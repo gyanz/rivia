@@ -1,8 +1,6 @@
-"""
-"""
-from __future__ import print_function
+"""COM geometry interface wrapper for HEC-RAS."""
+
 import math
-import traceback
 
 class GeometryBase(object):
     """ """
@@ -102,10 +100,9 @@ class GeometryBase(object):
 
         y : tuple of floats
         """
-        # FIXME:
-        n = self.NodeCutLine_nPoints(riv, rch, n)
-        x = (float('nan'),)*(n + 1)  # (n + 1) Adjust to 0-based indexing
-        y = (float('nan'),)*(n + 1)  # (n + 1) Adjust to 0-based indexing
+        n_pts = self.NodeCutLine_nPoints(riv, rch, n)
+        x = (float('nan'),) * (n_pts + 1)  # +1 for 0-based indexing
+        y = (float('nan'),) * (n_pts + 1)
         geo = self._geometry
         res = geo.NodeCutLine_Points(riv, rch, n, x, y)
         river_id, reach_id, node_id, point_x, point_y = res

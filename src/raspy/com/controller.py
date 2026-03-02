@@ -1,10 +1,7 @@
-from __future__ import print_function
 import logging
-import traceback
 import win32com.client
-from typing import Union, Any, Optional
 
-from .ras import installed_ras_progid
+from .ras import installed_ras_progid, installed_ras_display_name
 from ._runtime import Runtime, kill_hecras
 from ._geometry import GeometryBase as _GeometryBase
 from ._ver400 import Controller as C400, RASEvents as E400
@@ -12,9 +9,8 @@ from ._ver500 import Controller as C500, RASEvents as E500
 from ._ver503 import Controller as C503, RASEvents as E503
 
 
-def controller(version:Union[str | int]):
-    version_xxxx,info = installed_ras_progid(version)
-    print(info)
+def controller(version: str | int):
+    version_xxxx, info = installed_ras_progid(version)
     geometry_progid = info["geometry"]
     flow_progid = info["flow"]
     controller_progid = info["controller"]
@@ -22,7 +18,7 @@ def controller(version:Union[str | int]):
     # Necessary so that only one HEC-RAS process is open at a time
     if not controller_progid is None:
         # extra carefull although controller can't be None as it would have already raised error
-        kill_hecras()
+        #kill_hecras()
         
         _rc = _call_comobject(controller_progid)
         _geom = _call_comobject(geometry_progid)
@@ -94,17 +90,17 @@ class _ControllerBase:
 class _Controller400(_ControllerBase,C400,_GeometryBase):
     def __init__(self,rc,geom,flow,events,version_xxxx):
         super().__init__(rc,geom,flow,events,version_xxxx)
-        self._runtime = Runtime(self)
+        self._runtime = Runtime(self,installed_ras_display_name(version_xxxx))
 
 class _Controller500(_ControllerBase,C500,_GeometryBase):
     def __init__(self,rc,geom,flow,events,version_xxxx):
         super().__init__(rc,geom,flow,events,version_xxxx)
-        self._runtime = Runtime(self)
+        self._runtime = Runtime(self,installed_ras_display_name(version_xxxx))
 
 class _Controller503(_ControllerBase,C503,_GeometryBase):
     def __init__(self,rc,geom,flow,events,version_xxxx):
         super().__init__(rc,geom,flow,events,version_xxxx)
-        self._runtime = Runtime(self)
+        self._runtime = Runtime(self,installed_ras_display_name(version_xxxx))
 
 #class _ControllerGeometry(_GeometryBase):
 #    def __init__(self, geometry):

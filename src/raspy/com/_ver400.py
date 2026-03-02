@@ -1,33 +1,9 @@
 """
 """
 import logging
-import datetime as dt
-import os
 import os.path as osp
 
-
-def _fix_dates(dates):
-    """Helper function to convert dates to datetime objects."""
-
-    # Fix dates with epoch
-    init = dt.datetime(1900, 1, 1) - dt.timedelta(2)  # Needed to adjust
-    new_dates = [dt.timedelta(d) + init for d in dates[1:]]
-
-    return new_dates
-
-
-def _create_dir(filepath):
-    """Checks if path is valid, and if dir does not exist it will create it
-    recursively.
-    """
-    # Check relative path to script
-    dirpath = osp.dirname(osp.abspath(filepath))
-    if not osp.isdir(dirpath):
-        # Create directory recursively
-        os.makedirs(dirpath)
-    fullpath = osp.abspath(filepath)
-
-    return fullpath
+from raspy.utils.helpers import ensure_dir as _create_dir, fix_ras_dates as _fix_dates
 
 
 class ControllerDeprecated(object):
@@ -588,7 +564,7 @@ class ControllerBase(object):
         """
         rc = self._rc
         rc.Edit_BC(river, reach, rs)
-        self._runtime.pause_bc(close)
+        self._runtime.pause_window("bridge_culvert", close)
 
     def Edit_GeometricData(self):
         """
@@ -601,7 +577,7 @@ class ControllerBase(object):
         """
         rc = self._rc
         rc.Edit_GeometricData()
-        self._runtime.pause_geo()
+        self._runtime.pause_window("geometry")
 
     def Edit_IW(self, river, reach, rs, close=False):
         """
@@ -626,7 +602,7 @@ class ControllerBase(object):
         """
         rc = self._rc
         rc.Edit_LW(river, reach, rs)
-        self._runtime.pause_iw(close)
+        self._runtime.pause_window("inline_structure", close)
 
     def Edit_LW(self, river, reach, rs, close=False):
         """
@@ -651,7 +627,7 @@ class ControllerBase(object):
         """
         rc = self._rc
         rc.Edit_LW(river, reach, rs)
-        self._runtime.pause_lw(close)
+        self._runtime.pause_window("lateral_structure", close)
 
     def Edit_MultipleRun(self):
         """
@@ -666,7 +642,7 @@ class ControllerBase(object):
         """
         rc = self._rc
         rc.Edit_MultipleRun()
-        self._runtime.pause_multiple()
+        self._runtime.pause_window("multiple_plans")
 
     def Edit_PlanData(self):
         """
@@ -682,7 +658,7 @@ class ControllerBase(object):
         """
         rc = self._rc
         rc.Edit_PlanData()
-        self._runtime.pause_plan()
+        self._runtime.pause_window("steady_flow_analysis")
 
     def Edit_QuasiUnsteadyFlowData(self):
         """
@@ -697,7 +673,7 @@ class ControllerBase(object):
         """
         rc = self._rc
         rc.Edit_QuasiUnsteadyFlowData()
-        self._runtime.pause_quasi()
+        self._runtime.pause_window("quasi_unsteady")
 
     def Edit_SedimentData(self):
         """
@@ -712,7 +688,7 @@ class ControllerBase(object):
         """
         rc = self._rc
         rc.Edit_SedimentData()
-        self._runtime.pause_sediment()
+        self._runtime.pause_window("sediment")
 
     def Edit_SteadyFlowData(self):
         """
@@ -727,7 +703,7 @@ class ControllerBase(object):
         """
         rc = self._rc
         rc.Edit_SteadyFlowData()
-        self._runtime.pause_steady()
+        self._runtime.pause_window("steady_flow")
 
     def Edit_UnsteadyFlowData(self):
         """
@@ -742,7 +718,7 @@ class ControllerBase(object):
         """
         rc = self._rc
         rc.Edit_UnsteadyFlowData()
-        self._runtime.pause_unsteady()
+        self._runtime.pause_window("unsteady_flow")
 
     def Edit_WaterQualityData(self):
         """
@@ -757,7 +733,7 @@ class ControllerBase(object):
         """
         rc = self._rc
         rc.Edit_WaterQualityData()
-        self._runtime.pause_quality()
+        self._runtime.pause_window("water_quality")
 
     def Edit_XS(self, river, reach, rs, close=False):
         """
@@ -781,7 +757,7 @@ class ControllerBase(object):
         """
         rc = self._rc
         rc.Edit_XS(river, reach, rs)
-        self._runtime.pause_xs(close)
+        self._runtime.pause_window("cross_section", close)
 
     # %% Export
     def ExportGIS(self, filename=None):

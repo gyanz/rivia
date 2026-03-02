@@ -1,7 +1,6 @@
 import re
 import sys
-from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
+from typing import Any
 
 # -------------------------
 # 1) Version -> registry XXX
@@ -10,7 +9,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 _VERSION_RE = re.compile(r"(\d+)(?:\.(\d+))?(?:\.(\d+))?")
 _VERSION_XXXX_RE = re.compile(r"(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:\.(\d+))?")
 
-def ras_registry_xxx(version: Union[str, int]) -> str:
+def ras_registry_xxx(version: str | int) -> str:
     """
     Convert a HEC-RAS version into the registry COM ProgID suffix XXX.
 
@@ -97,7 +96,7 @@ def _to_xxx(major: int, minor: int, patch: int) -> str:
     return f"{major}{minor}"
 
 
-def hec_ras_progid(version: Union[str, int], kind: str = "controller") -> str:
+def hec_ras_progid(version: str | int, kind: str = "controller") -> str:
     """
     Build the COM ProgID string for the requested HEC-RAS version.
 
@@ -120,7 +119,7 @@ def hec_ras_progid(version: Union[str, int], kind: str = "controller") -> str:
 # 2) Enumerate installed HEC-RAS programs (HKCU/HKLM)
 # --------------------------------------------
 
-def find_hec_ras_installations() -> List[Dict[str, Any]]:
+def find_hec_ras_installations() -> list[dict[str, Any]]:
     """
     Return a list of HEC-RAS installations found in Windows Uninstall registry keys.
 
@@ -145,7 +144,7 @@ def find_hec_ras_installations() -> List[Dict[str, Any]]:
         ("system_wow6432", winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"),
     ]
 
-    results: List[Dict[str, Any]] = []
+    results: list[dict[str, Any]] = []
 
     for scope, hive, path in uninstall_paths:
         try:
@@ -172,8 +171,8 @@ def find_hec_ras_installations() -> List[Dict[str, Any]]:
     return sorted(uniq.values(), key=lambda d: (d.get("parsed_version") or "", d.get("display_name") or ""))
 
 
-def _read_uninstall_entry(winreg, k, scope: str, hive_name: str, key_path: str) -> Optional[Dict[str, Any]]:
-    def q(name: str) -> Optional[str]:
+def _read_uninstall_entry(winreg, k, scope: str, hive_name: str, key_path: str) -> dict[str, Any] | None:
+    def q(name: str) -> str | None:
         try:
             v, _t = winreg.QueryValueEx(k, name)
             return str(v) if v is not None else None
@@ -221,7 +220,7 @@ def _read_uninstall_entry(winreg, k, scope: str, hive_name: str, key_path: str) 
     }
 
 
-def _extract_version_token(text: Optional[str]) -> Optional[str]:
+def _extract_version_token(text: str | None) -> str | None:
     if not text:
         return None
     m = _VERSION_RE.search(text)
@@ -237,7 +236,7 @@ def _extract_version_token(text: Optional[str]) -> Optional[str]:
         return f"{major}.{minor}"
     return f"{major}.{minor}.{patch}"
 
-def _extract_version_token2(text: Optional[str]) -> Optional[int]:
+def _extract_version_token2(text: str | None) -> int | None:
     if not text:
         return None
     m = _VERSION_XXXX_RE.search(text)
@@ -269,7 +268,7 @@ def _hive_name(hive) -> str:
 # COM registry lookup: ProgID -> (exists, CLSID, server path)
 # ---------------------------------------------------------
 
-def _com_progid_info(progid: str) -> Dict[str, Any]:
+def _com_progid_info(progid: str) -> dict[str, Any]:
     """
     Check HKCR\\<ProgID>. If present, resolve CLSID and LocalServer32/InprocServer32.
 
@@ -285,7 +284,7 @@ def _com_progid_info(progid: str) -> Dict[str, Any]:
 
     import winreg  # type: ignore
 
-    def try_open(view_flag: int) -> Optional[Dict[str, Any]]:
+    def try_open(view_flag: int) -> dict[str, Any] | None:
         access = winreg.KEY_READ | view_flag
         try:
             with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, progid, 0, access) as k:
@@ -334,7 +333,7 @@ def _com_progid_info(progid: str) -> Dict[str, Any]:
 # Join: installed HEC-RAS (Uninstall keys) -> ProgIDs in HKCR
 # (calls your earlier find_hec_ras_installations() if you have it)
 # ---------------------------------------------------------
-def installed_ras_progids() -> List[Dict[str, Any]]:
+def installed_ras_progids() -> list[dict[str, Any]]:
     """
     Given a function that returns installed HEC-RAS entries (like find_hec_ras_installations()),
     enrich each entry with the actual registered COM ProgID info for Controller and Geometry.
@@ -343,7 +342,7 @@ def installed_ras_progids() -> List[Dict[str, Any]]:
         installs = installed_ras_progids(find_hec_ras_installations)
     """
     installs = find_hec_ras_installations()
-    out: List[Dict[str, Any]] = []
+    out: list[dict[str, Any]] = []
 
     for inst in installs:
         parsed_version = inst.get("parsed_version") or inst.get("display_version") or inst.get("display_name")
