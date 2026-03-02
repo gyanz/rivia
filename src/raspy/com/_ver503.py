@@ -2,17 +2,6 @@ import logging
 from . import _ver500
 
 class Controller(_ver500.Controller):
-    """
-    def QuitRas(self):
-        try:
-            self._rc.QuitRas()
-        except AttributeError:
-            raise ComObjException('QuitRas function not Available with HECRAS %s'%self._ras_version)
-    """
-    def HideRas(self):
-        # Hide GUI window
-        self.QuitRas()
-
     def Compute_CurrentPlan(self,BlockingMode=1):
         '''
         The number of parameters and return values have changed in 5.0.3 or is different than 5.0.0 or 4.X

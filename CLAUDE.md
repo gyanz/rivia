@@ -69,6 +69,14 @@ Current tasks:
 - Data read from file and hdf file are read in non-geospatial format but give an optional argument to convert them to geopandas or raster object via helper function defined in geo subpackage
 - I want only geo subpackage to use libraries such as geopandas and rasterio so that these dependencies are not needed to perform other unrelated task
 
+## Approach
+- Before writing any code, describe your approach and wait for approval
+- If the requirements I give your are ambiguous, ask clarifying questions before writing any code
+- After your finish writing code, list the edge cases and suggest test cases to cover them
+- If a task requires changing to more than 3 files, stop and break it into smaller tasks first
+- When there is a bug, start by writing a test that reporoduces it, then fix it until the test passes
+- Every time I correct you, refect on what you did wrong and come up with a plan to never make the same mistake again
+
 ## Environment
 - Conda env: `raspy-dev` (activate before Claude Code sessions)
 

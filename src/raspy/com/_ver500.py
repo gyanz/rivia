@@ -176,6 +176,8 @@ class ControllerAdded(object):
         """
         rc = self._rc
         rc.QuitRas()
+    
+    hide = QuitRas # Alia for QuitRas to hide application window
 
     # %% WAT, CAVI, FRA
     def wcf_ComputePlan(self):

@@ -63,16 +63,26 @@ class Runtime:
     def _get_pid_from_window(self) -> int | None:
         """Get PID via Win32 window enumeration.
 
-        Calls ShowRas() to force the window visible, finds the top-level
-        window whose title contains 'HEC-RAS ', resolves the owning process
-        via GetWindowThreadProcessId, then hides the window again.
+        Snapshots existing HEC-RAS windows before calling ShowRas(), then
+        finds the newly appeared window that was not present before. This
+        correctly handles the case where a pre-existing HEC-RAS process is
+        already running — we only attach to the window our COM call created.
         """
+        existing: set[int] = set()
+
+        def _collect_existing(hwnd, _):
+            if self.display_name in win32gui.GetWindowText(hwnd):
+                existing.add(hwnd)
+
+        win32gui.EnumWindows(_collect_existing, None)
+
         self.parent.ShowRas()
         hwnd_found = None
 
         def _enum_handler(hwnd, _):
             nonlocal hwnd_found
-            if self.display_name in win32gui.GetWindowText(hwnd):
+            title = win32gui.GetWindowText(hwnd)
+            if hwnd not in existing and self.display_name in title:
                 hwnd_found = hwnd
 
         for _ in range(5):
@@ -193,6 +203,49 @@ def kill_process(pid: int | None) -> bool:
         return False
     logging.info("HEC-RAS process pid=%s terminated", pid)
     return True
+
+
+def kill_hecras_version(display_name: str) -> None:
+    """Terminate HEC-RAS processes whose main window title contains display_name.
+
+    Uses window enumeration to target a specific installed version, leaving
+    other HEC-RAS versions (or unrelated sessions) untouched.
+    """
+    pids: set[int] = set()
+
+    def _enum_handler(hwnd, _):
+        if display_name in win32gui.GetWindowText(hwnd):
+            _, pid = win32process.GetWindowThreadProcessId(hwnd)
+            pids.add(pid)
+
+    win32gui.EnumWindows(_enum_handler, None)
+
+    procs = []
+    for pid in pids:
+        try:
+            proc = psutil.Process(pid)
+            if proc.name().lower() == "ras.exe":
+                proc.terminate()
+                procs.append(proc)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+
+    if not procs:
+        return
+
+    logging.debug(
+        "Waiting for HEC-RAS %r processes to exit: pids=%r",
+        display_name,
+        [p.pid for p in procs],
+    )
+    _, still_alive = psutil.wait_procs(procs, timeout=3)
+
+    for proc in still_alive:
+        with contextlib.suppress(psutil.NoSuchProcess, psutil.AccessDenied):
+            proc.kill()
+
+    if still_alive:
+        time.sleep(0.5)
 
 
 def kill_hecras() -> None:
