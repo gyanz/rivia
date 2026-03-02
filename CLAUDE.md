@@ -15,16 +15,16 @@ currently in `archive/`. Goal: clean public PyPI package with a well-designed AP
 
 ```
 raspy/
-├── ras/       # COM interface to run/control HEC-RAS (from paras)
-├── io/               # Read/parse/write HEC-RAS text input and output files including plan, flow and geometry (.prj, .g*, .f*, .u* etc.)
+├── com/              # COM interface to run/control HEC-RAS derived from pyras
+├── model/            # Uses com to load HEC-RAS software and load model and read/parse/write  text input and output files including plan, flow and geometry (.prj, .g*, .f*, .u* etc.)
 ├── hdf/              # Read HEC-RAS HDF5 files (h5py-based) for geometric data esp mesh and results
 ├── geo/              # Functions and classes for geospatial operation of input and output data such as interpolation, write raster after reading hdf data, etc.
 └── utils/            # Shared helpers (path handling, validation, logging)
 ```
 
 Archive reference:
-- `archive/pyras/`    → informs `ras/`
-- `archive/ras_tools/` → informs `io/`, `hdf/`, `geo/`
+- `archive/pyras/`    → informs `com/`
+- `archive/ras_tools/` → informs `model/`, `hdf/`, `geo/`
 
 ## Current Phase: Architecture Design
 We are in the PLANNING phase. Do not write production code yet.
@@ -40,6 +40,7 @@ Current tasks:
 - `pandas` — tabular results and timeseries
 - `h5py` — HDF5 file access for hdf subpackage
 - `pywin32` — COM interface in ras (Windows only)
+- `psutil` - Determine process id of loaded COM process
 - `geopandas` — optional, but needed for geo subpackage
 - `rasterio` — optional, but needed for geo subpackage
 
@@ -57,7 +58,7 @@ Current tasks:
 - Note which archive file a new implementation was derived from in docstrings
 
 ## Never Do
-- Never import `win32com` outside `controller/` subpackage
+- Never import `win32com` outside `com/` subpackage
 - Never use mutable default arguments
 - Never commit without updating "Current Phase" task list above
 
@@ -67,6 +68,9 @@ Current tasks:
 - Error handling philosophy: strict (raise early) vs lenient (warn and continue)?
 - Data read from file and hdf file are read in non-geospatial format but give an optional argument to convert them to geopandas or raster object via helper function defined in geo subpackage
 - I want only geo subpackage to use libraries such as geopandas and rasterio so that these dependencies are not needed to perform other unrelated task
+
+## Environment
+- Conda env: `raspy-dev` (activate before Claude Code sessions)
 
 ## Commands
 - Install dev: `pip install -e ".[dev]"`

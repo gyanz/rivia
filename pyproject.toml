@@ -1,6 +1,6 @@
 [build-system]
-requires = ["setuptools>=68.0", "setuptools-scm>=8.0"]
-build-backend = "setuptools.backends._legacy:_Backend"
+requires = ["setuptools>=75.0"]
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "raspy"
@@ -16,7 +16,6 @@ keywords = ["hec-ras", "hydraulics", "hydrology", "modeling", "water-resources"]
 classifiers = [
     "Development Status :: 2 - Pre-Alpha",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: Microsoft :: Windows",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
@@ -27,13 +26,19 @@ classifiers = [
 ]
 dependencies = [
     "numpy",
+    "scipy",
     "pandas",
     "h5py",
-    "geopandas",
     "pywin32",
+    "psutil",
+    "pydantic>=2",
 ]
 
 [project.optional-dependencies]
+geo = [
+    "geopandas",
+    "rasterio",
+]
 dev = [
     "pytest>=7.0",
     "pytest-cov",

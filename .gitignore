@@ -1,5 +1,6 @@
 # Python
 __pycache__/
+test.py
 *.py[cod]
 *$py.class
 *.so
@@ -39,3 +40,7 @@ Desktop.ini
 # Distribution
 *.tar.gz
 *.whl
+
+# Extra
+archive/*
+.claude
