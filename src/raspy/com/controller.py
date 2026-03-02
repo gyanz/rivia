@@ -30,9 +30,7 @@ def controller(version:Union[str | int]):
         _events = None
 
         if not flow_progid is None:
-            #_flow = _call_comobject(flow_progid)
-            # TODO: Is it needed? This creates new RAS process. Disabling for now.
-            pass
+            _flow = _call_comobject(flow_progid)
         
         if version_xxxx < 5000:
             _events = _call_comobject(_rc,E400)
@@ -85,7 +83,6 @@ class _ControllerBase:
     @property
     def exe(self):
         return self._runtime.exe
-
 
     def close(self):
         self._runtime.close()

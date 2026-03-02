@@ -365,7 +365,7 @@ def installed_ras_progids() -> List[Dict[str, Any]]:
             flow_progid = f"RAS{xxx}.HECRASFlow"
             controller = _com_progid_info(controller_progid)
             geometry = _com_progid_info(geometry_progid)
-            flow = _com_progid_info(geometry_progid)
+            flow = _com_progid_info(flow_progid)
 
         enriched = dict(inst)
         enriched["registry_xxx"] = xxx

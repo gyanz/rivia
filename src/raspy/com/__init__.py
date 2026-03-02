@@ -1,2 +1,2 @@
 """COM interface to run and control HEC-RAS."""
-from .controller import controller as load
+from .controller import controller as open
