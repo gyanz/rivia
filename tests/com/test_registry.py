@@ -9,6 +9,7 @@ from raspy.com.registry import ras_registry_xxx
 # Passing cases — dotted input (Case A)
 # ---------------------------------------------------------------------------
 
+
 class TestDottedInput:
     def test_major_minor_patch(self):
         assert ras_registry_xxx("6.4.1") == "641"
@@ -51,6 +52,7 @@ class TestDottedInput:
 # Passing cases — pure digit input (Case B)
 # ---------------------------------------------------------------------------
 
+
 class TestDigitInput:
     def test_three_digits(self):
         assert ras_registry_xxx("641") == "641"
@@ -75,6 +77,7 @@ class TestDigitInput:
 # Passing cases — prefixed strings (Case C)
 # ---------------------------------------------------------------------------
 
+
 class TestPrefixedInput:
     def test_ras_prefix(self):
         assert ras_registry_xxx("RAS630") == "63"
@@ -86,6 +89,7 @@ class TestPrefixedInput:
 # ---------------------------------------------------------------------------
 # Error cases — dotted input
 # ---------------------------------------------------------------------------
+
 
 class TestDottedInputErrors:
     def test_three_digit_component_raises(self):

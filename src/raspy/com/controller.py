@@ -63,17 +63,20 @@ def controller(version: str | int):
         else:
             _events = _bind_events(_rc, E503)
             rc = _Controller503(_rc, _geom, _flow, _events, version_xxxx)
-        
+
         return rc
+
 
 def _dispatch(prog_id: str):
     return win32com.client.DispatchEx(prog_id)
 
+
 def _bind_events(com_obj, event_class):
     return win32com.client.WithEvents(com_obj, event_class)
 
+
 class _ControllerBase:
-    def __init__(self,rc,geom,flow,events,version_xxxx):
+    def __init__(self, rc, geom, flow, events, version_xxxx):
         self._rc = rc
         self._geometry = geom
         self._flow = flow
@@ -92,7 +95,7 @@ class _ControllerBase:
     def runtime(self):
         return self._runtime
 
-    def ras_version(self,descriptive=False):
+    def ras_version(self, descriptive=False):
         if descriptive:
             return self.HECRASVersion()
         return self._rasver
@@ -127,24 +130,28 @@ class _ControllerBase:
             self._runtime.close()
 
     def __del__(self):
-        logging.debug('HEC-RAS Controller destructor called.')
+        logging.debug("HEC-RAS Controller destructor called.")
         self.close()
 
-class _Controller400(_ControllerBase,C400,_GeometryBase):
-    def __init__(self,rc,geom,flow,events,version_xxxx):
-        super().__init__(rc,geom,flow,events,version_xxxx)
-        self._runtime = Runtime(self,installed_ras_display_name(version_xxxx))
 
-class _Controller500(_ControllerBase,C500,_GeometryBase):
-    def __init__(self,rc,geom,flow,events,version_xxxx):
-        super().__init__(rc,geom,flow,events,version_xxxx)
-        self._runtime = Runtime(self,installed_ras_display_name(version_xxxx))
+class _Controller400(_ControllerBase, C400, _GeometryBase):
+    def __init__(self, rc, geom, flow, events, version_xxxx):
+        super().__init__(rc, geom, flow, events, version_xxxx)
+        self._runtime = Runtime(self, installed_ras_display_name(version_xxxx))
 
-class _Controller503(_ControllerBase,C503,_GeometryBase):
-    def __init__(self,rc,geom,flow,events,version_xxxx):
-        super().__init__(rc,geom,flow,events,version_xxxx)
-        self._runtime = Runtime(self,installed_ras_display_name(version_xxxx))
 
-#class _ControllerGeometry(_GeometryBase):
+class _Controller500(_ControllerBase, C500, _GeometryBase):
+    def __init__(self, rc, geom, flow, events, version_xxxx):
+        super().__init__(rc, geom, flow, events, version_xxxx)
+        self._runtime = Runtime(self, installed_ras_display_name(version_xxxx))
+
+
+class _Controller503(_ControllerBase, C503, _GeometryBase):
+    def __init__(self, rc, geom, flow, events, version_xxxx):
+        super().__init__(rc, geom, flow, events, version_xxxx)
+        self._runtime = Runtime(self, installed_ras_display_name(version_xxxx))
+
+
+# class _ControllerGeometry(_GeometryBase):
 #    def __init__(self, geometry):
 #        self._geometry = geometry

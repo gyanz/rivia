@@ -68,15 +68,21 @@ __all__ = [
 
 EXT_BACKUP_FILE = "raspy_bkup"
 
+
 class Model:
-    """ High-level interface for working with an HEC-RAS project via the wrapped COM object.
+    """High-level interface for working with an HEC-RAS project via the wrapped COM object.
 
     Use this class in preference to `com.open`. While `com.open` returns a raw HEC-RAS
     controller instance that is not associated with any project, `Model` binds the COM
     object to a specific HEC-RAS project file and provides project-aware operations.
     """
-    def __init__(self, project_file: str | Path, ras_version: str | int | None = None,
-                 backup: bool = False):
+
+    def __init__(
+        self,
+        project_file: str | Path,
+        ras_version: str | int | None = None,
+        backup: bool = False,
+    ):
         self._project_path = Path(project_file)
         self._backup = backup
 
@@ -85,7 +91,7 @@ class Model:
         Model._restore_backups(model_files)
 
         if ras_version is None:
-            ras_version= Model._get_ras_version_from_project_file(project_file)
+            ras_version = Model._get_ras_version_from_project_file(project_file)
 
         if backup:
             Model._create_backups(model_files)
@@ -167,13 +173,16 @@ class Model:
             depth = area.depth(5)
         """
         from raspy.hdf import PlanHdf
+
         if self._hdf is None:
             self._hdf = PlanHdf(self.plan_hdf_file)
         return self._hdf
 
     def reset(self):
         if not self._backup:
-            raise ValueError("Model instance does not have back files to perform reset.")
+            raise ValueError(
+                "Model instance does not have back files to perform reset."
+            )
         model_files = Model._get_project_files(self._project_path)
         Model._restore_backups(model_files)
         self.reload()
@@ -199,13 +208,13 @@ class Model:
     def hide(self):
         self._rc.hide()
 
-    def show_compute(self, flag:bool):
+    def show_compute(self, flag: bool):
         if flag:
             self._rc.Compute_ShowComputationWindow()
         else:
             self._rc.Compute_HideComputationWindow()
 
-    def compute_blocking(self, flag:bool):
+    def compute_blocking(self, flag: bool):
         if flag:
             self._compute_blocking = 1
         else:
@@ -229,7 +238,9 @@ class Model:
                     ext = line.split("=")[1].strip()
                     plan_file = path.parent / f"{path.stem}.{ext}"
         if plan_file is None:
-            raise RuntimeError(f"The HEC-RAS project file does not have current plan specified: {project_file}")
+            raise RuntimeError(
+                f"The HEC-RAS project file does not have current plan specified: {project_file}"
+            )
 
         with open(plan_file) as fid:
             for line in fid:

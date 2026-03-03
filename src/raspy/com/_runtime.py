@@ -11,18 +11,18 @@ import win32process
 
 # Map of short names to the window title substrings HEC-RAS uses for each editor.
 _WINDOW_TITLES: dict[str, str] = {
-    "bridge_culvert":       "Bridge Culvert Data",
-    "geometry":             "Geometric Data",
-    "inline_structure":     "Inline Structure Data",
-    "lateral_structure":    "Lateral Structure Editor",
-    "multiple_plans":       "Run Multiple Plans",
+    "bridge_culvert": "Bridge Culvert Data",
+    "geometry": "Geometric Data",
+    "inline_structure": "Inline Structure Data",
+    "lateral_structure": "Lateral Structure Editor",
+    "multiple_plans": "Run Multiple Plans",
     "steady_flow_analysis": "Steady Flow Analysis",
-    "quasi_unsteady":       "Quasi Unsteady Flow Editor",
-    "sediment":             "Sediment Data",
-    "steady_flow":          "Steady Flow Data",
-    "unsteady_flow":        "Unsteady Flow Data",
-    "water_quality":        "Water Quality Data",
-    "cross_section":        "Cross Section Data",
+    "quasi_unsteady": "Quasi Unsteady Flow Editor",
+    "sediment": "Sediment Data",
+    "steady_flow": "Steady Flow Data",
+    "unsteady_flow": "Unsteady Flow Data",
+    "water_quality": "Water Quality Data",
+    "cross_section": "Cross Section Data",
 }
 
 
@@ -55,7 +55,7 @@ class Runtime:
             pid = self._get_pid_from_name()
         if pid is not None:
             self.parent_pid = pid
-            logging.debug("%s Runtime pid assigned: %s",self.display_name, pid)
+            logging.debug("%s Runtime pid assigned: %s", self.display_name, pid)
         else:
             logging.error("Could not determine HEC-RAS process PID.")
         return pid
@@ -177,6 +177,7 @@ class Runtime:
 # ------------------------------------------------------------------
 # Module-level helpers
 # ------------------------------------------------------------------
+
 
 def kill_process(pid: int | None) -> bool:
     """Terminate a single HEC-RAS process by PID.

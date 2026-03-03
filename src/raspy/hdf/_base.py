@@ -3,6 +3,7 @@
 Manages file lifecycle: open on construction, close explicitly or via context
 manager.  Appends '.hdf' to the path when the suffix is missing.
 """
+
 from __future__ import annotations
 
 from pathlib import Path

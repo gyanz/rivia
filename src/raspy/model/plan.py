@@ -33,7 +33,7 @@ class PlanFile:
         prefix = key + "="
         for line in self._lines:
             if line.startswith(prefix):
-                value = line[len(prefix):].strip()
+                value = line[len(prefix) :].strip()
                 return value if value else None
         return None
 
@@ -354,8 +354,7 @@ class PlanFile:
 
     @property
     def write_ic_at_end(self) -> bool:
-        """Whether to write IC file at simulation end (``Write IC File at Sim End=``).
-        """
+        """Whether to write IC file at simulation end (``Write IC File at Sim End=``)."""
         return self._to_bool(self._get("Write IC File at Sim End"))
 
     @write_ic_at_end.setter

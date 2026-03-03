@@ -12,6 +12,7 @@ fully usable without rasterio or scipy installed.
 Derived from archive/ras_tools/r2d/ras_io.py and
 archive/ras_tools/r2d/ras2d_cell_velocity.py.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -31,17 +32,13 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 # HDF path constants
 # ---------------------------------------------------------------------------
-_TS_ROOT  = (
-    "Results/Unsteady/Output/Output Blocks/Base Output/Unsteady Time Series"
-)
-_SUM_ROOT = (
-    "Results/Unsteady/Output/Output Blocks/Base Output/Summary Output"
-)
-_TS_2D    = f"{_TS_ROOT}/2D Flow Areas"
-_SUM_2D   = f"{_SUM_ROOT}/2D Flow Areas"
+_TS_ROOT = "Results/Unsteady/Output/Output Blocks/Base Output/Unsteady Time Series"
+_SUM_ROOT = "Results/Unsteady/Output/Output Blocks/Base Output/Summary Output"
+_TS_2D = f"{_TS_ROOT}/2D Flow Areas"
+_SUM_2D = f"{_SUM_ROOT}/2D Flow Areas"
 
-_TIME_DS         = f"{_TS_ROOT}/Time"
-_TIME_STAMP_DS   = f"{_TS_ROOT}/Time Date Stamp"
+_TIME_DS = f"{_TS_ROOT}/Time"
+_TIME_STAMP_DS = f"{_TS_ROOT}/Time Date Stamp"
 
 # Timestamp format written by HEC-RAS (e.g. "03Jan2000 00:00:00")
 _RAS_TS_FMT = "%d%b%Y %H:%M:%S"
@@ -50,6 +47,7 @@ _RAS_TS_FMT = "%d%b%Y %H:%M:%S"
 # ---------------------------------------------------------------------------
 # FlowAreaResults — extends FlowArea with plan results
 # ---------------------------------------------------------------------------
+
 
 class FlowAreaResults(FlowArea):
     """Geometry *and* time-series results for one named 2-D flow area.
@@ -86,7 +84,7 @@ class FlowAreaResults(FlowArea):
         n_cells: int,
     ) -> None:
         super().__init__(geom_group, name, n_cells)
-        self._ts  = ts_group
+        self._ts = ts_group
         self._sum = sum_group
 
     # ------------------------------------------------------------------
@@ -143,7 +141,7 @@ class FlowAreaResults(FlowArea):
         Returns a DataFrame with columns ``['value', 'time']`` and
         integer index corresponding to cell or face index.
         """
-        raw = np.array(self._sum[key])   # shape (2, n_elements)
+        raw = np.array(self._sum[key])  # shape (2, n_elements)
         if n is not None:
             raw = raw[:, :n]
         return pd.DataFrame(
@@ -215,7 +213,9 @@ class FlowAreaResults(FlowArea):
     def cell_velocity_vectors(
         self,
         timestep: int,
-        method: Literal["area_weighted", "length_weighted", "flow_ratio"] = "area_weighted",
+        method: Literal[
+            "area_weighted", "length_weighted", "flow_ratio"
+        ] = "area_weighted",
         wse_interp: Literal["average", "sloped"] = "average",
     ) -> np.ndarray:
         """Reconstruct cell-centre velocity vectors via weighted least-squares.
@@ -253,12 +253,10 @@ class FlowAreaResults(FlowArea):
                 "before running the simulation, or use a different method."
             )
 
-        face_vel  = np.array(self.face_velocity[timestep, :])
-        cell_wse  = np.array(self.water_surface[timestep, : self.n_cells])
+        face_vel = np.array(self.face_velocity[timestep, :])
+        cell_wse = np.array(self.water_surface[timestep, : self.n_cells])
         face_flow = (
-            np.array(self.face_flow[timestep, :])
-            if method == "flow_ratio"
-            else None
+            np.array(self.face_flow[timestep, :]) if method == "flow_ratio" else None
         )
 
         cell_face_info, cell_face_values = self.cell_face_info
@@ -266,34 +264,36 @@ class FlowAreaResults(FlowArea):
 
         if wse_interp == "sloped":
             cell_coords = self.cell_centers
-            fp_idx      = self.face_facepoint_indexes   # (n_faces, 2)
-            fp_xy       = self.facepoint_coordinates    # (n_facepoints, 2)
+            fp_idx = self.face_facepoint_indexes  # (n_faces, 2)
+            fp_xy = self.facepoint_coordinates  # (n_facepoints, 2)
             face_coords = 0.5 * (fp_xy[fp_idx[:, 0]] + fp_xy[fp_idx[:, 1]])
         else:
             cell_coords = None
             face_coords = None
 
         return compute_all_cell_velocities(
-            n_cells           = self.n_cells,
-            cell_face_info    = cell_face_info,
-            cell_face_values  = cell_face_values,
-            face_normals      = self.face_normals,
-            face_cell_indexes = self.face_cell_indexes,
-            face_ae_info      = face_ae_info,
-            face_ae_values    = face_ae_values,
-            face_vel          = face_vel,
-            cell_wse          = cell_wse,
-            method            = method,
-            face_flow         = face_flow,
-            wse_interp        = wse_interp,
-            cell_coords       = cell_coords,
-            face_coords       = face_coords,
+            n_cells=self.n_cells,
+            cell_face_info=cell_face_info,
+            cell_face_values=cell_face_values,
+            face_normals=self.face_normals,
+            face_cell_indexes=self.face_cell_indexes,
+            face_ae_info=face_ae_info,
+            face_ae_values=face_ae_values,
+            face_vel=face_vel,
+            cell_wse=cell_wse,
+            method=method,
+            face_flow=face_flow,
+            wse_interp=wse_interp,
+            cell_coords=cell_coords,
+            face_coords=face_coords,
         )
 
     def cell_speed(
         self,
         timestep: int,
-        method: Literal["area_weighted", "length_weighted", "flow_ratio"] = "area_weighted",
+        method: Literal[
+            "area_weighted", "length_weighted", "flow_ratio"
+        ] = "area_weighted",
         wse_interp: Literal["average", "sloped"] = "average",
     ) -> np.ndarray:
         """Velocity magnitude at each cell centre for one timestep.
@@ -319,7 +319,9 @@ class FlowAreaResults(FlowArea):
     def cell_velocity_angle(
         self,
         timestep: int,
-        method: Literal["area_weighted", "length_weighted", "flow_ratio"] = "area_weighted",
+        method: Literal[
+            "area_weighted", "length_weighted", "flow_ratio"
+        ] = "area_weighted",
         wse_interp: Literal["average", "sloped"] = "average",
     ) -> np.ndarray:
         """Flow direction at each cell centre for one timestep.
@@ -348,7 +350,7 @@ class FlowAreaResults(FlowArea):
         )
         vx = vecs[:, 0]
         vy = vecs[:, 1]
-        speed = np.sqrt(vx ** 2 + vy ** 2)
+        speed = np.sqrt(vx**2 + vy**2)
         angle = (90.0 - np.degrees(np.arctan2(vy, vx))) % 360.0
         angle[speed < 1e-10] = np.nan
         return angle
@@ -383,9 +385,7 @@ class FlowAreaResults(FlowArea):
         )
 
         if cell_idx < 0 or cell_idx >= self.n_cells:
-            raise IndexError(
-                f"cell_idx {cell_idx} is out of range [0, {self.n_cells})"
-            )
+            raise IndexError(f"cell_idx {cell_idx} is out of range [0, {self.n_cells})")
 
         face_vel = np.array(self.face_velocity[timestep, :])
         cell_wse = np.array(self.water_surface[timestep, : self.n_cells])
@@ -393,18 +393,18 @@ class FlowAreaResults(FlowArea):
         cell_face_info, cell_face_values = self.cell_face_info
         start = int(cell_face_info[cell_idx, 0])
         count = int(cell_face_info[cell_idx, 1])
-        vals  = cell_face_values[start : start + count]
-        face_idxs    = vals[:, 0].astype(int)
+        vals = cell_face_values[start : start + count]
+        face_idxs = vals[:, 0].astype(int)
         orientations = vals[:, 1].astype(int)
 
-        normals = self.face_normals[face_idxs, :2]   # (k, 2)
-        lengths = self.face_normals[face_idxs, 2]    # (k,)
-        vn      = face_vel[face_idxs]                # (k,)
+        normals = self.face_normals[face_idxs, :2]  # (k, 2)
+        lengths = self.face_normals[face_idxs, 2]  # (k,)
+        vn = face_vel[face_idxs]  # (k,)
 
         face_ci = self.face_cell_indexes
         if wse_interp == "sloped":
-            fp_idx      = self.face_facepoint_indexes
-            fp_xy       = self.facepoint_coordinates
+            fp_idx = self.face_facepoint_indexes
+            fp_xy = self.facepoint_coordinates
             face_coords = 0.5 * (fp_xy[fp_idx[:, 0]] + fp_xy[fp_idx[:, 1]])
             face_wse_all = _estimate_face_wse_sloped(
                 face_ci, cell_wse, self.n_cells, self.cell_centers, face_coords
@@ -413,10 +413,12 @@ class FlowAreaResults(FlowArea):
             face_wse_all = _estimate_face_wse_average(face_ci, cell_wse, self.n_cells)
 
         ae_info, ae_values = self.face_area_elevation
-        areas = np.array([
-            _interpolate_face_flow_area(fi, face_wse_all[fi], ae_info, ae_values)
-            for fi in face_idxs
-        ])
+        areas = np.array(
+            [
+                _interpolate_face_flow_area(fi, face_wse_all[fi], ae_info, ae_values)
+                for fi in face_idxs
+            ]
+        )
 
         # --- header ---
         print(
@@ -434,8 +436,13 @@ class FlowAreaResults(FlowArea):
         print(hdr)
         print("-" * len(hdr))
         for fi, ori, (nx, ny), L, v, fwse, a in zip(
-            face_idxs, orientations, normals, lengths, vn,
-            face_wse_all[face_idxs], areas,
+            face_idxs,
+            orientations,
+            normals,
+            lengths,
+            vn,
+            face_wse_all[face_idxs],
+            areas,
             strict=False,
         ):
             print(
@@ -500,14 +507,14 @@ class FlowAreaResults(FlowArea):
         """
         n_t = self.water_surface.shape[0]
         max_speed = np.full(self.n_cells, -np.inf)
-        max_vecs  = np.zeros((self.n_cells, 2))
+        max_vecs = np.zeros((self.n_cells, 2))
 
         for t in range(n_t):
-            vecs  = self.cell_velocity_vectors(t, method=method, wse_interp=wse_interp)
+            vecs = self.cell_velocity_vectors(t, method=method, wse_interp=wse_interp)
             speed = np.sqrt(vecs[:, 0] ** 2 + vecs[:, 1] ** 2)
             faster = speed > max_speed
             max_speed[faster] = speed[faster]
-            max_vecs[faster]  = vecs[faster]
+            max_vecs[faster] = vecs[faster]
 
         return max_speed, max_vecs
 
@@ -605,13 +612,9 @@ class FlowAreaResults(FlowArea):
             elif variable == "depth":
                 values = self.max_depth()["value"].to_numpy()
             elif variable == "cell_speed":
-                values, _ = self._max_velocity(
-                    method=vel_method, wse_interp=wse_interp
-                )
+                values, _ = self._max_velocity(method=vel_method, wse_interp=wse_interp)
             elif variable == "cell_velocity":
-                _, values = self._max_velocity(
-                    method=vel_method, wse_interp=wse_interp
-                )
+                _, values = self._max_velocity(method=vel_method, wse_interp=wse_interp)
             else:
                 raise ValueError(f"Unknown variable: {variable!r}")
         else:
@@ -641,19 +644,20 @@ class FlowAreaResults(FlowArea):
             self.cell_centers,
             values,
             output_path,
-            cell_size        = resolved_cell_size,
-            transform        = transform,
-            reference_raster = reference_raster,
-            crs              = crs,
-            nodata           = nodata,
-            interp_method    = interp_method,
-            min_value        = min_value,
+            cell_size=resolved_cell_size,
+            transform=transform,
+            reference_raster=reference_raster,
+            crs=crs,
+            nodata=nodata,
+            interp_method=interp_method,
+            min_value=min_value,
         )
 
 
 # ---------------------------------------------------------------------------
 # FlowAreaResultsCollection
 # ---------------------------------------------------------------------------
+
 
 class FlowAreaResultsCollection(FlowAreaCollection):
     """Collection of :class:`FlowAreaResults` objects backed by a plan HDF file.
@@ -667,8 +671,7 @@ class FlowAreaResultsCollection(FlowAreaCollection):
             root = self._hdf["Geometry/2D Flow Areas"]
             if name not in root:
                 raise KeyError(
-                    f"2D flow area {name!r} not found. "
-                    f"Available: {self.names}"
+                    f"2D flow area {name!r} not found. Available: {self.names}"
                 )
             n_cells = self._get_real_cell_count(name)
 
@@ -685,16 +688,15 @@ class FlowAreaResultsCollection(FlowAreaCollection):
             sum_group = self._hdf.get(sum_path)
             if sum_group is None:
                 raise KeyError(
-                    f"No summary results found for flow area {name!r} "
-                    f"at '{sum_path}'."
+                    f"No summary results found for flow area {name!r} at '{sum_path}'."
                 )
 
             self._cache[name] = FlowAreaResults(
-                geom_group = root[name],
-                ts_group   = self._hdf[ts_path],
-                sum_group  = sum_group,
-                name       = name,
-                n_cells    = n_cells,
+                geom_group=root[name],
+                ts_group=self._hdf[ts_path],
+                sum_group=sum_group,
+                name=name,
+                n_cells=n_cells,
             )
         return self._cache[name]  # type: ignore[return-value]
 
@@ -702,6 +704,7 @@ class FlowAreaResultsCollection(FlowAreaCollection):
 # ---------------------------------------------------------------------------
 # PlanHdf — public entry point
 # ---------------------------------------------------------------------------
+
 
 class PlanHdf(GeometryHdf):
     """Read HEC-RAS plan HDF5 output files (``*.p*.hdf``).

@@ -54,8 +54,11 @@ def _fit_width(value: float, width: int = _COL_WIDTH) -> str:
     notation.  Truncates as last resort.
     """
     # Integer shortcut
-    if isinstance(value, int) or (isinstance(value, float) and value == int(value)
-                                  and len(str(int(value))) <= width):
+    if isinstance(value, int) or (
+        isinstance(value, float)
+        and value == int(value)
+        and len(str(int(value))) <= width
+    ):
         s = str(int(value))
         if len(s) <= width:
             return s.rjust(width)
@@ -78,9 +81,9 @@ def _fit_width(value: float, width: int = _COL_WIDTH) -> str:
     return repr(value)[:width]
 
 
-def _format_data_block(values: list[float],
-                       cols: int = _COLS_PER_ROW,
-                       width: int = _COL_WIDTH) -> list[str]:
+def _format_data_block(
+    values: list[float], cols: int = _COLS_PER_ROW, width: int = _COL_WIDTH
+) -> list[str]:
     """Return a list of fixed-width data lines (no trailing newline)."""
     lines: list[str] = []
     for i in range(0, len(values), cols):
@@ -89,8 +92,9 @@ def _format_data_block(values: list[float],
     return lines
 
 
-def _parse_data_block(lines: list[str], count: int,
-                      width: int = _COL_WIDTH) -> list[float]:
+def _parse_data_block(
+    lines: list[str], count: int, width: int = _COL_WIDTH
+) -> list[float]:
     """Parse *count* fixed-width values from *lines*."""
     values: list[float] = []
     for line in lines:
@@ -115,9 +119,11 @@ def _data_line_count(n: int, cols: int = _COLS_PER_ROW) -> int:
 # Shared boundary dataclasses
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class InitialFlowLoc:
     """Initial flow at a river / reach / station."""
+
     river: str
     reach: str
     river_station: str
@@ -134,13 +140,13 @@ class InitialFlowLoc:
         )
 
     def _to_raw(self) -> str:
-        return (f"{self.river:16},{self.reach:16},"
-                f"{self.river_station:8},{self.flow}")
+        return f"{self.river:16},{self.reach:16},{self.river_station:8},{self.flow}"
 
 
 @dataclass
 class InitialStorageElev:
     """Initial water surface elevation for a storage area."""
+
     name: str
     elevation: float
 
@@ -159,6 +165,7 @@ class InitialStorageElev:
 @dataclass
 class InitialRRRElev:
     """Initial water surface elevation for a reservoir / RRR."""
+
     river: str
     reach: str
     river_station: str
@@ -175,15 +182,18 @@ class InitialRRRElev:
         )
 
     def _to_raw(self) -> str:
-        return (f"{self.river:16},{self.reach:16},"
-                f"{self.river_station:8},{self.elevation}")
+        return (
+            f"{self.river:16},{self.reach:16},{self.river_station:8},{self.elevation}"
+        )
 
 
 # ---- boundary base ---------------------------------------------------------
 
+
 @dataclass
 class _Boundary:
     """Base class for all boundary condition types."""
+
     river: str
     reach: str
     river_station: str
@@ -192,8 +202,10 @@ class _Boundary:
     _location_tail: str = field(default="", repr=False)
 
     def _location_line(self) -> str:
-        return (f"Boundary Location={self.river:16},{self.reach:16},"
-                f"{self.river_station:8},{self._location_tail}")
+        return (
+            f"Boundary Location={self.river:16},{self.reach:16},"
+            f"{self.river_station:8},{self._location_tail}"
+        )
 
     def _rs_float(self) -> float:
         """River station as float for sorting (strips trailing '*')."""
@@ -206,6 +218,7 @@ class _Boundary:
 @dataclass
 class FlowHydrograph(_Boundary):
     """Upstream / internal flow hydrograph boundary."""
+
     interval: str = "1HOUR"
     values: list[float] = field(default_factory=list)
     stage_tw_check: int = 0
@@ -224,6 +237,7 @@ class FlowHydrograph(_Boundary):
 @dataclass
 class LateralInflow(_Boundary):
     """Lateral or uniform lateral inflow hydrograph."""
+
     interval: str = "1HOUR"
     values: list[float] = field(default_factory=list)
     is_uniform: bool = False
@@ -240,6 +254,7 @@ class LateralInflow(_Boundary):
 @dataclass
 class StageHydrograph(_Boundary):
     """Stage (water-surface) hydrograph boundary."""
+
     interval: str = "1HOUR"
     values: list[float] = field(default_factory=list)
     dss_path: str = ""
@@ -252,6 +267,7 @@ class StageHydrograph(_Boundary):
 @dataclass
 class RatingCurve(_Boundary):
     """Rating-curve downstream boundary."""
+
     pairs: list[tuple[float, float]] = field(default_factory=list)
     dss_path: str = ""
     use_dss: bool = False
@@ -265,6 +281,7 @@ class RatingCurve(_Boundary):
 @dataclass
 class FrictionSlope(_Boundary):
     """Normal-depth (friction slope) downstream boundary."""
+
     slope: float = 0.0
     value2: float = 0.0
 
@@ -272,12 +289,14 @@ class FrictionSlope(_Boundary):
 @dataclass
 class NormalDepth(_Boundary):
     """Normal-depth boundary specified as a single slope value."""
+
     slope: float = 0.0
 
 
 @dataclass
 class GateOpening:
     """Time series of openings for one gate."""
+
     gate_name: str = ""
     dss_path: str = ""
     use_dss: bool = False
@@ -290,17 +309,26 @@ class GateOpening:
 @dataclass
 class GateBoundary(_Boundary):
     """Inline structure with one or more gated openings."""
+
     gates: list[GateOpening] = field(default_factory=list)
 
 
 # Type alias for the flat boundary list
-BoundaryType = (FlowHydrograph | LateralInflow | StageHydrograph |
-                RatingCurve | FrictionSlope | NormalDepth | GateBoundary)
+BoundaryType = (
+    FlowHydrograph
+    | LateralInflow
+    | StageHydrograph
+    | RatingCurve
+    | FrictionSlope
+    | NormalDepth
+    | GateBoundary
+)
 
 
 # ---------------------------------------------------------------------------
 # Boundary parser (shared by both classes)
 # ---------------------------------------------------------------------------
+
 
 def _parse_boundary_blocks(lines: list[str]) -> list[BoundaryType]:
     """Parse all boundary condition blocks from *lines*.
@@ -319,7 +347,7 @@ def _parse_boundary_blocks(lines: list[str]) -> list[BoundaryType]:
         eq = raw.find("=")
         if eq == -1:
             return raw.rstrip("\n"), ""
-        return raw[:eq].rstrip(), raw[eq + 1:].rstrip("\n")
+        return raw[:eq].rstrip(), raw[eq + 1 :].rstrip("\n")
 
     while i < n:
         key, val = _next_key(i)
@@ -331,8 +359,8 @@ def _parse_boundary_blocks(lines: list[str]) -> list[BoundaryType]:
         parts = val.split(",", 3)
         river = parts[0].strip() if len(parts) > 0 else ""
         reach = parts[1].strip() if len(parts) > 1 else ""
-        rs    = parts[2].strip() if len(parts) > 2 else ""
-        tail  = parts[3] if len(parts) > 3 else ""
+        rs = parts[2].strip() if len(parts) > 2 else ""
+        tail = parts[3] if len(parts) > 3 else ""
 
         i += 1
 
@@ -363,9 +391,14 @@ def _parse_boundary_blocks(lines: list[str]) -> list[BoundaryType]:
                     data_lines = lines[i : i + nlines]
                     i += nlines
                     values = _parse_data_block(data_lines, count)
-                    bc = FlowHydrograph(river=river, reach=reach,
-                                        river_station=rs, _location_tail=tail,
-                                        interval=interval, values=values)
+                    bc = FlowHydrograph(
+                        river=river,
+                        reach=reach,
+                        river_station=rs,
+                        _location_tail=tail,
+                        interval=interval,
+                        values=values,
+                    )
                     # Consume metadata
                     while i < n:
                         k, v = _next_key(i)
@@ -394,18 +427,25 @@ def _parse_boundary_blocks(lines: list[str]) -> list[BoundaryType]:
                         i += 1
                     break
 
-                elif key3 in ("Lateral Inflow Hydrograph",
-                              "Uniform Lateral Inflow Hydrograph"):
+                elif key3 in (
+                    "Lateral Inflow Hydrograph",
+                    "Uniform Lateral Inflow Hydrograph",
+                ):
                     count = int(val3.strip())
                     i += 1
                     nlines = _data_line_count(count)
                     data_lines = lines[i : i + nlines]
                     i += nlines
                     values = _parse_data_block(data_lines, count)
-                    bc = LateralInflow(river=river, reach=reach,
-                                       river_station=rs, _location_tail=tail,
-                                       interval=interval, values=values,
-                                       is_uniform=(key3 == "Uniform Lateral Inflow Hydrograph"))
+                    bc = LateralInflow(
+                        river=river,
+                        reach=reach,
+                        river_station=rs,
+                        _location_tail=tail,
+                        interval=interval,
+                        values=values,
+                        is_uniform=(key3 == "Uniform Lateral Inflow Hydrograph"),
+                    )
                     while i < n:
                         k, v = _next_key(i)
                         if k in ("Boundary Location",) or _is_trailing_key(k):
@@ -438,9 +478,14 @@ def _parse_boundary_blocks(lines: list[str]) -> list[BoundaryType]:
                     data_lines = lines[i : i + nlines]
                     i += nlines
                     values = _parse_data_block(data_lines, count)
-                    bc = StageHydrograph(river=river, reach=reach,
-                                         river_station=rs, _location_tail=tail,
-                                         interval=interval, values=values)
+                    bc = StageHydrograph(
+                        river=river,
+                        reach=reach,
+                        river_station=rs,
+                        _location_tail=tail,
+                        interval=interval,
+                        values=values,
+                    )
                     while i < n:
                         k, v = _next_key(i)
                         if k in ("Boundary Location",) or _is_trailing_key(k):
@@ -474,9 +519,13 @@ def _parse_boundary_blocks(lines: list[str]) -> list[BoundaryType]:
                 i += nlines
                 flat = _parse_data_block(data_lines, count * 2)
                 pairs = [(flat[j], flat[j + 1]) for j in range(0, len(flat), 2)]
-                bc = RatingCurve(river=river, reach=reach,
-                                 river_station=rs, _location_tail=tail,
-                                 pairs=pairs)
+                bc = RatingCurve(
+                    river=river,
+                    reach=reach,
+                    river_station=rs,
+                    _location_tail=tail,
+                    pairs=pairs,
+                )
                 while i < n:
                     k, v = _next_key(i)
                     if k in ("Boundary Location",) or _is_trailing_key(k):
@@ -505,24 +554,34 @@ def _parse_boundary_blocks(lines: list[str]) -> list[BoundaryType]:
                 parts2 = val2.split(",")
                 slope = float(parts2[0].strip()) if parts2 else 0.0
                 v2 = float(parts2[1].strip()) if len(parts2) > 1 else 0.0
-                bc = FrictionSlope(river=river, reach=reach,
-                                   river_station=rs, _location_tail=tail,
-                                   slope=slope, value2=v2)
+                bc = FrictionSlope(
+                    river=river,
+                    reach=reach,
+                    river_station=rs,
+                    _location_tail=tail,
+                    slope=slope,
+                    value2=v2,
+                )
                 i += 1
                 break
 
             # ---- Normal depth
             elif key2 == "Normal Depth":
-                bc = NormalDepth(river=river, reach=reach,
-                                 river_station=rs, _location_tail=tail,
-                                 slope=float(val2.strip()))
+                bc = NormalDepth(
+                    river=river,
+                    reach=reach,
+                    river_station=rs,
+                    _location_tail=tail,
+                    slope=float(val2.strip()),
+                )
                 i += 1
                 break
 
             # ---- Gate boundary (inline structure)
             elif key2 == "Gate Name":
-                bc = GateBoundary(river=river, reach=reach,
-                                  river_station=rs, _location_tail=tail)
+                bc = GateBoundary(
+                    river=river, reach=reach, river_station=rs, _location_tail=tail
+                )
                 while i < n:
                     k, v = _next_key(i)
                     if k in ("Boundary Location",) or _is_trailing_key(k):
@@ -574,20 +633,26 @@ def _parse_boundary_blocks(lines: list[str]) -> list[BoundaryType]:
 
 def _is_trailing_key(key: str) -> bool:
     """Return True for keys that mark the start of the trailing section."""
-    return key.startswith("Met ") or key.startswith("Met BC") or key in (
-        "Met Point Raster Parameters",
-        "Non-Newtonian Method",
-        "Non-Newtonian Constant Vol Conc",
-        "Precipitation Mode",
-        "Wind Mode",
-        "Air Density Mode",
-        "Lava Activation",
+    return (
+        key.startswith("Met ")
+        or key.startswith("Met BC")
+        or key
+        in (
+            "Met Point Raster Parameters",
+            "Non-Newtonian Method",
+            "Non-Newtonian Constant Vol Conc",
+            "Precipitation Mode",
+            "Wind Mode",
+            "Air Density Mode",
+            "Lava Activation",
+        )
     )
 
 
 # ---------------------------------------------------------------------------
 # UnsteadyFlowFile — verbatim-line editor
 # ---------------------------------------------------------------------------
+
 
 class UnsteadyFlowFile:
     """Verbatim-line editor for HEC-RAS unsteady flow files (.u**).
@@ -618,7 +683,7 @@ class UnsteadyFlowFile:
         prefix = key + "="
         for line in self._lines:
             if line.startswith(prefix):
-                value = line[len(prefix):].strip()
+                value = line[len(prefix) :].strip()
                 return value if value else None
         return None
 
@@ -630,8 +695,7 @@ class UnsteadyFlowFile:
                 return
         raise KeyError(f"Key not found in unsteady flow file: {key!r}")
 
-    def _find_boundary_location(self, river: str, reach: str,
-                                 rs: str) -> int | None:
+    def _find_boundary_location(self, river: str, reach: str, rs: str) -> int | None:
         """Return the line index of the matching ``Boundary Location=`` line.
 
         Matching is done by stripping and case-insensitive comparison of
@@ -641,13 +705,15 @@ class UnsteadyFlowFile:
         for i, line in enumerate(self._lines):
             if not line.startswith(prefix):
                 continue
-            tail = line[len(prefix):]
+            tail = line[len(prefix) :]
             parts = tail.split(",", 3)
             if len(parts) < 3:
                 continue
-            if (parts[0].strip().lower() == river.strip().lower() and
-                    parts[1].strip().lower() == reach.strip().lower() and
-                    parts[2].strip().lower() == str(rs).strip().lower()):
+            if (
+                parts[0].strip().lower() == river.strip().lower()
+                and parts[1].strip().lower() == reach.strip().lower()
+                and parts[2].strip().lower() == str(rs).strip().lower()
+            ):
                 return i
         return None
 
@@ -701,8 +767,9 @@ class UnsteadyFlowFile:
     # Flow hydrograph
     # ------------------------------------------------------------------
 
-    def get_flow_hydrograph(self, river: str, reach: str,
-                             rs: str) -> list[float] | None:
+    def get_flow_hydrograph(
+        self, river: str, reach: str, rs: str
+    ) -> list[float] | None:
         """Return flow hydrograph values for the given location.
 
         Returns ``None`` if no matching boundary is found.
@@ -720,13 +787,16 @@ class UnsteadyFlowFile:
             if line.startswith("Flow Hydrograph="):
                 count = int(line.split("=", 1)[1].strip())
                 nlines = _data_line_count(count)
-                data_lines = [l.rstrip("\n") for l in self._lines[i + 1 : i + 1 + nlines]]
+                data_lines = [
+                    l.rstrip("\n") for l in self._lines[i + 1 : i + 1 + nlines]
+                ]
                 return _parse_data_block(data_lines, count)
             i += 1
         return None
 
-    def set_flow_hydrograph(self, river: str, reach: str, rs: str,
-                             values: _Values) -> None:
+    def set_flow_hydrograph(
+        self, river: str, reach: str, rs: str, values: _Values
+    ) -> None:
         """Replace the flow hydrograph at the given location.
 
         Args:
@@ -743,7 +813,8 @@ class UnsteadyFlowFile:
         loc_i = self._find_boundary_location(river, reach, rs)
         if loc_i is None:
             raise KeyError(
-                f"No Boundary Location found for {river!r}, {reach!r}, {rs!r}")
+                f"No Boundary Location found for {river!r}, {reach!r}, {rs!r}"
+            )
 
         n = len(self._lines)
         i = loc_i + 1
@@ -761,14 +832,14 @@ class UnsteadyFlowFile:
                 return
             i += 1
         raise ValueError(
-            f"Boundary at {river!r}, {reach!r}, {rs!r} has no Flow Hydrograph")
+            f"Boundary at {river!r}, {reach!r}, {rs!r} has no Flow Hydrograph"
+        )
 
     # ------------------------------------------------------------------
     # Lateral inflow hydrograph
     # ------------------------------------------------------------------
 
-    def get_lateral_inflow(self, river: str, reach: str,
-                            rs: str) -> list[float] | None:
+    def get_lateral_inflow(self, river: str, reach: str, rs: str) -> list[float] | None:
         """Return lateral inflow values for the given location."""
         loc_i = self._find_boundary_location(river, reach, rs)
         if loc_i is None:
@@ -781,18 +852,22 @@ class UnsteadyFlowFile:
             if line.startswith("Boundary Location="):
                 break
             key = line.split("=", 1)[0]
-            if key in ("Lateral Inflow Hydrograph",
-                       "Uniform Lateral Inflow Hydrograph"):
+            if key in (
+                "Lateral Inflow Hydrograph",
+                "Uniform Lateral Inflow Hydrograph",
+            ):
                 count = int(line.split("=", 1)[1].strip())
                 nlines = _data_line_count(count)
-                data_lines = [l.rstrip("\n")
-                              for l in self._lines[i + 1 : i + 1 + nlines]]
+                data_lines = [
+                    l.rstrip("\n") for l in self._lines[i + 1 : i + 1 + nlines]
+                ]
                 return _parse_data_block(data_lines, count)
             i += 1
         return None
 
-    def set_lateral_inflow(self, river: str, reach: str, rs: str,
-                            values: _Values) -> None:
+    def set_lateral_inflow(
+        self, river: str, reach: str, rs: str, values: _Values
+    ) -> None:
         """Replace the lateral inflow at the given location.
 
         Args:
@@ -806,7 +881,8 @@ class UnsteadyFlowFile:
         loc_i = self._find_boundary_location(river, reach, rs)
         if loc_i is None:
             raise KeyError(
-                f"No Boundary Location found for {river!r}, {reach!r}, {rs!r}")
+                f"No Boundary Location found for {river!r}, {reach!r}, {rs!r}"
+            )
 
         n = len(self._lines)
         i = loc_i + 1
@@ -815,8 +891,10 @@ class UnsteadyFlowFile:
             if line.startswith("Boundary Location="):
                 break
             key = line.split("=", 1)[0]
-            if key in ("Lateral Inflow Hydrograph",
-                       "Uniform Lateral Inflow Hydrograph"):
+            if key in (
+                "Lateral Inflow Hydrograph",
+                "Uniform Lateral Inflow Hydrograph",
+            ):
                 old_count = int(line.split("=", 1)[1].strip())
                 old_nlines = _data_line_count(old_count)
                 resolved = _coerce_values(values, old_count)
@@ -826,14 +904,16 @@ class UnsteadyFlowFile:
                 return
             i += 1
         raise ValueError(
-            f"Boundary at {river!r}, {reach!r}, {rs!r} has no Lateral Inflow Hydrograph")
+            f"Boundary at {river!r}, {reach!r}, {rs!r} has no Lateral Inflow Hydrograph"
+        )
 
     # ------------------------------------------------------------------
     # Gate openings
     # ------------------------------------------------------------------
 
-    def get_gate_openings(self, river: str, reach: str, rs: str,
-                           gate_name: str) -> list[float] | None:
+    def get_gate_openings(
+        self, river: str, reach: str, rs: str, gate_name: str
+    ) -> list[float] | None:
         """Return gate opening values for the given location and gate name."""
         loc_i = self._find_boundary_location(river, reach, rs)
         if loc_i is None:
@@ -852,14 +932,16 @@ class UnsteadyFlowFile:
                 if current_gate.lower() == gate_name.strip().lower():
                     count = int(line.split("=", 1)[1].strip())
                     nlines = _data_line_count(count)
-                    data_lines = [l.rstrip("\n")
-                                  for l in self._lines[i + 1 : i + 1 + nlines]]
+                    data_lines = [
+                        l.rstrip("\n") for l in self._lines[i + 1 : i + 1 + nlines]
+                    ]
                     return _parse_data_block(data_lines, count)
             i += 1
         return None
 
-    def set_gate_openings(self, river: str, reach: str, rs: str,
-                           gate_name: str, values: _Values) -> None:
+    def set_gate_openings(
+        self, river: str, reach: str, rs: str, gate_name: str, values: _Values
+    ) -> None:
         """Replace gate opening values for the given location and gate name.
 
         Args:
@@ -872,7 +954,8 @@ class UnsteadyFlowFile:
         loc_i = self._find_boundary_location(river, reach, rs)
         if loc_i is None:
             raise KeyError(
-                f"No Boundary Location found for {river!r}, {reach!r}, {rs!r}")
+                f"No Boundary Location found for {river!r}, {reach!r}, {rs!r}"
+            )
 
         n = len(self._lines)
         i = loc_i + 1
@@ -893,30 +976,29 @@ class UnsteadyFlowFile:
                     self._splice(i + 1, old_nlines, _format_data_block(resolved))
                     return
             i += 1
-        raise KeyError(
-            f"Gate {gate_name!r} not found at {river!r}, {reach!r}, {rs!r}")
+        raise KeyError(f"Gate {gate_name!r} not found at {river!r}, {reach!r}, {rs!r}")
 
     # ------------------------------------------------------------------
     # Initial conditions
     # ------------------------------------------------------------------
 
-    def get_initial_flow(self, river: str, reach: str,
-                          rs: str) -> float | None:
+    def get_initial_flow(self, river: str, reach: str, rs: str) -> float | None:
         """Return the initial flow at the given location, or ``None``."""
         for line in self._lines:
             if not line.startswith("Initial Flow Loc="):
                 continue
-            raw = line[len("Initial Flow Loc="):].strip()
+            raw = line[len("Initial Flow Loc=") :].strip()
             parts = raw.split(",")
-            if (len(parts) >= 4 and
-                    parts[0].strip().lower() == river.strip().lower() and
-                    parts[1].strip().lower() == reach.strip().lower() and
-                    parts[2].strip().lower() == str(rs).strip().lower()):
+            if (
+                len(parts) >= 4
+                and parts[0].strip().lower() == river.strip().lower()
+                and parts[1].strip().lower() == reach.strip().lower()
+                and parts[2].strip().lower() == str(rs).strip().lower()
+            ):
                 return float(parts[3].strip())
         return None
 
-    def set_initial_flow(self, river: str, reach: str, rs: str,
-                          flow: float) -> None:
+    def set_initial_flow(self, river: str, reach: str, rs: str, flow: float) -> None:
         """Update the initial flow at the given location.
 
         Raises ``KeyError`` if not found.
@@ -924,17 +1006,18 @@ class UnsteadyFlowFile:
         for i, line in enumerate(self._lines):
             if not line.startswith("Initial Flow Loc="):
                 continue
-            raw = line[len("Initial Flow Loc="):].rstrip("\n")
+            raw = line[len("Initial Flow Loc=") :].rstrip("\n")
             parts = raw.split(",")
-            if (len(parts) >= 4 and
-                    parts[0].strip().lower() == river.strip().lower() and
-                    parts[1].strip().lower() == reach.strip().lower() and
-                    parts[2].strip().lower() == str(rs).strip().lower()):
+            if (
+                len(parts) >= 4
+                and parts[0].strip().lower() == river.strip().lower()
+                and parts[1].strip().lower() == reach.strip().lower()
+                and parts[2].strip().lower() == str(rs).strip().lower()
+            ):
                 parts[3] = str(flow)
                 self._lines[i] = "Initial Flow Loc=" + ",".join(parts) + "\n"
                 return
-        raise KeyError(
-            f"Initial Flow Loc not found for {river!r}, {reach!r}, {rs!r}")
+        raise KeyError(f"Initial Flow Loc not found for {river!r}, {reach!r}, {rs!r}")
 
     # ------------------------------------------------------------------
     # Persistence
@@ -953,6 +1036,7 @@ class UnsteadyFlowFile:
 # ---------------------------------------------------------------------------
 # UnsteadyFlowEditor — structured, sortable editor
 # ---------------------------------------------------------------------------
+
 
 class UnsteadyFlowEditor:
     """Structured editor for HEC-RAS unsteady flow files (.u**).
@@ -1005,8 +1089,11 @@ class UnsteadyFlowEditor:
             key = line.split("=", 1)[0].rstrip() if "=" in line else line.rstrip("\n")
 
             if section == "header":
-                if key in ("Initial Flow Loc", "Initial Storage Elev",
-                           "Initial RRR Elev"):
+                if key in (
+                    "Initial Flow Loc",
+                    "Initial Storage Elev",
+                    "Initial RRR Elev",
+                ):
                     section = "initial"
                     self._initial_lines.append(line)
                 elif key == "Boundary Location":
@@ -1019,8 +1106,11 @@ class UnsteadyFlowEditor:
                 if key == "Boundary Location":
                     section = "boundary"
                     boundary_lines.append(line)
-                elif key not in ("Initial Flow Loc", "Initial Storage Elev",
-                                 "Initial RRR Elev"):
+                elif key not in (
+                    "Initial Flow Loc",
+                    "Initial Storage Elev",
+                    "Initial RRR Elev",
+                ):
                     # Non-initial, non-boundary line — stays in initial block
                     # (e.g. blank lines or unknown keys between initial conds)
                     self._initial_lines.append(line)
@@ -1043,19 +1133,20 @@ class UnsteadyFlowEditor:
         self.initial_rrr_elevs: list[InitialRRRElev] = []
         for line in self._initial_lines:
             if line.startswith("Initial Flow Loc="):
-                raw = line[len("Initial Flow Loc="):].strip()
+                raw = line[len("Initial Flow Loc=") :].strip()
                 self.initial_flow_locs.append(InitialFlowLoc._from_raw(raw))
             elif line.startswith("Initial Storage Elev="):
-                raw = line[len("Initial Storage Elev="):].strip()
+                raw = line[len("Initial Storage Elev=") :].strip()
                 self.initial_storage_elevs.append(InitialStorageElev._from_raw(raw))
             elif line.startswith("Initial RRR Elev="):
-                raw = line[len("Initial RRR Elev="):].strip()
+                raw = line[len("Initial RRR Elev=") :].strip()
                 self.initial_rrr_elevs.append(InitialRRRElev._from_raw(raw))
 
         # Parse boundaries
         boundary_lines_stripped = [l.rstrip("\n") for l in boundary_lines]
         self.boundaries: list[BoundaryType] = _parse_boundary_blocks(
-            boundary_lines_stripped)
+            boundary_lines_stripped
+        )
 
     # ------------------------------------------------------------------
     # Scalar properties (read from header_lines, write back in-place)
@@ -1065,7 +1156,7 @@ class UnsteadyFlowEditor:
         prefix = key + "="
         for line in self._header_lines:
             if line.startswith(prefix):
-                val = line[len(prefix):].strip()
+                val = line[len(prefix) :].strip()
                 return val if val else None
         return None
 
@@ -1125,11 +1216,12 @@ class UnsteadyFlowEditor:
     def _sort_type(self, bc_type: type, *, ascending: bool) -> None:
         """Sort boundaries of *bc_type* by river station within the list,
         preserving the relative positions of all other boundary types."""
-        targets = [(i, b) for i, b in enumerate(self.boundaries)
-                   if isinstance(b, bc_type)]
-        sorted_targets = sorted(targets,
-                                key=lambda t: t[1]._rs_float(),
-                                reverse=not ascending)
+        targets = [
+            (i, b) for i, b in enumerate(self.boundaries) if isinstance(b, bc_type)
+        ]
+        sorted_targets = sorted(
+            targets, key=lambda t: t[1]._rs_float(), reverse=not ascending
+        )
         for (orig_idx, _), (_, sorted_bc) in zip(targets, sorted_targets):
             self.boundaries[orig_idx] = sorted_bc
 
@@ -1178,9 +1270,7 @@ class UnsteadyFlowEditor:
         bc = self.lateral_inflows[index]
         bc.values = _coerce_values(values, len(bc.values))
 
-    def set_all_lateral_inflows(
-        self, values: list[float | list[float]]
-    ) -> None:
+    def set_all_lateral_inflows(self, values: list[float | list[float]]) -> None:
         """Set lateral inflow values across all :class:`LateralInflow` boundaries.
 
         Args:
@@ -1193,8 +1283,9 @@ class UnsteadyFlowEditor:
         for bc, v in zip(self.lateral_inflows, values, strict=False):
             bc.values = _coerce_values(v, len(bc.values))
 
-    def set_gate_openings(self, index: int, values: _Values,
-                           gate_index: int = 0) -> None:
+    def set_gate_openings(
+        self, index: int, values: _Values, gate_index: int = 0
+    ) -> None:
         """Set gate opening values by position in :attr:`gate_boundaries`.
 
         Args:
@@ -1206,9 +1297,7 @@ class UnsteadyFlowEditor:
         gate = self.gate_boundaries[index].gates[gate_index]
         gate.values = _coerce_values(values, len(gate.values))
 
-    def set_all_gate_openings(
-        self, values: list[float | list[float]]
-    ) -> None:
+    def set_all_gate_openings(self, values: list[float | list[float]]) -> None:
         """Set gate opening values across all gates in all :class:`GateBoundary`.
 
         Args:
@@ -1228,20 +1317,22 @@ class UnsteadyFlowEditor:
     # Set by location (river / reach / rs)
     # ------------------------------------------------------------------
 
-    def _find_boundary(self, river: str, reach: str,
-                        rs: str) -> BoundaryType | None:
+    def _find_boundary(self, river: str, reach: str, rs: str) -> BoundaryType | None:
         r = river.strip().lower()
         rc = reach.strip().lower()
         s = str(rs).strip().lower()
         for b in self.boundaries:
-            if (b.river.lower() == r and
-                    b.reach.lower() == rc and
-                    b.river_station.lower() == s):
+            if (
+                b.river.lower() == r
+                and b.reach.lower() == rc
+                and b.river_station.lower() == s
+            ):
                 return b
         return None
 
-    def set_flow_hydrograph_at(self, river: str, reach: str, rs: str,
-                                values: _Values) -> None:
+    def set_flow_hydrograph_at(
+        self, river: str, reach: str, rs: str, values: _Values
+    ) -> None:
         """Set flow hydrograph values by location.
 
         Args:
@@ -1252,8 +1343,9 @@ class UnsteadyFlowEditor:
             raise KeyError(f"No FlowHydrograph at {river!r}, {reach!r}, {rs!r}")
         b.values = _coerce_values(values, len(b.values))
 
-    def set_lateral_inflow_at(self, river: str, reach: str, rs: str,
-                               values: _Values) -> None:
+    def set_lateral_inflow_at(
+        self, river: str, reach: str, rs: str, values: _Values
+    ) -> None:
         """Set lateral inflow values by location.
 
         Args:
@@ -1264,8 +1356,9 @@ class UnsteadyFlowEditor:
             raise KeyError(f"No LateralInflow at {river!r}, {reach!r}, {rs!r}")
         b.values = _coerce_values(values, len(b.values))
 
-    def set_gate_openings_at(self, river: str, reach: str, rs: str,
-                              gate_name: str, values: _Values) -> None:
+    def set_gate_openings_at(
+        self, river: str, reach: str, rs: str, gate_name: str, values: _Values
+    ) -> None:
         """Set gate opening values by location and gate name.
 
         Args:
@@ -1285,8 +1378,7 @@ class UnsteadyFlowEditor:
     # Initial conditions
     # ------------------------------------------------------------------
 
-    def set_initial_flow(self, river: str, reach: str, rs: str,
-                          flow: float) -> None:
+    def set_initial_flow(self, river: str, reach: str, rs: str, flow: float) -> None:
         """Update the initial flow at the given location.
 
         Raises ``KeyError`` if not found.
@@ -1295,13 +1387,14 @@ class UnsteadyFlowEditor:
         rc = reach.strip().lower()
         s = str(rs).strip().lower()
         for loc in self.initial_flow_locs:
-            if (loc.river.lower() == r and
-                    loc.reach.lower() == rc and
-                    loc.river_station.lower() == s):
+            if (
+                loc.river.lower() == r
+                and loc.reach.lower() == rc
+                and loc.river_station.lower() == s
+            ):
                 loc.flow = flow
                 return
-        raise KeyError(
-            f"Initial Flow Loc not found for {river!r}, {reach!r}, {rs!r}")
+        raise KeyError(f"Initial Flow Loc not found for {river!r}, {reach!r}, {rs!r}")
 
     # ------------------------------------------------------------------
     # Serialisation helpers
@@ -1316,8 +1409,11 @@ class UnsteadyFlowEditor:
             if isinstance(bc, FlowHydrograph):
                 keyword = "Flow Hydrograph"
             else:
-                keyword = ("Uniform Lateral Inflow Hydrograph"
-                           if bc.is_uniform else "Lateral Inflow Hydrograph")
+                keyword = (
+                    "Uniform Lateral Inflow Hydrograph"
+                    if bc.is_uniform
+                    else "Lateral Inflow Hydrograph"
+                )
             count = len(bc.values)
             out.append(f"{keyword}= {count} \n")
             for dl in _format_data_block(bc.values):

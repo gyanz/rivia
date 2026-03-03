@@ -44,6 +44,7 @@ to the current cell.  Orientation cancels in the WLS product
 ``V_n * n_hat``, so the stored values are used directly.
 
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -52,6 +53,7 @@ import numpy as np
 # ---------------------------------------------------------------------------
 # Single-cell helpers (used internally and exposed for testing)
 # ---------------------------------------------------------------------------
+
 
 def _wls_velocity(
     vn: np.ndarray,
@@ -80,8 +82,8 @@ def _wls_velocity(
     a11 = np.dot(weights, nx * nx)
     a22 = np.dot(weights, ny * ny)
     a12 = np.dot(weights, nx * ny)
-    b1  = np.dot(weights * vn, nx)
-    b2  = np.dot(weights * vn, ny)
+    b1 = np.dot(weights * vn, nx)
+    b2 = np.dot(weights * vn, ny)
 
     det = a11 * a22 - a12 * a12
     if abs(det) < 1e-30:
@@ -118,7 +120,7 @@ def _interpolate_face_flow_area(
     """
     start = int(ae_info[face_idx, 0])
     count = int(ae_info[face_idx, 1])
-    table = ae_values[start: start + count]
+    table = ae_values[start : start + count]
     elevs = table[:, 0]
     areas = table[:, 1]
 
@@ -155,10 +157,10 @@ def _estimate_face_wse_average(
     n_faces = face_cell_indexes.shape[0]
     face_wse = np.zeros(n_faces)
 
-    left  = face_cell_indexes[:, 0].astype(int)
+    left = face_cell_indexes[:, 0].astype(int)
     right = face_cell_indexes[:, 1].astype(int)
 
-    l_real = (left  >= 0) & (left  < n_cells)
+    l_real = (left >= 0) & (left < n_cells)
     r_real = (right >= 0) & (right < n_cells)
 
     both = l_real & r_real
@@ -216,21 +218,21 @@ def _estimate_face_wse_sloped(
     n_faces = face_cell_indexes.shape[0]
     face_wse = np.zeros(n_faces)
 
-    left  = face_cell_indexes[:, 0].astype(int)
+    left = face_cell_indexes[:, 0].astype(int)
     right = face_cell_indexes[:, 1].astype(int)
 
-    l_real = (left  >= 0) & (left  < n_cells)
+    l_real = (left >= 0) & (left < n_cells)
     r_real = (right >= 0) & (right < n_cells)
 
     # Interior faces: interpolate at the face's position between cell centres
     both = l_real & r_real
     if np.any(both):
-        fi      = np.where(both)[0]
-        l_idx   = left[fi]
-        r_idx   = right[fi]
-        d_left  = np.linalg.norm(face_coords[fi] - cell_coords[l_idx], axis=1)
+        fi = np.where(both)[0]
+        l_idx = left[fi]
+        r_idx = right[fi]
+        d_left = np.linalg.norm(face_coords[fi] - cell_coords[l_idx], axis=1)
         d_right = np.linalg.norm(face_coords[fi] - cell_coords[r_idx], axis=1)
-        total   = d_left + d_right
+        total = d_left + d_right
         # fallback to 0.5 for degenerate geometry (cells at same location).
         # Use a safe denominator to avoid division-by-zero in the numpy
         # expression before np.where applies its mask.
@@ -251,6 +253,7 @@ def _estimate_face_wse_sloped(
 # ---------------------------------------------------------------------------
 # Vectorised batch computation (main entry point)
 # ---------------------------------------------------------------------------
+
 
 def compute_all_cell_velocities(
     n_cells: int,
@@ -338,9 +341,7 @@ def compute_all_cell_velocities(
                 face_cell_indexes, cell_wse, n_cells, cell_coords, face_coords
             )
         else:
-            face_wse = _estimate_face_wse_average(
-                face_cell_indexes, cell_wse, n_cells
-            )
+            face_wse = _estimate_face_wse_average(face_cell_indexes, cell_wse, n_cells)
     else:
         face_wse = None
 
@@ -349,18 +350,22 @@ def compute_all_cell_velocities(
     for c in range(n_cells):
         start = int(cell_face_info[c, 0])
         count = int(cell_face_info[c, 1])
-        vals  = cell_face_values[start: start + count]
+        vals = cell_face_values[start : start + count]
         face_idxs = vals[:, 0].astype(int)
 
-        normals = face_normals[face_idxs, :2]   # (k, 2)
-        lengths = face_normals[face_idxs, 2]    # (k,)
-        vn      = face_vel[face_idxs]            # (k,)
+        normals = face_normals[face_idxs, :2]  # (k, 2)
+        lengths = face_normals[face_idxs, 2]  # (k,)
+        vn = face_vel[face_idxs]  # (k,)
 
         if method == "area_weighted":
-            weights = np.array([
-                _interpolate_face_flow_area(fi, face_wse[fi], face_ae_info, face_ae_values)
-                for fi in face_idxs
-            ])
+            weights = np.array(
+                [
+                    _interpolate_face_flow_area(
+                        fi, face_wse[fi], face_ae_info, face_ae_values
+                    )
+                    for fi in face_idxs
+                ]
+            )
         elif method == "length_weighted":
             weights = lengths
         else:  # flow_ratio

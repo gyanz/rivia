@@ -48,15 +48,15 @@ def installed_ras_progid(version: str | int) -> tuple[int, dict[str, str | None]
         If the requested version is not found in the installed HEC-RAS entries.
     """
     xxx = ras_registry_xxx(version)
-    entry = next(
-        (e for e in _cached_installs() if e.get("registry_xxx") == xxx), None
-    )
+    entry = next((e for e in _cached_installs() if e.get("registry_xxx") == xxx), None)
     if entry is None:
         raise RuntimeError(f"HEC-RAS {version} is not installed.")
 
     version_xxxx = int(entry["version_xxxx"])
     progids: dict[str, str | None] = {
-        "controller": None, "geometry": None, "flow": None
+        "controller": None,
+        "geometry": None,
+        "flow": None,
     }
     for key in progids:
         com = entry.get(key)
@@ -65,11 +65,10 @@ def installed_ras_progid(version: str | int) -> tuple[int, dict[str, str | None]
 
     return version_xxxx, progids
 
+
 def installed_ras_display_name(version: str | int) -> str | None:
     xxx = ras_registry_xxx(version)
-    entry = next(
-        (e for e in _cached_installs() if e.get("registry_xxx") == xxx), None
-    )
+    entry = next((e for e in _cached_installs() if e.get("registry_xxx") == xxx), None)
     if entry is None:
         raise RuntimeError(f"HEC-RAS {version} is not installed.")
 

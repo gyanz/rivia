@@ -46,9 +46,9 @@ from pathlib import Path
 # Constants
 # ---------------------------------------------------------------------------
 
-_COL = 8          # fixed-width column for numerical data
-_COLS_STAE = 10   # values per row in #Sta/Elev blocks  (5 pairs)
-_COLS_MANN = 9    # values per row in #Mann / #XS Ineff  (3 triplets)
+_COL = 8  # fixed-width column for numerical data
+_COLS_STAE = 10  # values per row in #Sta/Elev blocks  (5 pairs)
+_COLS_MANN = 9  # values per row in #Mann / #XS Ineff  (3 triplets)
 _COLS_FLAGS = 10  # flags per row in Permanent Ineff blocks
 
 #: Node type: cross section
@@ -352,9 +352,7 @@ class GeometryFile:
             if line.startswith(_KEY_REACH + "="):
                 rh = self._parse_reach_header(line)
                 if rh:
-                    in_reach = (
-                        rh[0].lower() == river_l and rh[1].lower() == reach_l
-                    )
+                    in_reach = rh[0].lower() == river_l and rh[1].lower() == reach_l
             if in_reach and line.startswith(prefix):
                 parsed = self._parse_node_header(line)
                 if parsed and self._normalize_rs(parsed[1]) == rs_norm:
@@ -457,9 +455,7 @@ class GeometryFile:
             if line.startswith(_KEY_REACH + "="):
                 rh = self._parse_reach_header(line)
                 if rh:
-                    in_reach = (
-                        rh[0].lower() == river_l and rh[1].lower() == reach_l
-                    )
+                    in_reach = rh[0].lower() == river_l and rh[1].lower() == reach_l
             if in_reach and line.startswith(prefix):
                 parsed = self._parse_node_header(line)
                 if parsed:
@@ -615,9 +611,7 @@ class GeometryFile:
     # Cross-section access
     # ------------------------------------------------------------------
 
-    def get_cross_section(
-        self, river: str, reach: str, rs: str
-    ) -> CrossSection | None:
+    def get_cross_section(self, river: str, reach: str, rs: str) -> CrossSection | None:
         """Parse and return the cross section at *(river, reach, rs)*.
 
         Returns ``None`` if not found or if the node is not a cross section
@@ -649,9 +643,7 @@ class GeometryFile:
             if line.startswith(_KEY_REACH + "="):
                 rh = self._parse_reach_header(line)
                 if rh:
-                    in_reach = (
-                        rh[0].lower() == river_l and rh[1].lower() == reach_l
-                    )
+                    in_reach = rh[0].lower() == river_l and rh[1].lower() == reach_l
             if in_reach and line.startswith(prefix):
                 parsed = self._parse_node_header(line)
                 if parsed and parsed[0] == NODE_XS:
@@ -667,9 +659,7 @@ class GeometryFile:
     # Cross-section write helpers
     # ------------------------------------------------------------------
 
-    def _find_key_in_block(
-        self, start: int, end: int, key: str
-    ) -> int | None:
+    def _find_key_in_block(self, start: int, end: int, key: str) -> int | None:
         """Return index of first line in ``[start, end)`` starting with *key*."""
         for i in range(start, end):
             if self._lines[i].startswith(key):
@@ -711,9 +701,7 @@ class GeometryFile:
         end = self._find_node_end(start)
         mann_i = self._find_key_in_block(start, end, "#Mann=")
         if mann_i is None:
-            raise KeyError(
-                f"No #Mann= line found for {river!r}, {reach!r}, {rs!r}"
-            )
+            raise KeyError(f"No #Mann= line found for {river!r}, {reach!r}, {rs!r}")
 
         # Preserve existing type/alt if caller did not supply them
         existing = self._lines[mann_i]
@@ -766,9 +754,7 @@ class GeometryFile:
         end = self._find_node_end(start)
         sta_i = self._find_key_in_block(start, end, "#Sta/Elev=")
         if sta_i is None:
-            raise KeyError(
-                f"No #Sta/Elev= line found for {river!r}, {reach!r}, {rs!r}"
-            )
+            raise KeyError(f"No #Sta/Elev= line found for {river!r}, {reach!r}, {rs!r}")
 
         n_old = int(self._lines[sta_i].split("=", 1)[1].strip())
         n_old_rows = _row_count(n_old * 2, _COLS_STAE)
@@ -798,9 +784,7 @@ class GeometryFile:
         end = self._find_node_end(start)
         bank_i = self._find_key_in_block(start, end, "Bank Sta=")
         if bank_i is None:
-            raise KeyError(
-                f"No Bank Sta= line found for {river!r}, {reach!r}, {rs!r}"
-            )
+            raise KeyError(f"No Bank Sta= line found for {river!r}, {reach!r}, {rs!r}")
         self._splice(bank_i, 1, [f"Bank Sta={left},{right}"])
 
     def set_exp_cntr(
@@ -822,18 +806,14 @@ class GeometryFile:
         end = self._find_node_end(start)
         ec_i = self._find_key_in_block(start, end, "Exp/Cntr=")
         if ec_i is None:
-            raise KeyError(
-                f"No Exp/Cntr= line found for {river!r}, {reach!r}, {rs!r}"
-            )
+            raise KeyError(f"No Exp/Cntr= line found for {river!r}, {reach!r}, {rs!r}")
         self._splice(ec_i, 1, [f"Exp/Cntr={expansion},{contraction}"])
 
     # ------------------------------------------------------------------
     # Raw node access (for structures)
     # ------------------------------------------------------------------
 
-    def get_node_lines(
-        self, river: str, reach: str, rs: str
-    ) -> list[str] | None:
+    def get_node_lines(self, river: str, reach: str, rs: str) -> list[str] | None:
         """Return the raw lines for a node block (header inclusive).
 
         Useful for inspecting structure nodes (bridges, culverts, etc.) that

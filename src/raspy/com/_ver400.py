@@ -1,5 +1,5 @@
-"""
-"""
+""" """
+
 import logging
 import os.path as osp
 
@@ -39,12 +39,13 @@ class ControllerDeprecated(object):
         """
         raise NotImplementedError
         rc = self._rc
-        errmsg = ''
+        errmsg = ""
         LocationDesciptions = []
         DSSFiles = []
         DSSPathnames = []
-        res = rc.GetDataLocations_Input(PlanTitle, LocationDesciptions,
-                                        DSSFiles, DSSPathnames, errmsg)
+        res = rc.GetDataLocations_Input(
+            PlanTitle, LocationDesciptions, DSSFiles, DSSPathnames, errmsg
+        )
 
         return res
 
@@ -62,7 +63,7 @@ class ControllerDeprecated(object):
         """
         raise NotImplementedError
         rc = self._rc
-        errmsg = ''
+        errmsg = ""
         res = rc.GetDataLocations_Input_count(PlanTitle, errmsg)
 
         return res
@@ -86,7 +87,7 @@ class ControllerDeprecated(object):
         """
         raise NotImplementedError
         rc = self._rc
-        errmsg = ''
+        errmsg = ""
         DSSFiles = []
         DSSPathnames = []
         res = rc.Geometry_SetSAArea(planTitle, DSSFiles, DSSPathnames, errmsg)
@@ -107,19 +108,19 @@ class ControllerDeprecated(object):
         """
         raise NotImplementedError
         rc = self._rc
-        errmsg = ''
+        errmsg = ""
         res = rc.GetDataLocations_Output_count(PlanTitle, errmsg)
 
         return res
 
     def Output_Initialize(self):
-        """
-        """
+        """ """
         raise NotImplementedError
 
     # %% Set TODO:
-    def SetDataLocations(self, PlanTitle, count, LocationDesciptions, DSSFiles,
-                         DSSPathnames):
+    def SetDataLocations(
+        self, PlanTitle, count, LocationDesciptions, DSSFiles, DSSPathnames
+    ):
         """
 
         PlanTitle : str
@@ -135,9 +136,10 @@ class ControllerDeprecated(object):
         """
         raise NotImplementedError
         rc = self._rc
-        errmsg = ''
-        res = rc.SetDataLocations(PlanTitle, count, LocationDesciptions,
-                                  DSSFiles, DSSPathnames, errmsg)
+        errmsg = ""
+        res = rc.SetDataLocations(
+            PlanTitle, count, LocationDesciptions, DSSFiles, DSSPathnames, errmsg
+        )
 
 
 class ControllerAdded(object):
@@ -193,16 +195,22 @@ class ControllerAdded(object):
         Flow = None
         errmsg = None
 
-        res = rc.OutputDSS_GetStageFlowSA(StorageArea, nvalue, ValueDateTime,
-                                          Stage, Flow, errmsg)
+        res = rc.OutputDSS_GetStageFlowSA(
+            StorageArea, nvalue, ValueDateTime, Stage, Flow, errmsg
+        )
         success, StorageArea, nvalue, ValueDateTime, Stage, Flow, errmsg = res
 
         new_dates = _fix_dates(ValueDateTime)
         return nvalue, new_dates, Stage, Flow, errmsg
 
-    def Output_ComputationLevel_Export(self, filename, WriteFlow=False,
-                                       WriteStage=False, WriteArea=False,
-                                       WriteTopWidth=False):
+    def Output_ComputationLevel_Export(
+        self,
+        filename,
+        WriteFlow=False,
+        WriteStage=False,
+        WriteArea=False,
+        WriteTopWidth=False,
+    ):
         """Exports the computation level output to a comma delimited text file.
 
         Parameters
@@ -241,13 +249,14 @@ class ControllerAdded(object):
         large text file.
 
         """
-        errmsg = ''
+        errmsg = ""
         rc = self._rc
-        res = rc.Output_ComputationLevel_Export(filename, errmsg, WriteFlow,
-                                                WriteStage, WriteArea,
-                                                WriteTopWidth)
-        (success, filename, errmsg, WriteFlow, WriteStage, WriteArea,
-         WriteTopWidth) = res
+        res = rc.Output_ComputationLevel_Export(
+            filename, errmsg, WriteFlow, WriteStage, WriteArea, WriteTopWidth
+        )
+        (success, filename, errmsg, WriteFlow, WriteStage, WriteArea, WriteTopWidth) = (
+            res
+        )
 
         return success
 
@@ -438,7 +447,7 @@ class ControllerBase(object):
         cross section will be lost.
         """
         rc = self._rc
-        errmsg = ''
+        errmsg = ""
         res = rc.Edit_AddBC(river, reach, rs, errmsg)
         river, reach, rs, errmsg = res
         self.Edit_BC(river, reach, rs, close=close)
@@ -470,7 +479,7 @@ class ControllerBase(object):
         newly added cross section will be lost.
         """
         rc = self._rc
-        errmsg = ''
+        errmsg = ""
         res = rc.Edit_AddIW(river, reach, rs, errmsg)
         river, reach, rs, errmsg = res
         self.Edit_IW(river, reach, rs, close=close)
@@ -502,7 +511,7 @@ class ControllerBase(object):
         newly added cross section will be lost.
         """
         rc = self._rc
-        errmsg = ''
+        errmsg = ""
         res = rc.Edit_AddLW(river, reach, rs, errmsg)
         river, reach, rs, errmsg = res
         self.Edit_LW(river, reach, rs, close=close)
@@ -534,7 +543,7 @@ class ControllerBase(object):
         cross section will be lost.
         """
         rc = self._rc
-        errmsg = ''
+        errmsg = ""
         res = rc.Edit_AddXS(river, reach, rs, errmsg)
         river, reach, rs, errmsg = res
         self.Edit_XS(river, reach, rs, close=close)
@@ -784,9 +793,9 @@ class ControllerBase(object):
 
         Python: this method returns the location of the file (unlike VBA)
         """
-        suffix = '.RASexport.sdf'
+        suffix = ".RASexport.sdf"
         path, fname_project = osp.split(self.CurrentProjectFile())
-        fname_project = fname_project.split('.')[0]
+        fname_project = fname_project.split(".")[0]
         fname_gis = fname_project + suffix
         fullpath = osp.join(path, fname_gis)
 
@@ -842,7 +851,7 @@ class ControllerBase(object):
             The river station of the inline structure.
         """
         rc = self._rc
-        res = rc.Geometry_GetGateNames(river, reach, station,None,None,None)
+        res = rc.Geometry_GetGateNames(river, reach, station, None, None, None)
         river, reach, station, ngate, GateNames, errmsg = res
 
         # Return an empty list or return None?
@@ -851,7 +860,7 @@ class ControllerBase(object):
 
         result = (ngate, list(GateNames))
 
-        if errmsg != '':
+        if errmsg != "":
             raise Exception(errmsg)
 
         return result
@@ -915,8 +924,8 @@ class ControllerBase(object):
 
         geo = self.Geometry()
         nRS = geo.nNode(riv, rch)
-        rs = (float('nan'),)*(nRS + 1)
-        NodeType = (float('nan'),)*(nRS + 1)
+        rs = (float("nan"),) * (nRS + 1)
+        NodeType = (float("nan"),) * (nRS + 1)
 
         res = rc.Geometry_GetNodes(riv, rch, nRS, rs, NodeType)
         riv, rch, nRS, rs, NodeType = res
@@ -966,7 +975,7 @@ class ControllerBase(object):
             The number of rivers.
         river : list of str
             The list of the names of the rivers.
-            """
+        """
         rc = self._rc
         nRiver, river = 0, tuple()
         res = rc.Geometry_GetRivers(nRiver, river)
@@ -1006,24 +1015,22 @@ class ControllerBase(object):
         Python: This method takes care of 0-based indexing.
         """
         rc = self._rc
-        errmsg = ''
+        errmsg = ""
 
         # Adjust to 0-based indexing and force the use of tuples
         Mann_n = tuple([0] + list(Mann_n))
         Station = tuple([0] + list(Station))
 
-        res = rc.Geometry_SetMann(river, reach, rs, nMann, Mann_n, Station,
-                                  errmsg)
+        res = rc.Geometry_SetMann(river, reach, rs, nMann, Mann_n, Station, errmsg)
 
         flag, river, reach, rs, nMann, Mann_n, Station, errmsg = res
 
-        if errmsg != '':
+        if errmsg != "":
             raise Exception(errmsg)
 
         return flag
 
-    def Geometry_SetMann_LChR(self, river, reach, rs, MannLOB, MannChan,
-                              MannROB):
+    def Geometry_SetMann_LChR(self, river, reach, rs, MannLOB, MannChan, MannROB):
         """
         Sets the Manning's n Values, by left verbank, main channel, and right
         overbank, for a cross section.
@@ -1044,9 +1051,10 @@ class ControllerBase(object):
             Manning's n Value for the Right Overbank.
         """
         rc = self._rc
-        errmsg = ''
-        res = rc.Geometry_SetMann_LChR(river, reach, rs, MannLOB, MannChan,
-                                       MannROB, errmsg)
+        errmsg = ""
+        res = rc.Geometry_SetMann_LChR(
+            river, reach, rs, MannLOB, MannChan, MannROB, errmsg
+        )
         return res
 
     def Geometry_SetSAArea(self, SAName, Area):
@@ -1072,7 +1080,7 @@ class ControllerBase(object):
         # TODO: using the parsed filed, look for valid areas and check
         # against this
         rc = self._rc
-        errmsg = ''
+        errmsg = ""
         res = rc.Geometry_SetSAArea(SAName, Area, errmsg)
         geo = self.Geometry()
         geo.Save()
@@ -1385,8 +1393,7 @@ class ControllerBase(object):
         rs = None
         ChannelDist = None
         value = None
-        res = rc.Output_ReachOutput(riv, rch, prof, nVar, nRS, rs, ChannelDist,
-                                    value)
+        res = rc.Output_ReachOutput(riv, rch, prof, nVar, nRS, rs, ChannelDist, value)
         riv, rch, prof, nVar, nRS, rs, ChannelDist, value = res
 
         return nRS, rs, ChannelDist, value
@@ -1415,7 +1422,7 @@ class ControllerBase(object):
         VarDesc = None
         res = rc.Output_Variables(nVar, VarName, VarDesc)
         nVar, VarName, VarDesc = res
-        ids = list(range(1, len(VarName)+1, 1))
+        ids = list(range(1, len(VarName) + 1, 1))
 
         return nVar, VarName, VarDesc
 
@@ -1479,13 +1486,40 @@ class ControllerBase(object):
         Flow = None
         HydrDepth = None
         Velocity = None
-        res = rc.Output_VelDist(riv, rch, n, updn, prof, nv, LeftSta, RightSta,
-                                ConvPerc, Area, WP, Flow, HydrDepth, Velocity)
-        (riv, rch, n, updn, prof, nv, LeftSta, RightSta, ConvPerc, Area, WP,
-         Flow, HydrDepth, Velocity) = res
+        res = rc.Output_VelDist(
+            riv,
+            rch,
+            n,
+            updn,
+            prof,
+            nv,
+            LeftSta,
+            RightSta,
+            ConvPerc,
+            Area,
+            WP,
+            Flow,
+            HydrDepth,
+            Velocity,
+        )
+        (
+            riv,
+            rch,
+            n,
+            updn,
+            prof,
+            nv,
+            LeftSta,
+            RightSta,
+            ConvPerc,
+            Area,
+            WP,
+            Flow,
+            HydrDepth,
+            Velocity,
+        ) = res
 
-        return (nv, LeftSta, RightSta, ConvPerc, Area, WP, Flow, HydrDepth,
-                Velocity)
+        return (nv, LeftSta, RightSta, ConvPerc, Area, WP, Flow, HydrDepth, Velocity)
 
     def OutputDSS_GetStageFlow(self, riv, rch, rs):
         """Return stage and flow for every hydrograph output interval.
@@ -1524,8 +1558,9 @@ class ControllerBase(object):
         Stage = None
         Flow = None
         errmsg = None
-        res = rc.OutputDSS_GetStageFlow(riv, rch, rs, nvalue, ValueDateTime,
-                                        Stage, Flow, errmsg)
+        res = rc.OutputDSS_GetStageFlow(
+            riv, rch, rs, nvalue, ValueDateTime, Stage, Flow, errmsg
+        )
         success, riv, rch, rs, nvalue, ValueDateTime, Stage, Flow, errmsg = res
         new_dates = _fix_dates(ValueDateTime)
 
@@ -1567,8 +1602,7 @@ class ControllerBase(object):
         rc = self._rc
         PlanCount = None
         PlanNames = None
-        res = rc.Plan_Names(PlanCount, PlanNames,
-                            IncludeOnlyPlansInBaseDirectory)
+        res = rc.Plan_Names(PlanCount, PlanNames, IncludeOnlyPlansInBaseDirectory)
         PlanCount, PlanNames, IncludeOnlyPlansInBaseDirectory = res
 
         return PlanCount, PlanNames
@@ -1646,8 +1680,7 @@ class ControllerBase(object):
         """
         rc = self._rc
         errmsg = None
-        res = rc.PlanOutput_IsCurrent(PlanTitleToCheck, ShowMessageList,
-                                      errmsg)
+        res = rc.PlanOutput_IsCurrent(PlanTitleToCheck, ShowMessageList, errmsg)
         success, PlanTitleToCheck, ShowMessageList, errmsg = res
 
         return errmsg
@@ -1677,8 +1710,9 @@ class ControllerBase(object):
 
         return success
 
-    def PlanOutput_SetMultiple(self, nPlanTitleToSet, PlanTitleToSet_0,
-                               ShowMessageList):
+    def PlanOutput_SetMultiple(
+        self, nPlanTitleToSet, PlanTitleToSet_0, ShowMessageList
+    ):
         """
         Sets which pan to set to view in putput plots and tables.
 
@@ -1706,8 +1740,9 @@ class ControllerBase(object):
         0-based, prior to calling PlanOutput_SetMultiple.
         """
         rc = self._rc
-        res = rc.PlanOutput_SetMultiple(nPlanTitleToSet, PlanTitleToSet_0,
-                                        ShowMessageList)
+        res = rc.PlanOutput_SetMultiple(
+            nPlanTitleToSet, PlanTitleToSet_0, ShowMessageList
+        )
         nplans, nPlanTitleToSet, PlanTitleToSet_0, ShowMessageList = res
 
         return nplans
@@ -1729,7 +1764,7 @@ class ControllerBase(object):
         """
         rc = self._rc
         rc.PlotHydraulicTables(river, reach, rs)
-        self._runtime.pause_text('View Hydraulic Property Tables')
+        self._runtime.pause_text("View Hydraulic Property Tables")
 
     def PlotPF(self, river, reach):
         """
@@ -1748,7 +1783,7 @@ class ControllerBase(object):
         """
         rc = self._rc
         rc.PlotPF(river, reach)
-        self._runtime.pause_text('Profile Plot')
+        self._runtime.pause_text("Profile Plot")
 
     def PlotPFGeneral(self, river, reach):
         """
@@ -1767,7 +1802,7 @@ class ControllerBase(object):
         """
         rc = self._rc
         rc.PlotPFGeneral(river, reach)
-        self._runtime.pause_text('General Profile Plot')
+        self._runtime.pause_text("General Profile Plot")
 
     def PlotRatingCurve(self, river, reach, rs):
         """
@@ -1788,7 +1823,7 @@ class ControllerBase(object):
         """
         rc = self._rc
         rc.PlotRatingCurve(river, reach, rs)
-        self._runtime.pause_text('Rating Curve')
+        self._runtime.pause_text("Rating Curve")
 
     def PlotStageFlow(self, river, reach, rs):
         """
@@ -1810,7 +1845,7 @@ class ControllerBase(object):
         """
         rc = self._rc
         rc.PlotStageFlow(river, reach, rs)
-        self._runtime.pause_text('Stage and Flow Hydrographs')
+        self._runtime.pause_text("Stage and Flow Hydrographs")
 
     def PlotStageFlow_SA(self, SAName):
         """
@@ -1825,7 +1860,7 @@ class ControllerBase(object):
         """
         rc = self._rc
         rc.PlotStageFlow_SA(SAName)
-        self._runtime.pause_text('Stage and Flow Hydrographs')
+        self._runtime.pause_text("Stage and Flow Hydrographs")
 
     def PlotXS(self, river, reach, rs):
         """
@@ -1843,7 +1878,7 @@ class ControllerBase(object):
         """
         rc = self._rc
         rc.PlotXS(river, reach, rs)
-        self._runtime.pause_text('Cross Section')
+        self._runtime.pause_text("Cross Section")
 
     def PlotXYZ(self, river, reach):
         """
@@ -1858,7 +1893,7 @@ class ControllerBase(object):
         """
         rc = self._rc
         rc.PlotXYZ(river, reach)
-        self._runtime.pause_text('X-Y-Z Perspective Plot')
+        self._runtime.pause_text("X-Y-Z Perspective Plot")
 
     # %% Project
     def Project_Current(self):
@@ -1901,7 +1936,6 @@ class ControllerBase(object):
             raise IOError(error)
 
         rc.Project_Open(fullpath)
-
 
     def Project_Save(self):
         """
@@ -1985,18 +2019,29 @@ class ControllerBase(object):
         n_rivers = geo.nRiver()
         n_reaches = self.Schematic_ReachCount()
         n_points = self.Schematic_ReachPointCount()
-        RiverName_0 = ('',)*(n_rivers)
-        ReachName_0 = ('',)*(n_reaches)
-        ReachStartIndex_0 = (0,)*(n_reaches)
-        ReachPointCount_0 = (0,)*(n_reaches)
-        ReachPointX_0 = (0.0,)*(n_points)
-        ReachPointY_0 = (0.0,)*(n_points)
+        RiverName_0 = ("",) * (n_rivers)
+        ReachName_0 = ("",) * (n_reaches)
+        ReachStartIndex_0 = (0,) * (n_reaches)
+        ReachPointCount_0 = (0,) * (n_reaches)
+        ReachPointX_0 = (0.0,) * (n_points)
+        ReachPointY_0 = (0.0,) * (n_points)
 
-        res = rc.Schematic_ReachPoints(RiverName_0, ReachName_0,
-                                       ReachStartIndex_0, ReachPointCount_0,
-                                       ReachPointX_0, ReachPointY_0)
-        (RiverName_0, ReachName_0, ReachStartIndex_0, ReachPointCount_0,
-         ReachPointX_0, ReachPointY_0) = res
+        res = rc.Schematic_ReachPoints(
+            RiverName_0,
+            ReachName_0,
+            ReachStartIndex_0,
+            ReachPointCount_0,
+            ReachPointX_0,
+            ReachPointY_0,
+        )
+        (
+            RiverName_0,
+            ReachName_0,
+            ReachStartIndex_0,
+            ReachPointCount_0,
+            ReachPointX_0,
+            ReachPointY_0,
+        ) = res
 
         return res
 
@@ -2057,16 +2102,28 @@ class ControllerBase(object):
         rc = self._rc
         n_xs = self.Schematic_XSCount()
         n_points = self.Schematic_XSPointCount()
-        RSName_0 = ('',)*(n_xs)
-        ReachIndex_0 = (-1,)*(n_xs)
-        XSStartIndex_0 = (-1,)*(n_xs)
-        XSPointCount_0 = (-1,)*(n_xs)
-        XSPointX_0 = (float('nan'),)*(n_points)
-        XSPointY_0 = (float('nan'),)*(n_points)
-        res = rc.Schematic_XSPoints(RSName_0, ReachIndex_0, XSStartIndex_0,
-                                    XSPointCount_0, XSPointX_0, XSPointY_0)
-        (RSName_0, ReachIndex_0, XSStartIndex_0, XSPointCount_0,
-         XSPointX_0, XSPointY_0) = res
+        RSName_0 = ("",) * (n_xs)
+        ReachIndex_0 = (-1,) * (n_xs)
+        XSStartIndex_0 = (-1,) * (n_xs)
+        XSPointCount_0 = (-1,) * (n_xs)
+        XSPointX_0 = (float("nan"),) * (n_points)
+        XSPointY_0 = (float("nan"),) * (n_points)
+        res = rc.Schematic_XSPoints(
+            RSName_0,
+            ReachIndex_0,
+            XSStartIndex_0,
+            XSPointCount_0,
+            XSPointX_0,
+            XSPointY_0,
+        )
+        (
+            RSName_0,
+            ReachIndex_0,
+            XSStartIndex_0,
+            XSPointCount_0,
+            XSPointX_0,
+            XSPointY_0,
+        ) = res
 
         return res
 
@@ -2090,11 +2147,11 @@ class ControllerBase(object):
         rc = self._rc
         rc.ShowRas()
 
-    show = ShowRas # alias for ShowRas function
+    show = ShowRas  # alias for ShowRas function
 
     def QuitRas(self):
         logging.warning("HEC-Version < 5.X.X does not have window hide interface.")
-    
+
     hide = QuitRas
 
     # %% Steady
@@ -2187,7 +2244,7 @@ class ControllerBase(object):
         """
         rc = self._rc
         rc.TablePF(river, reach)
-        self._runtime.pause_text('Profile Output Table')
+        self._runtime.pause_text("Profile Output Table")
 
     def TableXS(self, river, reach, rs):
         """
@@ -2205,11 +2262,12 @@ class ControllerBase(object):
         """
         rc = self._rc
         rc.TableXS(river, reach, rs)
-        self._runtime.pause_text('Cross Section Output')
+        self._runtime.pause_text("Cross Section Output")
 
     # %% Unsteady
-    def UnsteadyFlow_SetGateOpening_Constant(self, river, reach, rs, GateName,
-                                             OpenHeight):
+    def UnsteadyFlow_SetGateOpening_Constant(
+        self, river, reach, rs, GateName, OpenHeight
+    ):
         """
         Sets the gate opening for a specified gate group to a constant value in
         the Time Series Gate Opening boundary condition.
@@ -2232,11 +2290,12 @@ class ControllerBase(object):
         The time interval in the TS Gate Opening boundary condition is set to 1
         year.
         """
-        #raise NotImplementedError
+        # raise NotImplementedError
         rc = self._rc
-        errmsg = ''
-        res = rc.UnsteadyFlow_SetGateOpening_Constant(river, reach, rs,
-                                                      GateName, OpenHeight,None) #added None 11/30/2017
+        errmsg = ""
+        res = rc.UnsteadyFlow_SetGateOpening_Constant(
+            river, reach, rs, GateName, OpenHeight, None
+        )  # added None 11/30/2017
         river, reach, rs, GateName, OpenHeight, errmsg = res
         return errmsg
 
@@ -2266,7 +2325,7 @@ class RASEvents:
 
         Python: this event does not work with win32com
         """
-        logging.debug('%s',Progress)
+        logging.debug("%s", Progress)
         return Progress
 
     def ComputeProgressMessage(self, msg):
@@ -2288,5 +2347,5 @@ class RASEvents:
 
         Python: this event does not work with win32com
         """
-        logging.debug('%s',msg)
+        logging.debug("%s", msg)
         return msg

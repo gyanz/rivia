@@ -6,6 +6,7 @@ cell centres, face connectivity, hydraulic property tables, etc.
 Derived from archive/ras_tools/r2d/ras_io.py and
 archive/ras_tools/r2d/ras2d_cell_velocity.py.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -30,6 +31,7 @@ _GEOM_2D_ATTRS = f"{_GEOM_2D_ROOT}/Attributes"
 # ---------------------------------------------------------------------------
 # FlowArea — geometry for a single 2-D flow area
 # ---------------------------------------------------------------------------
+
 
 class FlowArea:
     """Geometry data for one named 2-D flow area.
@@ -211,6 +213,7 @@ class FlowArea:
 # FlowAreaCollection — dict-like access to all flow areas in the HDF file
 # ---------------------------------------------------------------------------
 
+
 class FlowAreaCollection:
     """Access all 2-D flow areas stored in an HDF geometry or plan file.
 
@@ -243,9 +246,7 @@ class FlowAreaCollection:
             if df[col].dtype.kind in ("S", "O"):
                 df[col] = df[col].str.decode("utf-8").str.strip()
         # Normalise the name column to lower-case key 'name'
-        name_col = next(
-            (c for c in df.columns if c.lower() == "name"), None
-        )
+        name_col = next((c for c in df.columns if c.lower() == "name"), None)
         if name_col and name_col != "name":
             df = df.rename(columns={name_col: "name"})
         return df
@@ -254,9 +255,11 @@ class FlowAreaCollection:
     def names(self) -> list[str]:
         """Names of all 2-D flow areas in the file."""
         import h5py
+
         root = self._hdf[_GEOM_2D_ROOT]
         return [
-            k for k, v in root.items()
+            k
+            for k, v in root.items()
             if isinstance(v, h5py.Group) and k != "Attributes"
         ]
 
@@ -269,8 +272,7 @@ class FlowAreaCollection:
             root = self._hdf[_GEOM_2D_ROOT]
             if name not in root:
                 raise KeyError(
-                    f"2D flow area {name!r} not found. "
-                    f"Available: {self.names}"
+                    f"2D flow area {name!r} not found. Available: {self.names}"
                 )
             n_cells = self._get_real_cell_count(name)
             self._cache[name] = FlowArea(root[name], name, n_cells)
@@ -306,14 +308,9 @@ class FlowAreaCollection:
         if attrs_ds is not None:
             attrs = np.array(attrs_ds)
             dtype_names = [f.lower() for f in attrs_ds.dtype.names]
-            name_idx = next(
-                (i for i, f in enumerate(dtype_names) if "name" in f), None
-            )
+            name_idx = next((i for i, f in enumerate(dtype_names) if "name" in f), None)
             count_idx = next(
-                (
-                    i for i, f in enumerate(dtype_names)
-                    if "cell" in f and "count" in f
-                ),
+                (i for i, f in enumerate(dtype_names) if "cell" in f and "count" in f),
                 None,
             )
             if name_idx is not None and count_idx is not None:
@@ -334,6 +331,7 @@ class FlowAreaCollection:
 # ---------------------------------------------------------------------------
 # GeometryHdf — public entry point
 # ---------------------------------------------------------------------------
+
 
 class GeometryHdf(_HdfFile):
     """Read HEC-RAS geometry HDF5 output files (``*.g*.hdf``).

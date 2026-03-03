@@ -24,25 +24,28 @@ import pytest
 from raspy.model.flow_steady import SteadyBoundary, SteadyFlowFile
 
 FIXTURES = Path(__file__).parent / "fixtures"
-BAXTER   = FIXTURES / "baxter.f01"
-CONSPAN  = FIXTURES / "conspan.f01"
-MIXED    = FIXTURES / "mixed.f01"
-WAILUPE  = FIXTURES / "wailupe.f01"
+BAXTER = FIXTURES / "baxter.f01"
+CONSPAN = FIXTURES / "conspan.f01"
+MIXED = FIXTURES / "mixed.f01"
+WAILUPE = FIXTURES / "wailupe.f01"
 
 
 @pytest.fixture()
 def tmp_copy(tmp_path: Path):
     """Factory: copy a fixture to tmp_path and return the copy path."""
+
     def _copy(src: Path) -> Path:
         dst = tmp_path / src.name
         shutil.copy(src, dst)
         return dst
+
     return _copy
 
 
 # ---------------------------------------------------------------------------
 # Construction
 # ---------------------------------------------------------------------------
+
 
 class TestConstruction:
     def test_missing_file_raises(self, tmp_path):
@@ -62,20 +65,20 @@ class TestConstruction:
 # No-op roundtrip — must produce byte-identical output
 # ---------------------------------------------------------------------------
 
+
 class TestVerbatimRoundtrip:
     @pytest.mark.parametrize("fixture", [BAXTER, CONSPAN, MIXED, WAILUPE])
     def test_noop_save_is_byte_identical(self, fixture, tmp_copy):
         original = fixture.read_bytes()
         dst = tmp_copy(fixture)
         SteadyFlowFile(dst).save()
-        assert dst.read_bytes() == original, (
-            f"Roundtrip failed for {fixture.name}"
-        )
+        assert dst.read_bytes() == original, f"Roundtrip failed for {fixture.name}"
 
 
 # ---------------------------------------------------------------------------
 # Scalar properties
 # ---------------------------------------------------------------------------
+
 
 class TestScalarProperties:
     def test_flow_title_baxter(self):
@@ -139,34 +142,32 @@ class TestScalarProperties:
 # get_flows
 # ---------------------------------------------------------------------------
 
+
 class TestGetFlows:
     def test_baxter_upper_reach_count(self):
-        vals = SteadyFlowFile(BAXTER).get_flows(
-            "Baxter River", "Upper Reach", "84816.")
+        vals = SteadyFlowFile(BAXTER).get_flows("Baxter River", "Upper Reach", "84816.")
         assert len(vals) == 3
 
     def test_baxter_upper_reach_values(self):
-        vals = SteadyFlowFile(BAXTER).get_flows(
-            "Baxter River", "Upper Reach", "84816.")
+        vals = SteadyFlowFile(BAXTER).get_flows("Baxter River", "Upper Reach", "84816.")
         assert vals[0] == pytest.approx(31500.0)
         assert vals[1] == pytest.approx(67499.99)
         assert vals[2] == pytest.approx(149400.0)
 
     def test_tule_creek_first_value(self):
-        vals = SteadyFlowFile(BAXTER).get_flows(
-            "Tule Creek", "Tributary", "10982.")
+        vals = SteadyFlowFile(BAXTER).get_flows("Tule Creek", "Tributary", "10982.")
         assert vals[0] == pytest.approx(499.9999)
 
     def test_conspan_four_profiles(self):
         vals = SteadyFlowFile(CONSPAN).get_flows(
-            "Spring Creek", "Culvrt Reach", "20.535")
+            "Spring Creek", "Culvrt Reach", "20.535"
+        )
         assert len(vals) == 4
         assert vals[0] == pytest.approx(250.0)
         assert vals[3] == pytest.approx(1000.0)
 
     def test_missing_location_returns_none(self):
-        assert SteadyFlowFile(BAXTER).get_flows(
-            "No River", "No Reach", "0") is None
+        assert SteadyFlowFile(BAXTER).get_flows("No River", "No Reach", "0") is None
 
     def test_wailupe_multiple_locations_for_same_reach(self):
         f = SteadyFlowFile(WAILUPE)
@@ -181,6 +182,7 @@ class TestGetFlows:
 # set_flows
 # ---------------------------------------------------------------------------
 
+
 class TestSetFlows:
     def test_set_same_count(self, tmp_copy):
         dst = tmp_copy(BAXTER)
@@ -188,8 +190,7 @@ class TestSetFlows:
         new_vals = [1000.0, 2000.0, 3000.0]
         f.set_flows("Baxter River", "Upper Reach", "84816.", new_vals)
         f.save()
-        result = SteadyFlowFile(dst).get_flows(
-            "Baxter River", "Upper Reach", "84816.")
+        result = SteadyFlowFile(dst).get_flows("Baxter River", "Upper Reach", "84816.")
         assert result == pytest.approx(new_vals, rel=1e-5)
 
     def test_set_does_not_affect_other_location(self, tmp_copy):
@@ -222,8 +223,7 @@ class TestSetFlows:
         new_vals = [100.0, 200.0, 300.0, 400.0]
         f.set_flows("Spring Creek", "Culvrt Reach", "20.535", new_vals)
         f.save()
-        result = SteadyFlowFile(dst).get_flows(
-            "Spring Creek", "Culvrt Reach", "20.535")
+        result = SteadyFlowFile(dst).get_flows("Spring Creek", "Culvrt Reach", "20.535")
         assert result == pytest.approx(new_vals, rel=1e-5)
 
 
@@ -231,27 +231,24 @@ class TestSetFlows:
 # get_boundary
 # ---------------------------------------------------------------------------
 
+
 class TestGetBoundary:
     def test_baxter_upper_up_type_none(self):
-        bc = SteadyFlowFile(BAXTER).get_boundary(
-            "Baxter River", "Upper Reach", 1)
+        bc = SteadyFlowFile(BAXTER).get_boundary("Baxter River", "Upper Reach", 1)
         assert bc is not None
         assert bc.up_type == 0
 
     def test_baxter_upper_dn_type_none(self):
-        bc = SteadyFlowFile(BAXTER).get_boundary(
-            "Baxter River", "Upper Reach", 1)
+        bc = SteadyFlowFile(BAXTER).get_boundary("Baxter River", "Upper Reach", 1)
         assert bc.dn_type == 0
 
     def test_baxter_lower_dn_type_normal_depth(self):
-        bc = SteadyFlowFile(BAXTER).get_boundary(
-            "Baxter River", "Lower Reach", 1)
+        bc = SteadyFlowFile(BAXTER).get_boundary("Baxter River", "Lower Reach", 1)
         assert bc is not None
         assert bc.dn_type == 3
 
     def test_baxter_lower_dn_slope(self):
-        bc = SteadyFlowFile(BAXTER).get_boundary(
-            "Baxter River", "Lower Reach", 1)
+        bc = SteadyFlowFile(BAXTER).get_boundary("Baxter River", "Lower Reach", 1)
         assert bc.dn_slope == pytest.approx(0.001)
 
     def test_baxter_all_profiles_same_slope(self):
@@ -261,40 +258,36 @@ class TestGetBoundary:
             assert bc.dn_slope == pytest.approx(0.001)
 
     def test_conspan_known_ws_profile_1(self):
-        bc = SteadyFlowFile(CONSPAN).get_boundary(
-            "Spring Creek", "Culvrt Reach", 1)
+        bc = SteadyFlowFile(CONSPAN).get_boundary("Spring Creek", "Culvrt Reach", 1)
         assert bc is not None
         assert bc.dn_type == 1
         assert bc.dn_known_ws == pytest.approx(28.9)
 
     def test_conspan_known_ws_profile_4(self):
-        bc = SteadyFlowFile(CONSPAN).get_boundary(
-            "Spring Creek", "Culvrt Reach", 4)
+        bc = SteadyFlowFile(CONSPAN).get_boundary("Spring Creek", "Culvrt Reach", 4)
         assert bc.dn_known_ws == pytest.approx(31.5)
 
     def test_mixed_up_type_normal_depth(self):
-        bc = SteadyFlowFile(MIXED).get_boundary(
-            "Mixed Reach", "Mixed Reach", 1)
+        bc = SteadyFlowFile(MIXED).get_boundary("Mixed Reach", "Mixed Reach", 1)
         assert bc.up_type == 3
         assert bc.up_slope == pytest.approx(0.01)
 
     def test_mixed_dn_type_normal_depth(self):
-        bc = SteadyFlowFile(MIXED).get_boundary(
-            "Mixed Reach", "Mixed Reach", 1)
+        bc = SteadyFlowFile(MIXED).get_boundary("Mixed Reach", "Mixed Reach", 1)
         assert bc.dn_type == 3
         assert bc.dn_slope == pytest.approx(0.000586)
 
     def test_missing_boundary_returns_none(self):
-        assert SteadyFlowFile(BAXTER).get_boundary(
-            "No River", "No Reach", 1) is None
+        assert SteadyFlowFile(BAXTER).get_boundary("No River", "No Reach", 1) is None
 
     def test_missing_profile_number_returns_none(self):
-        assert SteadyFlowFile(BAXTER).get_boundary(
-            "Baxter River", "Lower Reach", 99) is None
+        assert (
+            SteadyFlowFile(BAXTER).get_boundary("Baxter River", "Lower Reach", 99)
+            is None
+        )
 
     def test_profile_field_set_correctly(self):
-        bc = SteadyFlowFile(BAXTER).get_boundary(
-            "Baxter River", "Lower Reach", 2)
+        bc = SteadyFlowFile(BAXTER).get_boundary("Baxter River", "Lower Reach", 2)
         assert bc.profile == 2
 
 
@@ -302,30 +295,28 @@ class TestGetBoundary:
 # get_boundaries (all profiles for a reach)
 # ---------------------------------------------------------------------------
 
+
 class TestGetBoundaries:
     def test_baxter_lower_returns_three_profiles(self):
-        bcs = SteadyFlowFile(BAXTER).get_boundaries(
-            "Baxter River", "Lower Reach")
+        bcs = SteadyFlowFile(BAXTER).get_boundaries("Baxter River", "Lower Reach")
         assert len(bcs) == 3
 
     def test_sorted_by_profile(self):
-        bcs = SteadyFlowFile(BAXTER).get_boundaries(
-            "Baxter River", "Lower Reach")
+        bcs = SteadyFlowFile(BAXTER).get_boundaries("Baxter River", "Lower Reach")
         assert [bc.profile for bc in bcs] == [1, 2, 3]
 
     def test_conspan_four_profiles(self):
-        bcs = SteadyFlowFile(CONSPAN).get_boundaries(
-            "Spring Creek", "Culvrt Reach")
+        bcs = SteadyFlowFile(CONSPAN).get_boundaries("Spring Creek", "Culvrt Reach")
         assert len(bcs) == 4
 
     def test_missing_reach_returns_empty(self):
-        assert SteadyFlowFile(BAXTER).get_boundaries(
-            "No River", "No Reach") == []
+        assert SteadyFlowFile(BAXTER).get_boundaries("No River", "No Reach") == []
 
 
 # ---------------------------------------------------------------------------
 # set_boundary
 # ---------------------------------------------------------------------------
+
 
 class TestSetBoundary:
     def test_set_dn_slope(self, tmp_copy):
@@ -335,8 +326,7 @@ class TestSetBoundary:
         bc.dn_slope = 0.005
         f.set_boundary(bc)
         f.save()
-        result = SteadyFlowFile(dst).get_boundary(
-            "Baxter River", "Lower Reach", 1)
+        result = SteadyFlowFile(dst).get_boundary("Baxter River", "Lower Reach", 1)
         assert result.dn_slope == pytest.approx(0.005)
 
     def test_set_changes_only_target_profile(self, tmp_copy):
@@ -361,8 +351,7 @@ class TestSetBoundary:
         bc.dn_known_ws = None
         f.set_boundary(bc)
         f.save()
-        result = SteadyFlowFile(dst).get_boundary(
-            "Spring Creek", "Culvrt Reach", 1)
+        result = SteadyFlowFile(dst).get_boundary("Spring Creek", "Culvrt Reach", 1)
         assert result.dn_type == 3
         assert result.dn_slope == pytest.approx(0.002)
         assert result.dn_known_ws is None
@@ -375,8 +364,7 @@ class TestSetBoundary:
         bc.dn_slope = 0.005
         f.set_boundary(bc)
         f.save()
-        after = SteadyFlowFile(dst).get_flows(
-            "Baxter River", "Upper Reach", "84816.")
+        after = SteadyFlowFile(dst).get_flows("Baxter River", "Upper Reach", "84816.")
         assert before == pytest.approx(after, rel=1e-5)
 
     def test_set_missing_boundary_raises(self, tmp_copy):
@@ -404,14 +392,14 @@ class TestSetBoundary:
         bc.dn_known_ws = 99.9
         f.set_boundary(bc)
         f.save()
-        result = SteadyFlowFile(dst).get_boundary(
-            "Spring Creek", "Culvrt Reach", 2)
+        result = SteadyFlowFile(dst).get_boundary("Spring Creek", "Culvrt Reach", 2)
         assert result.dn_known_ws == pytest.approx(99.9)
 
 
 # ---------------------------------------------------------------------------
 # Generic escape hatch (get / set)
 # ---------------------------------------------------------------------------
+
 
 class TestEscapeHatch:
     def test_get_existing_key(self):

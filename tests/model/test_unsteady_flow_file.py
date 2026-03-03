@@ -30,9 +30,9 @@ from raspy.model.flow_unsteady import (
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
-BAXTER    = FIXTURES / "baxter_1d.u01"
+BAXTER = FIXTURES / "baxter_1d.u01"
 BALDEAGLE = FIXTURES / "baldeagle_1d.u02"
-DAMBRK    = FIXTURES / "dambrk.u01"
+DAMBRK = FIXTURES / "dambrk.u01"
 DAMBRK_DSS = FIXTURES / "dambrk_dss.u02"
 INLINE_3G = FIXTURES / "inline_3gates.u01"
 
@@ -40,16 +40,19 @@ INLINE_3G = FIXTURES / "inline_3gates.u01"
 @pytest.fixture()
 def tmp_copy(tmp_path: Path):
     """Factory: copy a fixture to tmp_path and return the copy path."""
+
     def _copy(src: Path) -> Path:
         dst = tmp_path / src.name
         shutil.copy(src, dst)
         return dst
+
     return _copy
 
 
 # ---------------------------------------------------------------------------
 # Construction
 # ---------------------------------------------------------------------------
+
 
 class TestConstruction:
     def test_missing_file_raises_verbatim(self, tmp_path):
@@ -73,22 +76,29 @@ class TestConstruction:
 # No-op roundtrip — UnsteadyFlowFile must produce byte-identical output
 # ---------------------------------------------------------------------------
 
+
 class TestVerbatimRoundtrip:
-    @pytest.mark.parametrize("fixture", [
-        BAXTER, BALDEAGLE, DAMBRK, DAMBRK_DSS, INLINE_3G,
-    ])
+    @pytest.mark.parametrize(
+        "fixture",
+        [
+            BAXTER,
+            BALDEAGLE,
+            DAMBRK,
+            DAMBRK_DSS,
+            INLINE_3G,
+        ],
+    )
     def test_noop_save_is_byte_identical(self, fixture, tmp_copy):
         original = fixture.read_bytes()
         dst = tmp_copy(fixture)
         UnsteadyFlowFile(dst).save()
-        assert dst.read_bytes() == original, (
-            f"Roundtrip failed for {fixture.name}"
-        )
+        assert dst.read_bytes() == original, f"Roundtrip failed for {fixture.name}"
 
 
 # ---------------------------------------------------------------------------
 # Scalar properties — UnsteadyFlowFile
 # ---------------------------------------------------------------------------
+
 
 class TestVerbatimProperties:
     def test_flow_title_baxter(self):
@@ -126,6 +136,7 @@ class TestVerbatimProperties:
 # get_flow_hydrograph — UnsteadyFlowFile
 # ---------------------------------------------------------------------------
 
+
 class TestVerbatimGetFlowHydrograph:
     def test_returns_correct_count(self):
         f = UnsteadyFlowFile(BAXTER)
@@ -162,6 +173,7 @@ class TestVerbatimGetFlowHydrograph:
 # set_flow_hydrograph — UnsteadyFlowFile
 # ---------------------------------------------------------------------------
 
+
 class TestVerbatimSetFlowHydrograph:
     def test_set_list_same_count(self, tmp_copy):
         dst = tmp_copy(BAXTER)
@@ -171,17 +183,19 @@ class TestVerbatimSetFlowHydrograph:
         f.set_flow_hydrograph("Baxter River", "Upper Reach", "84816.", new_vals)
         f.save()
         result = UnsteadyFlowFile(dst).get_flow_hydrograph(
-            "Baxter River", "Upper Reach", "84816.")
+            "Baxter River", "Upper Reach", "84816."
+        )
         assert result == pytest.approx(new_vals, rel=1e-5)
 
     def test_set_list_different_count(self, tmp_copy):
         dst = tmp_copy(BAXTER)
         f = UnsteadyFlowFile(dst)
-        new_vals = [500.0, 600.0, 700.0]   # 3 instead of 100
+        new_vals = [500.0, 600.0, 700.0]  # 3 instead of 100
         f.set_flow_hydrograph("Baxter River", "Upper Reach", "84816.", new_vals)
         f.save()
         result = UnsteadyFlowFile(dst).get_flow_hydrograph(
-            "Baxter River", "Upper Reach", "84816.")
+            "Baxter River", "Upper Reach", "84816."
+        )
         assert result == pytest.approx(new_vals, rel=1e-5)
 
     def test_set_scalar_broadcasts_to_original_length(self, tmp_copy):
@@ -190,7 +204,8 @@ class TestVerbatimSetFlowHydrograph:
         f.set_flow_hydrograph("Baxter River", "Upper Reach", "84816.", 999.0)
         f.save()
         result = UnsteadyFlowFile(dst).get_flow_hydrograph(
-            "Baxter River", "Upper Reach", "84816.")
+            "Baxter River", "Upper Reach", "84816."
+        )
         assert len(result) == 100
         assert all(v == pytest.approx(999.0) for v in result)
 
@@ -200,7 +215,8 @@ class TestVerbatimSetFlowHydrograph:
         f.set_flow_hydrograph("Tule Creek", "Tributary", "10982.", 1234)
         f.save()
         result = UnsteadyFlowFile(dst).get_flow_hydrograph(
-            "Tule Creek", "Tributary", "10982.")
+            "Tule Creek", "Tributary", "10982."
+        )
         assert len(result) == 100
         assert result[0] == pytest.approx(1234.0)
 
@@ -211,7 +227,8 @@ class TestVerbatimSetFlowHydrograph:
         f.set_flow_hydrograph("Baxter River", "Upper Reach", "84816.", 0.0)
         f.save()
         after_tule = UnsteadyFlowFile(dst).get_flow_hydrograph(
-            "Tule Creek", "Tributary", "10982.")
+            "Tule Creek", "Tributary", "10982."
+        )
         assert before_tule == pytest.approx(after_tule, rel=1e-5)
 
     def test_missing_boundary_raises_key_error(self, tmp_copy):
@@ -224,13 +241,13 @@ class TestVerbatimSetFlowHydrograph:
         dst = tmp_copy(BAXTER)
         f = UnsteadyFlowFile(dst)
         with pytest.raises(ValueError):
-            f.set_flow_hydrograph(
-                "Baxter River", "Lower Reach", "1192.", [1.0])
+            f.set_flow_hydrograph("Baxter River", "Lower Reach", "1192.", [1.0])
 
 
 # ---------------------------------------------------------------------------
 # get/set lateral inflow — UnsteadyFlowFile
 # ---------------------------------------------------------------------------
+
 
 class TestVerbatimLateralInflow:
     def test_get_returns_correct_count(self):
@@ -251,7 +268,8 @@ class TestVerbatimLateralInflow:
         f.set_lateral_inflow("Bald Eagle Cr.", "Lock Haven", "28519", new_vals)
         f.save()
         result = UnsteadyFlowFile(dst).get_lateral_inflow(
-            "Bald Eagle Cr.", "Lock Haven", "28519")
+            "Bald Eagle Cr.", "Lock Haven", "28519"
+        )
         assert result == pytest.approx(new_vals, rel=1e-5)
 
     def test_set_scalar_broadcasts(self, tmp_copy):
@@ -260,7 +278,8 @@ class TestVerbatimLateralInflow:
         f.set_lateral_inflow("Bald Eagle Cr.", "Lock Haven", "28519", 500.0)
         f.save()
         result = UnsteadyFlowFile(dst).get_lateral_inflow(
-            "Bald Eagle Cr.", "Lock Haven", "28519")
+            "Bald Eagle Cr.", "Lock Haven", "28519"
+        )
         assert len(result) == 100
         assert all(v == pytest.approx(500.0) for v in result)
 
@@ -269,23 +288,23 @@ class TestVerbatimLateralInflow:
 # get/set gate openings — UnsteadyFlowFile
 # ---------------------------------------------------------------------------
 
+
 class TestVerbatimGateOpenings:
     def test_get_returns_correct_count(self):
         f = UnsteadyFlowFile(INLINE_3G)
-        vals = f.get_gate_openings(
-            "Nittany River", "Weir Reach", "41.75", "Left Group")
+        vals = f.get_gate_openings("Nittany River", "Weir Reach", "41.75", "Left Group")
         assert len(vals) == 100
 
     def test_get_first_value(self):
         f = UnsteadyFlowFile(INLINE_3G)
-        vals = f.get_gate_openings(
-            "Nittany River", "Weir Reach", "41.75", "Left Group")
+        vals = f.get_gate_openings("Nittany River", "Weir Reach", "41.75", "Left Group")
         assert vals[0] == pytest.approx(3.0)
 
     def test_get_second_gate(self):
         f = UnsteadyFlowFile(INLINE_3G)
         vals = f.get_gate_openings(
-            "Nittany River", "Weir Reach", "41.75", "Middle Group")
+            "Nittany River", "Weir Reach", "41.75", "Middle Group"
+        )
         assert vals[0] == pytest.approx(5.0)
 
     def test_set_list(self, tmp_copy):
@@ -293,20 +312,22 @@ class TestVerbatimGateOpenings:
         f = UnsteadyFlowFile(dst)
         new_vals = [8.5] * 100
         f.set_gate_openings(
-            "Nittany River", "Weir Reach", "41.75", "Left Group", new_vals)
+            "Nittany River", "Weir Reach", "41.75", "Left Group", new_vals
+        )
         f.save()
         result = UnsteadyFlowFile(dst).get_gate_openings(
-            "Nittany River", "Weir Reach", "41.75", "Left Group")
+            "Nittany River", "Weir Reach", "41.75", "Left Group"
+        )
         assert result == pytest.approx(new_vals, rel=1e-5)
 
     def test_set_scalar_broadcasts(self, tmp_copy):
         dst = tmp_copy(INLINE_3G)
         f = UnsteadyFlowFile(dst)
-        f.set_gate_openings(
-            "Nittany River", "Weir Reach", "41.75", "Middle Group", 7.0)
+        f.set_gate_openings("Nittany River", "Weir Reach", "41.75", "Middle Group", 7.0)
         f.save()
         result = UnsteadyFlowFile(dst).get_gate_openings(
-            "Nittany River", "Weir Reach", "41.75", "Middle Group")
+            "Nittany River", "Weir Reach", "41.75", "Middle Group"
+        )
         assert len(result) == 100
         assert all(v == pytest.approx(7.0) for v in result)
 
@@ -314,12 +335,13 @@ class TestVerbatimGateOpenings:
         dst = tmp_copy(INLINE_3G)
         f = UnsteadyFlowFile(dst)
         before = f.get_gate_openings(
-            "Nittany River", "Weir Reach", "41.75", "Middle Group")
-        f.set_gate_openings(
-            "Nittany River", "Weir Reach", "41.75", "Left Group", 0.0)
+            "Nittany River", "Weir Reach", "41.75", "Middle Group"
+        )
+        f.set_gate_openings("Nittany River", "Weir Reach", "41.75", "Left Group", 0.0)
         f.save()
         after = UnsteadyFlowFile(dst).get_gate_openings(
-            "Nittany River", "Weir Reach", "41.75", "Middle Group")
+            "Nittany River", "Weir Reach", "41.75", "Middle Group"
+        )
         assert before == pytest.approx(after, rel=1e-5)
 
     def test_missing_gate_name_raises(self, tmp_copy):
@@ -327,21 +349,27 @@ class TestVerbatimGateOpenings:
         f = UnsteadyFlowFile(dst)
         with pytest.raises(KeyError):
             f.set_gate_openings(
-                "Nittany River", "Weir Reach", "41.75", "No Gate", [1.0])
+                "Nittany River", "Weir Reach", "41.75", "No Gate", [1.0]
+            )
 
 
 # ---------------------------------------------------------------------------
 # Initial conditions — UnsteadyFlowFile
 # ---------------------------------------------------------------------------
 
+
 class TestVerbatimInitialConditions:
     def test_get_initial_flow(self):
         f = UnsteadyFlowFile(BAXTER)
-        assert f.get_initial_flow("Baxter River", "Upper Reach", "84816.") == pytest.approx(2000.0)
+        assert f.get_initial_flow(
+            "Baxter River", "Upper Reach", "84816."
+        ) == pytest.approx(2000.0)
 
     def test_get_initial_flow_second(self):
         f = UnsteadyFlowFile(BAXTER)
-        assert f.get_initial_flow("Baxter River", "Lower Reach", "47694.") == pytest.approx(4000.0)
+        assert f.get_initial_flow(
+            "Baxter River", "Lower Reach", "47694."
+        ) == pytest.approx(4000.0)
 
     def test_get_initial_flow_missing_returns_none(self):
         f = UnsteadyFlowFile(BAXTER)
@@ -353,7 +381,8 @@ class TestVerbatimInitialConditions:
         f.set_initial_flow("Baxter River", "Upper Reach", "84816.", 9999.0)
         f.save()
         assert UnsteadyFlowFile(dst).get_initial_flow(
-            "Baxter River", "Upper Reach", "84816.") == pytest.approx(9999.0)
+            "Baxter River", "Upper Reach", "84816."
+        ) == pytest.approx(9999.0)
 
     def test_set_initial_flow_missing_raises(self, tmp_copy):
         dst = tmp_copy(BAXTER)
@@ -365,6 +394,7 @@ class TestVerbatimInitialConditions:
 # ---------------------------------------------------------------------------
 # UnsteadyFlowEditor — parsing
 # ---------------------------------------------------------------------------
+
 
 class TestEditorParsing:
     def test_flow_title(self):
@@ -461,6 +491,7 @@ class TestEditorParsing:
 # UnsteadyFlowEditor — sorting
 # ---------------------------------------------------------------------------
 
+
 class TestEditorSorting:
     def test_sort_lateral_inflows_ascending(self):
         ed = UnsteadyFlowEditor(DAMBRK)
@@ -485,17 +516,21 @@ class TestEditorSorting:
         positions in the flat boundary list after sorting laterals."""
         ed = UnsteadyFlowEditor(DAMBRK)
         before_types = [type(b) for b in ed.boundaries]
-        before_flow_indices = [i for i, b in enumerate(ed.boundaries)
-                               if isinstance(b, FlowHydrograph)]
-        before_fs_indices = [i for i, b in enumerate(ed.boundaries)
-                             if isinstance(b, FrictionSlope)]
+        before_flow_indices = [
+            i for i, b in enumerate(ed.boundaries) if isinstance(b, FlowHydrograph)
+        ]
+        before_fs_indices = [
+            i for i, b in enumerate(ed.boundaries) if isinstance(b, FrictionSlope)
+        ]
 
         ed.sort_lateral_inflows(ascending=True)
 
-        after_flow_indices = [i for i, b in enumerate(ed.boundaries)
-                              if isinstance(b, FlowHydrograph)]
-        after_fs_indices = [i for i, b in enumerate(ed.boundaries)
-                            if isinstance(b, FrictionSlope)]
+        after_flow_indices = [
+            i for i, b in enumerate(ed.boundaries) if isinstance(b, FlowHydrograph)
+        ]
+        after_fs_indices = [
+            i for i, b in enumerate(ed.boundaries) if isinstance(b, FrictionSlope)
+        ]
 
         assert before_flow_indices == after_flow_indices
         assert before_fs_indices == after_fs_indices
@@ -513,6 +548,7 @@ class TestEditorSorting:
 # ---------------------------------------------------------------------------
 # UnsteadyFlowEditor — set by index
 # ---------------------------------------------------------------------------
+
 
 class TestEditorSetByIndex:
     def test_set_flow_hydrograph_list(self):
@@ -569,8 +605,7 @@ class TestEditorSetByIndex:
         ed.set_lateral_inflow(0, 111.0)
 
         # Verify we changed the right boundary
-        assert all(v == pytest.approx(111.0)
-                   for v in ed.lateral_inflows[0].values)
+        assert all(v == pytest.approx(111.0) for v in ed.lateral_inflows[0].values)
         assert float(ed.lateral_inflows[0].river_station) == lowest_rs
 
     # set_all_lateral_inflows ------------------------------------------------
@@ -636,26 +671,23 @@ class TestEditorSetByIndex:
 # UnsteadyFlowEditor — set by location
 # ---------------------------------------------------------------------------
 
+
 class TestEditorSetAtLocation:
     def test_set_flow_hydrograph_at(self):
         ed = UnsteadyFlowEditor(BAXTER)
-        ed.set_flow_hydrograph_at(
-            "Baxter River", "Upper Reach", "84816.", 300.0)
+        ed.set_flow_hydrograph_at("Baxter River", "Upper Reach", "84816.", 300.0)
         vals = ed.flow_hydrographs[0].values
         assert all(v == pytest.approx(300.0) for v in vals)
 
     def test_set_flow_hydrograph_at_wrong_type_raises(self):
         ed = UnsteadyFlowEditor(BAXTER)
         with pytest.raises(KeyError):
-            ed.set_flow_hydrograph_at(
-                "Baxter River", "Lower Reach", "1192.", [1.0])
+            ed.set_flow_hydrograph_at("Baxter River", "Lower Reach", "1192.", [1.0])
 
     def test_set_lateral_inflow_at(self):
         ed = UnsteadyFlowEditor(DAMBRK)
-        ed.set_lateral_inflow_at(
-            "Bald Eagle Cr.", "Lock Haven", "28519", 777.0)
-        filt = [b for b in ed.lateral_inflows
-                if b.river_station.strip() == "28519"]
+        ed.set_lateral_inflow_at("Bald Eagle Cr.", "Lock Haven", "28519", 777.0)
+        filt = [b for b in ed.lateral_inflows if b.river_station.strip() == "28519"]
         assert filt
         assert all(v == pytest.approx(777.0) for v in filt[0].values)
 
@@ -663,16 +695,16 @@ class TestEditorSetAtLocation:
         ed = UnsteadyFlowEditor(INLINE_3G)
         new_vals = [2.5] * 100
         ed.set_gate_openings_at(
-            "Nittany River", "Weir Reach", "41.75",
-            "Left Group", new_vals)
+            "Nittany River", "Weir Reach", "41.75", "Left Group", new_vals
+        )
         gate = ed.gate_boundaries[0].gates[0]
         assert gate.values == pytest.approx(new_vals)
 
     def test_set_gate_openings_at_scalar(self):
         ed = UnsteadyFlowEditor(INLINE_3G)
         ed.set_gate_openings_at(
-            "Nittany River", "Weir Reach", "41.75",
-            "Middle Group", 9.0)
+            "Nittany River", "Weir Reach", "41.75", "Middle Group", 9.0
+        )
         gate = ed.gate_boundaries[0].gates[1]
         assert all(v == pytest.approx(9.0) for v in gate.values)
 
@@ -680,18 +712,24 @@ class TestEditorSetAtLocation:
         ed = UnsteadyFlowEditor(INLINE_3G)
         with pytest.raises(KeyError):
             ed.set_gate_openings_at(
-                "Nittany River", "Weir Reach", "41.75",
-                "No Such Gate", [1.0])
+                "Nittany River", "Weir Reach", "41.75", "No Such Gate", [1.0]
+            )
 
 
 # ---------------------------------------------------------------------------
 # UnsteadyFlowEditor — semantic roundtrip (parse → save → re-parse)
 # ---------------------------------------------------------------------------
 
+
 class TestEditorSemanticRoundtrip:
-    @pytest.mark.parametrize("fixture", [
-        BAXTER, DAMBRK, INLINE_3G,
-    ])
+    @pytest.mark.parametrize(
+        "fixture",
+        [
+            BAXTER,
+            DAMBRK,
+            INLINE_3G,
+        ],
+    )
     def test_values_preserved_after_save(self, fixture, tmp_copy, tmp_path):
         ed1 = UnsteadyFlowEditor(fixture)
         out = tmp_path / (fixture.stem + "_rt" + fixture.suffix)

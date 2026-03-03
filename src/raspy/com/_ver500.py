@@ -1,9 +1,9 @@
-
 from . import _ver400
 
 
 class ControllerDeprecated(object):
     """Methods present in RAS500 but not in next version."""
+
     pass
 
 
@@ -114,7 +114,7 @@ class ControllerAdded(object):
         """
         raise NotImplementedError
         rc = self._rc
-        errmsg = ''
+        errmsg = ""
         rc.Geometry_RatioMann(riv, rchUp, nUp, rchDn, nDn, ratio, errmsg)
 
         return errmsg
@@ -129,8 +129,10 @@ class ControllerAdded(object):
         -------
         str
         """
-        error = 'Not available. Will be for Monte Carlo Analysis in future' + \
-                'versions of HEC-RAS.'
+        error = (
+            "Not available. Will be for Monte Carlo Analysis in future"
+            + "versions of HEC-RAS."
+        )
         raise NotImplementedError(error)
 
     def Plan_InformationXML(self):
@@ -142,8 +144,10 @@ class ControllerAdded(object):
         -------
         str
         """
-        error = 'Not available. Will be for Monte Carlo Analysis in future' + \
-                'versions of HEC-RAS.'
+        error = (
+            "Not available. Will be for Monte Carlo Analysis in future"
+            + "versions of HEC-RAS."
+        )
         raise NotImplementedError(error)
 
     def Plan_SetParameterUncertaintyXML(self, xmlText):
@@ -159,8 +163,10 @@ class ControllerAdded(object):
         -------
         str
         """
-        error = 'Not available. Will be for Monte Carlo Analysis in future' + \
-                'versions of HEC-RAS.'
+        error = (
+            "Not available. Will be for Monte Carlo Analysis in future"
+            + "versions of HEC-RAS."
+        )
         raise NotImplementedError(error)
 
     # %%
@@ -176,8 +182,8 @@ class ControllerAdded(object):
         """
         rc = self._rc
         rc.QuitRas()
-    
-    hide = QuitRas # Alia for QuitRas to hide application window
+
+    hide = QuitRas  # Alia for QuitRas to hide application window
 
     # %% WAT, CAVI, FRA
     def wcf_ComputePlan(self):
@@ -229,7 +235,9 @@ class ControllerBase(_ver400.ControllerBase, _ver400.ControllerAdded):
 
 class Controller(ControllerAdded, ControllerBase, ControllerDeprecated):
     """HECRAS Controller version RAS500."""
+
     pass
+
 
 class RASEvents(_ver400.RASEvents):
     pass

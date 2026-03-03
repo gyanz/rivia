@@ -25,16 +25,19 @@ BALDEAGLE_P02 = FIXTURES / "baldeagle_unsteady1d.p02"  # no Mapping Interval lin
 @pytest.fixture()
 def tmp_plan(tmp_path: Path):
     """Return a factory that copies a fixture to a temp dir for mutation tests."""
+
     def _copy(src: Path) -> Path:
         dst = tmp_path / src.name
         shutil.copy(src, dst)
         return dst
+
     return _copy
 
 
 # ---------------------------------------------------------------------------
 # Construction
 # ---------------------------------------------------------------------------
+
 
 class TestConstruction:
     def test_missing_file_raises(self, tmp_path):
@@ -50,6 +53,7 @@ class TestConstruction:
 # Round-trip fidelity
 # ---------------------------------------------------------------------------
 
+
 class TestRoundTrip:
     @pytest.mark.parametrize("fixture", [BAXTER, BALDEAGLE, MUNCIE_P01, MUNCIE_P03])
     def test_save_produces_identical_file(self, fixture, tmp_plan):
@@ -63,6 +67,7 @@ class TestRoundTrip:
 # ---------------------------------------------------------------------------
 # Identity / metadata — Baxter (steady)
 # ---------------------------------------------------------------------------
+
 
 class TestIdentityBaxter:
     def setup_method(self):
@@ -89,6 +94,7 @@ class TestIdentityBaxter:
 # Simulation date — present in all plan types
 # ---------------------------------------------------------------------------
 
+
 class TestSimulationDate:
     def test_steady_plan(self):
         pf = PlanFile(BAXTER)
@@ -112,6 +118,7 @@ class TestSimulationDate:
 # ---------------------------------------------------------------------------
 # Intervals
 # ---------------------------------------------------------------------------
+
 
 class TestIntervals:
     def test_computation_interval_baxter(self):
@@ -144,6 +151,7 @@ class TestIntervals:
 # Plan type detection
 # ---------------------------------------------------------------------------
 
+
 class TestPlanType:
     def test_baxter_is_steady(self):
         pf = PlanFile(BAXTER)
@@ -164,6 +172,7 @@ class TestPlanType:
 # ---------------------------------------------------------------------------
 # Run flags
 # ---------------------------------------------------------------------------
+
 
 class TestRunFlags:
     def setup_method(self):
@@ -195,6 +204,7 @@ class TestRunFlags:
 # 1-D hydraulics
 # ---------------------------------------------------------------------------
 
+
 class TestHydraulics:
     def setup_method(self):
         self.pf = PlanFile(BAXTER)
@@ -216,6 +226,7 @@ class TestHydraulics:
 # Empty / missing values
 # ---------------------------------------------------------------------------
 
+
 class TestNoneValues:
     def test_empty_value_returns_none(self):
         # "UNET QTol=" has no value in any example plan.
@@ -230,6 +241,7 @@ class TestNoneValues:
 # ---------------------------------------------------------------------------
 # Generic get / set
 # ---------------------------------------------------------------------------
+
 
 class TestGenericAccess:
     def test_get_known_key(self):
@@ -258,6 +270,7 @@ class TestGenericAccess:
 # ---------------------------------------------------------------------------
 # Mutation — typed properties
 # ---------------------------------------------------------------------------
+
 
 class TestMutation:
     def test_set_plan_title(self, tmp_plan):
@@ -321,7 +334,9 @@ class TestMutation:
     def test_set_does_not_affect_other_lines(self, tmp_plan):
         """Changing one field must not alter any other line in the file."""
         dst = tmp_plan(BAXTER)
-        original_lines = BAXTER.read_text(encoding="utf-8", errors="replace").splitlines()
+        original_lines = BAXTER.read_text(
+            encoding="utf-8", errors="replace"
+        ).splitlines()
         pf = PlanFile(dst)
         pf.plan_title = "Changed Title"
         pf.save()

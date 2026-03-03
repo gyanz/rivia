@@ -1,9 +1,10 @@
 import logging
 from . import _ver500
 
+
 class Controller(_ver500.Controller):
-    def Compute_CurrentPlan(self,BlockingMode=1):
-        '''
+    def Compute_CurrentPlan(self, BlockingMode=1):
+        """
         The number of parameters and return values have changed in 5.0.3 or is different than 5.0.0 or 4.X
 
         # Input Parameters:
@@ -21,9 +22,9 @@ class Controller(_ver500.Controller):
         # Msg is tuple containing a number of messages. See example return Msg below.
           ('Starting Unsteady Computation', 'Computing', 'Computation Completed')
         # nmsg is length of Msg tuple
-        '''
-        res = self._rc.Compute_CurrentPlan(None,None,BlockingMode)
-        return res[0],res[2]
+        """
+        res = self._rc.Compute_CurrentPlan(None, None, BlockingMode)
+        return res[0], res[2]
 
     def Geometry_GetGateNames(self, river, reach, station):
         """Returns a list of gates names.
@@ -37,7 +38,7 @@ class Controller(_ver500.Controller):
         station : str
             The river station of the inline structure.
         """
-        res =  self._rc.Geometry_GetGateNames(river, reach, station,None,None,None)
+        res = self._rc.Geometry_GetGateNames(river, reach, station, None, None, None)
         river, reach, station, ngate, GateNames, errmsg = res
 
         # Return an empty list or return None?
@@ -46,12 +47,14 @@ class Controller(_ver500.Controller):
 
         result = (ngate, list(GateNames))
 
-        if errmsg != '':
+        if errmsg != "":
             raise Exception(errmsg)
 
         return result
-    def UnsteadyFlow_SetGateOpening_Constant(self, river, reach, rs, GateName,
-                                             OpenHeight):
+
+    def UnsteadyFlow_SetGateOpening_Constant(
+        self, river, reach, rs, GateName, OpenHeight
+    ):
         """
         Sets the gate opening for a specified gate group to a constant value in
         the Time Series Gate Opening boundary condition.
@@ -74,11 +77,12 @@ class Controller(_ver500.Controller):
         The time interval in the TS Gate Opening boundary condition is set to 1
         year.
         """
-        #raise NotImplementedError
+        # raise NotImplementedError
         rc = self._rc
-        errmsg = ''
-        res = rc.UnsteadyFlow_SetGateOpening_Constant(river, reach, rs,
-                                                      GateName, OpenHeight,None)
+        errmsg = ""
+        res = rc.UnsteadyFlow_SetGateOpening_Constant(
+            river, reach, rs, GateName, OpenHeight, None
+        )
         river, reach, rs, GateName, OpenHeight, errmsg = res
         return errmsg
 
@@ -89,6 +93,7 @@ class Controller(_ver500.Controller):
         """
         rc = self._rc
         rc.Project_Close()
+
 
 class RASEvents(_ver500.RASEvents):
     def OnComputeMessageEvent(self, msg):
@@ -109,11 +114,11 @@ class RASEvents(_ver500.RASEvents):
         duration of the HEC-RAS Computations.
 
         """
-        logging.debug('Compute Message Event: %s',msg)
+        logging.debug("Compute Message Event: %s", msg)
         return msg
 
     def OnComputeComplete(self):
-        logging.debug('Compute Complete Event!')
+        logging.debug("Compute Complete Event!")
 
     def OnComputeProgressEvent(self, Progress):
         """
@@ -134,7 +139,5 @@ class RASEvents(_ver500.RASEvents):
         duration of the HEC-RAS Computations.
 
         """
-        logging.debug('Compute Progress Event: %s',Progress)
+        logging.debug("Compute Progress Event: %s", Progress)
         return Progress
-
-

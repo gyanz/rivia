@@ -134,6 +134,7 @@ _BC_RATING_CURVE = 4
 # Boundary condition dataclass
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class SteadyBoundary:
     """Boundary conditions for one river/reach endpoint for one flow profile.
@@ -166,6 +167,7 @@ class SteadyBoundary:
 # ---------------------------------------------------------------------------
 # SteadyFlowFile — verbatim-line editor
 # ---------------------------------------------------------------------------
+
 
 class SteadyFlowFile:
     """Verbatim-line editor for HEC-RAS steady flow files (.f**).
@@ -395,9 +397,7 @@ class SteadyFlowFile:
             n = _COLS_PER_ROW * len(data_lines)
         return _parse_data_block(data_lines, n)
 
-    def set_flows(
-        self, river: str, reach: str, rs: str, values: list[float]
-    ) -> None:
+    def set_flows(self, river: str, reach: str, rs: str, values: list[float]) -> None:
         """Replace the flow values at the given location.
 
         The number of values in *values* need not match the current count;
@@ -414,9 +414,7 @@ class SteadyFlowFile:
         """
         loc_i = self._find_flow_location(river, reach, rs)
         if loc_i is None:
-            raise KeyError(
-                f"No flow location found for {river!r}, {reach!r}, {rs!r}"
-            )
+            raise KeyError(f"No flow location found for {river!r}, {reach!r}, {rs!r}")
         end_i = self._find_flow_end(loc_i)
         old_line_count = end_i - (loc_i + 1)
         self._splice(loc_i + 1, old_line_count, _format_data_block(values))
@@ -468,8 +466,7 @@ class SteadyFlowFile:
                 count = int(val)
                 nlines = _data_line_count(count * 2)
                 data_lines = [
-                    ln.rstrip("\n")
-                    for ln in self._lines[i + 1 : i + 1 + nlines]
+                    ln.rstrip("\n") for ln in self._lines[i + 1 : i + 1 + nlines]
                 ]
                 flat = _parse_data_block(data_lines, count * 2)
                 bc.up_rating_curve = [
@@ -480,8 +477,7 @@ class SteadyFlowFile:
                 count = int(val)
                 nlines = _data_line_count(count * 2)
                 data_lines = [
-                    ln.rstrip("\n")
-                    for ln in self._lines[i + 1 : i + 1 + nlines]
+                    ln.rstrip("\n") for ln in self._lines[i + 1 : i + 1 + nlines]
                 ]
                 flat = _parse_data_block(data_lines, count * 2)
                 bc.dn_rating_curve = [

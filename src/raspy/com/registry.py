@@ -9,6 +9,7 @@ from typing import Any
 _VERSION_RE = re.compile(r"(\d+)(?:\.(\d+))?(?:\.(\d+))?")
 _VERSION_XXXX_RE = re.compile(r"(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:\.(\d+))?")
 
+
 def ras_registry_xxx(version: str | int) -> str:
     """
     Convert a HEC-RAS version into the registry COM ProgID suffix XXX.
@@ -108,7 +109,9 @@ def _to_xxx(major: int, minor: int, patch: int) -> str:
 
     """
     if major < 0 or minor < 0 or patch < 0:
-        raise ValueError(f"Negative version parts are not valid: {major}.{minor}.{patch}")
+        raise ValueError(
+            f"Negative version parts are not valid: {major}.{minor}.{patch}"
+        )
 
     if patch:
         return f"{major}{minor}{patch}"
@@ -138,6 +141,7 @@ def hec_ras_progid(version: str | int, kind: str = "controller") -> str:
 # 2) Enumerate installed HEC-RAS programs (HKCU/HKLM)
 # --------------------------------------------
 
+
 def find_hec_ras_installations() -> list[dict[str, Any]]:
     """
     Return a list of HEC-RAS installations found in Windows Uninstall registry keys.
@@ -158,9 +162,21 @@ def find_hec_ras_installations() -> list[dict[str, Any]]:
     import winreg  # type: ignore
 
     uninstall_paths = [
-        ("user", winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
-        ("system", winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
-        ("system_wow6432", winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"),
+        (
+            "user",
+            winreg.HKEY_CURRENT_USER,
+            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
+        ),
+        (
+            "system",
+            winreg.HKEY_LOCAL_MACHINE,
+            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
+        ),
+        (
+            "system_wow6432",
+            winreg.HKEY_LOCAL_MACHINE,
+            r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall",
+        ),
     ]
 
     results: list[dict[str, Any]] = []
@@ -174,7 +190,13 @@ def find_hec_ras_installations() -> list[dict[str, Any]]:
                     subkey_path = f"{path}\\{subkey_name}"
                     try:
                         with winreg.OpenKey(hive, subkey_path) as k:
-                            item = _read_uninstall_entry(winreg, k, scope, hive_name=_hive_name(hive), key_path=subkey_path)
+                            item = _read_uninstall_entry(
+                                winreg,
+                                k,
+                                scope,
+                                hive_name=_hive_name(hive),
+                                key_path=subkey_path,
+                            )
                             if item:
                                 results.append(item)
                     except OSError:
@@ -185,12 +207,22 @@ def find_hec_ras_installations() -> list[dict[str, Any]]:
     # De-duplicate (same install shows up twice sometimes)
     uniq = {}
     for r in results:
-        key = (r.get("display_name"), r.get("display_version"), r.get("install_location"), r.get("scope"))
+        key = (
+            r.get("display_name"),
+            r.get("display_version"),
+            r.get("install_location"),
+            r.get("scope"),
+        )
         uniq[key] = r
-    return sorted(uniq.values(), key=lambda d: (d.get("parsed_version") or "", d.get("display_name") or ""))
+    return sorted(
+        uniq.values(),
+        key=lambda d: (d.get("parsed_version") or "", d.get("display_name") or ""),
+    )
 
 
-def _read_uninstall_entry(winreg, k, scope: str, hive_name: str, key_path: str) -> dict[str, Any] | None:
+def _read_uninstall_entry(
+    winreg, k, scope: str, hive_name: str, key_path: str
+) -> dict[str, Any] | None:
     def q(name: str) -> str | None:
         try:
             v, _t = winreg.QueryValueEx(k, name)
@@ -214,7 +246,9 @@ def _read_uninstall_entry(winreg, k, scope: str, hive_name: str, key_path: str) 
     # Try to parse a usable version string:
     # 1) from DisplayVersion
     # 2) else from DisplayName
-    parsed_version = _extract_version_token(display_version) or _extract_version_token(display_name)
+    parsed_version = _extract_version_token(display_version) or _extract_version_token(
+        display_name
+    )
 
     registry_xxx = None
     if parsed_version:
@@ -222,8 +256,10 @@ def _read_uninstall_entry(winreg, k, scope: str, hive_name: str, key_path: str) 
             registry_xxx = ras_registry_xxx(parsed_version)
         except ValueError:
             registry_xxx = None
-    
-    version_xxxx = _extract_version_token2(display_version) or _extract_version_token2(display_name)
+
+    version_xxxx = _extract_version_token2(display_version) or _extract_version_token2(
+        display_name
+    )
 
     return {
         "scope": scope,
@@ -255,6 +291,7 @@ def _extract_version_token(text: str | None) -> str | None:
         return f"{major}.{minor}"
     return f"{major}.{minor}.{patch}"
 
+
 def _extract_version_token2(text: str | None) -> int | None:
     if not text:
         return None
@@ -271,21 +308,25 @@ def _extract_version_token2(text: str | None) -> int | None:
         patch = "0"
     if beta is None:
         beta = "0"
-    
+
     return int(f"{major}{minor}{patch}{beta}")
+
 
 def _hive_name(hive) -> str:
     # Minimal friendly labels
     import winreg  # type: ignore
+
     if hive == winreg.HKEY_CURRENT_USER:
         return "HKCU"
     if hive == winreg.HKEY_LOCAL_MACHINE:
         return "HKLM"
     return "HK?"
 
+
 # ---------------------------------------------------------
 # COM registry lookup: ProgID -> (exists, CLSID, server path)
 # ---------------------------------------------------------
+
 
 def _com_progid_info(progid: str) -> dict[str, Any]:
     """
@@ -321,7 +362,7 @@ def _com_progid_info(progid: str) -> dict[str, Any]:
                         try:
                             with winreg.OpenKey(
                                 winreg.HKEY_CLASSES_ROOT,
-                                fr"CLSID\{clsid}\{sub}",
+                                rf"CLSID\{clsid}\{sub}",
                                 0,
                                 access,
                             ) as sk:
@@ -330,7 +371,12 @@ def _com_progid_info(progid: str) -> dict[str, Any]:
                         except OSError:
                             continue
 
-                return {"exists": True, "progid": progid, "clsid": clsid, "server": server}
+                return {
+                    "exists": True,
+                    "progid": progid,
+                    "clsid": clsid,
+                    "server": server,
+                }
         except OSError:
             return None
 
@@ -345,7 +391,13 @@ def _com_progid_info(progid: str) -> dict[str, Any]:
         found32["view"] = "32-bit"
         return found32
 
-    return {"exists": False, "progid": progid, "view": None, "clsid": None, "server": None}
+    return {
+        "exists": False,
+        "progid": progid,
+        "view": None,
+        "clsid": None,
+        "server": None,
+    }
 
 
 # ---------------------------------------------------------
@@ -364,7 +416,11 @@ def installed_ras_progids() -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
 
     for inst in installs:
-        parsed_version = inst.get("parsed_version") or inst.get("display_version") or inst.get("display_name")
+        parsed_version = (
+            inst.get("parsed_version")
+            or inst.get("display_version")
+            or inst.get("display_name")
+        )
         if not parsed_version:
             out.append(inst)
             continue
@@ -394,6 +450,7 @@ def installed_ras_progids() -> list[dict[str, Any]]:
 
     return out
 
+
 # -------------------------
 # Quick usage examples
 # -------------------------
@@ -406,4 +463,10 @@ if __name__ == "__main__":
     if sys.platform == "win32":
         installs = find_hec_ras_installations()
         for r in installs:
-            print(r["scope"], r["display_name"], r["parsed_version"], r["registry_xxx"], r["install_location"])
+            print(
+                r["scope"],
+                r["display_name"],
+                r["parsed_version"],
+                r["registry_xxx"],
+                r["install_location"],
+            )

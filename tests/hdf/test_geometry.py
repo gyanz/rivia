@@ -1,4 +1,5 @@
 """Tests for raspy.hdf._geometry (GeometryHdf, FlowAreaCollection, FlowArea)."""
+
 from __future__ import annotations
 
 import numpy as np
@@ -10,12 +11,13 @@ from .conftest import skip_if_no_example, EXAMPLE_PLAN_HDF
 
 N_CELLS = 10
 N_FACES = 20
-AREA    = "TestArea"
+AREA = "TestArea"
 
 
 # ---------------------------------------------------------------------------
 # FlowAreaCollection
 # ---------------------------------------------------------------------------
+
 
 class TestFlowAreaCollection:
     def test_names_returns_list(self, synthetic_plan_hdf):
@@ -47,6 +49,7 @@ class TestFlowAreaCollection:
 # ---------------------------------------------------------------------------
 # FlowArea geometry
 # ---------------------------------------------------------------------------
+
 
 class TestFlowArea:
     def test_n_cells(self, synthetic_plan_hdf):
@@ -124,6 +127,7 @@ class TestFlowArea:
 # ---------------------------------------------------------------------------
 # Integration tests against the real example file
 # ---------------------------------------------------------------------------
+
 
 @skip_if_no_example
 class TestGeometryHdfIntegration:

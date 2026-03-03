@@ -1,4 +1,5 @@
 """Tests for raspy.hdf._plan (PlanHdf, FlowAreaResults)."""
+
 from __future__ import annotations
 
 import numpy as np
@@ -9,15 +10,16 @@ from raspy.hdf import PlanHdf
 
 from .conftest import skip_if_no_example, EXAMPLE_PLAN_HDF
 
-N_CELLS     = 10
-N_FACES     = 20
+N_CELLS = 10
+N_FACES = 20
 N_TIMESTEPS = 5
-AREA        = "TestArea"
+AREA = "TestArea"
 
 
 # ---------------------------------------------------------------------------
 # Time stamps
 # ---------------------------------------------------------------------------
+
 
 class TestTimeStamps:
     def test_returns_datetimeindex(self, synthetic_plan_hdf):
@@ -40,9 +42,11 @@ class TestTimeStamps:
 # Lazy time-series
 # ---------------------------------------------------------------------------
 
+
 class TestLazyTimeSeries:
     def test_water_surface_is_dataset(self, synthetic_plan_hdf):
         import h5py
+
         with PlanHdf(synthetic_plan_hdf) as hdf:
             ws = hdf.flow_areas[AREA].water_surface
             assert isinstance(ws, h5py.Dataset)
@@ -77,6 +81,7 @@ class TestLazyTimeSeries:
 # Summary DataFrames
 # ---------------------------------------------------------------------------
 
+
 class TestSummaryResults:
     def test_max_water_surface_shape(self, synthetic_plan_hdf):
         with PlanHdf(synthetic_plan_hdf) as hdf:
@@ -98,13 +103,16 @@ class TestSummaryResults:
     def test_max_ge_min_water_surface(self, synthetic_plan_hdf):
         with PlanHdf(synthetic_plan_hdf) as hdf:
             area = hdf.flow_areas[AREA]
-            assert (area.max_water_surface["value"].values
-                    >= area.min_water_surface["value"].values).all()
+            assert (
+                area.max_water_surface["value"].values
+                >= area.min_water_surface["value"].values
+            ).all()
 
 
 # ---------------------------------------------------------------------------
 # Computed: depth
 # ---------------------------------------------------------------------------
+
 
 class TestDepth:
     def test_depth_shape(self, synthetic_plan_hdf):
@@ -119,9 +127,9 @@ class TestDepth:
 
     def test_depth_equals_wse_minus_bed(self, synthetic_plan_hdf):
         with PlanHdf(synthetic_plan_hdf) as hdf:
-            area  = hdf.flow_areas[AREA]
-            wse   = np.array(area.water_surface[0, :N_CELLS])
-            bed   = area.cell_min_elevation
+            area = hdf.flow_areas[AREA]
+            wse = np.array(area.water_surface[0, :N_CELLS])
+            bed = area.cell_min_elevation
             depth = area.depth(0)
         expected = np.maximum(0.0, wse - bed)
         np.testing.assert_allclose(depth, expected, rtol=1e-5)
@@ -142,6 +150,7 @@ class TestDepth:
 # Computed: cell velocity
 # ---------------------------------------------------------------------------
 
+
 class TestCellVelocity:
     def test_cell_velocity_vectors_shape(self, synthetic_plan_hdf):
         with PlanHdf(synthetic_plan_hdf) as hdf:
@@ -160,8 +169,8 @@ class TestCellVelocity:
 
     def test_speed_equals_norm_of_vectors(self, synthetic_plan_hdf):
         with PlanHdf(synthetic_plan_hdf) as hdf:
-            area  = hdf.flow_areas[AREA]
-            vecs  = area.cell_velocity_vectors(0)
+            area = hdf.flow_areas[AREA]
+            vecs = area.cell_velocity_vectors(0)
             speed = area.cell_speed(0)
         expected = np.sqrt(vecs[:, 0] ** 2 + vecs[:, 1] ** 2)
         np.testing.assert_allclose(speed, expected, rtol=1e-6)
@@ -185,9 +194,7 @@ class TestCellVelocity:
 
     def test_sloped_wse_interp_vectors_shape(self, synthetic_plan_hdf):
         with PlanHdf(synthetic_plan_hdf) as hdf:
-            vecs = hdf.flow_areas[AREA].cell_velocity_vectors(
-                0, wse_interp="sloped"
-            )
+            vecs = hdf.flow_areas[AREA].cell_velocity_vectors(0, wse_interp="sloped")
         assert vecs.shape == (N_CELLS, 2)
 
     def test_sloped_wse_interp_speed_shape(self, synthetic_plan_hdf):
@@ -198,20 +205,20 @@ class TestCellVelocity:
     def test_invalid_wse_interp_raises(self, synthetic_plan_hdf):
         with PlanHdf(synthetic_plan_hdf) as hdf:
             with pytest.raises(ValueError, match="wse_interp"):
-                hdf.flow_areas[AREA].cell_velocity_vectors(
-                    0, wse_interp="bad"
-                )
+                hdf.flow_areas[AREA].cell_velocity_vectors(0, wse_interp="bad")
 
 
 # ---------------------------------------------------------------------------
 # export_raster: no-geo guard
 # ---------------------------------------------------------------------------
 
+
 class TestExportRasterGeoGuard:
     """export_raster must raise ImportError if geo deps are missing.
 
     We patch the import to simulate missing rasterio.
     """
+
     def test_bad_variable_raises_value_error(self, synthetic_plan_hdf):
         with PlanHdf(synthetic_plan_hdf) as hdf:
             with pytest.raises(ValueError, match="Unknown variable"):
@@ -245,6 +252,7 @@ class TestExportRasterGeoGuard:
 # Integration tests against the real example file
 # ---------------------------------------------------------------------------
 
+
 @skip_if_no_example
 class TestPlanHdfIntegration:
     def test_time_stamps_length(self):
@@ -257,7 +265,7 @@ class TestPlanHdfIntegration:
             area = hdf.flow_areas[hdf.flow_areas.names[0]]
             # check h5py.Dataset attributes while file is open
             ws_shape = area.water_surface.shape
-            n_cells  = area.n_cells
+            n_cells = area.n_cells
         assert ws_shape[0] > 0
         # HEC-RAS stores WSE for real + ghost cells, so columns >= n_cells
         assert ws_shape[1] >= n_cells
@@ -270,14 +278,14 @@ class TestPlanHdfIntegration:
 
     def test_cell_velocity_vectors_shape(self):
         with PlanHdf(EXAMPLE_PLAN_HDF) as hdf:
-            area  = hdf.flow_areas[hdf.flow_areas.names[0]]
-            vecs  = area.cell_velocity_vectors(0)
+            area = hdf.flow_areas[hdf.flow_areas.names[0]]
+            vecs = area.cell_velocity_vectors(0)
             n_cells = area.n_cells
         assert vecs.shape == (n_cells, 2)
 
     def test_max_water_surface_len(self):
         with PlanHdf(EXAMPLE_PLAN_HDF) as hdf:
-            area  = hdf.flow_areas[hdf.flow_areas.names[0]]
-            df    = area.max_water_surface
+            area = hdf.flow_areas[hdf.flow_areas.names[0]]
+            df = area.max_water_surface
             n_cells = area.n_cells
         assert len(df) == n_cells

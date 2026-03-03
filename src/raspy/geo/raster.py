@@ -40,6 +40,7 @@ Band layout
 Derived from archive/ras_tools/r2d/ras2d_cell_velocity.py
 ``RAS2DCellVelocity.export_velocity_raster``.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -54,6 +55,7 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
 
 def points_to_raster(
     points: np.ndarray,
@@ -134,23 +136,19 @@ def points_to_raster(
         from rasterio.transform import Affine, from_origin
     except ImportError as exc:
         raise ImportError(
-            "Raster export requires rasterio. "
-            "Install it with: pip install raspy[geo]"
+            "Raster export requires rasterio. Install it with: pip install raspy[geo]"
         ) from exc
 
     try:
         from scipy.interpolate import griddata
     except ImportError as exc:
         raise ImportError(
-            "Raster export requires scipy. "
-            "Install it with: pip install raspy[geo]"
+            "Raster export requires scipy. Install it with: pip install raspy[geo]"
         ) from exc
 
     # ── Validate inputs ───────────────────────────────────────────────────
     if reference_raster is not None and transform is not None:
-        raise ValueError(
-            "Specify either reference_raster or transform, not both."
-        )
+        raise ValueError("Specify either reference_raster or transform, not both.")
 
     points = np.asarray(points, dtype=np.float64)
     values = np.asarray(values, dtype=np.float64)
@@ -173,9 +171,13 @@ def points_to_raster(
         )
 
     # ── Resolve transform and CRS ─────────────────────────────────────────
+    ref_width: int | None = None
+    ref_height: int | None = None
     if reference_raster is not None:
         with rasterio.open(reference_raster) as src:
             transform = src.transform
+            ref_width = src.width
+            ref_height = src.height
             if crs is None:
                 crs = src.crs
 
@@ -189,16 +191,23 @@ def points_to_raster(
     if transform is not None:
         # Snap output grid to the reference transform's pixel grid.
         # Pixel size from the transform (always positive).
-        dx = abs(transform.a)   # column pixel width
-        dy = abs(transform.e)   # row pixel height (transform.e < 0 for north-up)
+        dx = abs(transform.a)  # column pixel width
+        dy = abs(transform.e)  # row pixel height (transform.e < 0 for north-up)
 
         # Column range covering [x_min, x_max] on the reference grid
         col_min = int(np.floor((x_min - transform.c) / dx))
-        col_max = int(np.ceil( (x_max - transform.c) / dx))
+        col_max = int(np.ceil((x_max - transform.c) / dx))
 
         # Row range covering [y_min, y_max] (rows increase southward)
         row_min = int(np.floor((transform.f - y_max) / dy))
-        row_max = int(np.ceil( (transform.f - y_min) / dy))
+        row_max = int(np.ceil((transform.f - y_min) / dy))
+
+        # Clamp to the reference raster extent (only when one was given)
+        if ref_width is not None:
+            col_min = max(col_min, 0)
+            col_max = min(col_max, ref_width)
+            row_min = max(row_min, 0)
+            row_max = min(row_max, ref_height)  # type: ignore[arg-type]
 
         # Pixel-centre coordinates aligned to the reference grid
         xi = transform.c + (np.arange(col_min, col_max) + 0.5) * dx
@@ -206,8 +215,12 @@ def points_to_raster(
 
         # Top-left corner of the output sub-grid
         out_transform = Affine(
-            dx,  0.0, transform.c + col_min * dx,
-            0.0, -dy, transform.f - row_min * dy,
+            dx,
+            0.0,
+            transform.c + col_min * dx,
+            0.0,
+            -dy,
+            transform.f - row_min * dy,
         )
     else:
         # Build a new grid snapped to round multiples of cell_size.
@@ -216,10 +229,10 @@ def points_to_raster(
                 "cell_size must be a positive number when transform and "
                 "reference_raster are both None."
             )
-        west  = np.floor(x_min / cell_size) * cell_size
-        north = np.ceil( y_max / cell_size) * cell_size
+        west = np.floor(x_min / cell_size) * cell_size
+        north = np.ceil(y_max / cell_size) * cell_size
 
-        xi = np.arange(west  + cell_size / 2, x_max + cell_size,  cell_size)
+        xi = np.arange(west + cell_size / 2, x_max + cell_size, cell_size)
         yi = np.arange(north - cell_size / 2, y_min - cell_size, -cell_size)
 
         out_transform = from_origin(west, north, cell_size, cell_size)
@@ -240,39 +253,37 @@ def points_to_raster(
             points, vy_src, grid_pts, method=interp_method, fill_value=np.nan
         ).reshape(n_rows, n_cols)
 
-        speed = np.sqrt(vx ** 2 + vy ** 2)
+        speed = np.sqrt(vx**2 + vy**2)
         # Direction: degrees clockwise from north, flow-going-to convention
         #   atan2(vy, vx) is CCW from east; transform to CW from north:
         direction = (90.0 - np.degrees(np.arctan2(vy, vx))) % 360.0
         direction = np.where(np.isnan(vx), np.nan, direction)
 
         band_arrays = [vx, vy, speed, direction]
-        band_names  = ["Vx", "Vy", "Speed", "Direction_deg_from_N"]
+        band_names = ["Vx", "Vy", "Speed", "Direction_deg_from_N"]
     else:
         scalar = griddata(
             points, values, grid_pts, method=interp_method, fill_value=np.nan
         ).reshape(n_rows, n_cols)
         band_arrays = [scalar]
-        band_names  = ["value"]
+        band_names = ["value"]
 
     # ── Write GeoTIFF ─────────────────────────────────────────────────────
     profile: dict = {
-        "driver":    "GTiff",
-        "dtype":     "float32",
-        "width":     n_cols,
-        "height":    n_rows,
-        "count":     len(band_arrays),
-        "nodata":    nodata,
+        "driver": "GTiff",
+        "dtype": "float32",
+        "width": n_cols,
+        "height": n_rows,
+        "count": len(band_arrays),
+        "nodata": nodata,
         "transform": out_transform,
-        "compress":  "lzw",
+        "compress": "lzw",
     }
     if crs is not None:
         profile["crs"] = crs
 
     def _write_bands(dst: Any) -> None:
-        for band_idx, (arr, bname) in enumerate(
-            zip(band_arrays, band_names), start=1
-        ):
+        for band_idx, (arr, bname) in enumerate(zip(band_arrays, band_names), start=1):
             data = arr.astype(np.float32)
             data[np.isnan(data)] = nodata
             dst.write(data, band_idx)

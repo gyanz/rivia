@@ -37,25 +37,28 @@ from raspy.model.geometry import (
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
-EX1      = FIXTURES / "ex1.g01"
-CONSPAN  = FIXTURES / "conspan.g01"
-BEAVER   = FIXTURES / "beaver.g01"
-NIT      = FIXTURES / "nit_inline.g01"
+EX1 = FIXTURES / "ex1.g01"
+CONSPAN = FIXTURES / "conspan.g01"
+BEAVER = FIXTURES / "beaver.g01"
+NIT = FIXTURES / "nit_inline.g01"
 
 
 @pytest.fixture()
 def tmp_copy(tmp_path: Path):
     """Factory: copy a fixture to tmp_path and return the copy path."""
+
     def _copy(src: Path) -> Path:
         dst = tmp_path / src.name
         shutil.copy(src, dst)
         return dst
+
     return _copy
 
 
 # ---------------------------------------------------------------------------
 # Construction
 # ---------------------------------------------------------------------------
+
 
 class TestConstruction:
     def test_missing_file_raises(self, tmp_path):
@@ -74,6 +77,7 @@ class TestConstruction:
 # ---------------------------------------------------------------------------
 # Metadata
 # ---------------------------------------------------------------------------
+
 
 class TestMetadata:
     def test_geom_title_ex1(self):
@@ -104,6 +108,7 @@ class TestMetadata:
 # ---------------------------------------------------------------------------
 # Reaches and junctions
 # ---------------------------------------------------------------------------
+
 
 class TestReachesAndJunctions:
     def test_ex1_reaches(self):
@@ -142,6 +147,7 @@ class TestReachesAndJunctions:
 # ---------------------------------------------------------------------------
 # Node inventory
 # ---------------------------------------------------------------------------
+
 
 class TestNodeInventory:
     def test_ex1_node_count_butte(self):
@@ -188,6 +194,7 @@ class TestNodeInventory:
 # ---------------------------------------------------------------------------
 # Cross-section parsing
 # ---------------------------------------------------------------------------
+
 
 class TestCrossSectionParsing:
     def test_get_cross_section_returns_object(self):
@@ -305,6 +312,7 @@ class TestCrossSectionParsing:
 # Ineffective areas
 # ---------------------------------------------------------------------------
 
+
 class TestIneffectiveAreas:
     def test_conspan_ineff_areas_parsed(self):
         g = GeometryFile(CONSPAN)
@@ -334,6 +342,7 @@ class TestIneffectiveAreas:
 # Interpolated cross sections
 # ---------------------------------------------------------------------------
 
+
 class TestInterpolatedXS:
     def test_interpolated_flag(self):
         g = GeometryFile(CONSPAN)
@@ -346,6 +355,7 @@ class TestInterpolatedXS:
 # ---------------------------------------------------------------------------
 # Raw node access
 # ---------------------------------------------------------------------------
+
 
 class TestRawNodeAccess:
     def test_get_node_lines_xs(self):
@@ -381,6 +391,7 @@ class TestRawNodeAccess:
 # ---------------------------------------------------------------------------
 # set_mannings
 # ---------------------------------------------------------------------------
+
 
 class TestSetMannings:
     def test_set_mannings_changes_values(self, tmp_copy):
@@ -447,11 +458,16 @@ class TestSetMannings:
         rs1 = xs_list[1].rs
         original_n1 = xs_list[1].mann_entries[0].n_value
 
-        g.set_mannings("Butte Cr.", "Tributary", rs0, [
-            ManningEntry(station=210.0, n_value=0.09),
-            ManningEntry(station=260.0, n_value=0.03),
-            ManningEntry(station=275.0, n_value=0.09),
-        ])
+        g.set_mannings(
+            "Butte Cr.",
+            "Tributary",
+            rs0,
+            [
+                ManningEntry(station=210.0, n_value=0.09),
+                ManningEntry(station=260.0, n_value=0.03),
+                ManningEntry(station=275.0, n_value=0.09),
+            ],
+        )
         g.save()
 
         g2 = GeometryFile(path)
@@ -467,6 +483,7 @@ class TestSetMannings:
 # ---------------------------------------------------------------------------
 # set_stations
 # ---------------------------------------------------------------------------
+
 
 class TestSetStations:
     def test_set_stations_changes_values(self, tmp_copy):
@@ -518,6 +535,7 @@ class TestSetStations:
 # set_bank_stations
 # ---------------------------------------------------------------------------
 
+
 class TestSetBankStations:
     def test_set_bank_stations(self, tmp_copy):
         path = tmp_copy(EX1)
@@ -543,6 +561,7 @@ class TestSetBankStations:
 # set_exp_cntr
 # ---------------------------------------------------------------------------
 
+
 class TestSetExpCntr:
     def test_set_exp_cntr(self, tmp_copy):
         path = tmp_copy(EX1)
@@ -567,6 +586,7 @@ class TestSetExpCntr:
 # ---------------------------------------------------------------------------
 # Round-trip fidelity
 # ---------------------------------------------------------------------------
+
 
 class TestRoundTrip:
     def _assert_roundtrip(self, src: Path, tmp_path: Path) -> None:
@@ -594,6 +614,7 @@ class TestRoundTrip:
 # Case-insensitive reach/river matching
 # ---------------------------------------------------------------------------
 
+
 class TestCaseInsensitiveMatching:
     def test_reach_lookup_case_insensitive(self):
         g = GeometryFile(EX1)
@@ -613,6 +634,7 @@ class TestCaseInsensitiveMatching:
 # ---------------------------------------------------------------------------
 # Conspan culvert cross sections (approach sections)
 # ---------------------------------------------------------------------------
+
 
 class TestConspanXS:
     def test_conspan_xs_count(self):
@@ -638,6 +660,7 @@ class TestConspanXS:
 # ---------------------------------------------------------------------------
 # Beaver bridge file
 # ---------------------------------------------------------------------------
+
 
 class TestBeaverBridge:
     def test_beaver_xs_parsed(self):
