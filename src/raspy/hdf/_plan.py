@@ -547,7 +547,10 @@ class FlowAreaResults(FlowArea):
         ----------
         variable:
             ``"water_surface"`` — water-surface elevation.
-            ``"depth"``         — water depth (WSE - bed elevation, >= 0).
+            ``"depth"``         — water depth from DEM subtraction (requires
+                                  *reference_raster*): WSE is interpolated then
+                                  the DEM pixel value is subtracted; negative
+                                  values are clamped to 0.
             ``"cell_speed"``    — WLS-reconstructed velocity magnitude.
             ``"cell_velocity"`` — WLS-reconstructed velocity vector
                                   (writes 4 bands: Vx, Vy, Speed, Direction).
@@ -572,7 +575,8 @@ class FlowAreaResults(FlowArea):
         reference_raster:
             Path to an existing GeoTIFF.  The transform *and* CRS are read
             from this file.  Mutually exclusive with *transform*.  If *crs*
-            is also supplied it overrides the file CRS.
+            is also supplied it overrides the file CRS.  **Required** when
+            ``variable="depth"``.
         crs:
             Output CRS (e.g. ``"EPSG:26910"`` or an integer EPSG code).
             When *reference_raster* is given and *crs* is ``None``, the
@@ -586,6 +590,8 @@ class FlowAreaResults(FlowArea):
             Source cells whose value is below this threshold are excluded
             from interpolation and set to *nodata*.  Useful for masking
             near-dry cells (e.g. ``min_value=0.01`` for depth in metres).
+            For ``"depth"``, filtering is applied using HDF cell depths
+            (WSE minus cell minimum elevation) before WSE interpolation.
         vel_method:
             Velocity reconstruction weight scheme.  Passed to
             :meth:`cell_velocity_vectors`; ignored for ``"water_surface"``
@@ -605,12 +611,35 @@ class FlowAreaResults(FlowArea):
         """
         from raspy.geo import raster as _raster  # deferred — geo not required
 
+        # ── 0. Guard: depth requires a reference DEM ───────────────────
+        if variable == "depth" and reference_raster is None:
+            raise ValueError(
+                "reference_raster is required when variable='depth'. "
+                "Provide a path to a terrain DEM GeoTIFF."
+            )
+
         # ── 1. Resolve values array (numpy only) ──────────────────────
-        if timestep is None:
+        if variable == "depth":
+            # Interpolate WSE; subtract DEM after interpolation.
+            # HDF depth (WSE - cell_min_elevation) is used only for
+            # min_value filtering so that the threshold applies to depth,
+            # not to raw WSE values.
+            if timestep is None:
+                wse_values      = self.max_water_surface["value"].to_numpy()
+                depth_at_cells  = self.max_depth()["value"].to_numpy()
+            else:
+                wse_values     = np.array(self.water_surface[timestep, : self.n_cells])
+                depth_at_cells = self.depth(timestep)
+
+            interp_points = self.cell_centers
+            if min_value is not None:
+                mask          = depth_at_cells >= min_value
+                interp_points = self.cell_centers[mask]
+                wse_values    = wse_values[mask]
+
+        elif timestep is None:
             if variable == "water_surface":
                 values = self.max_water_surface["value"].to_numpy()
-            elif variable == "depth":
-                values = self.max_depth()["value"].to_numpy()
             elif variable == "cell_speed":
                 values, _ = self._max_velocity(method=vel_method, wse_interp=wse_interp)
             elif variable == "cell_velocity":
@@ -620,14 +649,12 @@ class FlowAreaResults(FlowArea):
         else:
             if variable == "water_surface":
                 values = np.array(self.water_surface[timestep, : self.n_cells])
-            elif variable == "depth":
-                values = self.depth(timestep)
             elif variable == "cell_speed":
                 values = self.cell_speed(
                     timestep, method=vel_method, wse_interp=wse_interp
                 )
             elif variable == "cell_velocity":
-                values = self.cell_velocity_vectors(  # (n_cells, 2)
+                values = self.cell_velocity_vectors(
                     timestep, method=vel_method, wse_interp=wse_interp
                 )
             else:
@@ -640,6 +667,25 @@ class FlowAreaResults(FlowArea):
             resolved_cell_size = float(np.median(self.face_normals[:, 2]))
 
         # ── 3. Delegate all rasterio logic to raspy.geo ────────────────
+        if variable == "depth":
+            wse_ds = _raster.points_to_raster(
+                interp_points,
+                wse_values,
+                output_path=None,  # always in-memory; written after DEM subtraction
+                cell_size=resolved_cell_size,
+                transform=transform,
+                reference_raster=reference_raster,
+                crs=crs,
+                nodata=nodata,
+                interp_method=interp_method,
+                min_value=None,  # pre-filtered above
+            )
+            result = _raster._depth_from_wse_and_dem(
+                wse_ds, reference_raster, nodata, output_path
+            )
+            wse_ds.close()
+            return result
+
         return _raster.points_to_raster(
             self.cell_centers,
             values,

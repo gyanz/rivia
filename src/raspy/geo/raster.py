@@ -300,3 +300,91 @@ def points_to_raster(
     with rasterio.open(out_path, "w", **profile) as dst:
         _write_bands(dst)
     return out_path
+
+
+def _depth_from_wse_and_dem(
+    wse_ds: rasterio.io.DatasetReader,
+    reference_raster: str | Path,
+    nodata: float,
+    output_path: str | Path | None = None,
+) -> Path | rasterio.io.DatasetReader:
+    """Subtract a DEM from an interpolated WSE raster to produce a depth raster.
+
+    The WSE dataset must be pixel-aligned with *reference_raster* (same pixel
+    grid, possibly a sub-extent — as guaranteed when *reference_raster* was
+    passed to :func:`points_to_raster`).  The DEM window that exactly
+    overlaps *wse_ds* is read using a pixel-aligned ``rasterio.Window``; no
+    resampling is performed.
+
+    Negative depths (interpolated WSE below terrain) are clamped to 0.
+    Pixels where either the WSE or the DEM is nodata are set to *nodata* in
+    the output.
+
+    Parameters
+    ----------
+    wse_ds:
+        Open rasterio dataset containing the interpolated WSE (band 1).
+    reference_raster:
+        Path to the terrain DEM GeoTIFF used as the reference for *wse_ds*.
+    nodata:
+        Nodata value to use in the output depth raster.
+    output_path:
+        Destination file path.  ``None`` returns an in-memory
+        ``DatasetReader``; the caller must close it.
+
+    Returns
+    -------
+    Path or rasterio.io.DatasetReader
+    """
+    try:
+        import rasterio
+        from rasterio.windows import Window
+    except ImportError as exc:
+        raise ImportError(
+            "Depth-from-DEM requires rasterio. "
+            "Install it with: pip install raspy[geo]"
+        ) from exc
+
+    wse_transform = wse_ds.transform
+    wse_nodata = wse_ds.nodata
+    wse_data = wse_ds.read(1).astype(np.float64)
+
+    with rasterio.open(reference_raster) as dem_src:
+        dem_transform = dem_src.transform
+        dem_nodata = dem_src.nodata
+        dx = abs(dem_transform.a)
+        dy = abs(dem_transform.e)
+        col_off = round((wse_transform.c - dem_transform.c) / dx)
+        row_off = round((dem_transform.f - wse_transform.f) / dy)
+        window = Window(col_off, row_off, wse_ds.width, wse_ds.height)
+        dem_data = dem_src.read(1, window=window).astype(np.float64)
+
+    depth = wse_data - dem_data
+    np.clip(depth, 0.0, None, out=depth)
+
+    # Propagate nodata from either input
+    out_nodata_mask = np.zeros(depth.shape, dtype=bool)
+    if wse_nodata is not None:
+        out_nodata_mask |= wse_data == wse_nodata
+    if dem_nodata is not None:
+        out_nodata_mask |= dem_data == dem_nodata
+    depth[out_nodata_mask] = nodata
+
+    profile = wse_ds.profile.copy()
+    profile["nodata"] = nodata
+
+    data = depth.astype(np.float32)
+
+    if output_path is None:
+        memfile = rasterio.MemoryFile()
+        with memfile.open(**profile) as dst:
+            dst.write(data, 1)
+            dst.update_tags(1, name="depth")
+        return memfile.open()
+
+    out_path = Path(output_path).resolve()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with rasterio.open(out_path, "w", **profile) as dst:
+        dst.write(data, 1)
+        dst.update_tags(1, name="depth")
+    return out_path
