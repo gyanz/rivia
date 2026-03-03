@@ -55,7 +55,7 @@ class Runtime:
             pid = self._get_pid_from_name()
         if pid is not None:
             self.parent_pid = pid
-            logging.debug("HEC-RAS Runtime pid assigned: %s", pid)
+            logging.debug("%s Runtime pid assigned: %s",self.display_name, pid)
         else:
             logging.error("Could not determine HEC-RAS process PID.")
         return pid

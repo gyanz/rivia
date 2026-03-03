@@ -1,0 +1,117 @@
+Flow Title=Flood Event
+Program Version=6.30
+Use Restart= 0 
+Initial Flow Loc=Baxter River    ,Upper Reach     ,84816.  ,2000
+Initial Flow Loc=Baxter River    ,Lower Reach     ,47694.  ,4000
+Initial Flow Loc=Tule Creek      ,Tributary       ,10982.  ,2000
+Initial Storage Elev=Northside       ,63.34
+Initial Storage Elev=Southside       ,68.08
+Boundary Location=Baxter River    ,Upper Reach     ,84816.  ,        ,                ,                ,                ,                                ,                                
+Interval=1HOUR
+Flow Hydrograph= 100 
+    2000 2583.51 4324.857196.53911153.3116132.7422056.3228830.6336348.8244492.31
+53132.7562133.7971353.4980646.5289866.2298867.26107507.7115651.2123169.4129943.7
+135867.3140846.7144803.5147675.2149416.5  150000149416.5147675.2144803.5140846.7
+135867.3129943.7123169.4115651.2107507.798867.2689866.2280646.5276810.8873162.31
+69691.66 66390.363249.9460262.7957421.2654718.3552147.2349701.5147375.0845162.13
+43057.0941054.7139149.9837338.16 35614.733975.2932415.8430932.4429521.3928179.15
+26902.3825687.8824532.6123433.6822388.3521393.9920448.1419548.4118692.5717878.46
+17104.0616367.4215666.7215000.1814366.1613763.0513189.3612643.6512124.5511630.77
+11161.0810714.2810289.28 9885.01 9500.45 9134.658786.6918455.701 8140.85 7841.36
+ 7556.477285.479  7027.7  6782.5    6000    6000    6000    60005500.0024999.999
+Stage Hydrograph TW Check=0
+DSS Path=
+Use DSS=False
+Use Fixed Start Time=False
+Fixed Start Date/Time=,
+Is Critical Boundary=False
+Critical Boundary Flow=
+Boundary Location=Baxter River    ,Lower Reach     ,1192.   ,        ,                ,                ,                ,                                ,                                
+Friction Slope=0.001,0
+Boundary Location=Tule Creek      ,Tributary       ,10982.  ,        ,                ,                ,                ,                                ,                                
+Interval=1HOUR
+Flow Hydrograph= 100 
+ 2012.33 2049.25 2110.52 2195.77 2304.48 2435.97 2589.44 2763.93 2958.38 3171.57
+ 3402.21 3648.863910.0124184.0394469.2694763.9315066.221 5374.265686.159    6000
+6313.8386625.7416933.781 7236.077530.7297815.958 8089.998351.139 8597.79 8828.43
+9041.6229236.0719410.5619564.0319695.5199804.231 9889.489950.751 9987.67   10000
+ 9987.679950.751 9889.489804.2319695.5199564.0319410.5619236.0719041.622 8828.43
+ 8597.798351.139 8089.997815.9587530.729 7236.076933.7816625.7416313.8386103.452
+ 5903.325712.9495531.8695359.619 5195.775039.912 4891.654750.6214616.4714488.869
+4367.481 4252.024142.1914037.7093938.331  3843.83753.8783668.3393586.971 3509.57
+ 3435.95 3365.92  3299.3 3235.94 3175.66 3118.32 3063.78  3011.9 2962.55  2915.6
+ 2870.95 2828.472788.071 2749.63 2713.07  2678.3 2645.22 2613.75 2583.81 2555.34
+Stage Hydrograph TW Check=0
+DSS Path=
+Use DSS=False
+Use Fixed Start Time=False
+Fixed Start Date/Time=,
+Is Critical Boundary=False
+Critical Boundary Flow=
+Met Point Raster Parameters=,,,,
+Precipitation Mode=Disable
+Wind Mode=No Wind Forces
+Air Density Mode=
+Met BC=Precipitation|Expanded View=0
+Met BC=Precipitation|Point Interpolation=Nearest
+Met BC=Precipitation|Gridded Source=DSS
+Met BC=Evapotranspiration|Expanded View=0
+Met BC=Evapotranspiration|Point Interpolation=Nearest
+Met BC=Evapotranspiration|Gridded Source=DSS
+Met BC=Wind Speed|Expanded View=0
+Met BC=Wind Speed|Point Interpolation=Nearest
+Met BC=Wind Speed|Gridded Source=DSS
+Met BC=Wind Direction|Expanded View=0
+Met BC=Wind Direction|Point Interpolation=Nearest
+Met BC=Wind Direction|Gridded Source=DSS
+Met BC=Wind Velocity X|Expanded View=0
+Met BC=Wind Velocity X|Point Interpolation=Nearest
+Met BC=Wind Velocity X|Gridded Source=DSS
+Met BC=Wind Velocity Y|Expanded View=0
+Met BC=Wind Velocity Y|Point Interpolation=Nearest
+Met BC=Wind Velocity Y|Gridded Source=DSS
+Met BC=Air Density|Mode=Constant
+Met BC=Air Density|Expanded View=0
+Met BC=Air Density|Constant Value=1.225
+Met BC=Air Density|Constant Units=kg/m3
+Met BC=Air Density|Point Interpolation=Nearest
+Met BC=Air Density|Gridded Source=DSS
+Met BC=Air Temperature|Expanded View=0
+Met BC=Air Temperature|Point Interpolation=Nearest
+Met BC=Air Temperature|Gridded Source=DSS
+Met BC=Humidity|Expanded View=0
+Met BC=Humidity|Point Interpolation=Nearest
+Met BC=Humidity|Gridded Source=DSS
+Met BC=Air Pressure|Mode=Constant
+Met BC=Air Pressure|Expanded View=0
+Met BC=Air Pressure|Constant Value=1013.2
+Met BC=Air Pressure|Constant Units=mb
+Met BC=Air Pressure|Point Interpolation=Inv Distance
+Met BC=Air Pressure|Gridded Source=DSS
+Non-Newtonian Method= 0 , 
+Non-Newtonian Constant Vol Conc=0
+Non-Newtonian Yield Method= 0 , 
+Non-Newtonian Yield Coef=0, 0
+User Yeild=   0
+Non-Newtonian Sed Visc= 0 , 
+Non-Newtonian Obrian B=0
+User Viscosity=0
+User Viscosity Ratio=0
+Herschel-Bulkley Coef=0, 0
+Clastic Method= 0 , 
+Coulomb Phi=0
+Voellmy X=0
+Non-Newtonian Hindered FV= 0 
+Non-Newtonian FV K=0
+Non-Newtonian ds=0
+Non-Newtonian Max Cv=0
+Non-Newtonian Bulking Method= 0 , 
+Non-Newtonian High C Transport= 0 , 
+Lava Activation= 0 
+Temperature=1300,15,,15,14,980
+Heat Ballance=1,1200,0.5,1,70,0.95
+Viscosity=1000,,,
+Yield Strength=,,,
+Consistency Factor=,,,
+Profile Coefficient=4,1.3,
+Lava Param=,2500,

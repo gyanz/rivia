@@ -1,0 +1,739 @@
+"""Tests for raspy.model.flow_unsteady — UnsteadyFlowFile and UnsteadyFlowEditor.
+
+Fixtures (real unsteady flow files from HEC-RAS 6.6 example projects):
+  baxter_1d.u01       — 2 flow hydrographs, 1 friction slope, 2 lateral inflows
+                        (from 1D Steady Flow / Baxter RAS Mapper example)
+  baldeagle_1d.u02    — 1 flow hydrograph, 1 gate boundary, 1 rating-curve BC
+                        (from 1D Unsteady / Balde Eagle Creek example)
+  dambrk.u01          — 6-field Boundary Location (pre-v5 format), 1 flow hyd,
+                        1 gate, 4 lateral inflows, 1 friction slope
+                        (from 1D Unsteady / Dam Breaching example)
+  dambrk_dss.u02      — same geometry, Flow Hydrograph= 0 (all data from DSS)
+  inline_3gates.u01   — "Version=" (pre-v4), 1 flow hyd, 1 gate boundary with
+                        3 named gates inside
+                        (from 1D Unsteady / Inline Structure with Gated Spillways)
+"""
+
+import shutil
+from pathlib import Path
+
+import pytest
+
+from raspy.model.flow_unsteady import (
+    FrictionSlope,
+    GateBoundary,
+    LateralInflow,
+    FlowHydrograph,
+    RatingCurve,
+    UnsteadyFlowEditor,
+    UnsteadyFlowFile,
+)
+
+FIXTURES = Path(__file__).parent / "fixtures"
+BAXTER    = FIXTURES / "baxter_1d.u01"
+BALDEAGLE = FIXTURES / "baldeagle_1d.u02"
+DAMBRK    = FIXTURES / "dambrk.u01"
+DAMBRK_DSS = FIXTURES / "dambrk_dss.u02"
+INLINE_3G = FIXTURES / "inline_3gates.u01"
+
+
+@pytest.fixture()
+def tmp_copy(tmp_path: Path):
+    """Factory: copy a fixture to tmp_path and return the copy path."""
+    def _copy(src: Path) -> Path:
+        dst = tmp_path / src.name
+        shutil.copy(src, dst)
+        return dst
+    return _copy
+
+
+# ---------------------------------------------------------------------------
+# Construction
+# ---------------------------------------------------------------------------
+
+class TestConstruction:
+    def test_missing_file_raises_verbatim(self, tmp_path):
+        with pytest.raises(FileNotFoundError):
+            UnsteadyFlowFile(tmp_path / "missing.u01")
+
+    def test_missing_file_raises_editor(self, tmp_path):
+        with pytest.raises(FileNotFoundError):
+            UnsteadyFlowEditor(tmp_path / "missing.u01")
+
+    def test_accepts_str_path(self):
+        f = UnsteadyFlowFile(str(BAXTER))
+        assert f.flow_title is not None
+
+    def test_editor_accepts_str_path(self):
+        ed = UnsteadyFlowEditor(str(BAXTER))
+        assert ed.flow_title is not None
+
+
+# ---------------------------------------------------------------------------
+# No-op roundtrip — UnsteadyFlowFile must produce byte-identical output
+# ---------------------------------------------------------------------------
+
+class TestVerbatimRoundtrip:
+    @pytest.mark.parametrize("fixture", [
+        BAXTER, BALDEAGLE, DAMBRK, DAMBRK_DSS, INLINE_3G,
+    ])
+    def test_noop_save_is_byte_identical(self, fixture, tmp_copy):
+        original = fixture.read_bytes()
+        dst = tmp_copy(fixture)
+        UnsteadyFlowFile(dst).save()
+        assert dst.read_bytes() == original, (
+            f"Roundtrip failed for {fixture.name}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Scalar properties — UnsteadyFlowFile
+# ---------------------------------------------------------------------------
+
+class TestVerbatimProperties:
+    def test_flow_title_baxter(self):
+        assert UnsteadyFlowFile(BAXTER).flow_title == "Flood Event"
+
+    def test_program_version_baxter(self):
+        assert UnsteadyFlowFile(BAXTER).program_version == "6.30"
+
+    def test_use_restart_zero(self):
+        assert UnsteadyFlowFile(BAXTER).use_restart == 0
+
+    def test_flow_title_inline_3gates(self):
+        assert UnsteadyFlowFile(INLINE_3G).flow_title == "Unsteady Flow Hydrograph"
+
+    def test_program_version_old_format_is_none(self):
+        # inline_3gates uses "Version=" not "Program Version="
+        assert UnsteadyFlowFile(INLINE_3G).program_version is None
+
+    def test_set_flow_title(self, tmp_copy):
+        dst = tmp_copy(BAXTER)
+        f = UnsteadyFlowFile(dst)
+        f.flow_title = "Modified Title"
+        f.save()
+        assert UnsteadyFlowFile(dst).flow_title == "Modified Title"
+
+    def test_set_use_restart(self, tmp_copy):
+        dst = tmp_copy(BAXTER)
+        f = UnsteadyFlowFile(dst)
+        f.use_restart = -1
+        f.save()
+        assert UnsteadyFlowFile(dst).use_restart == -1
+
+
+# ---------------------------------------------------------------------------
+# get_flow_hydrograph — UnsteadyFlowFile
+# ---------------------------------------------------------------------------
+
+class TestVerbatimGetFlowHydrograph:
+    def test_returns_correct_count(self):
+        f = UnsteadyFlowFile(BAXTER)
+        vals = f.get_flow_hydrograph("Baxter River", "Upper Reach", "84816.")
+        assert len(vals) == 100
+
+    def test_first_value(self):
+        f = UnsteadyFlowFile(BAXTER)
+        vals = f.get_flow_hydrograph("Baxter River", "Upper Reach", "84816.")
+        assert vals[0] == pytest.approx(2000.0)
+
+    def test_second_boundary(self):
+        f = UnsteadyFlowFile(BAXTER)
+        vals = f.get_flow_hydrograph("Tule Creek", "Tributary", "10982.")
+        assert vals[0] == pytest.approx(2012.33)
+
+    def test_missing_boundary_returns_none(self):
+        f = UnsteadyFlowFile(BAXTER)
+        assert f.get_flow_hydrograph("No River", "No Reach", "0") is None
+
+    def test_wrong_bc_type_returns_none(self):
+        # Lower Reach / 1192. is a friction slope, not a flow hydrograph
+        f = UnsteadyFlowFile(BAXTER)
+        assert f.get_flow_hydrograph("Baxter River", "Lower Reach", "1192.") is None
+
+    def test_dss_zero_count_returns_empty_list(self):
+        # dambrk_dss has Flow Hydrograph= 0
+        f = UnsteadyFlowFile(DAMBRK_DSS)
+        vals = f.get_flow_hydrograph("Bald Eagle Cr.", "Lock Haven", "137520")
+        assert vals == []
+
+
+# ---------------------------------------------------------------------------
+# set_flow_hydrograph — UnsteadyFlowFile
+# ---------------------------------------------------------------------------
+
+class TestVerbatimSetFlowHydrograph:
+    def test_set_list_same_count(self, tmp_copy):
+        dst = tmp_copy(BAXTER)
+        f = UnsteadyFlowFile(dst)
+        orig = f.get_flow_hydrograph("Baxter River", "Upper Reach", "84816.")
+        new_vals = [v * 2.0 for v in orig]
+        f.set_flow_hydrograph("Baxter River", "Upper Reach", "84816.", new_vals)
+        f.save()
+        result = UnsteadyFlowFile(dst).get_flow_hydrograph(
+            "Baxter River", "Upper Reach", "84816.")
+        assert result == pytest.approx(new_vals, rel=1e-5)
+
+    def test_set_list_different_count(self, tmp_copy):
+        dst = tmp_copy(BAXTER)
+        f = UnsteadyFlowFile(dst)
+        new_vals = [500.0, 600.0, 700.0]   # 3 instead of 100
+        f.set_flow_hydrograph("Baxter River", "Upper Reach", "84816.", new_vals)
+        f.save()
+        result = UnsteadyFlowFile(dst).get_flow_hydrograph(
+            "Baxter River", "Upper Reach", "84816.")
+        assert result == pytest.approx(new_vals, rel=1e-5)
+
+    def test_set_scalar_broadcasts_to_original_length(self, tmp_copy):
+        dst = tmp_copy(BAXTER)
+        f = UnsteadyFlowFile(dst)
+        f.set_flow_hydrograph("Baxter River", "Upper Reach", "84816.", 999.0)
+        f.save()
+        result = UnsteadyFlowFile(dst).get_flow_hydrograph(
+            "Baxter River", "Upper Reach", "84816.")
+        assert len(result) == 100
+        assert all(v == pytest.approx(999.0) for v in result)
+
+    def test_set_integer_scalar(self, tmp_copy):
+        dst = tmp_copy(BAXTER)
+        f = UnsteadyFlowFile(dst)
+        f.set_flow_hydrograph("Tule Creek", "Tributary", "10982.", 1234)
+        f.save()
+        result = UnsteadyFlowFile(dst).get_flow_hydrograph(
+            "Tule Creek", "Tributary", "10982.")
+        assert len(result) == 100
+        assert result[0] == pytest.approx(1234.0)
+
+    def test_set_does_not_affect_other_boundary(self, tmp_copy):
+        dst = tmp_copy(BAXTER)
+        f = UnsteadyFlowFile(dst)
+        before_tule = f.get_flow_hydrograph("Tule Creek", "Tributary", "10982.")
+        f.set_flow_hydrograph("Baxter River", "Upper Reach", "84816.", 0.0)
+        f.save()
+        after_tule = UnsteadyFlowFile(dst).get_flow_hydrograph(
+            "Tule Creek", "Tributary", "10982.")
+        assert before_tule == pytest.approx(after_tule, rel=1e-5)
+
+    def test_missing_boundary_raises_key_error(self, tmp_copy):
+        dst = tmp_copy(BAXTER)
+        f = UnsteadyFlowFile(dst)
+        with pytest.raises(KeyError):
+            f.set_flow_hydrograph("No River", "No Reach", "0", [1.0, 2.0])
+
+    def test_wrong_bc_type_raises_value_error(self, tmp_copy):
+        dst = tmp_copy(BAXTER)
+        f = UnsteadyFlowFile(dst)
+        with pytest.raises(ValueError):
+            f.set_flow_hydrograph(
+                "Baxter River", "Lower Reach", "1192.", [1.0])
+
+
+# ---------------------------------------------------------------------------
+# get/set lateral inflow — UnsteadyFlowFile
+# ---------------------------------------------------------------------------
+
+class TestVerbatimLateralInflow:
+    def test_get_returns_correct_count(self):
+        # dambrk has 4 lateral inflows
+        f = UnsteadyFlowFile(DAMBRK)
+        vals = f.get_lateral_inflow("Bald Eagle Cr.", "Lock Haven", "28519")
+        assert len(vals) == 100
+
+    def test_get_first_value(self):
+        f = UnsteadyFlowFile(DAMBRK)
+        vals = f.get_lateral_inflow("Bald Eagle Cr.", "Lock Haven", "28519")
+        assert vals[0] == pytest.approx(600.0)
+
+    def test_set_list(self, tmp_copy):
+        dst = tmp_copy(DAMBRK)
+        f = UnsteadyFlowFile(dst)
+        new_vals = [750.0] * 100
+        f.set_lateral_inflow("Bald Eagle Cr.", "Lock Haven", "28519", new_vals)
+        f.save()
+        result = UnsteadyFlowFile(dst).get_lateral_inflow(
+            "Bald Eagle Cr.", "Lock Haven", "28519")
+        assert result == pytest.approx(new_vals, rel=1e-5)
+
+    def test_set_scalar_broadcasts(self, tmp_copy):
+        dst = tmp_copy(DAMBRK)
+        f = UnsteadyFlowFile(dst)
+        f.set_lateral_inflow("Bald Eagle Cr.", "Lock Haven", "28519", 500.0)
+        f.save()
+        result = UnsteadyFlowFile(dst).get_lateral_inflow(
+            "Bald Eagle Cr.", "Lock Haven", "28519")
+        assert len(result) == 100
+        assert all(v == pytest.approx(500.0) for v in result)
+
+
+# ---------------------------------------------------------------------------
+# get/set gate openings — UnsteadyFlowFile
+# ---------------------------------------------------------------------------
+
+class TestVerbatimGateOpenings:
+    def test_get_returns_correct_count(self):
+        f = UnsteadyFlowFile(INLINE_3G)
+        vals = f.get_gate_openings(
+            "Nittany River", "Weir Reach", "41.75", "Left Group")
+        assert len(vals) == 100
+
+    def test_get_first_value(self):
+        f = UnsteadyFlowFile(INLINE_3G)
+        vals = f.get_gate_openings(
+            "Nittany River", "Weir Reach", "41.75", "Left Group")
+        assert vals[0] == pytest.approx(3.0)
+
+    def test_get_second_gate(self):
+        f = UnsteadyFlowFile(INLINE_3G)
+        vals = f.get_gate_openings(
+            "Nittany River", "Weir Reach", "41.75", "Middle Group")
+        assert vals[0] == pytest.approx(5.0)
+
+    def test_set_list(self, tmp_copy):
+        dst = tmp_copy(INLINE_3G)
+        f = UnsteadyFlowFile(dst)
+        new_vals = [8.5] * 100
+        f.set_gate_openings(
+            "Nittany River", "Weir Reach", "41.75", "Left Group", new_vals)
+        f.save()
+        result = UnsteadyFlowFile(dst).get_gate_openings(
+            "Nittany River", "Weir Reach", "41.75", "Left Group")
+        assert result == pytest.approx(new_vals, rel=1e-5)
+
+    def test_set_scalar_broadcasts(self, tmp_copy):
+        dst = tmp_copy(INLINE_3G)
+        f = UnsteadyFlowFile(dst)
+        f.set_gate_openings(
+            "Nittany River", "Weir Reach", "41.75", "Middle Group", 7.0)
+        f.save()
+        result = UnsteadyFlowFile(dst).get_gate_openings(
+            "Nittany River", "Weir Reach", "41.75", "Middle Group")
+        assert len(result) == 100
+        assert all(v == pytest.approx(7.0) for v in result)
+
+    def test_set_does_not_affect_other_gate(self, tmp_copy):
+        dst = tmp_copy(INLINE_3G)
+        f = UnsteadyFlowFile(dst)
+        before = f.get_gate_openings(
+            "Nittany River", "Weir Reach", "41.75", "Middle Group")
+        f.set_gate_openings(
+            "Nittany River", "Weir Reach", "41.75", "Left Group", 0.0)
+        f.save()
+        after = UnsteadyFlowFile(dst).get_gate_openings(
+            "Nittany River", "Weir Reach", "41.75", "Middle Group")
+        assert before == pytest.approx(after, rel=1e-5)
+
+    def test_missing_gate_name_raises(self, tmp_copy):
+        dst = tmp_copy(INLINE_3G)
+        f = UnsteadyFlowFile(dst)
+        with pytest.raises(KeyError):
+            f.set_gate_openings(
+                "Nittany River", "Weir Reach", "41.75", "No Gate", [1.0])
+
+
+# ---------------------------------------------------------------------------
+# Initial conditions — UnsteadyFlowFile
+# ---------------------------------------------------------------------------
+
+class TestVerbatimInitialConditions:
+    def test_get_initial_flow(self):
+        f = UnsteadyFlowFile(BAXTER)
+        assert f.get_initial_flow("Baxter River", "Upper Reach", "84816.") == pytest.approx(2000.0)
+
+    def test_get_initial_flow_second(self):
+        f = UnsteadyFlowFile(BAXTER)
+        assert f.get_initial_flow("Baxter River", "Lower Reach", "47694.") == pytest.approx(4000.0)
+
+    def test_get_initial_flow_missing_returns_none(self):
+        f = UnsteadyFlowFile(BAXTER)
+        assert f.get_initial_flow("No River", "No Reach", "0") is None
+
+    def test_set_initial_flow(self, tmp_copy):
+        dst = tmp_copy(BAXTER)
+        f = UnsteadyFlowFile(dst)
+        f.set_initial_flow("Baxter River", "Upper Reach", "84816.", 9999.0)
+        f.save()
+        assert UnsteadyFlowFile(dst).get_initial_flow(
+            "Baxter River", "Upper Reach", "84816.") == pytest.approx(9999.0)
+
+    def test_set_initial_flow_missing_raises(self, tmp_copy):
+        dst = tmp_copy(BAXTER)
+        f = UnsteadyFlowFile(dst)
+        with pytest.raises(KeyError):
+            f.set_initial_flow("No River", "No Reach", "0", 100.0)
+
+
+# ---------------------------------------------------------------------------
+# UnsteadyFlowEditor — parsing
+# ---------------------------------------------------------------------------
+
+class TestEditorParsing:
+    def test_flow_title(self):
+        assert UnsteadyFlowEditor(BAXTER).flow_title == "Flood Event"
+
+    def test_program_version(self):
+        assert UnsteadyFlowEditor(BAXTER).program_version == "6.30"
+
+    def test_use_restart(self):
+        assert UnsteadyFlowEditor(BAXTER).use_restart == 0
+
+    def test_program_version_old_format_is_none(self):
+        assert UnsteadyFlowEditor(INLINE_3G).program_version is None
+
+    def test_flow_hydrograph_count_baxter(self):
+        ed = UnsteadyFlowEditor(BAXTER)
+        assert len(ed.flow_hydrographs) == 2
+
+    def test_friction_slope_count_baxter(self):
+        ed = UnsteadyFlowEditor(BAXTER)
+        assert len(ed.friction_slopes) == 1
+
+    def test_friction_slope_value(self):
+        ed = UnsteadyFlowEditor(BAXTER)
+        assert ed.friction_slopes[0].slope == pytest.approx(0.001)
+
+    def test_initial_flow_locs_baxter(self):
+        ed = UnsteadyFlowEditor(BAXTER)
+        assert len(ed.initial_flow_locs) == 3
+
+    def test_initial_flow_value(self):
+        ed = UnsteadyFlowEditor(BAXTER)
+        loc = ed.initial_flow_locs[0]
+        assert loc.flow == pytest.approx(2000.0)
+
+    def test_initial_storage_elevs(self):
+        ed = UnsteadyFlowEditor(BAXTER)
+        assert len(ed.initial_storage_elevs) == 2
+        assert ed.initial_storage_elevs[0].elevation == pytest.approx(63.34)
+
+    def test_flow_hydrograph_values(self):
+        ed = UnsteadyFlowEditor(BAXTER)
+        fh = ed.flow_hydrographs[0]
+        assert len(fh.values) == 100
+        assert fh.values[0] == pytest.approx(2000.0)
+
+    def test_gate_boundary_count_inline(self):
+        ed = UnsteadyFlowEditor(INLINE_3G)
+        assert len(ed.gate_boundaries) == 1
+
+    def test_gate_count_per_boundary(self):
+        ed = UnsteadyFlowEditor(INLINE_3G)
+        assert len(ed.gate_boundaries[0].gates) == 3
+
+    def test_gate_names(self):
+        ed = UnsteadyFlowEditor(INLINE_3G)
+        gates = ed.gate_boundaries[0].gates
+        assert gates[0].gate_name.strip() == "Left Group"
+        assert gates[1].gate_name.strip() == "Middle Group"
+        assert gates[2].gate_name.strip() == "Right Group"
+
+    def test_gate_values_first(self):
+        ed = UnsteadyFlowEditor(INLINE_3G)
+        assert ed.gate_boundaries[0].gates[0].values[0] == pytest.approx(3.0)
+        assert ed.gate_boundaries[0].gates[1].values[0] == pytest.approx(5.0)
+
+    def test_rating_curve_parsed(self):
+        ed = UnsteadyFlowEditor(BALDEAGLE)
+        rc = [b for b in ed.boundaries if isinstance(b, RatingCurve)]
+        assert len(rc) == 1
+        assert len(rc[0].pairs) == 7
+        # First pair from file: 529.2, 0
+        assert rc[0].pairs[0][0] == pytest.approx(529.2)
+        assert rc[0].pairs[0][1] == pytest.approx(0.0)
+
+    def test_dss_zero_count(self):
+        ed = UnsteadyFlowEditor(DAMBRK_DSS)
+        fh = ed.flow_hydrographs[0]
+        assert fh.values == []
+        assert fh.use_dss is True
+
+    def test_lateral_inflows_dambrk(self):
+        ed = UnsteadyFlowEditor(DAMBRK)
+        assert len(ed.lateral_inflows) == 4
+
+    def test_lateral_inflow_counts(self):
+        # dambrk: laterals at 28519 (100), 1 (200), 76865 (100), 67130 (100)
+        ed = UnsteadyFlowEditor(DAMBRK)
+        counts = [len(li.values) for li in ed.lateral_inflows]
+        assert counts == [100, 200, 100, 100]
+
+
+# ---------------------------------------------------------------------------
+# UnsteadyFlowEditor — sorting
+# ---------------------------------------------------------------------------
+
+class TestEditorSorting:
+    def test_sort_lateral_inflows_ascending(self):
+        ed = UnsteadyFlowEditor(DAMBRK)
+        ed.sort_lateral_inflows(ascending=True)
+        rs = [float(li.river_station) for li in ed.lateral_inflows]
+        assert rs == sorted(rs)
+
+    def test_sort_lateral_inflows_descending(self):
+        ed = UnsteadyFlowEditor(DAMBRK)
+        ed.sort_lateral_inflows(ascending=False)
+        rs = [float(li.river_station) for li in ed.lateral_inflows]
+        assert rs == sorted(rs, reverse=True)
+
+    def test_sort_preserves_total_boundary_count(self):
+        ed = UnsteadyFlowEditor(DAMBRK)
+        n_before = len(ed.boundaries)
+        ed.sort_lateral_inflows(ascending=True)
+        assert len(ed.boundaries) == n_before
+
+    def test_sort_preserves_non_lateral_positions(self):
+        """Flow hydrographs and friction slopes must stay at their original
+        positions in the flat boundary list after sorting laterals."""
+        ed = UnsteadyFlowEditor(DAMBRK)
+        before_types = [type(b) for b in ed.boundaries]
+        before_flow_indices = [i for i, b in enumerate(ed.boundaries)
+                               if isinstance(b, FlowHydrograph)]
+        before_fs_indices = [i for i, b in enumerate(ed.boundaries)
+                             if isinstance(b, FrictionSlope)]
+
+        ed.sort_lateral_inflows(ascending=True)
+
+        after_flow_indices = [i for i, b in enumerate(ed.boundaries)
+                              if isinstance(b, FlowHydrograph)]
+        after_fs_indices = [i for i, b in enumerate(ed.boundaries)
+                            if isinstance(b, FrictionSlope)]
+
+        assert before_flow_indices == after_flow_indices
+        assert before_fs_indices == after_fs_indices
+
+    def test_sort_ascending_then_descending_restores_desc_order(self):
+        ed = UnsteadyFlowEditor(DAMBRK)
+        ed.sort_lateral_inflows(ascending=False)
+        rs_desc = [float(li.river_station) for li in ed.lateral_inflows]
+        ed.sort_lateral_inflows(ascending=True)
+        ed.sort_lateral_inflows(ascending=False)
+        rs_again = [float(li.river_station) for li in ed.lateral_inflows]
+        assert rs_desc == rs_again
+
+
+# ---------------------------------------------------------------------------
+# UnsteadyFlowEditor — set by index
+# ---------------------------------------------------------------------------
+
+class TestEditorSetByIndex:
+    def test_set_flow_hydrograph_list(self):
+        ed = UnsteadyFlowEditor(BAXTER)
+        new_vals = [1.0] * 100
+        ed.set_flow_hydrograph(0, new_vals)
+        assert ed.flow_hydrographs[0].values == pytest.approx(new_vals)
+
+    def test_set_flow_hydrograph_scalar(self):
+        ed = UnsteadyFlowEditor(BAXTER)
+        ed.set_flow_hydrograph(0, 500.0)
+        vals = ed.flow_hydrographs[0].values
+        assert len(vals) == 100
+        assert all(v == pytest.approx(500.0) for v in vals)
+
+    def test_set_flow_hydrograph_integer_scalar(self):
+        ed = UnsteadyFlowEditor(BAXTER)
+        ed.set_flow_hydrograph(1, 300)
+        vals = ed.flow_hydrographs[1].values
+        assert len(vals) == 100
+        assert vals[0] == pytest.approx(300.0)
+
+    def test_set_gate_openings_list(self):
+        ed = UnsteadyFlowEditor(INLINE_3G)
+        new_vals = [4.0] * 100
+        ed.set_gate_openings(0, new_vals, gate_index=0)
+        assert ed.gate_boundaries[0].gates[0].values == pytest.approx(new_vals)
+
+    def test_set_gate_openings_scalar(self):
+        ed = UnsteadyFlowEditor(INLINE_3G)
+        ed.set_gate_openings(0, 6.0, gate_index=1)
+        vals = ed.gate_boundaries[0].gates[1].values
+        assert len(vals) == 100
+        assert all(v == pytest.approx(6.0) for v in vals)
+
+    def test_set_lateral_inflow_list(self):
+        ed = UnsteadyFlowEditor(DAMBRK)
+        new_vals = [800.0] * 100
+        ed.set_lateral_inflow(0, new_vals)
+        assert ed.lateral_inflows[0].values == pytest.approx(new_vals)
+
+    def test_set_lateral_inflow_scalar(self):
+        ed = UnsteadyFlowEditor(DAMBRK)
+        ed.set_lateral_inflow(2, 250.0)
+        vals = ed.lateral_inflows[2].values
+        assert len(vals) == 100
+        assert all(v == pytest.approx(250.0) for v in vals)
+
+    def test_set_after_sort_targets_correct_boundary(self):
+        """After sorting, index 0 should address the lowest-RS boundary."""
+        ed = UnsteadyFlowEditor(DAMBRK)
+        ed.sort_lateral_inflows(ascending=True)
+        lowest_rs = float(ed.lateral_inflows[0].river_station)
+        ed.set_lateral_inflow(0, 111.0)
+
+        # Verify we changed the right boundary
+        assert all(v == pytest.approx(111.0)
+                   for v in ed.lateral_inflows[0].values)
+        assert float(ed.lateral_inflows[0].river_station) == lowest_rs
+
+    # set_all_lateral_inflows ------------------------------------------------
+
+    def test_set_all_lateral_inflows_scalar_per_boundary(self):
+        """One scalar per lateral inflow broadcasts to the full series length."""
+        ed = UnsteadyFlowEditor(DAMBRK)
+        n = len(ed.lateral_inflows)
+        scalars = [float(i * 10) for i in range(n)]
+        ed.set_all_lateral_inflows(scalars)
+        for i, bc in enumerate(ed.lateral_inflows):
+            assert all(v == pytest.approx(scalars[i]) for v in bc.values)
+
+    def test_set_all_lateral_inflows_list_per_boundary(self):
+        """One list[float] per lateral inflow sets exact values."""
+        ed = UnsteadyFlowEditor(DAMBRK)
+        series = [[float(i)] * 100 for i in range(len(ed.lateral_inflows))]
+        ed.set_all_lateral_inflows(series)
+        for i, bc in enumerate(ed.lateral_inflows):
+            assert bc.values == pytest.approx(series[i])
+
+    def test_set_all_lateral_inflows_partial_leaves_rest_unchanged(self):
+        """If values is shorter than lateral inflow count, tail is untouched."""
+        ed = UnsteadyFlowEditor(DAMBRK)
+        original_last = list(ed.lateral_inflows[-1].values)
+        # Only update first boundary
+        ed.set_all_lateral_inflows([999.0])
+        assert all(v == pytest.approx(999.0) for v in ed.lateral_inflows[0].values)
+        assert ed.lateral_inflows[-1].values == pytest.approx(original_last)
+
+    # set_all_gate_openings --------------------------------------------------
+
+    def test_set_all_gate_openings_scalar_per_gate(self):
+        """One scalar per gate broadcasts to the full series length."""
+        ed = UnsteadyFlowEditor(INLINE_3G)
+        gates = ed.gate_boundaries[0].gates
+        scalars = [float(i + 1) for i in range(len(gates))]
+        ed.set_all_gate_openings(scalars)
+        for i, gate in enumerate(gates):
+            assert all(v == pytest.approx(scalars[i]) for v in gate.values)
+
+    def test_set_all_gate_openings_list_per_gate(self):
+        """One list[float] per gate sets exact values."""
+        ed = UnsteadyFlowEditor(INLINE_3G)
+        gates = ed.gate_boundaries[0].gates
+        series = [[float(i)] * 100 for i in range(len(gates))]
+        ed.set_all_gate_openings(series)
+        for i, gate in enumerate(gates):
+            assert gate.values == pytest.approx(series[i])
+
+    def test_set_all_gate_openings_partial_leaves_rest_unchanged(self):
+        """If values is shorter than gate count, remaining gates are untouched."""
+        ed = UnsteadyFlowEditor(INLINE_3G)
+        gates = ed.gate_boundaries[0].gates
+        original_last = list(gates[-1].values)
+        # INLINE_3G has 3 gates; only update first one
+        ed.set_all_gate_openings([7.0])
+        assert all(v == pytest.approx(7.0) for v in gates[0].values)
+        assert gates[-1].values == pytest.approx(original_last)
+
+
+# ---------------------------------------------------------------------------
+# UnsteadyFlowEditor — set by location
+# ---------------------------------------------------------------------------
+
+class TestEditorSetAtLocation:
+    def test_set_flow_hydrograph_at(self):
+        ed = UnsteadyFlowEditor(BAXTER)
+        ed.set_flow_hydrograph_at(
+            "Baxter River", "Upper Reach", "84816.", 300.0)
+        vals = ed.flow_hydrographs[0].values
+        assert all(v == pytest.approx(300.0) for v in vals)
+
+    def test_set_flow_hydrograph_at_wrong_type_raises(self):
+        ed = UnsteadyFlowEditor(BAXTER)
+        with pytest.raises(KeyError):
+            ed.set_flow_hydrograph_at(
+                "Baxter River", "Lower Reach", "1192.", [1.0])
+
+    def test_set_lateral_inflow_at(self):
+        ed = UnsteadyFlowEditor(DAMBRK)
+        ed.set_lateral_inflow_at(
+            "Bald Eagle Cr.", "Lock Haven", "28519", 777.0)
+        filt = [b for b in ed.lateral_inflows
+                if b.river_station.strip() == "28519"]
+        assert filt
+        assert all(v == pytest.approx(777.0) for v in filt[0].values)
+
+    def test_set_gate_openings_at(self):
+        ed = UnsteadyFlowEditor(INLINE_3G)
+        new_vals = [2.5] * 100
+        ed.set_gate_openings_at(
+            "Nittany River", "Weir Reach", "41.75",
+            "Left Group", new_vals)
+        gate = ed.gate_boundaries[0].gates[0]
+        assert gate.values == pytest.approx(new_vals)
+
+    def test_set_gate_openings_at_scalar(self):
+        ed = UnsteadyFlowEditor(INLINE_3G)
+        ed.set_gate_openings_at(
+            "Nittany River", "Weir Reach", "41.75",
+            "Middle Group", 9.0)
+        gate = ed.gate_boundaries[0].gates[1]
+        assert all(v == pytest.approx(9.0) for v in gate.values)
+
+    def test_set_gate_openings_at_missing_gate_raises(self):
+        ed = UnsteadyFlowEditor(INLINE_3G)
+        with pytest.raises(KeyError):
+            ed.set_gate_openings_at(
+                "Nittany River", "Weir Reach", "41.75",
+                "No Such Gate", [1.0])
+
+
+# ---------------------------------------------------------------------------
+# UnsteadyFlowEditor — semantic roundtrip (parse → save → re-parse)
+# ---------------------------------------------------------------------------
+
+class TestEditorSemanticRoundtrip:
+    @pytest.mark.parametrize("fixture", [
+        BAXTER, DAMBRK, INLINE_3G,
+    ])
+    def test_values_preserved_after_save(self, fixture, tmp_copy, tmp_path):
+        ed1 = UnsteadyFlowEditor(fixture)
+        out = tmp_path / (fixture.stem + "_rt" + fixture.suffix)
+        ed1.save(out)
+        ed2 = UnsteadyFlowEditor(out)
+
+        assert ed1.flow_title == ed2.flow_title
+        assert len(ed1.boundaries) == len(ed2.boundaries)
+
+        for fh1, fh2 in zip(ed1.flow_hydrographs, ed2.flow_hydrographs):
+            assert fh1.values == pytest.approx(fh2.values, rel=1e-5)
+
+        for li1, li2 in zip(ed1.lateral_inflows, ed2.lateral_inflows):
+            assert li1.values == pytest.approx(li2.values, rel=1e-5)
+
+        for gb1, gb2 in zip(ed1.gate_boundaries, ed2.gate_boundaries):
+            for g1, g2 in zip(gb1.gates, gb2.gates):
+                assert g1.values == pytest.approx(g2.values, rel=1e-5)
+
+    def test_initial_conditions_preserved(self, tmp_copy, tmp_path):
+        ed1 = UnsteadyFlowEditor(BAXTER)
+        out = tmp_path / "baxter_rt.u01"
+        ed1.save(out)
+        ed2 = UnsteadyFlowEditor(out)
+
+        assert len(ed1.initial_flow_locs) == len(ed2.initial_flow_locs)
+        for loc1, loc2 in zip(ed1.initial_flow_locs, ed2.initial_flow_locs):
+            assert loc1.flow == pytest.approx(loc2.flow)
+
+        assert len(ed1.initial_storage_elevs) == len(ed2.initial_storage_elevs)
+        for se1, se2 in zip(ed1.initial_storage_elevs, ed2.initial_storage_elevs):
+            assert se1.elevation == pytest.approx(se2.elevation)
+
+    def test_sort_then_save_then_re_parse_preserves_order(self, tmp_path):
+        """After sort + save, the re-parsed file should have the same order."""
+        ed1 = UnsteadyFlowEditor(DAMBRK)
+        ed1.sort_lateral_inflows(ascending=True)
+        rs_before = [float(li.river_station) for li in ed1.lateral_inflows]
+
+        out = tmp_path / "dambrk_sorted.u01"
+        ed1.save(out)
+
+        ed2 = UnsteadyFlowEditor(out)
+        rs_after = [float(li.river_station) for li in ed2.lateral_inflows]
+        assert rs_before == rs_after

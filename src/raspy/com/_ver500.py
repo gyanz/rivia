@@ -227,7 +227,7 @@ class ControllerBase(_ver400.ControllerBase, _ver400.ControllerAdded):
     pass
 
 
-class Controller(ControllerBase, ControllerAdded, ControllerDeprecated):
+class Controller(ControllerAdded, ControllerBase, ControllerDeprecated):
     """HECRAS Controller version RAS500."""
     pass
 

@@ -37,8 +37,27 @@ def ras_registry_xxx(version: str | int) -> str:
         if not parts or not all(p.isdigit() for p in parts):
             raise ValueError(f"Unrecognized HEC-RAS version format: {version!r}")
         major = int(parts[0])
-        minor = int(parts[1]) if len(parts) >= 2 else 0
-        patch = int(parts[2]) if len(parts) >= 3 else 0
+
+        # Unpack any 2-digit minor/patch component — minor and patch are always
+        # single-digit in HEC-RAS COM ProgIDs, so "6.60" means minor=6, patch=0.
+        expanded: list[int] = []
+        for p in parts[1:]:
+            if len(p) == 1:
+                expanded.append(int(p))
+            elif len(p) == 2:
+                expanded.extend([int(p[0]), int(p[1])])
+            else:
+                raise ValueError(
+                    f"Version component {p!r} is too large "
+                    f"(minor and patch must each be a single digit): {version!r}"
+                )
+        if len(expanded) > 2:
+            raise ValueError(
+                f"Too many version components after expansion "
+                f"(got {len(expanded) + 1} parts): {version!r}"
+            )
+        minor = expanded[0] if len(expanded) >= 1 else 0
+        patch = expanded[1] if len(expanded) >= 2 else 0
         return _to_xxx(major, minor, patch)
 
     # Case B: pure digits like "641", "630", "510", "41", "410", "6"

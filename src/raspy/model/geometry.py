@@ -1,0 +1,872 @@
+"""Read/write HEC-RAS geometry files (.g**).
+
+:class:`GeometryFile` — verbatim-line editor for HEC-RAS 1-D geometry files
+(.g01, .g02, …).  All lines are stored verbatim.  Typed access is provided
+for:
+
+- File metadata (``geom_title``, ``program_version``)
+- Reach / node inventory (``reaches``, ``junctions``, ``node_rs_list``)
+- Cross-section data: ``#Sta/Elev``, ``#Mann``, ``Bank Sta``,
+  ``#XS Ineff``, ``Exp/Cntr``  (read via :meth:`get_cross_section`,
+  write via targeted setters)
+- Structure nodes (bridge, culvert, inline/lateral structure) preserved
+  verbatim and accessible via :meth:`get_node_lines`
+
+``save()`` is byte-faithful for every unmodified line.
+
+Node type codes in ``Type RM Length L Ch R = TYPE, ...``::
+
+    1 — Cross Section
+    2 — Culvert (single or twin-pipe)
+    3 — Bridge
+    4 — Multiple Opening
+    5 — Inline Structure
+    6 — Lateral Structure
+
+Cross-section fixed-width format (8-char columns):
+
+.. code-block:: text
+
+    #Sta/Elev= N   alternating station/elevation pairs, 10 values per row
+    #Mann= N,t,a   triplets (station, n-value, variation),  9 values per row
+    #XS Ineff= N   triplets (x_start, x_end, elevation),   9 values per row
+                   followed by ``Permanent Ineff=`` flags (8-char each, 10/row)
+
+Derived from format inspection of HEC-RAS 6.6 example files and
+``archive/ras_tools/geomParser.py``.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from math import ceil
+from pathlib import Path
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+_COL = 8          # fixed-width column for numerical data
+_COLS_STAE = 10   # values per row in #Sta/Elev blocks  (5 pairs)
+_COLS_MANN = 9    # values per row in #Mann / #XS Ineff  (3 triplets)
+_COLS_FLAGS = 10  # flags per row in Permanent Ineff blocks
+
+#: Node type: cross section
+NODE_XS = 1
+#: Node type: culvert
+NODE_CULVERT = 2
+#: Node type: bridge
+NODE_BRIDGE = 3
+#: Node type: multiple opening
+NODE_MULTIPLE_OPENING = 4
+#: Node type: inline structure
+NODE_INLINE_STRUCTURE = 5
+#: Node type: lateral structure
+NODE_LATERAL_STRUCTURE = 6
+
+_NODE_TYPE_NAMES: dict[int, str] = {
+    NODE_XS: "CrossSection",
+    NODE_CULVERT: "Culvert",
+    NODE_BRIDGE: "Bridge",
+    NODE_MULTIPLE_OPENING: "MultipleOpening",
+    NODE_INLINE_STRUCTURE: "InlineStructure",
+    NODE_LATERAL_STRUCTURE: "LateralStructure",
+}
+
+_KEY_NODE = "Type RM Length L Ch R"
+_KEY_REACH = "River Reach"
+_KEY_JUNCT = "Junct Name"
+
+# ---------------------------------------------------------------------------
+# Formatting helpers (same algorithm as flow_steady)
+# ---------------------------------------------------------------------------
+
+
+def _fit_width(value: float, width: int = _COL) -> str:
+    """Right-justify *value* inside *width* chars.
+
+    Tries integer, then progressively fewer decimal places, then scientific
+    notation.  Truncates as a last resort.
+    """
+    if isinstance(value, int) or (
+        isinstance(value, float)
+        and value == int(value)
+        and len(str(int(value))) <= width
+    ):
+        s = str(int(value))
+        if len(s) <= width:
+            return s.rjust(width)
+
+    s = repr(value)
+    if len(s) <= width:
+        return s.rjust(width)
+
+    fv = float(value)
+    for decimals in range(6, -1, -1):
+        s = f"{fv:.{decimals}f}"
+        if len(s) <= width:
+            return s.rjust(width)
+
+    for decimals in range(2, -1, -1):
+        s = f"{fv:.{decimals}E}"
+        if len(s) <= width:
+            return s.rjust(width)
+
+    return repr(value)[:width]
+
+
+def _format_block(values: list[float], cols: int, width: int = _COL) -> list[str]:
+    """Return fixed-width data rows (no trailing newline)."""
+    rows: list[str] = []
+    for i in range(0, len(values), cols):
+        rows.append("".join(_fit_width(v, width) for v in values[i : i + cols]))
+    return rows
+
+
+def _parse_block(lines: list[str], count: int, width: int = _COL) -> list[float]:
+    """Parse up to *count* fixed-width values from *lines*."""
+    values: list[float] = []
+    for line in lines:
+        pos = 0
+        while pos < len(line) and len(values) < count:
+            token = line[pos : pos + width].strip()
+            if token:
+                try:
+                    values.append(float(token))
+                except ValueError:
+                    values.append(0.0)
+            pos += width
+    return values[:count]
+
+
+def _row_count(n: int, cols: int) -> int:
+    return ceil(n / cols) if n > 0 else 0
+
+
+# ---------------------------------------------------------------------------
+# Data classes
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ManningEntry:
+    """One horizontal Manning's n zone.
+
+    Attributes:
+        station:   Left boundary station of this n zone.
+        n_value:   Manning's roughness coefficient.
+        variation: Third column in the HEC-RAS file.  Usually ``0``; used
+                   for vertical-n or alternative-n assignments.
+    """
+
+    station: float
+    n_value: float
+    variation: float = 0.0
+
+
+@dataclass
+class IneffArea:
+    """One ineffective flow area interval.
+
+    Attributes:
+        x_start:   Left boundary station.
+        x_end:     Right boundary station.
+        elevation: Activation elevation (area is ineffective below this).
+        permanent: ``True`` if always active (``T`` flag), ``False`` if
+                   elevation-triggered (``F`` flag).
+    """
+
+    x_start: float
+    x_end: float
+    elevation: float
+    permanent: bool = False
+
+
+@dataclass
+class CrossSection:
+    """Parsed data for one HEC-RAS cross section (node type 1).
+
+    Returned by :meth:`GeometryFile.get_cross_section`.  Write changes back
+    with the targeted setters on :class:`GeometryFile` (``set_mannings``,
+    ``set_stations``, ``set_bank_stations``, ``set_exp_cntr``).
+
+    Attributes:
+        river:          River name.
+        reach:          Reach name.
+        rs:             River station string (normalised: no trailing
+                        whitespace or ``*`` interpolation marker).
+        description:    Node description from ``BEGIN/END DESCRIPTION``.
+        stations:       Station values from ``#Sta/Elev``.
+        elevations:     Elevation values from ``#Sta/Elev``.
+        mann_entries:   Manning's n zones from ``#Mann``.
+        mann_type:      Type flag from ``#Mann= N , type , alt`` header.
+        mann_alt:       Alt flag from ``#Mann= N , type , alt`` header.
+        bank_left:      Left bank station (``Bank Sta``).
+        bank_right:     Right bank station (``Bank Sta``).
+        ineff_areas:    Ineffective flow areas (``#XS Ineff``).
+        expansion:      Expansion loss coefficient (``Exp/Cntr``).
+        contraction:    Contraction loss coefficient (``Exp/Cntr``).
+        left_length:    Left overbank reach length from node header.
+        channel_length: Channel reach length from node header.
+        right_length:   Right overbank reach length from node header.
+        interpolated:   ``True`` if the RS string had a trailing ``*``
+                        (HEC-RAS interpolated cross section).
+    """
+
+    river: str
+    reach: str
+    rs: str
+    description: str = ""
+    stations: list[float] = field(default_factory=list)
+    elevations: list[float] = field(default_factory=list)
+    mann_entries: list[ManningEntry] = field(default_factory=list)
+    mann_type: int = 0
+    mann_alt: int = 0
+    bank_left: float | None = None
+    bank_right: float | None = None
+    ineff_areas: list[IneffArea] = field(default_factory=list)
+    expansion: float = 0.3
+    contraction: float = 0.1
+    left_length: float | None = None
+    channel_length: float | None = None
+    right_length: float | None = None
+    interpolated: bool = False
+
+
+# ---------------------------------------------------------------------------
+# GeometryFile
+# ---------------------------------------------------------------------------
+
+
+class GeometryFile:
+    """Verbatim-line editor for HEC-RAS geometry files (.g**).
+
+    All lines are loaded verbatim.  Structured cross-section data can be
+    read (:meth:`get_cross_section`, :meth:`cross_sections`) and written
+    (:meth:`set_mannings`, :meth:`set_stations`, :meth:`set_bank_stations`,
+    :meth:`set_exp_cntr`).  Structure nodes (bridges, culverts, etc.) are
+    accessible as raw lines via :meth:`get_node_lines`.
+
+    ``save()`` writes all in-memory lines back to disk; a no-op parse+save
+    produces a byte-identical file.
+
+    Derived from format inspection of HEC-RAS 6.6 example files and
+    ``archive/ras_tools/geomParser.py``.
+    """
+
+    def __init__(self, path: str | Path) -> None:
+        self._path = Path(path)
+        if not self._path.is_file():
+            raise FileNotFoundError(f"Geometry file not found: {self._path}")
+        with open(self._path, encoding="utf-8", errors="replace") as fh:
+            self._lines: list[str] = fh.readlines()
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _get(self, key: str) -> str | None:
+        prefix = key + "="
+        for line in self._lines:
+            if line.startswith(prefix):
+                value = line[len(prefix) :].strip()
+                return value if value else None
+        return None
+
+    def _set(self, key: str, raw_value: str) -> None:
+        prefix = key + "="
+        for i, line in enumerate(self._lines):
+            if line.startswith(prefix):
+                self._lines[i] = f"{prefix}{raw_value}\n"
+                return
+        raise KeyError(f"Key not found in geometry file: {key!r}")
+
+    def _splice(self, start: int, old_count: int, new_lines: list[str]) -> None:
+        """Replace *old_count* lines beginning at *start* with *new_lines*."""
+        self._lines[start : start + old_count] = [
+            (ln if ln.endswith("\n") else ln + "\n") for ln in new_lines
+        ]
+
+    # ------------------------------------------------------------------
+    # Static parsing helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _normalize_rs(rs: str) -> str:
+        """Strip whitespace and trailing ``*`` (interpolated XS marker)."""
+        return rs.strip().rstrip("*").strip()
+
+    @staticmethod
+    def _parse_node_header(
+        line: str,
+    ) -> tuple[int, str, float | None, float | None, float | None] | None:
+        """Parse ``Type RM Length L Ch R = TYPE,RS,L,Ch,R``.
+
+        Returns ``(node_type, rs_normalised, left, ch, right)`` or ``None``.
+        """
+        prefix = _KEY_NODE + " ="
+        if not line.startswith(prefix):
+            return None
+        tail = line[len(prefix) :].strip()
+        parts = tail.split(",", 4)
+        if len(parts) < 2:
+            return None
+        try:
+            node_type = int(parts[0].strip())
+        except ValueError:
+            return None
+        rs = GeometryFile._normalize_rs(parts[1]) if len(parts) > 1 else ""
+
+        def _opt_float(s: str) -> float | None:
+            s = s.strip()
+            return float(s) if s else None
+
+        left = _opt_float(parts[2]) if len(parts) > 2 else None
+        ch = _opt_float(parts[3]) if len(parts) > 3 else None
+        right = _opt_float(parts[4]) if len(parts) > 4 else None
+        return node_type, rs, left, ch, right
+
+    @staticmethod
+    def _parse_reach_header(line: str) -> tuple[str, str] | None:
+        """Parse ``River Reach=river,reach``. Returns ``(river, reach)``."""
+        prefix = _KEY_REACH + "="
+        if not line.startswith(prefix):
+            return None
+        parts = line[len(prefix) :].split(",", 1)
+        if len(parts) != 2:
+            return None
+        return parts[0].strip(), parts[1].strip()
+
+    # ------------------------------------------------------------------
+    # Node location
+    # ------------------------------------------------------------------
+
+    def _find_node_start(self, river: str, reach: str, rs: str) -> int | None:
+        """Return the line index of the matching node header, or ``None``."""
+        prefix = _KEY_NODE + " ="
+        river_l = river.strip().lower()
+        reach_l = reach.strip().lower()
+        rs_norm = self._normalize_rs(rs)
+        in_reach = False
+        for i, line in enumerate(self._lines):
+            if line.startswith(_KEY_REACH + "="):
+                rh = self._parse_reach_header(line)
+                if rh:
+                    in_reach = (
+                        rh[0].lower() == river_l and rh[1].lower() == reach_l
+                    )
+            if in_reach and line.startswith(prefix):
+                parsed = self._parse_node_header(line)
+                if parsed and self._normalize_rs(parsed[1]) == rs_norm:
+                    return i
+        return None
+
+    def _find_node_end(self, start: int) -> int:
+        """Return the index of the first line *after* the node block at *start*.
+
+        A new node begins with ``Type RM Length L Ch R =``.  A new reach
+        begins with ``River Reach=`` or ``Junct Name=``.
+        """
+        prefix = _KEY_NODE + " ="
+        n = len(self._lines)
+        i = start + 1
+        while i < n:
+            line = self._lines[i]
+            if (
+                line.startswith(prefix)
+                or line.startswith(_KEY_REACH + "=")
+                or line.startswith(_KEY_JUNCT + "=")
+            ):
+                return i
+            i += 1
+        return n
+
+    # ------------------------------------------------------------------
+    # Generic escape hatch
+    # ------------------------------------------------------------------
+
+    def get(self, key: str) -> str | None:
+        """Return the raw stripped value for *key*, or ``None`` if absent."""
+        return self._get(key)
+
+    def set(self, key: str, value: str) -> None:
+        """Set *key* to *value* verbatim.  Raises ``KeyError`` if absent."""
+        self._set(key, value)
+
+    # ------------------------------------------------------------------
+    # Metadata properties
+    # ------------------------------------------------------------------
+
+    @property
+    def geom_title(self) -> str | None:
+        """Geometry title (``Geom Title=``)."""
+        return self._get("Geom Title")
+
+    @geom_title.setter
+    def geom_title(self, value: str) -> None:
+        self._set("Geom Title", value)
+
+    @property
+    def program_version(self) -> str | None:
+        """HEC-RAS version that wrote this file (``Program Version=``).
+
+        Treat as read-only; HEC-RAS manages this field.
+        """
+        return self._get("Program Version")
+
+    # ------------------------------------------------------------------
+    # Reach / node inventory
+    # ------------------------------------------------------------------
+
+    @property
+    def reaches(self) -> list[tuple[str, str]]:
+        """Ordered list of ``(river, reach)`` pairs in file order."""
+        result: list[tuple[str, str]] = []
+        seen: set[tuple[str, str]] = set()
+        for line in self._lines:
+            if line.startswith(_KEY_REACH + "="):
+                rh = self._parse_reach_header(line)
+                if rh and rh not in seen:
+                    result.append(rh)
+                    seen.add(rh)
+        return result
+
+    @property
+    def junctions(self) -> list[str]:
+        """Junction names defined in the file, in order of appearance."""
+        result: list[str] = []
+        prefix = _KEY_JUNCT + "="
+        for line in self._lines:
+            if line.startswith(prefix):
+                result.append(line[len(prefix) :].strip())
+        return result
+
+    def node_rs_list(self, river: str, reach: str) -> list[tuple[int, str]]:
+        """Return ``(node_type, rs)`` pairs for every node in *reach*.
+
+        Useful for surveying what cross sections and structures exist.
+        Results are in file order (upstream to downstream for standard
+        HEC-RAS convention).
+        """
+        result: list[tuple[int, str]] = []
+        prefix = _KEY_NODE + " ="
+        river_l = river.strip().lower()
+        reach_l = reach.strip().lower()
+        in_reach = False
+        for line in self._lines:
+            if line.startswith(_KEY_REACH + "="):
+                rh = self._parse_reach_header(line)
+                if rh:
+                    in_reach = (
+                        rh[0].lower() == river_l and rh[1].lower() == reach_l
+                    )
+            if in_reach and line.startswith(prefix):
+                parsed = self._parse_node_header(line)
+                if parsed:
+                    result.append((parsed[0], parsed[1]))
+        return result
+
+    # ------------------------------------------------------------------
+    # Cross-section parsing
+    # ------------------------------------------------------------------
+
+    def _parse_xs_from_lines(
+        self,
+        river: str,
+        reach: str,
+        start: int,
+        end: int,
+    ) -> CrossSection:
+        """Parse a cross section from ``self._lines[start:end]``."""
+        header_line = self._lines[start]
+        parsed_hdr = self._parse_node_header(header_line)
+
+        # Detect interpolated XS (RS had trailing '*')
+        raw_rs = header_line.split("=", 1)[1].split(",")[1] if parsed_hdr else ""
+        interpolated = raw_rs.strip().endswith("*")
+
+        rs = parsed_hdr[1] if parsed_hdr else ""
+        left_len = parsed_hdr[2] if parsed_hdr else None
+        ch_len = parsed_hdr[3] if parsed_hdr else None
+        right_len = parsed_hdr[4] if parsed_hdr else None
+
+        xs = CrossSection(
+            river=river,
+            reach=reach,
+            rs=rs,
+            left_length=left_len,
+            channel_length=ch_len,
+            right_length=right_len,
+            interpolated=interpolated,
+        )
+
+        # Collect block lines (stripped of newline for easy processing)
+        block = [ln.rstrip("\n") for ln in self._lines[start + 1 : end]]
+
+        # --- Pass 1: extract description ---
+        desc_lines: list[str] = []
+        in_desc = False
+        for ln in block:
+            stripped = ln.strip()
+            if stripped == "BEGIN DESCRIPTION:":
+                in_desc = True
+                continue
+            if stripped == "END DESCRIPTION:":
+                in_desc = False
+                continue
+            if in_desc:
+                desc_lines.append(ln)
+        xs.description = "\n".join(desc_lines)
+
+        # --- Pass 2: extract keyed fields ---
+        i = 0
+        while i < len(block):
+            ln = block[i]
+
+            # #Sta/Elev= N
+            if ln.startswith("#Sta/Elev="):
+                n_pts = int(ln.split("=", 1)[1].strip())
+                n_rows = _row_count(n_pts * 2, _COLS_STAE)
+                flat = _parse_block(block[i + 1 : i + 1 + n_rows], n_pts * 2)
+                xs.stations = flat[0::2]
+                xs.elevations = flat[1::2]
+                i += 1 + n_rows
+                continue
+
+            # #Mann= N , type , alt
+            if ln.startswith("#Mann="):
+                parts = ln.split("=", 1)[1].split(",")
+                n_zones = int(parts[0].strip())
+                xs.mann_type = int(parts[1].strip()) if len(parts) > 1 else 0
+                xs.mann_alt = int(parts[2].strip()) if len(parts) > 2 else 0
+                n_rows = _row_count(n_zones * 3, _COLS_MANN)
+                flat = _parse_block(block[i + 1 : i + 1 + n_rows], n_zones * 3)
+                xs.mann_entries = [
+                    ManningEntry(
+                        station=flat[j],
+                        n_value=flat[j + 1],
+                        variation=flat[j + 2],
+                    )
+                    for j in range(0, len(flat), 3)
+                ]
+                i += 1 + n_rows
+                continue
+
+            # #XS Ineff= N , type
+            if ln.startswith("#XS Ineff="):
+                parts = ln.split("=", 1)[1].split(",")
+                n_ineff = int(parts[0].strip())
+                n_rows = _row_count(n_ineff * 3, _COLS_MANN)
+                flat = _parse_block(block[i + 1 : i + 1 + n_rows], n_ineff * 3)
+                areas: list[IneffArea] = [
+                    IneffArea(
+                        x_start=flat[j],
+                        x_end=flat[j + 1],
+                        elevation=flat[j + 2],
+                    )
+                    for j in range(0, len(flat), 3)
+                ]
+                i += 1 + n_rows
+                # Permanent Ineff= flags (marker line + flag lines)
+                if i < len(block) and block[i].startswith("Permanent Ineff="):
+                    i += 1  # skip marker
+                    n_flag_rows = _row_count(n_ineff, _COLS_FLAGS)
+                    flags: list[str] = []
+                    for _ in range(n_flag_rows):
+                        if i < len(block):
+                            # Flags are 8-char right-justified; use split() safely
+                            flags.extend(block[i].split())
+                            i += 1
+                    for k, area in enumerate(areas):
+                        if k < len(flags):
+                            area.permanent = flags[k].strip().upper() == "T"
+                xs.ineff_areas = areas
+                continue
+
+            # Bank Sta=LB,RB
+            if ln.startswith("Bank Sta="):
+                parts = ln.split("=", 1)[1].split(",")
+                if len(parts) >= 2:
+                    try:
+                        xs.bank_left = float(parts[0].strip())
+                        xs.bank_right = float(parts[1].strip())
+                    except ValueError:
+                        pass
+                i += 1
+                continue
+
+            # Exp/Cntr=exp,cntr
+            if ln.startswith("Exp/Cntr="):
+                parts = ln.split("=", 1)[1].split(",")
+                if len(parts) >= 2:
+                    try:
+                        xs.expansion = float(parts[0].strip())
+                        xs.contraction = float(parts[1].strip())
+                    except ValueError:
+                        pass
+                i += 1
+                continue
+
+            i += 1
+
+        return xs
+
+    # ------------------------------------------------------------------
+    # Cross-section access
+    # ------------------------------------------------------------------
+
+    def get_cross_section(
+        self, river: str, reach: str, rs: str
+    ) -> CrossSection | None:
+        """Parse and return the cross section at *(river, reach, rs)*.
+
+        Returns ``None`` if not found or if the node is not a cross section
+        (type != 1).
+        """
+        start = self._find_node_start(river, reach, rs)
+        if start is None:
+            return None
+        parsed = self._parse_node_header(self._lines[start])
+        if parsed is None or parsed[0] != NODE_XS:
+            return None
+        end = self._find_node_end(start)
+        return self._parse_xs_from_lines(river, reach, start, end)
+
+    def cross_sections(self, river: str, reach: str) -> list[CrossSection]:
+        """Return all cross sections in *reach*, in file order.
+
+        Structure nodes (bridges, culverts, etc.) are skipped.
+        """
+        prefix = _KEY_NODE + " ="
+        river_l = river.strip().lower()
+        reach_l = reach.strip().lower()
+        result: list[CrossSection] = []
+        in_reach = False
+        i = 0
+        n = len(self._lines)
+        while i < n:
+            line = self._lines[i]
+            if line.startswith(_KEY_REACH + "="):
+                rh = self._parse_reach_header(line)
+                if rh:
+                    in_reach = (
+                        rh[0].lower() == river_l and rh[1].lower() == reach_l
+                    )
+            if in_reach and line.startswith(prefix):
+                parsed = self._parse_node_header(line)
+                if parsed and parsed[0] == NODE_XS:
+                    end = self._find_node_end(i)
+                    xs = self._parse_xs_from_lines(river, reach, i, end)
+                    result.append(xs)
+                    i = end
+                    continue
+            i += 1
+        return result
+
+    # ------------------------------------------------------------------
+    # Cross-section write helpers
+    # ------------------------------------------------------------------
+
+    def _find_key_in_block(
+        self, start: int, end: int, key: str
+    ) -> int | None:
+        """Return index of first line in ``[start, end)`` starting with *key*."""
+        for i in range(start, end):
+            if self._lines[i].startswith(key):
+                return i
+        return None
+
+    def set_mannings(
+        self,
+        river: str,
+        reach: str,
+        rs: str,
+        entries: list[ManningEntry],
+        mann_type: int | None = None,
+        mann_alt: int | None = None,
+    ) -> None:
+        """Replace the Manning's n data for the given cross section.
+
+        The ``#Mann=`` header and data rows are rebuilt from *entries*.
+        If *mann_type* or *mann_alt* are ``None``, the existing values from
+        the file are preserved.
+
+        Args:
+            river:     River name (case-insensitive).
+            reach:     Reach name (case-insensitive).
+            rs:        River station string (leading/trailing whitespace and
+                       trailing ``*`` are ignored in comparisons).
+            entries:   New Manning's n zones (station, n_value, variation).
+            mann_type: Type flag for the ``#Mann=`` header.  ``None`` keeps
+                       the existing value.
+            mann_alt:  Alt flag for the ``#Mann=`` header.  ``None`` keeps
+                       the existing value.
+
+        Raises:
+            KeyError: No matching node or no ``#Mann=`` line found.
+        """
+        start = self._find_node_start(river, reach, rs)
+        if start is None:
+            raise KeyError(f"No node found for {river!r}, {reach!r}, {rs!r}")
+        end = self._find_node_end(start)
+        mann_i = self._find_key_in_block(start, end, "#Mann=")
+        if mann_i is None:
+            raise KeyError(
+                f"No #Mann= line found for {river!r}, {reach!r}, {rs!r}"
+            )
+
+        # Preserve existing type/alt if caller did not supply them
+        existing = self._lines[mann_i]
+        parts = existing.split("=", 1)[1].split(",")
+        existing_type = int(parts[1].strip()) if len(parts) > 1 else 0
+        existing_alt = int(parts[2].strip()) if len(parts) > 2 else 0
+        if mann_type is None:
+            mann_type = existing_type
+        if mann_alt is None:
+            mann_alt = existing_alt
+
+        n_old_zones = int(parts[0].strip())
+        n_old_rows = _row_count(n_old_zones * 3, _COLS_MANN)
+
+        n = len(entries)
+        header = f"#Mann= {n} , {mann_type} , {mann_alt} "
+        flat = [v for e in entries for v in (e.station, e.n_value, e.variation)]
+        new_lines = [header] + _format_block(flat, _COLS_MANN)
+        self._splice(mann_i, 1 + n_old_rows, new_lines)
+
+    def set_stations(
+        self,
+        river: str,
+        reach: str,
+        rs: str,
+        stations: list[float],
+        elevations: list[float],
+    ) -> None:
+        """Replace the station/elevation data for the given cross section.
+
+        Args:
+            river:      River name (case-insensitive).
+            reach:      Reach name (case-insensitive).
+            rs:         River station string.
+            stations:   New station values.
+            elevations: New elevation values (must match length of *stations*).
+
+        Raises:
+            ValueError: *stations* and *elevations* have different lengths.
+            KeyError:   No matching node or no ``#Sta/Elev=`` line found.
+        """
+        if len(stations) != len(elevations):
+            raise ValueError(
+                f"stations ({len(stations)}) and elevations ({len(elevations)})"
+                " must have the same length"
+            )
+        start = self._find_node_start(river, reach, rs)
+        if start is None:
+            raise KeyError(f"No node found for {river!r}, {reach!r}, {rs!r}")
+        end = self._find_node_end(start)
+        sta_i = self._find_key_in_block(start, end, "#Sta/Elev=")
+        if sta_i is None:
+            raise KeyError(
+                f"No #Sta/Elev= line found for {river!r}, {reach!r}, {rs!r}"
+            )
+
+        n_old = int(self._lines[sta_i].split("=", 1)[1].strip())
+        n_old_rows = _row_count(n_old * 2, _COLS_STAE)
+
+        n = len(stations)
+        header = f"#Sta/Elev= {n} "
+        flat = [v for pair in zip(stations, elevations) for v in pair]
+        new_lines = [header] + _format_block(flat, _COLS_STAE)
+        self._splice(sta_i, 1 + n_old_rows, new_lines)
+
+    def set_bank_stations(
+        self,
+        river: str,
+        reach: str,
+        rs: str,
+        left: float,
+        right: float,
+    ) -> None:
+        """Set the left and right bank stations for the given cross section.
+
+        Raises:
+            KeyError: No matching node or no ``Bank Sta=`` line found.
+        """
+        start = self._find_node_start(river, reach, rs)
+        if start is None:
+            raise KeyError(f"No node found for {river!r}, {reach!r}, {rs!r}")
+        end = self._find_node_end(start)
+        bank_i = self._find_key_in_block(start, end, "Bank Sta=")
+        if bank_i is None:
+            raise KeyError(
+                f"No Bank Sta= line found for {river!r}, {reach!r}, {rs!r}"
+            )
+        self._splice(bank_i, 1, [f"Bank Sta={left},{right}"])
+
+    def set_exp_cntr(
+        self,
+        river: str,
+        reach: str,
+        rs: str,
+        expansion: float,
+        contraction: float,
+    ) -> None:
+        """Set the expansion/contraction loss coefficients.
+
+        Raises:
+            KeyError: No matching node or no ``Exp/Cntr=`` line found.
+        """
+        start = self._find_node_start(river, reach, rs)
+        if start is None:
+            raise KeyError(f"No node found for {river!r}, {reach!r}, {rs!r}")
+        end = self._find_node_end(start)
+        ec_i = self._find_key_in_block(start, end, "Exp/Cntr=")
+        if ec_i is None:
+            raise KeyError(
+                f"No Exp/Cntr= line found for {river!r}, {reach!r}, {rs!r}"
+            )
+        self._splice(ec_i, 1, [f"Exp/Cntr={expansion},{contraction}"])
+
+    # ------------------------------------------------------------------
+    # Raw node access (for structures)
+    # ------------------------------------------------------------------
+
+    def get_node_lines(
+        self, river: str, reach: str, rs: str
+    ) -> list[str] | None:
+        """Return the raw lines for a node block (header inclusive).
+
+        Useful for inspecting structure nodes (bridges, culverts, etc.) that
+        are not fully parsed.  Returns ``None`` if not found.
+        """
+        start = self._find_node_start(river, reach, rs)
+        if start is None:
+            return None
+        end = self._find_node_end(start)
+        return [ln.rstrip("\n") for ln in self._lines[start:end]]
+
+    def node_type(self, river: str, reach: str, rs: str) -> int | None:
+        """Return the node type code for *(river, reach, rs)*, or ``None``.
+
+        Returns one of :data:`NODE_XS`, :data:`NODE_CULVERT`,
+        :data:`NODE_BRIDGE`, :data:`NODE_MULTIPLE_OPENING`,
+        :data:`NODE_INLINE_STRUCTURE`, :data:`NODE_LATERAL_STRUCTURE`.
+        """
+        start = self._find_node_start(river, reach, rs)
+        if start is None:
+            return None
+        parsed = self._parse_node_header(self._lines[start])
+        return parsed[0] if parsed else None
+
+    # ------------------------------------------------------------------
+    # Persistence
+    # ------------------------------------------------------------------
+
+    def save(self, path: str | Path | None = None) -> None:
+        """Write all in-memory lines back to disk.
+
+        If *path* is omitted the source file is overwritten.
+        """
+        dest = Path(path) if path is not None else self._path
+        with open(dest, "w", encoding="utf-8") as fh:
+            fh.writelines(self._lines)

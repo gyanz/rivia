@@ -30,7 +30,7 @@ def controller(version: str | int):
     _Controller400 or _Controller500 or _Controller503
         A controller instance connected to the requested HEC-RAS version. The
         exact type depends on the resolved version number: ``_Controller400`` for
-        versions below 5000, ``_Controller500`` for 5000–5029, and
+        versions below 5000, ``_Controller500`` for 5000-5029, and
         ``_Controller503`` for 5030 and above.
 
     Raises

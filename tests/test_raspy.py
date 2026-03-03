@@ -8,8 +8,8 @@ def test_version():
 
 
 def test_subpackage_imports():
-    import raspy.controller
-    import raspy.io
+    import raspy.com
+    import raspy.model
     import raspy.hdf
-    import raspy.geometry
+    import raspy.geo
     import raspy.utils

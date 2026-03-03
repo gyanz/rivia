@@ -76,6 +76,81 @@ Current tasks:
 - If a task requires changing to more than 3 files, stop and break it into smaller tasks first
 - When there is a bug, start by writing a test that reporoduces it, then fix it until the test passes
 - Every time I correct you, refect on what you did wrong and come up with a plan to never make the same mistake again
+- Use the example HEC-RAS projects to understand input and output files that are in ..\HEC-RAS Examples.
+
+## HDF File Structure
+- Geometry filename *.gx.hdf.
+- Geomtry file structure:
+    - Geometry
+        - 2D FLow Area
+            - Attributes
+            - Cell Info
+            - Cell Points
+            - Polygon Info
+            - Polygon Parts
+            - Polygon Points
+            - Flow Area Name
+                - Cells Center Coordinate
+                - Cells Center Manning's n
+                - Cells Face and Orientation Info
+                - Cells Face and Orientation Values
+                - Cells FacePoint Indexes
+                - Cells Minimum Elevation
+                - Cells Surface Area
+                - Cells Volume Elevation Info
+                - Cells Volume Elevation Values
+                - FacePoints Cell Index Values
+                - FacePoints Cell Info
+                - FacePoints Coordinate
+                - FacePoints Face and Orientation Info
+                - FacePoints Face and Orientation Values
+                - FacePoints Is Perimeter
+                - Faces Area Elevation Info
+                - Faces Area Elevation Values
+                - Faces Cell Indexes
+                - Faces FacePoint Indexes
+                - Faces Low Elevation Centroid
+                - Faces Minimum Elevation
+                - Faces NormalUnitVector and Length
+                - Faces Perimeter Info
+                - Faces Perimeter Values
+                - Perimeter
+            - Cross Sections
+                - Flow Distribution
+                - Property Table
+            - Structures
+- Plan filename *.px.hdf
+- Plan file contains Geometry as well as the following:
+    - Event Conditions
+    - Plan Data
+    - Results
+        - Summary
+            - Compute Messages (rtf)
+            - Compute Messages (text)
+            - Compute Processes
+        - Unsteady
+            - Output
+                - Output Blocks
+                    - Base Output
+                        - Summary Output
+                            - 2D Flow Areas
+                        - Unsteady Time Series
+                            - 2D Flow Areas
+                                - 2D Flow Area Name
+                                    - 2D Hyd Conn
+                                    - Face Velocity
+                                    - Water Surface
+                            - Boundary Conditions
+                            - Reference Lines
+                            - SA 2D Area Conn
+                            - Time
+                            - Time Date Stamp
+                            - Time Step
+                        - DSS Adaptive Hydrograph Output
+                        - DSS Hydrograph Output
+                        - DSS Profile Output
+            - Summary
+                - Volume Accounting
 
 ## Environment
 - Conda env: `raspy-dev` (activate before Claude Code sessions)
