@@ -152,7 +152,7 @@ class TestGridAlignment:
         ref_transform = from_origin(0.0, 200.0, 10.0, 10.0)
         pts, vals = _scattered_scalar()  # x in [0,100], y in [0,100]
         out = points_to_raster(
-            pts, vals, tmp_path / "snapped.tif", transform=ref_transform
+            pts, vals, tmp_path / "snapped.tif", reference_transform=ref_transform
         )
         with rasterio.open(out) as src:
             # pixel size must equal the reference
@@ -222,12 +222,12 @@ class TestGridAlignment:
         from raspy.geo.raster import points_to_raster
 
         pts, vals = _scattered_scalar()
-        with pytest.raises(ValueError, match="reference_raster or transform"):
+        with pytest.raises(ValueError, match="reference_raster or reference_transform"):
             points_to_raster(
                 pts,
                 vals,
                 tmp_path / "out.tif",
-                transform=from_origin(0, 100, 5, 5),
+                reference_transform=from_origin(0, 100, 5, 5),
                 reference_raster=tmp_path / "nonexistent.tif",
             )
 

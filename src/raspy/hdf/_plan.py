@@ -22,7 +22,15 @@ import numpy as np
 import pandas as pd
 
 from ._base import _HdfFile
-from ._geometry import FlowArea, FlowAreaCollection, GeometryHdf
+from ._geometry import (
+    FlowArea,
+    FlowAreaCollection,
+    GeometryHdf,
+    StorageArea,
+    StorageAreaCollection,
+    _SA_ROOT,
+    _decode,
+)
 
 if TYPE_CHECKING:
     import h5py
@@ -36,6 +44,10 @@ _TS_ROOT = "Results/Unsteady/Output/Output Blocks/Base Output/Unsteady Time Seri
 _SUM_ROOT = "Results/Unsteady/Output/Output Blocks/Base Output/Summary Output"
 _TS_2D = f"{_TS_ROOT}/2D Flow Areas"
 _SUM_2D = f"{_SUM_ROOT}/2D Flow Areas"
+
+_TS_SA = f"{_TS_ROOT}/Storage Areas"
+_SUM_SA = f"{_SUM_ROOT}/Storage Areas"
+_TS_SA_CONN = f"{_TS_ROOT}/SA 2D Area Conn"
 
 _TIME_DS = f"{_TS_ROOT}/Time"
 _TIME_STAMP_DS = f"{_TS_ROOT}/Time Date Stamp"
@@ -525,12 +537,14 @@ class FlowAreaResults(FlowArea):
         output_path: str | Path | None = None,
         *,
         cell_size: float | None = None,
-        transform: Any | None = None,
+        reference_transform: Any | None = None,
         reference_raster: str | Path | None = None,
+        snap_to_reference_extent: bool = True,
         crs: Any | None = None,
         nodata: float = -9999.0,
         interp_method: Literal["linear", "nearest", "cubic"] = "linear",
         min_value: float | None = None,
+        use_adjacency: bool = True,
         vel_method: Literal[
             "area_weighted", "length_weighted", "flow_ratio"
         ] = "area_weighted",
@@ -565,9 +579,9 @@ class FlowAreaResults(FlowArea):
             all timesteps are iterated to find the per-cell peak speed.
         cell_size:
             Output pixel size in model coordinate units.  Ignored when
-            *transform* or *reference_raster* is supplied.  Defaults to the
-            median face length of this flow area.
-        transform:
+            *reference_transform* or *reference_raster* is supplied.
+            Defaults to the median face length of this flow area.
+        reference_transform:
             ``rasterio.transform.Affine`` reference transform.  The output
             grid is snapped to this pixel grid so the result aligns exactly
             with an existing raster.  Mutually exclusive with
@@ -577,6 +591,11 @@ class FlowAreaResults(FlowArea):
             from this file.  Mutually exclusive with *transform*.  If *crs*
             is also supplied it overrides the file CRS.  **Required** when
             ``variable="depth"``.
+        snap_to_reference_extent:
+            Passed to :func:`~raspy.geo.raster.points_to_raster`.  Only
+            relevant when *reference_raster* is supplied.  When ``True``
+            (default) the output covers the full reference raster extent;
+            when ``False`` it is cropped to the point cloud.
         crs:
             Output CRS (e.g. ``"EPSG:26910"`` or an integer EPSG code).
             When *reference_raster* is given and *crs* is ``None``, the
@@ -592,6 +611,11 @@ class FlowAreaResults(FlowArea):
             near-dry cells (e.g. ``min_value=0.01`` for depth in metres).
             For ``"depth"``, filtering is applied using HDF cell depths
             (WSE minus cell minimum elevation) before WSE interpolation.
+        use_adjacency:
+            When ``True`` (default), mesh face connectivity is used to
+            prevent spurious interpolation across gaps between disconnected
+            wet areas.  Set to ``False`` to fall back to standard convex-hull
+            ``griddata`` interpolation (faster, no gap masking).
         vel_method:
             Velocity reconstruction weight scheme.  Passed to
             :meth:`cell_velocity_vectors`; ignored for ``"water_surface"``
@@ -663,25 +687,42 @@ class FlowAreaResults(FlowArea):
         # ── 2. Default cell size (median face length) — computed here  ──
         #       so raspy.geo does not need access to mesh geometry.
         resolved_cell_size = cell_size
-        if cell_size is None and transform is None and reference_raster is None:
+        no_grid = reference_transform is None and reference_raster is None
+        if cell_size is None and no_grid:
             resolved_cell_size = float(np.median(self.face_normals[:, 2]))
 
         # ── 3. Delegate all rasterio logic to raspy.geo ────────────────
+        resolved_adjacency = self.face_cell_indexes if use_adjacency else None
+
         if variable == "depth":
+            # Remap adjacency to the filtered interp_points index space when
+            # min_value pre-filtering has already reduced cell_centers to a subset.
+            fci = resolved_adjacency  # (n_faces, 2), -1 = boundary
+            if min_value is not None:
+                orig_to_new = np.full(self.n_cells, -1, dtype=np.int64)
+                orig_to_new[np.where(mask)[0]] = np.arange(int(mask.sum()))
+                depth_adjacency = np.where(
+                    fci >= 0, orig_to_new[np.maximum(fci, 0)], -1
+                )
+            else:
+                depth_adjacency = fci
+
             wse_ds = _raster.points_to_raster(
                 interp_points,
                 wse_values,
                 output_path=None,  # always in-memory; written after DEM subtraction
                 cell_size=resolved_cell_size,
-                transform=transform,
+                reference_transform=reference_transform,
                 reference_raster=reference_raster,
                 crs=crs,
                 nodata=nodata,
                 interp_method=interp_method,
-                min_value=None,  # pre-filtered above
+                min_value=None,
+                snap_to_reference_extent=snap_to_reference_extent,
+                adjacency=depth_adjacency,
             )
             result = _raster._depth_from_wse_and_dem(
-                wse_ds, reference_raster, nodata, output_path
+                wse_ds, reference_raster, nodata, output_path, min_value=min_value
             )
             wse_ds.close()
             return result
@@ -691,12 +732,14 @@ class FlowAreaResults(FlowArea):
             values,
             output_path,
             cell_size=resolved_cell_size,
-            transform=transform,
+            reference_transform=reference_transform,
             reference_raster=reference_raster,
             crs=crs,
             nodata=nodata,
             interp_method=interp_method,
             min_value=min_value,
+            snap_to_reference_extent=snap_to_reference_extent,
+            adjacency=resolved_adjacency,
         )
 
 
@@ -748,6 +791,501 @@ class FlowAreaResultsCollection(FlowAreaCollection):
 
 
 # ---------------------------------------------------------------------------
+# StorageAreaResults — extends StorageArea geometry with plan results
+# ---------------------------------------------------------------------------
+
+
+class StorageAreaResults(StorageArea):
+    """Geometry *and* time-series results for one storage area.
+
+    Inherits all geometry properties from :class:`~raspy.hdf.StorageArea`
+    (:attr:`boundary`, :attr:`volume_elevation`, :meth:`volume_at_elevation`, etc.).
+
+    Time-series properties return ``numpy`` arrays (storage areas are scalar
+    entities so their result datasets are small and eager loading is appropriate).
+
+    Parameters
+    ----------
+    sa:
+        Parent geometry object whose fields are copied into this instance.
+    sa_index:
+        0-based column index of this SA in the flat ``(n_t, n_sa)`` datasets
+        (``Water Surface``, ``Flow``) stored under ``Storage Areas/``.
+    ts_sa_group:
+        ``h5py.Group`` at ``…/Unsteady Time Series/Storage Areas``, or ``None``
+        when the plan has no SA results.
+    sum_sa_group:
+        ``h5py.Group`` at ``…/Summary Output/Storage Areas``, or ``None``.
+    """
+
+    def __init__(
+        self,
+        sa: StorageArea,
+        sa_index: int,
+        ts_sa_group: "h5py.Group | None",
+        sum_sa_group: "h5py.Group | None",
+    ) -> None:
+        super().__init__(
+            name=sa.name,
+            mode=sa.mode,
+            boundary=sa.boundary,
+            volume_elevation=sa.volume_elevation,
+        )
+        self._i = sa_index
+        self._ts = ts_sa_group
+        self._sum = sum_sa_group
+        # per-SA subgroup: …/Storage Areas/<name>/
+        self._sub = ts_sa_group.get(sa.name) if ts_sa_group else None
+        self._cache: dict[str, np.ndarray] = {}
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _load_flat(self, key: str) -> np.ndarray:
+        """Load column *i* from a flat ``(n_t, n_sa)`` dataset."""
+        if key not in self._cache:
+            if self._ts is None:
+                raise KeyError(
+                    f"No time-series results for storage area {self.name!r}. "
+                    "Has the plan been computed?"
+                )
+            self._cache[key] = np.array(self._ts[key])[:, self._i]
+        return self._cache[key]
+
+    def _load_vars(self) -> np.ndarray:
+        """Load and cache the ``(n_t, 6)`` Storage Area Variables array."""
+        if "_vars" not in self._cache:
+            if self._sub is None or "Storage Area Variables" not in self._sub:
+                raise KeyError(
+                    f"'Storage Area Variables' not found for storage area "
+                    f"{self.name!r}."
+                )
+            self._cache["_vars"] = np.array(self._sub["Storage Area Variables"])
+        return self._cache["_vars"]
+
+    # ------------------------------------------------------------------
+    # Flat time-series (one value per timestep)
+    # ------------------------------------------------------------------
+
+    @property
+    def water_surface(self) -> np.ndarray:
+        """Water-surface elevation time series.  Shape ``(n_t,)``."""
+        return self._load_flat("Water Surface")
+
+    @property
+    def flow(self) -> np.ndarray:
+        """Net inflow rate (positive = into SA).  Shape ``(n_t,)``."""
+        return self._load_flat("Flow")
+
+    # ------------------------------------------------------------------
+    # Storage Area Variables columns (Stage, flows, area, volume)
+    # ------------------------------------------------------------------
+
+    @property
+    def stage(self) -> np.ndarray:
+        """Stage (WSE) from Storage Area Variables.  Shape ``(n_t,)``."""
+        return self._load_vars()[:, 0]
+
+    @property
+    def net_inflow(self) -> np.ndarray:
+        """Net inflow rate.  Shape ``(n_t,)``."""
+        return self._load_vars()[:, 1]
+
+    @property
+    def total_inflow(self) -> np.ndarray:
+        """Total inflow rate (sum of all inflow sources).  Shape ``(n_t,)``."""
+        return self._load_vars()[:, 2]
+
+    @property
+    def total_outflow(self) -> np.ndarray:
+        """Total outflow rate (sum of all outflow sinks).  Shape ``(n_t,)``."""
+        return self._load_vars()[:, 3]
+
+    @property
+    def surface_area_ts(self) -> np.ndarray:
+        """Water-surface area time series (model area units).  Shape ``(n_t,)``."""
+        return self._load_vars()[:, 4]
+
+    @property
+    def volume_ts(self) -> np.ndarray:
+        """Stored volume time series (model volume units).  Shape ``(n_t,)``."""
+        return self._load_vars()[:, 5]
+
+    # ------------------------------------------------------------------
+    # Connection inflows
+    # ------------------------------------------------------------------
+
+    @property
+    def connections(self) -> np.ndarray | None:
+        """Inflow from each named connection.
+
+        Shape ``(n_t, n_conns)``, or ``None`` when no connection data is stored.
+        Column names are in :attr:`connection_names`.
+        """
+        if "_conns" not in self._cache:
+            if self._sub is None:
+                return None
+            ds = self._sub.get("Connections to Storage Area")
+            if ds is None:
+                return None
+            self._cache["_conns"] = np.array(ds)
+        return self._cache["_conns"]
+
+    @property
+    def connection_names(self) -> list[str]:
+        """Names of the inflow connection sources (from HDF ``Connections`` attribute).
+
+        Falls back to index-based names if the attribute is absent.
+        """
+        if self._sub is None:
+            return []
+        ds = self._sub.get("Connections to Storage Area")
+        if ds is None:
+            return []
+        attr = ds.attrs.get("Connections")
+        if attr is None:
+            n = ds.shape[1] if ds.ndim > 1 else 1
+            return [f"connection_{i}" for i in range(n)]
+        return [_decode(v) for v in attr]
+
+    # ------------------------------------------------------------------
+    # Summary results
+    # ------------------------------------------------------------------
+
+    def _load_summary(self, key: str) -> pd.DataFrame:
+        """Load a ``(2, n_sa)`` summary dataset as a single-row DataFrame."""
+        if self._sum is None:
+            raise KeyError(
+                f"No summary results for storage area {self.name!r}. "
+                "Has the plan been computed?"
+            )
+        raw = np.array(self._sum[key])  # shape (2, n_sa)
+        return pd.DataFrame({"value": [float(raw[0, self._i])],
+                             "time":  [float(raw[1, self._i])]})
+
+    @property
+    def max_water_surface(self) -> pd.DataFrame:
+        """Maximum WSE.
+
+        DataFrame with columns ``['value', 'time']``.
+        ``value``: maximum WSE in model units.
+        ``time``: elapsed simulation time (days) when maximum occurred.
+        """
+        return self._load_summary("Maximum Water Surface")
+
+    @property
+    def min_water_surface(self) -> pd.DataFrame:
+        """Minimum WSE.  Same column layout as :attr:`max_water_surface`."""
+        return self._load_summary("Minimum Water Surface")
+
+
+# ---------------------------------------------------------------------------
+# StorageAreaResultsCollection
+# ---------------------------------------------------------------------------
+
+
+class StorageAreaResultsCollection(StorageAreaCollection):
+    """Collection of :class:`StorageAreaResults` backed by a plan HDF file.
+
+    Overrides :class:`~raspy.hdf.StorageAreaCollection` to return
+    ``StorageAreaResults`` with both geometry *and* plan results.
+    """
+
+    def _load(self) -> dict[str, StorageAreaResults]:  # type: ignore[override]
+        if self._items is not None:
+            return self._items  # type: ignore[return-value]
+
+        if _SA_ROOT not in self._hdf:
+            self._items = {}
+            return self._items  # type: ignore[return-value]
+
+        # Re-read geometry flat arrays (same logic as StorageAreaCollection._load)
+        root = self._hdf[_SA_ROOT]
+        attrs = np.array(root["Attributes"])
+        poly_info = np.array(root["Polygon Info"])
+        poly_pts = np.array(root["Polygon Points"])
+        ve_info = np.array(root["Volume Elevation Info"])
+        ve_vals = np.array(root["Volume Elevation Values"])
+
+        ts_sa_group = self._hdf.get(_TS_SA)
+        sum_sa_group = self._hdf.get(_SUM_SA)
+
+        items: dict[str, StorageAreaResults] = {}
+        for i, row in enumerate(attrs):
+            name = _decode(row["Name"])
+            mode = _decode(row["Mode"])
+
+            start_pt = int(poly_info[i, 0])
+            n_pts = int(poly_info[i, 1])
+            boundary = poly_pts[start_pt : start_pt + n_pts].astype(float)
+
+            ve_start = int(ve_info[i, 0])
+            ve_count = int(ve_info[i, 1])
+            vol_elev = (
+                ve_vals[ve_start : ve_start + ve_count].astype(float)
+                if ve_count > 0
+                else np.empty((0, 2), dtype=float)
+            )
+
+            sa = StorageArea(
+                name=name, mode=mode, boundary=boundary, volume_elevation=vol_elev
+            )
+            items[name] = StorageAreaResults(
+                sa=sa,
+                sa_index=i,
+                ts_sa_group=ts_sa_group,
+                sum_sa_group=sum_sa_group,
+            )
+
+        self._items = items  # type: ignore[assignment]
+        return items
+
+    def __getitem__(self, name: str) -> StorageAreaResults:  # type: ignore[override]
+        items = self._load()
+        if name not in items:
+            raise KeyError(
+                f"Storage area {name!r} not found. Available: {self.names}"
+            )
+        return items[name]
+
+
+# ---------------------------------------------------------------------------
+# SA2DConnectionResults — one connection between two hydraulic areas
+# ---------------------------------------------------------------------------
+
+
+class SA2DConnectionResults:
+    """Time-series results for one HEC-RAS hydraulic connection.
+
+    In HEC-RAS, the "SA/2D Area Conn" group holds connections between
+    any two of: a Storage Area, a 2-D Flow Area, or another Storage Area.
+    Common examples: dam, levee, inline weir, gate structure.
+
+    Parameters
+    ----------
+    name:
+        Name of the connection (group key in the HDF file).
+    group:
+        ``h5py.Group`` at ``…/SA 2D Area Conn/<name>``.
+    """
+
+    def __init__(self, name: str, group: "h5py.Group") -> None:
+        self.name = name
+        self._g = group
+        self._cache: dict[str, np.ndarray] = {}
+
+    def _load(self, key: str) -> np.ndarray:
+        if key not in self._cache:
+            self._cache[key] = np.array(self._g[key])
+        return self._cache[key]
+
+    # ------------------------------------------------------------------
+    # Structure Variables (always present)
+    # ------------------------------------------------------------------
+
+    @property
+    def variable_names(self) -> list[str]:
+        """Column names from the ``Structure Variables`` HDF attribute.
+
+        Typical columns: ``Total Flow``, ``Weir Flow``, ``Stage HW``,
+        ``Stage TW`` [, ``Total Gate Flow``].  Falls back to
+        ``col_0``, ``col_1``, … when the attribute is absent.
+        """
+        ds = self._g["Structure Variables"]
+        attr = ds.attrs.get("Variable_Unit")
+        if attr is None:
+            attr = ds.attrs.get("Variables")
+        if attr is not None:
+            # attr shape is (n_vars, 2): column 0 = variable name, column 1 = unit
+            return [_decode(v[0]) for v in attr]
+        return [f"col_{i}" for i in range(ds.shape[1])]
+
+    @property
+    def structure_variables(self) -> "h5py.Dataset":
+        """All structure variables.
+
+        Lazy ``h5py.Dataset``, shape ``(n_t, n_vars)``.
+        Slice to read: ``conn.structure_variables[:]``.
+        Column names are in :attr:`variable_names`.
+        """
+        return self._g["Structure Variables"]
+
+    # Convenience column accessors (always present for all connection types)
+
+    @property
+    def total_flow(self) -> np.ndarray:
+        """Total flow through the connection.  Shape ``(n_t,)``."""
+        return self._load("Structure Variables")[:, 0]
+
+    @property
+    def weir_flow(self) -> np.ndarray:
+        """Weir flow component.  Shape ``(n_t,)``."""
+        return self._load("Structure Variables")[:, 1]
+
+    @property
+    def stage_hw(self) -> np.ndarray:
+        """Headwater stage (upstream side).  Shape ``(n_t,)``."""
+        return self._load("Structure Variables")[:, 2]
+
+    @property
+    def stage_tw(self) -> np.ndarray:
+        """Tailwater stage (downstream side).  Shape ``(n_t,)``."""
+        return self._load("Structure Variables")[:, 3]
+
+    # ------------------------------------------------------------------
+    # Optional datasets
+    # ------------------------------------------------------------------
+
+    @property
+    def breaching_variables(self) -> "h5py.Dataset | None":
+        """Breach geometry and flow time series, or ``None`` if the connection
+        is not breach-capable.
+
+        Lazy ``h5py.Dataset``, shape ``(n_t, 10)``.
+        Columns: Stage HW, Stage TW, Bottom Width, Bottom Elevation,
+        Left Side Slope, Right Side Slope, Breach Flow, Breach Velocity,
+        Breach Flow Area, Top Elevation.
+        """
+        return self._g.get("Breaching Variables")
+
+    @property
+    def weir_variables(self) -> "h5py.Dataset | None":
+        """Detailed weir hydraulics time series, or ``None`` if absent.
+
+        Lazy ``h5py.Dataset``, shape ``(n_t, 9)``.
+        """
+        return self._g.get("Weir Variables")
+
+    def gate_flow(self, gate_number: int) -> "h5py.Dataset":
+        """Gate operation dataset for the specified gate (1-based numbering).
+
+        Returns a lazy ``h5py.Dataset``, shape ``(n_t, n_vars)``.
+
+        Raises
+        ------
+        KeyError
+            If the gate number does not exist for this connection.
+        """
+        path = f"Gate Groups/Gate #{gate_number}"
+        if path not in self._g:
+            gates_grp = self._g.get("Gate Groups")
+            available = list(gates_grp.keys()) if gates_grp is not None else []
+            raise KeyError(
+                f"Gate #{gate_number} not found for connection {self.name!r}. "
+                f"Available: {available}"
+            )
+        return self._g[path]
+
+    # ------------------------------------------------------------------
+    # Static cell connectivity
+    # ------------------------------------------------------------------
+
+    @property
+    def headwater_cells(self) -> np.ndarray | None:
+        """Cell indices on the headwater side, or ``None`` if not stored.
+
+        Shape ``(n_faces,)``.  Absent for some structure types (e.g. gates
+        without explicit face-level connectivity).
+        """
+        if "Headwater Cells" not in self._g:
+            return None
+        return self._load("Headwater Cells")
+
+    @property
+    def tailwater_cells(self) -> np.ndarray | None:
+        """Cell indices on the tailwater side, or ``None`` if not stored.
+
+        Shape ``(n_faces,)``.
+        """
+        if "Tailwater Cells" not in self._g:
+            return None
+        return self._load("Tailwater Cells")
+
+
+# ---------------------------------------------------------------------------
+# SA2DConnectionCollection
+# ---------------------------------------------------------------------------
+
+
+class SA2DConnectionCollection:
+    """Access all SA/2D hydraulic connections in a plan HDF file.
+
+    Connections can link a Storage Area to a 2-D Flow Area, two Storage Areas
+    to each other, or two 2-D Flow Areas.  Each connection is a named
+    ``h5py.Group`` under ``…/SA 2D Area Conn/``.
+
+    Parameters
+    ----------
+    hdf:
+        Open ``h5py.File`` handle.
+    """
+
+    def __init__(self, hdf: "h5py.File") -> None:
+        self._hdf = hdf
+        self._items: dict[str, SA2DConnectionResults] | None = None
+
+    def _load(self) -> dict[str, SA2DConnectionResults]:
+        if self._items is not None:
+            return self._items
+
+        if _TS_SA_CONN not in self._hdf:
+            self._items = {}
+            return self._items
+
+        import h5py as _h5
+
+        root = self._hdf[_TS_SA_CONN]
+        self._items = {
+            k: SA2DConnectionResults(k, root[k])
+            for k, v in root.items()
+            if isinstance(v, _h5.Group)
+        }
+        return self._items
+
+    @property
+    def names(self) -> list[str]:
+        """Names of all connections in the file."""
+        return list(self._load().keys())
+
+    @property
+    def summary(self) -> pd.DataFrame:
+        """One row per connection with basic attributes.
+
+        Columns: ``name``, ``n_variables``, ``variable_names``,
+        ``has_breaching``, ``has_weir``.
+        """
+        rows = [
+            {
+                "name": conn.name,
+                "n_variables": conn.structure_variables.shape[1],
+                "variable_names": conn.variable_names,
+                "has_breaching": conn.breaching_variables is not None,
+                "has_weir": conn.weir_variables is not None,
+            }
+            for conn in self._load().values()
+        ]
+        return pd.DataFrame(rows)
+
+    def __getitem__(self, name: str) -> SA2DConnectionResults:
+        items = self._load()
+        if name not in items:
+            raise KeyError(
+                f"SA/2D connection {name!r} not found. Available: {self.names}"
+            )
+        return items[name]
+
+    def __contains__(self, name: str) -> bool:
+        return name in self._load()
+
+    def __iter__(self):
+        return iter(self._load())
+
+    def __len__(self) -> int:
+        return len(self._load())
+
+
+# ---------------------------------------------------------------------------
 # PlanHdf — public entry point
 # ---------------------------------------------------------------------------
 
@@ -789,6 +1327,8 @@ class PlanHdf(GeometryHdf):
     def __init__(self, filename: str | Path) -> None:
         super().__init__(filename)
         self._plan_flow_areas: FlowAreaResultsCollection | None = None
+        self._plan_storage_areas: StorageAreaResultsCollection | None = None
+        self._sa_connections: SA2DConnectionCollection | None = None
 
     # ------------------------------------------------------------------
     # Time stamps
@@ -820,3 +1360,21 @@ class PlanHdf(GeometryHdf):
         if self._plan_flow_areas is None:
             self._plan_flow_areas = FlowAreaResultsCollection(self._hdf)
         return self._plan_flow_areas
+
+    @property
+    def storage_areas(self) -> StorageAreaResultsCollection:
+        """Access storage areas with both geometry and plan results data."""
+        if self._plan_storage_areas is None:
+            self._plan_storage_areas = StorageAreaResultsCollection(self._hdf)
+        return self._plan_storage_areas
+
+    @property
+    def storage_area_connections(self) -> SA2DConnectionCollection:
+        """Access SA/2D hydraulic connections (levees, dams, gates, etc.).
+
+        Each connection can link a Storage Area to a 2-D Flow Area, two
+        Storage Areas, or two 2-D Flow Areas.
+        """
+        if self._sa_connections is None:
+            self._sa_connections = SA2DConnectionCollection(self._hdf)
+        return self._sa_connections

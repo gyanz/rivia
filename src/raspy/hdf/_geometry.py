@@ -3,12 +3,15 @@
 Provides structured access to 2-D flow-area mesh data:
 cell centres, face connectivity, hydraulic property tables, etc.
 
+Also provides access to storage areas and boundary condition lines.
+
 Derived from archive/ras_tools/r2d/ras_io.py and
 archive/ras_tools/r2d/ras2d_cell_velocity.py.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -26,6 +29,9 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 _GEOM_2D_ROOT = "Geometry/2D Flow Areas"
 _GEOM_2D_ATTRS = f"{_GEOM_2D_ROOT}/Attributes"
+_SA_ROOT = "Geometry/Storage Areas"
+_BC_ROOT = "Geometry/Boundary Condition Lines"
+_STRUCT_ROOT = "Geometry/Structures"
 
 
 # ---------------------------------------------------------------------------
@@ -329,6 +335,802 @@ class FlowAreaCollection:
 
 
 # ---------------------------------------------------------------------------
+# StorageArea / StorageAreaCollection
+# ---------------------------------------------------------------------------
+
+
+def _decode(value: bytes | str) -> str:
+    """Decode a byte-string field from an HDF structured array."""
+    if isinstance(value, bytes):
+        return value.decode("utf-8").strip()
+    return str(value).strip()
+
+
+@dataclass
+class StorageArea:
+    """Geometry for a single HEC-RAS storage area (reservoir, pond, etc.).
+
+    Attributes
+    ----------
+    name:
+        Name of the storage area.
+    mode:
+        Storage mode string from HEC-RAS (e.g. ``"Elev Vol RC"`` for an
+        elevation-volume rating curve, or ``"Normal"`` for a flat-pool).
+    boundary:
+        x, y coordinates of the storage area boundary polygon.
+        Shape ``(n_pts, 2)``.
+    volume_elevation:
+        Elevation-volume rating curve.  Shape ``(n_pairs, 2)`` with columns
+        ``[elevation, volume]``.  Empty array (shape ``(0, 2)``) when the
+        storage area has no rating curve (e.g. flat-pool mode).
+    """
+
+    name: str
+    mode: str
+    boundary: np.ndarray  # (n_pts, 2)
+    volume_elevation: np.ndarray  # (n_pairs, 2): [elevation, volume]
+
+    @property
+    def elevations(self) -> np.ndarray:
+        """Elevation column of the rating curve.  Shape ``(n_pairs,)``."""
+        return self.volume_elevation[:, 0]
+
+    @property
+    def volumes(self) -> np.ndarray:
+        """Volume column of the rating curve.  Shape ``(n_pairs,)``."""
+        return self.volume_elevation[:, 1]
+
+    def volume_at_elevation(self, wse: float) -> float:
+        """Return interpolated stored volume at *wse*.
+
+        Uses linear interpolation via ``numpy.interp``.  Values outside the
+        rating-curve range are clamped to the curve endpoints.
+
+        Raises
+        ------
+        ValueError
+            If the storage area has no volume-elevation rating curve.
+        """
+        if len(self.volume_elevation) == 0:
+            raise ValueError(
+                f"Storage area {self.name!r} has no volume-elevation rating curve "
+                f"(mode={self.mode!r})."
+            )
+        return float(np.interp(wse, self.elevations, self.volumes))
+
+
+class StorageAreaCollection:
+    """Access all storage areas stored in an HDF geometry file.
+
+    Parameters
+    ----------
+    hdf:
+        Open ``h5py.File`` handle.
+    """
+
+    def __init__(self, hdf: "h5py.File") -> None:
+        self._hdf = hdf
+        self._items: dict[str, StorageArea] | None = None
+
+    def _load(self) -> dict[str, StorageArea]:
+        if self._items is not None:
+            return self._items
+
+        if _SA_ROOT not in self._hdf:
+            self._items = {}
+            return self._items
+
+        root = self._hdf[_SA_ROOT]
+        attrs = np.array(root["Attributes"])
+        poly_info = np.array(root["Polygon Info"])  # (n, 4): [start_pt, n_pts, ...]
+        poly_pts = np.array(root["Polygon Points"])  # (total, 2)
+        ve_info = np.array(root["Volume Elevation Info"])  # (n, 2): [start, count]
+        ve_vals = np.array(root["Volume Elevation Values"])  # (total, 2)
+
+        items: dict[str, StorageArea] = {}
+        for i, row in enumerate(attrs):
+            name = _decode(row["Name"])
+            mode = _decode(row["Mode"])
+
+            start_pt = int(poly_info[i, 0])
+            n_pts = int(poly_info[i, 1])
+            boundary = poly_pts[start_pt : start_pt + n_pts].astype(float)
+
+            ve_start = int(ve_info[i, 0])
+            ve_count = int(ve_info[i, 1])
+            if ve_count > 0:
+                vol_elev = ve_vals[ve_start : ve_start + ve_count].astype(float)
+            else:
+                vol_elev = np.empty((0, 2), dtype=float)
+
+            items[name] = StorageArea(
+                name=name,
+                mode=mode,
+                boundary=boundary,
+                volume_elevation=vol_elev,
+            )
+
+        self._items = items
+        return self._items
+
+    @property
+    def names(self) -> list[str]:
+        """Names of all storage areas in the file."""
+        return list(self._load().keys())
+
+    @property
+    def summary(self) -> pd.DataFrame:
+        """One row per storage area with basic attributes.
+
+        Columns: ``name``, ``mode``, ``n_boundary_points``,
+        ``n_elev_vol_pairs``.
+        """
+        rows = [
+            {
+                "name": sa.name,
+                "mode": sa.mode,
+                "n_boundary_points": len(sa.boundary),
+                "n_elev_vol_pairs": len(sa.volume_elevation),
+            }
+            for sa in self._load().values()
+        ]
+        return pd.DataFrame(rows)
+
+    def __getitem__(self, name: str) -> StorageArea:
+        items = self._load()
+        if name not in items:
+            raise KeyError(
+                f"Storage area {name!r} not found. Available: {self.names}"
+            )
+        return items[name]
+
+    def __contains__(self, name: str) -> bool:
+        return name in self._load()
+
+    def __iter__(self):
+        return iter(self._load())
+
+    def __len__(self) -> int:
+        return len(self._load())
+
+
+# ---------------------------------------------------------------------------
+# BoundaryConditionLine / BoundaryConditionCollection
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class BoundaryConditionLine:
+    """A single HEC-RAS boundary condition line.
+
+    Attributes
+    ----------
+    name:
+        Name of the BC line (e.g. ``"DSNormalDepth1"``).
+    connected_area:
+        Name of the 2-D flow area or storage area this line belongs to
+        (the ``SA-2D`` field in the HDF attributes table).
+    bc_type:
+        Type string (e.g. ``"External"`` or ``"Internal"``).
+    polyline:
+        x, y coordinates of the BC line.  Shape ``(n_pts, 2)``.
+    """
+
+    name: str
+    connected_area: str
+    bc_type: str
+    polyline: np.ndarray  # (n_pts, 2)
+
+
+class BoundaryConditionCollection:
+    """Access all boundary condition lines in an HDF geometry file.
+
+    Parameters
+    ----------
+    hdf:
+        Open ``h5py.File`` handle.
+    """
+
+    def __init__(self, hdf: "h5py.File") -> None:
+        self._hdf = hdf
+        self._items: dict[str, BoundaryConditionLine] | None = None
+
+    def _load(self) -> dict[str, BoundaryConditionLine]:
+        if self._items is not None:
+            return self._items
+
+        if _BC_ROOT not in self._hdf:
+            self._items = {}
+            return self._items
+
+        root = self._hdf[_BC_ROOT]
+        attrs = np.array(root["Attributes"])
+        poly_info = np.array(root["Polyline Info"])  # (n, 4): [start_pt, n_pts, ...]
+        poly_pts = np.array(root["Polyline Points"])  # (total, 2)
+
+        # Resolve the connected-area field name (varies: "SA-2D" or "SA/2D Area")
+        sa_field = next(
+            (f for f in attrs.dtype.names if "2D" in f or "2d" in f),
+            None,
+        )
+
+        items: dict[str, BoundaryConditionLine] = {}
+        for i, row in enumerate(attrs):
+            name = _decode(row["Name"])
+            connected = _decode(row[sa_field]) if sa_field else ""
+            bc_type = _decode(row["Type"])
+
+            start_pt = int(poly_info[i, 0])
+            n_pts = int(poly_info[i, 1])
+            polyline = poly_pts[start_pt : start_pt + n_pts].astype(float)
+
+            items[name] = BoundaryConditionLine(
+                name=name,
+                connected_area=connected,
+                bc_type=bc_type,
+                polyline=polyline,
+            )
+
+        self._items = items
+        return self._items
+
+    @property
+    def names(self) -> list[str]:
+        """Names of all boundary condition lines in the file."""
+        return list(self._load().keys())
+
+    @property
+    def summary(self) -> pd.DataFrame:
+        """One row per BC line with basic attributes.
+
+        Columns: ``name``, ``connected_area``, ``type``, ``n_points``.
+        """
+        rows = [
+            {
+                "name": bc.name,
+                "connected_area": bc.connected_area,
+                "type": bc.bc_type,
+                "n_points": len(bc.polyline),
+            }
+            for bc in self._load().values()
+        ]
+        return pd.DataFrame(rows)
+
+    def __getitem__(self, name: str) -> BoundaryConditionLine:
+        items = self._load()
+        if name not in items:
+            raise KeyError(
+                f"Boundary condition line {name!r} not found. "
+                f"Available: {self.names}"
+            )
+        return items[name]
+
+    def __contains__(self, name: str) -> bool:
+        return name in self._load()
+
+    def __iter__(self):
+        return iter(self._load())
+
+    def __len__(self) -> int:
+        return len(self._load())
+
+
+# ---------------------------------------------------------------------------
+# Structure / SA2DConnection / StructureCollection
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class Weir:
+    """Overflow weir parameters read from ``Geometry/Structures/Attributes``.
+
+    Present on :class:`Bridge`, :class:`Inline`, and :class:`Lateral`
+    structures when *mode* is ``'Weir/Gate/Culverts'``.
+
+    Attributes
+    ----------
+    width:
+        Weir crest length perpendicular to flow (HDF ``Weir Width``).
+    coefficient:
+        Discharge coefficient (HDF ``Weir Coef``).
+    shape:
+        Crest shape: ``'Broad Crested'``, ``'Ogee'``, etc.
+        (HDF ``Weir Shape``).
+    max_submergence:
+        Maximum submergence ratio above which flow is fully submerged
+        (HDF ``Weir Max Submergence``).
+    min_elevation:
+        Minimum crest elevation; ``nan`` when not set
+        (HDF ``Weir Min Elevation``).
+    us_slope:
+        Upstream face slope H:V (HDF ``Weir US Slope``).
+    ds_slope:
+        Downstream face slope H:V (HDF ``Weir DS Slope``).
+    skew:
+        Skew angle in degrees (HDF ``Weir Skew``).
+    use_water_surface:
+        When ``True`` the water-surface elevation is used as the weir
+        reference head; when ``False`` the energy grade line is used
+        (HDF ``Use WS for Weir Reference``).
+    """
+
+    width: float
+    coefficient: float
+    shape: str
+    max_submergence: float
+    min_elevation: float
+    us_slope: float
+    ds_slope: float
+    skew: float
+    use_water_surface: bool
+
+
+@dataclass
+class GateOpening:
+    """One physical opening within a :class:`GateGroup`.
+
+    Attributes
+    ----------
+    name:
+        Opening label (HDF ``Name`` in ``Gate Groups/Openings/Attributes``).
+    station:
+        Lateral station of this opening along the structure centreline
+        (HDF ``Station``).
+    """
+
+    name: str
+    station: float
+
+
+@dataclass
+class GateGroup:
+    """One gate group from ``Geometry/Structures/Gate Groups/Attributes``.
+
+    A gate group defines a set of identical gate openings.  Each opening
+    in the group shares the same geometry (width, height, invert, coefficients)
+    but is placed at a different station along the structure.
+
+    Attributes
+    ----------
+    name:
+        Gate group label (e.g. ``'Gate #1'``).
+    width:
+        Gate opening width (ft or m).
+    height:
+        Gate opening height (ft or m).
+    invert:
+        Gate sill elevation.
+    sluice_coefficient:
+        Sluice gate discharge coefficient.
+    radial_coefficient:
+        Radial (Tainter) gate discharge coefficient.
+    weir_coefficient:
+        Overflow weir coefficient for the gate crest.
+    spillway_shape:
+        Crest shape used when gate overflows (e.g. ``'Broad Crested'``).
+    openings:
+        Individual openings in this group, one per physical gate bay.
+    """
+
+    name: str
+    width: float
+    height: float
+    invert: float
+    sluice_coefficient: float
+    radial_coefficient: float
+    weir_coefficient: float
+    spillway_shape: str
+    openings: list[GateOpening] = field(default_factory=list)
+
+
+@dataclass
+class Structure:
+    """Base class for one HEC-RAS structure from ``Geometry/Structures/Attributes``.
+
+    Attributes
+    ----------
+    mode:
+        HDF ``Mode`` field (e.g. ``'Weir/Gate/Culverts'``).  Empty string
+        when the field is blank.
+    upstream_type:
+        HDF ``US Type`` field: ``'XS'`` (1-D cross section), ``'SA'``
+        (storage area), ``'2D'`` (2-D flow area), or ``'--'`` (unspecified /
+        treated as storage area by HEC-RAS).
+    downstream_type:
+        HDF ``DS Type`` field — same vocabulary as *upstream_type*.
+    centerline:
+        x, y coordinates of the structure centreline.  Shape ``(n_pts, 2)``.
+    """
+
+    mode: str
+    upstream_type: str
+    downstream_type: str
+    centerline: np.ndarray  # (n_pts, 2)
+
+
+@dataclass
+class Bridge(Structure):
+    """Bridge structure embedded in a 1-D HEC-RAS reach.
+
+    Both sides are always ``'XS'``.
+
+    Attributes
+    ----------
+    location:
+        ``(river, reach, rs)`` of this bridge in the 1-D geometry
+        (HDF ``River`` / ``Reach`` / ``RS`` fields).
+    upstream_node:
+        ``(river, reach, rs)`` of the adjacent upstream cross section
+        (HDF ``US River`` / ``US Reach`` / ``US RS``).
+    downstream_node:
+        ``(river, reach, rs)`` of the adjacent downstream cross section
+        (HDF ``DS River`` / ``DS Reach`` / ``DS RS``).
+    weir:
+        Weir overflow parameters; ``None`` when *mode* is empty (pure bridge,
+        no overflow weir modelled).
+    gate_groups:
+        Gate groups attached to this structure (empty list when none).
+    """
+
+    location: tuple[str, str, str] = ("", "", "")
+    upstream_node: tuple[str, str, str] = ("", "", "")
+    downstream_node: tuple[str, str, str] = ("", "", "")
+    weir: Weir | None = None
+    gate_groups: list[GateGroup] = field(default_factory=list)
+
+
+@dataclass
+class Inline(Structure):
+    """Inline structure (e.g. inline weir/dam) embedded in a 1-D HEC-RAS reach.
+
+    Both sides are always ``'XS'``.
+
+    Attributes
+    ----------
+    location:
+        ``(river, reach, rs)`` of this structure in the 1-D geometry.
+    upstream_node:
+        ``(river, reach, rs)`` of the adjacent upstream cross section.
+    downstream_node:
+        ``(river, reach, rs)`` of the adjacent downstream cross section.
+    weir:
+        Weir overflow parameters; ``None`` when *mode* is empty.
+    gate_groups:
+        Gate groups attached to this structure (empty list when none).
+    """
+
+    location: tuple[str, str, str] = ("", "", "")
+    upstream_node: tuple[str, str, str] = ("", "", "")
+    downstream_node: tuple[str, str, str] = ("", "", "")
+    weir: Weir | None = None
+    gate_groups: list[GateGroup] = field(default_factory=list)
+
+
+@dataclass
+class Lateral(Structure):
+    """Lateral structure connecting a 1-D reach to a Storage Area or 2-D Flow Area.
+
+    The upstream side is always ``'XS'`` (the 1-D reach).  The downstream
+    side connects to a Storage Area (``'SA'``), a 2-D Flow Area (``'2D'``),
+    or nothing when flow exits the system (empty *downstream_type*).
+
+    Attributes
+    ----------
+    location:
+        ``(river, reach, rs)`` of this structure in the 1-D geometry.
+    upstream_node:
+        ``(river, reach, rs)`` of the adjacent upstream cross section.
+    downstream_node:
+        Name of the connected Storage Area or 2-D Flow Area
+        (HDF ``DS SA/2D``).  Empty string when flow exits the system.
+    weir:
+        Weir overflow parameters; ``None`` when *mode* is empty.
+    gate_groups:
+        Gate groups attached to this structure (empty list when none).
+    """
+
+    location: tuple[str, str, str] = ("", "", "")
+    upstream_node: tuple[str, str, str] = ("", "", "")
+    downstream_node: str = ""
+    weir: Weir | None = None
+    gate_groups: list[GateGroup] = field(default_factory=list)
+
+
+@dataclass
+class SA2DConnection(Structure):
+    """Connection structure linking two Storage Areas or 2-D Flow Areas.
+
+    Both sides are ``'SA'``, ``'2D'``, or ``'--'`` (treated as SA by
+    HEC-RAS).  Common examples: dam breach connection, levee between two
+    2-D domains, SA-to-SA link.
+
+    Attributes
+    ----------
+    name:
+        User-given connection name from the HDF ``Connection`` field
+        (e.g. ``"Dam"``, ``"Lower Levee"``).
+    upstream_node:
+        Name of the upstream Storage Area or 2-D Flow Area
+        (HDF ``US SA/2D``).
+    downstream_node:
+        Name of the downstream Storage Area or 2-D Flow Area
+        (HDF ``DS SA/2D``).
+
+    Notes
+    -----
+    Plan-result groups (see :class:`~raspy.hdf.SA2DConnectionResults`) may
+    use a different naming convention: for 2D↔2D connections HEC-RAS prefixes
+    the flow area name (e.g. geometry ``"Lower Levee"`` → plan result
+    ``"BaldEagleCr Lower Levee"``).
+    """
+
+    name: str = ""
+    upstream_node: str = ""
+    downstream_node: str = ""
+
+
+class StructureCollection:
+    """Access all structures stored in ``Geometry/Structures/Attributes``.
+
+    The collection is keyed by a string identifier:
+
+    * :class:`SA2DConnection` — the HDF ``Connection`` field (user-given name).
+    * :class:`Bridge`, :class:`Inline`, :class:`Lateral` — ``"River Reach RS"``
+      built from the HDF ``River`` / ``Reach`` / ``RS`` fields.
+
+    Use the typed filter properties (:attr:`connections`, :attr:`bridges`,
+    :attr:`laterals`, :attr:`inlines`) to narrow by structure subclass.
+
+    Parameters
+    ----------
+    hdf:
+        Open ``h5py.File`` handle.
+    """
+
+    def __init__(self, hdf: "h5py.File") -> None:
+        self._hdf = hdf
+        self._items: dict[str, Structure] | None = None
+
+    # ------------------------------------------------------------------
+    # Internal loader
+    # ------------------------------------------------------------------
+
+    def _load_gate_groups(self) -> dict[int, list[GateGroup]]:
+        """Return gate groups keyed by structure row index (0-based)."""
+        gg_root = f"{_STRUCT_ROOT}/Gate Groups"
+        if gg_root not in self._hdf:
+            return {}
+
+        gg_ds = self._hdf[f"{gg_root}/Attributes"]
+        gg_arr = np.array(gg_ds)
+        gg_fn = gg_ds.dtype.names
+
+        def _gg(row, f: str) -> str:
+            return _decode(row[f]) if f in gg_fn else ""
+
+        def _ggf(row, f: str) -> float:
+            return float(row[f]) if f in gg_fn else float("nan")
+
+        # Build openings dict: (struct_id, gate_group_local_id) → [GateOpening]
+        openings_map: dict[tuple[int, int], list[GateOpening]] = {}
+        op_path = f"{gg_root}/Openings/Attributes"
+        if op_path in self._hdf:
+            op_ds = self._hdf[op_path]
+            op_arr = np.array(op_ds)
+            op_fn = op_ds.dtype.names
+            for op_row in op_arr:
+                sid = int(op_row["Structure ID"]) if "Structure ID" in op_fn else -1
+                gid = int(op_row["Gate Group ID"]) if "Gate Group ID" in op_fn else 0
+                name = _decode(op_row["Name"]) if "Name" in op_fn else ""
+                station = float(op_row["Station"]) if "Station" in op_fn else float("nan")
+                key = (sid, gid)
+                openings_map.setdefault(key, []).append(GateOpening(name=name, station=station))
+
+        # Build gate groups, tracking local index per structure
+        gate_groups_map: dict[int, list[GateGroup]] = {}
+        local_count: dict[int, int] = {}
+        for gg_row in gg_arr:
+            sid = int(gg_row["Structure ID"]) if "Structure ID" in gg_fn else -1
+            local_id = local_count.get(sid, 0)
+            local_count[sid] = local_id + 1
+            gg = GateGroup(
+                name=_gg(gg_row, "Name"),
+                width=_ggf(gg_row, "Width"),
+                height=_ggf(gg_row, "Height"),
+                invert=_ggf(gg_row, "Invert"),
+                sluice_coefficient=_ggf(gg_row, "Sluice Coef"),
+                radial_coefficient=_ggf(gg_row, "Radial Coef"),
+                weir_coefficient=_ggf(gg_row, "Weir Coef"),
+                spillway_shape=_gg(gg_row, "Spillway Shape"),
+                openings=openings_map.get((sid, local_id), []),
+            )
+            gate_groups_map.setdefault(sid, []).append(gg)
+
+        return gate_groups_map
+
+    def _load(self) -> dict[str, Structure]:
+        if self._items is not None:
+            return self._items
+
+        if _STRUCT_ROOT not in self._hdf:
+            self._items = {}
+            return self._items
+
+        root = self._hdf[_STRUCT_ROOT]
+        attrs_ds = root["Attributes"]
+        attrs = np.array(attrs_ds)
+        cl_info = np.array(root["Centerline Info"])   # (n, 4): [start, count, ...]
+        cl_pts = np.array(root["Centerline Points"])  # (total, 2)
+
+        fn = attrs_ds.dtype.names  # available field names
+
+        def _get(row, f: str) -> str:
+            return _decode(row[f]) if f in fn else ""
+
+        def _getf(row, f: str) -> float:
+            return float(row[f]) if f in fn else float("nan")
+
+        def _xs_node(r: str, rc: str, rstation: str) -> tuple[str, str, str]:
+            return (r, rc, rstation)
+
+        def _build_weir(row) -> Weir:
+            return Weir(
+                width=_getf(row, "Weir Width"),
+                coefficient=_getf(row, "Weir Coef"),
+                shape=_get(row, "Weir Shape"),
+                max_submergence=_getf(row, "Weir Max Submergence"),
+                min_elevation=_getf(row, "Weir Min Elevation"),
+                us_slope=_getf(row, "Weir US Slope"),
+                ds_slope=_getf(row, "Weir DS Slope"),
+                skew=_getf(row, "Weir Skew"),
+                use_water_surface=bool(int(row["Use WS for Weir Reference"]))
+                if "Use WS for Weir Reference" in fn else False,
+            )
+
+        gate_groups_map = self._load_gate_groups()
+
+        items: dict[str, Structure] = {}
+        for i, row in enumerate(attrs):
+            typ  = _get(row, "Type")
+            mode = _get(row, "Mode")
+            us_t = _get(row, "US Type")
+            ds_t = _get(row, "DS Type")
+
+            start_pt = int(cl_info[i, 0])
+            n_pts    = int(cl_info[i, 1])
+            centerline = cl_pts[start_pt : start_pt + n_pts].astype(float)
+
+            base = dict(mode=mode, upstream_type=us_t, downstream_type=ds_t, centerline=centerline)
+
+            if typ == "Connection":
+                conn_name = _get(row, "Connection") or f"Connection_{i}"
+                key = conn_name
+                if key in items:
+                    key = f"{key}_{i}"
+                items[key] = SA2DConnection(
+                    **base,
+                    name=conn_name,
+                    upstream_node=_get(row, "US SA/2D"),
+                    downstream_node=_get(row, "DS SA/2D"),
+                )
+            else:
+                river = _get(row, "River")
+                reach = _get(row, "Reach")
+                rs    = _get(row, "RS")
+                key = f"{river} {reach} {rs}".strip() if (river or reach or rs) else f"{typ}_{i}"
+                if key in items:
+                    key = f"{key}_{i}"
+                location = (river, reach, rs)
+                us_xs = _xs_node(_get(row, "US River"), _get(row, "US Reach"), _get(row, "US RS"))
+                weir = _build_weir(row) if mode else None
+                gate_groups = gate_groups_map.get(i, [])
+                if typ == "Bridge":
+                    items[key] = Bridge(
+                        **base,
+                        location=location,
+                        upstream_node=us_xs,
+                        downstream_node=_xs_node(_get(row, "DS River"), _get(row, "DS Reach"), _get(row, "DS RS")),
+                        weir=weir,
+                        gate_groups=gate_groups,
+                    )
+                elif typ == "Inline":
+                    items[key] = Inline(
+                        **base,
+                        location=location,
+                        upstream_node=us_xs,
+                        downstream_node=_xs_node(_get(row, "DS River"), _get(row, "DS Reach"), _get(row, "DS RS")),
+                        weir=weir,
+                        gate_groups=gate_groups,
+                    )
+                elif typ == "Lateral":
+                    items[key] = Lateral(
+                        **base,
+                        location=location,
+                        upstream_node=us_xs,
+                        downstream_node=_get(row, "DS SA/2D"),
+                        weir=weir,
+                        gate_groups=gate_groups,
+                    )
+                else:
+                    items[key] = Structure(**base)  # unknown type, store as base
+
+        self._items = items
+        return self._items
+
+    # ------------------------------------------------------------------
+    # Public interface
+    # ------------------------------------------------------------------
+
+    @property
+    def names(self) -> list[str]:
+        """Keys of all structures in the collection."""
+        return list(self._load().keys())
+
+    @property
+    def connections(self) -> dict[str, SA2DConnection]:
+        """All :class:`SA2DConnection` instances keyed by connection name."""
+        return {k: v for k, v in self._load().items() if isinstance(v, SA2DConnection)}
+
+    @property
+    def bridges(self) -> dict[str, Bridge]:
+        """All :class:`Bridge` instances keyed by ``"River Reach RS"``."""
+        return {k: v for k, v in self._load().items() if isinstance(v, Bridge)}
+
+    @property
+    def laterals(self) -> dict[str, Lateral]:
+        """All :class:`Lateral` instances keyed by ``"River Reach RS"``."""
+        return {k: v for k, v in self._load().items() if isinstance(v, Lateral)}
+
+    @property
+    def inlines(self) -> dict[str, Inline]:
+        """All :class:`Inline` instances keyed by ``"River Reach RS"``."""
+        return {k: v for k, v in self._load().items() if isinstance(v, Inline)}
+
+    @property
+    def summary(self) -> pd.DataFrame:
+        """One row per structure with basic attributes.
+
+        Columns: ``key``, ``subclass``, ``mode``, ``upstream_type``,
+        ``upstream_node``, ``downstream_type``, ``downstream_node``,
+        ``n_centerline_points``.
+
+        ``upstream_node`` / ``downstream_node`` are ``(river, reach, rs)``
+        tuples for :class:`Bridge` and :class:`Inline` sides, and plain
+        strings (area names) for :class:`SA2DConnection` and
+        :class:`Lateral` downstream sides.
+        """
+        rows = []
+        for key, s in self._load().items():
+            rows.append({
+                "key": key,
+                "subclass": type(s).__name__,
+                "mode": s.mode,
+                "upstream_type": s.upstream_type,
+                "upstream_node": getattr(s, "upstream_node", None),
+                "downstream_type": s.downstream_type,
+                "downstream_node": getattr(s, "downstream_node", None),
+                "n_centerline_points": len(s.centerline),
+            })
+        return pd.DataFrame(rows)
+
+    def __getitem__(self, key: str) -> Structure:
+        items = self._load()
+        if key not in items:
+            raise KeyError(f"Structure {key!r} not found. Available: {self.names}")
+        return items[key]
+
+    def __contains__(self, key: str) -> bool:
+        return key in self._load()
+
+    def __iter__(self):
+        return iter(self._load())
+
+    def __len__(self) -> int:
+        return len(self._load())
+
+
+# ---------------------------------------------------------------------------
 # GeometryHdf — public entry point
 # ---------------------------------------------------------------------------
 
@@ -354,6 +1156,9 @@ class GeometryHdf(_HdfFile):
     def __init__(self, filename: str | Path) -> None:
         super().__init__(filename)
         self._flow_areas: FlowAreaCollection | None = None
+        self._storage_areas: StorageAreaCollection | None = None
+        self._boundary_condition_lines: BoundaryConditionCollection | None = None
+        self._structures: StructureCollection | None = None
 
     # ------------------------------------------------------------------
     # Collections
@@ -365,3 +1170,24 @@ class GeometryHdf(_HdfFile):
         if self._flow_areas is None:
             self._flow_areas = FlowAreaCollection(self._hdf)
         return self._flow_areas
+
+    @property
+    def storage_areas(self) -> StorageAreaCollection:
+        """Access storage areas (reservoirs, ponds) stored in the geometry HDF."""
+        if self._storage_areas is None:
+            self._storage_areas = StorageAreaCollection(self._hdf)
+        return self._storage_areas
+
+    @property
+    def boundary_condition_lines(self) -> BoundaryConditionCollection:
+        """Access boundary condition lines stored in the geometry HDF."""
+        if self._boundary_condition_lines is None:
+            self._boundary_condition_lines = BoundaryConditionCollection(self._hdf)
+        return self._boundary_condition_lines
+
+    @property
+    def structures(self) -> StructureCollection:
+        """Access all structures (connections, bridges, laterals, inline weirs)."""
+        if self._structures is None:
+            self._structures = StructureCollection(self._hdf)
+        return self._structures

@@ -1,7 +1,32 @@
 """Read/write HEC-RAS HDF5 output files."""
 
-from ._geometry import FlowArea, FlowAreaCollection, GeometryHdf
-from ._plan import FlowAreaResults, FlowAreaResultsCollection, PlanHdf
+from ._geometry import (
+    BoundaryConditionCollection,
+    BoundaryConditionLine,
+    Bridge,
+    FlowArea,
+    FlowAreaCollection,
+    GateGroup,
+    GateOpening,
+    GeometryHdf,
+    Inline,
+    Lateral,
+    SA2DConnection,
+    StorageArea,
+    StorageAreaCollection,
+    Structure,
+    StructureCollection,
+    Weir,
+)
+from ._plan import (
+    FlowAreaResults,
+    FlowAreaResultsCollection,
+    PlanHdf,
+    SA2DConnectionCollection,
+    SA2DConnectionResults,
+    StorageAreaResults,
+    StorageAreaResultsCollection,
+)
 
 __all__ = [
     "GeometryHdf",
@@ -10,4 +35,21 @@ __all__ = [
     "FlowAreaResultsCollection",
     "FlowArea",
     "FlowAreaResults",
+    "StorageArea",
+    "StorageAreaCollection",
+    "StorageAreaResults",
+    "StorageAreaResultsCollection",
+    "SA2DConnectionResults",
+    "SA2DConnectionCollection",
+    "BoundaryConditionLine",
+    "BoundaryConditionCollection",
+    "Structure",
+    "Bridge",
+    "Inline",
+    "Lateral",
+    "SA2DConnection",
+    "StructureCollection",
+    "Weir",
+    "GateGroup",
+    "GateOpening",
 ]
