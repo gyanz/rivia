@@ -530,7 +530,7 @@ class FlowAreaResults(FlowArea):
 
         return max_speed, max_vecs
 
-    def export_raster(
+    def _export_raster(
         self,
         variable: Literal["water_surface", "depth", "cell_speed", "cell_velocity"],
         timestep: int | None = None,
@@ -740,6 +740,182 @@ class FlowAreaResults(FlowArea):
             min_value=min_value,
             snap_to_reference_extent=snap_to_reference_extent,
             adjacency=resolved_adjacency,
+        )
+
+    def export_raster(
+        self,
+        variable: Literal["water_surface", "depth", "cell_speed", "cell_velocity"],
+        timestep: int | None = None,
+        output_path: str | Path | None = None,
+        *,
+        cell_size: float | None = None,
+        reference_transform: Any | None = None,
+        reference_raster: str | Path | None = None,
+        snap_to_reference_extent: bool = True,
+        crs: Any | None = None,
+        nodata: float = -9999.0,
+        min_value: float | None = None,
+        vel_method: Literal[
+            "area_weighted", "length_weighted", "flow_ratio"
+        ] = "area_weighted",
+        wse_interp: Literal["average", "sloped"] = "average",
+    ) -> Path | rasterio.io.DatasetReader:
+        """Interpolate a field to a GeoTIFF using mesh-conforming triangulation.
+
+        Uses :func:`~raspy.geo.raster.mesh_to_raster` which sub-divides each
+        mesh cell into triangles from the cell centre to each bounding face,
+        then performs linear (barycentric) interpolation within those triangles.
+        This prevents spurious fill across dry gaps or disconnected wet islands,
+        matching the interpolation used by HEC-RAS RASMapper.
+
+        Requires ``rasterio`` and ``matplotlib`` (``pip install raspy[geo]``).
+
+        Parameters
+        ----------
+        variable:
+            ``"water_surface"`` — water-surface elevation.
+            ``"depth"``         — water depth (requires *reference_raster*):
+                                  WSE is interpolated then the DEM pixel value
+                                  is subtracted; negative depths are clamped
+                                  to 0.
+            ``"cell_speed"``    — WLS-reconstructed velocity magnitude.
+            ``"cell_velocity"`` — WLS-reconstructed velocity vector
+                                  (4 bands: Vx, Vy, Speed, Direction).
+        timestep:
+            0-based time index.  Pass ``None`` (default) to use maximum values
+            (only valid for ``"water_surface"`` and ``"depth"``).
+        output_path:
+            Destination ``.tif`` file path.  ``None`` returns an in-memory
+            ``rasterio.DatasetReader``; the caller must close it.
+        cell_size:
+            Output pixel size in model coordinate units.  Defaults to the
+            median face length when no reference grid is supplied.
+        reference_transform:
+            ``rasterio.transform.Affine`` for pixel-perfect alignment.
+            Mutually exclusive with *reference_raster*.
+        reference_raster:
+            Existing GeoTIFF whose transform and CRS are inherited.
+            **Required** when ``variable="depth"``.
+        snap_to_reference_extent:
+            When *reference_raster* is given, extend the output to its full
+            extent (default ``True``).
+        crs:
+            Output CRS.  When *reference_raster* is given and *crs* is
+            ``None``, the reference raster CRS is inherited.
+        nodata:
+            Fill value for pixels outside the wet mesh.
+        min_value:
+            Dry-cell threshold.  For ``"depth"``, cells whose HDF depth
+            (WSE minus cell minimum elevation) is below this value are
+            excluded before interpolation.  For other variables, cells
+            whose scalar value (or vector speed) is below this threshold
+            are excluded.
+        vel_method:
+            Velocity reconstruction scheme passed to
+            :meth:`cell_velocity_vectors`.
+        wse_interp:
+            Face WSE interpolation method passed to
+            :meth:`cell_velocity_vectors`.
+
+        Returns
+        -------
+        Path
+            Written GeoTIFF path (when *output_path* is given).
+        rasterio.io.DatasetReader
+            Open in-memory dataset (when *output_path* is ``None``).
+
+        Raises
+        ------
+        ImportError
+            If ``rasterio`` or ``matplotlib`` are not installed.
+        ValueError
+            If ``variable="depth"`` and *reference_raster* is not provided,
+            or if ``timestep=None`` is used with ``"cell_speed"`` or
+            ``"cell_velocity"``.
+        """
+        from raspy.geo import raster as _raster  # deferred — geo not required
+
+        # ── 0. Guards ──────────────────────────────────────────────────
+        if variable == "depth" and reference_raster is None:
+            raise ValueError(
+                "reference_raster is required when variable='depth'. "
+                "Provide a path to a terrain DEM GeoTIFF."
+            )
+        if variable in ("cell_speed", "cell_velocity") and timestep is None:
+            raise ValueError(
+                "timestep=None is not supported for cell_speed / cell_velocity. "
+                "Provide an explicit timestep index."
+            )
+
+        # ── 1. Resolve values array ────────────────────────────────────
+        if variable == "depth":
+            if timestep is None:
+                wse_values = self.max_water_surface["value"].to_numpy()
+                depth_at_cells = self.max_depth()["value"].to_numpy()
+            else:
+                wse_values = np.array(self.water_surface[timestep, : self.n_cells])
+                depth_at_cells = self.depth(timestep)
+            # Pre-mask dry cells by depth so mesh_to_raster sees NaN at those
+            # cell centres and excludes the corresponding triangles.
+            cell_wse = wse_values.copy()
+            if min_value is not None:
+                cell_wse[depth_at_cells < min_value] = np.nan
+        elif variable == "water_surface":
+            if timestep is None:
+                values = self.max_water_surface["value"].to_numpy()
+            else:
+                values = np.array(self.water_surface[timestep, : self.n_cells])
+        elif variable == "cell_speed":
+            values = self.cell_speed(timestep, method=vel_method, wse_interp=wse_interp)
+        elif variable == "cell_velocity":
+            values = self.cell_velocity_vectors(
+                timestep, method=vel_method, wse_interp=wse_interp
+            )
+        else:
+            raise ValueError(f"Unknown variable: {variable!r}")
+
+        # ── 2. Default cell size ───────────────────────────────────────
+        resolved_cell_size = cell_size
+        no_grid = reference_transform is None and reference_raster is None
+        if cell_size is None and no_grid:
+            resolved_cell_size = float(np.median(self.face_normals[:, 2]))
+
+        # ── 3. Common mesh topology keyword arguments ──────────────────
+        _cfi, _cfv = self.cell_face_info  # property returns (info, values) tuple
+        mesh_kw: dict[str, Any] = dict(
+            cell_centers=self.cell_centers,
+            facepoint_coordinates=self.facepoint_coordinates,
+            face_facepoint_indexes=self.face_facepoint_indexes,
+            face_cell_indexes=self.face_cell_indexes,
+            cell_face_info=_cfi,
+            cell_face_values=_cfv,
+            cell_size=resolved_cell_size,
+            reference_transform=reference_transform,
+            reference_raster=reference_raster,
+            crs=crs,
+            nodata=nodata,
+            snap_to_reference_extent=snap_to_reference_extent,
+        )
+
+        # ── 4. Delegate to mesh_to_raster ─────────────────────────────
+        if variable == "depth":
+            wse_ds = _raster.mesh_to_raster(
+                **mesh_kw,
+                cell_values=cell_wse,
+                output_path=None,   # in-memory; depth written after DEM subtraction
+                min_value=None,     # dry cells already NaN-masked above
+            )
+            result = _raster._depth_from_wse_and_dem(
+                wse_ds, reference_raster, nodata, output_path, min_value=min_value
+            )
+            wse_ds.close()
+            return result
+
+        return _raster.mesh_to_raster(
+            **mesh_kw,
+            cell_values=values,
+            output_path=output_path,
+            min_value=min_value,
         )
 
 

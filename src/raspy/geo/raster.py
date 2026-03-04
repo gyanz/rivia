@@ -400,6 +400,412 @@ def points_to_raster(
     return out_path
 
 
+def _compute_facepoint_values(
+    cell_vals: np.ndarray,
+    face_facepoint_indexes: np.ndarray,
+    face_cell_indexes: np.ndarray,
+    n_cells: int,
+    n_facepoints: int,
+) -> np.ndarray:
+    """Assign interpolated values at mesh facepoints.
+
+    For each facepoint the value is the mean of the face-midpoint values from
+    all adjacent faces.  Each face midpoint is the NaN-aware mean of its two
+    adjacent cell values (or the single cell value for boundary faces).
+    Averaging via face midpoints avoids double-counting a cell that shares two
+    faces at the same vertex.
+
+    Parameters
+    ----------
+    cell_vals : ndarray, shape ``(n_cells,)``
+        Cell-centre scalar values; ``NaN`` marks dry / excluded cells.
+    face_facepoint_indexes : ndarray, shape ``(n_faces, 2)``
+        Start and end facepoint index for each face.
+    face_cell_indexes : ndarray, shape ``(n_faces, 2)``
+        Left and right cell indices; ``-1`` for boundary faces.
+    n_cells, n_facepoints : int
+
+    Returns
+    -------
+    ndarray, shape ``(n_facepoints,)``
+        ``NaN`` where every adjacent face is dry or out-of-domain.
+    """
+    n_faces = len(face_facepoint_indexes)
+    left_cells = face_cell_indexes[:, 0]
+    right_cells = face_cell_indexes[:, 1]
+
+    left_vals = np.full(n_faces, np.nan)
+    right_vals = np.full(n_faces, np.nan)
+
+    valid_left = (left_cells >= 0) & (left_cells < n_cells)
+    valid_right = (right_cells >= 0) & (right_cells < n_cells)
+    left_vals[valid_left] = cell_vals[left_cells[valid_left]]
+    right_vals[valid_right] = cell_vals[right_cells[valid_right]]
+
+    # Face midpoint value: NaN-aware mean of adjacent cells.
+    with np.errstate(all="ignore"):
+        face_vals = np.nanmean(np.column_stack([left_vals, right_vals]), axis=1)
+
+    # Accumulate face midpoint values at each of the two bounding facepoints.
+    fp_sum = np.zeros(n_facepoints)
+    fp_count = np.zeros(n_facepoints, dtype=np.int64)
+    valid_faces = ~np.isnan(face_vals)
+    fp0 = face_facepoint_indexes[:, 0]
+    fp1 = face_facepoint_indexes[:, 1]
+    np.add.at(fp_sum, fp0[valid_faces], face_vals[valid_faces])
+    np.add.at(fp_count, fp0[valid_faces], 1)
+    np.add.at(fp_sum, fp1[valid_faces], face_vals[valid_faces])
+    np.add.at(fp_count, fp1[valid_faces], 1)
+
+    with np.errstate(all="ignore"):
+        return np.where(fp_count > 0, fp_sum / fp_count, np.nan)
+
+
+def mesh_to_raster(
+    cell_centers: np.ndarray,
+    facepoint_coordinates: np.ndarray,
+    face_facepoint_indexes: np.ndarray,
+    face_cell_indexes: np.ndarray,
+    cell_face_info: np.ndarray,
+    cell_face_values: np.ndarray,
+    cell_values: np.ndarray,
+    output_path: str | Path | None = None,
+    *,
+    cell_size: float | None = None,
+    reference_transform: Any | None = None,
+    reference_raster: str | Path | None = None,
+    crs: Any | None = None,
+    nodata: float = -9999.0,
+    min_value: float | None = None,
+    snap_to_reference_extent: bool = True,
+) -> Path | rasterio.io.DatasetReader:
+    """Interpolate HEC-RAS mesh results to a raster using mesh-conforming triangulation.
+
+    Unlike :func:`points_to_raster`, which Delaunay-triangulates scattered cell
+    centres and can produce spurious fill across dry gaps or disconnected wet
+    islands, this function builds a triangulation that exactly conforms to the
+    cell polygons — mirroring how HEC-RAS RASMapper creates its result maps.
+
+    **Algorithm**
+
+    1. Dry cells (value < *min_value*) are masked to ``NaN``.
+    2. A value is assigned to every facepoint by averaging the face-midpoint
+       values of all adjacent faces (face midpoint = NaN-aware mean of the two
+       bordering cell values).
+    3. Each cell is sub-divided into one triangle per bounding face:
+       ``[cell_centre, facepoint_start, facepoint_end]``.
+    4. Triangles whose cell-centre vertex is masked (dry cell) are excluded.
+    5. ``matplotlib.tri.LinearTriInterpolator`` performs linear (barycentric)
+       interpolation on this topology-conforming triangulation.
+    6. Pixels outside the wet mesh domain (outside all unmasked triangles)
+       are set to *nodata*.
+
+    Parameters
+    ----------
+    cell_centers : ndarray, shape ``(n_cells, 2)``
+        Cell-centre x, y coordinates (``FlowArea.cell_centers``).
+    facepoint_coordinates : ndarray, shape ``(n_facepoints, 2)``
+        Polygon-vertex x, y coordinates (``FlowArea.facepoint_coordinates``).
+    face_facepoint_indexes : ndarray, shape ``(n_faces, 2)``
+        Start/end facepoint index for each face
+        (``FlowArea.face_facepoint_indexes``).
+    face_cell_indexes : ndarray, shape ``(n_faces, 2)``
+        Left/right cell indices per face; ``-1`` = boundary
+        (``FlowArea.face_cell_indexes``).
+    cell_face_info : ndarray, shape ``(n_cells, 2)``
+        ``[start_idx, count]`` into *cell_face_values* for each cell
+        (``FlowArea.cell_face_info``).
+    cell_face_values : ndarray, shape ``(total_entries, 2)``
+        ``[face_idx, orientation]`` for each cell-face association
+        (``FlowArea.cell_face_values``).
+    cell_values : ndarray, shape ``(n_cells,)`` or ``(n_cells, 2)``
+        Scalar field or 2-component vector ``[Vx, Vy]`` at cell centres.
+    output_path : str, Path, or None
+        Destination GeoTIFF.  ``None`` returns an open in-memory
+        ``rasterio.DatasetReader``; the caller must close it.
+    cell_size : float, optional
+        Output pixel size in the same coordinate units as the point data.
+        Ignored when *reference_transform* or *reference_raster* is given.
+    reference_transform : rasterio.transform.Affine, optional
+        Affine transform for pixel-perfect grid alignment with other rasters.
+        Mutually exclusive with *reference_raster*.
+    reference_raster : str or Path, optional
+        Existing GeoTIFF whose transform and CRS are inherited.
+        Mutually exclusive with *reference_transform*.
+    crs : str, int, or rasterio.crs.CRS, optional
+        Output CRS (overrides *reference_raster* CRS when given).
+    nodata : float
+        Fill value written to pixels outside the wet mesh polygon.
+    min_value : float, optional
+        Scalar / speed threshold: cells below this are treated as dry
+        and excluded before interpolation.
+    snap_to_reference_extent : bool
+        When *reference_raster* is given, extend the output to its full
+        extent (default ``True``).
+
+    Returns
+    -------
+    Path
+        Written GeoTIFF path (when *output_path* is given).
+    rasterio.io.DatasetReader
+        Open in-memory dataset (when *output_path* is ``None``).
+
+    Raises
+    ------
+    ImportError
+        If ``rasterio`` or ``matplotlib`` are not installed.
+    ValueError
+        If both *reference_raster* and *reference_transform* are supplied,
+        or if *cell_size* is missing when no transform is provided.
+
+    Notes
+    -----
+    Band layout matches :func:`points_to_raster`:
+
+    +---------------------+---------+--------------------------------------------+
+    | *cell_values* shape | bands   | band names                                 |
+    +=====================+=========+============================================+
+    | ``(n,)`` scalar     | 1       | ``"value"``                                |
+    +---------------------+---------+--------------------------------------------+
+    | ``(n, 2)`` vector   | 4       | Vx, Vy, Speed, Direction_deg_from_N        |
+    +---------------------+---------+--------------------------------------------+
+    """
+    # ── Deferred imports ───────────────────────────────────────────────────
+    try:
+        import rasterio
+        from rasterio.crs import CRS
+        from rasterio.transform import Affine, from_origin
+    except ImportError as exc:
+        raise ImportError(
+            "mesh_to_raster requires rasterio. "
+            "Install it with: pip install raspy[geo]"
+        ) from exc
+
+    try:
+        import matplotlib.tri as mtri
+    except ImportError as exc:
+        raise ImportError(
+            "mesh_to_raster requires matplotlib. "
+            "Install it with: pip install raspy[geo]"
+        ) from exc
+
+    # ── Validate ───────────────────────────────────────────────────────────
+    if reference_raster is not None and reference_transform is not None:
+        raise ValueError(
+            "Specify either reference_raster or reference_transform, not both."
+        )
+
+    cell_centers = np.asarray(cell_centers, dtype=np.float64)
+    facepoint_coordinates = np.asarray(facepoint_coordinates, dtype=np.float64)
+    face_facepoint_indexes = np.asarray(face_facepoint_indexes, dtype=np.int64)
+    face_cell_indexes = np.asarray(face_cell_indexes, dtype=np.int64)
+    cell_face_values_arr = np.asarray(cell_face_values, dtype=np.int64)
+    cell_values = np.asarray(cell_values, dtype=np.float64)
+
+    n_cells = len(cell_centers)
+    # Slice to real cells only — HDF may append ghost/padding rows beyond n_cells.
+    cell_face_info = np.asarray(cell_face_info, dtype=np.int64)[:n_cells]
+    n_facepoints = len(facepoint_coordinates)
+    is_vector = cell_values.ndim == 2 and cell_values.shape[1] == 2
+
+    # ── Dry-cell masking and facepoint value computation ───────────────────
+    if is_vector:
+        with np.errstate(invalid="ignore"):
+            magnitude = np.sqrt(cell_values[:, 0] ** 2 + cell_values[:, 1] ** 2)
+        dry_mask = (
+            magnitude < min_value
+            if min_value is not None
+            else np.zeros(n_cells, dtype=bool)
+        )
+        cv = cell_values.copy()
+        cv[dry_mask] = np.nan  # broadcasts over both components
+        fp_vx = _compute_facepoint_values(
+            cv[:, 0], face_facepoint_indexes, face_cell_indexes, n_cells, n_facepoints
+        )
+        fp_vy = _compute_facepoint_values(
+            cv[:, 1], face_facepoint_indexes, face_cell_indexes, n_cells, n_facepoints
+        )
+        all_vx = np.concatenate([cv[:, 0], fp_vx])
+        all_vy = np.concatenate([cv[:, 1], fp_vy])
+        vertex_nan = np.isnan(all_vx) | np.isnan(all_vy)
+    else:
+        dry_mask = (
+            cell_values < min_value
+            if min_value is not None
+            else np.zeros(n_cells, dtype=bool)
+        )
+        cv = cell_values.copy()
+        cv[dry_mask] = np.nan
+        fp_vals = _compute_facepoint_values(
+            cv, face_facepoint_indexes, face_cell_indexes, n_cells, n_facepoints
+        )
+        all_vals = np.concatenate([cv, fp_vals])
+        vertex_nan = np.isnan(all_vals)
+
+    # ── Build unified point set ────────────────────────────────────────────
+    # Cell centres occupy indices [0, n_cells);
+    # facepoints occupy [n_cells, n_cells + n_facepoints).
+    all_pts = np.vstack([cell_centers, facepoint_coordinates])
+
+    # ── Build mesh-conforming triangles (vectorised, no Python loop) ───────
+    # For every cell-face association produce triangle
+    # [cell_idx, n_cells + fp0, n_cells + fp1].
+    counts = cell_face_info[:, 1]
+    starts = cell_face_info[:, 0]
+    total = int(counts.sum())
+
+    # Generate the flat index array into cell_face_values using the cumsum trick
+    # so that non-contiguous start offsets (if any) are handled correctly.
+    idx_step = np.ones(total, dtype=np.int64)
+    if n_cells > 1:
+        boundary_pos = np.cumsum(counts[:-1])
+        idx_step[boundary_pos] = starts[1:] - starts[:-1] - counts[:-1] + 1
+    idx_step[0] = starts[0]
+    entry_indices = np.cumsum(idx_step)
+
+    face_idx_arr = cell_face_values_arr[entry_indices, 0]
+    cell_for_entry = np.repeat(np.arange(n_cells, dtype=np.int64), counts)
+
+    fp0_per_entry = face_facepoint_indexes[face_idx_arr, 0]
+    fp1_per_entry = face_facepoint_indexes[face_idx_arr, 1]
+
+    # Discard degenerate faces (identical facepoints on both ends).
+    valid = fp0_per_entry != fp1_per_entry
+    triangles = np.column_stack([
+        cell_for_entry[valid],
+        n_cells + fp0_per_entry[valid],
+        n_cells + fp1_per_entry[valid],
+    ])
+
+    # Mask triangles whose cell-centre vertex is dry or has any NaN vertex.
+    tri_mask = np.any(vertex_nan[triangles], axis=1)
+
+    # ── Resolve transform and CRS ──────────────────────────────────────────
+    ref_width: int | None = None
+    ref_height: int | None = None
+    transform = reference_transform
+    if reference_raster is not None:
+        with rasterio.open(reference_raster) as src:
+            transform = src.transform
+            ref_width = src.width
+            ref_height = src.height
+            if crs is None:
+                crs = src.crs
+
+    if crs is not None and not isinstance(crs, CRS):
+        crs = CRS.from_user_input(crs)
+
+    # ── Build output pixel grid ────────────────────────────────────────────
+    # Use the full point set (cell centres + facepoints) for extent so the
+    # grid covers the mesh boundary rather than just the cell-centre cloud.
+    x_min, y_min = all_pts.min(axis=0)
+    x_max, y_max = all_pts.max(axis=0)
+
+    if transform is not None:
+        dx = abs(transform.a)
+        dy = abs(transform.e)
+
+        if snap_to_reference_extent and ref_width is not None:
+            col_min, col_max = 0, ref_width
+            row_min, row_max = 0, ref_height  # type: ignore[assignment]
+        else:
+            col_min = int(np.floor((x_min - transform.c) / dx))
+            col_max = int(np.ceil((x_max - transform.c) / dx))
+            row_min = int(np.floor((transform.f - y_max) / dy))
+            row_max = int(np.ceil((transform.f - y_min) / dy))
+
+            if ref_width is not None:
+                col_min = max(col_min, 0)
+                col_max = min(col_max, ref_width)
+                row_min = max(row_min, 0)
+                row_max = min(row_max, ref_height)  # type: ignore[arg-type]
+
+        xi = transform.c + (np.arange(col_min, col_max) + 0.5) * dx
+        yi = transform.f - (np.arange(row_min, row_max) + 0.5) * dy
+        out_transform = Affine(
+            dx, 0.0, transform.c + col_min * dx,
+            0.0, -dy, transform.f - row_min * dy,
+        )
+    else:
+        if cell_size is None or cell_size <= 0:
+            raise ValueError(
+                "cell_size must be a positive number when transform and "
+                "reference_raster are both None."
+            )
+        west = np.floor(x_min / cell_size) * cell_size
+        north = np.ceil(y_max / cell_size) * cell_size
+        xi = np.arange(west + cell_size / 2, x_max + cell_size, cell_size)
+        yi = np.arange(north - cell_size / 2, y_min - cell_size, -cell_size)
+        out_transform = from_origin(west, north, cell_size, cell_size)
+
+    n_rows, n_cols = len(yi), len(xi)
+    xi_grid, yi_grid = np.meshgrid(xi, yi)
+
+    # ── Build triangulation and interpolate ────────────────────────────────
+    triang = mtri.Triangulation(all_pts[:, 0], all_pts[:, 1], triangles)
+    triang.set_mask(tri_mask)
+
+    def _to_array(masked: Any) -> np.ndarray:
+        """Convert a matplotlib masked array to a plain ndarray with NaN fill."""
+        if hasattr(masked, "filled"):
+            return masked.filled(np.nan)
+        return np.asarray(masked, dtype=np.float64)
+
+    if is_vector:
+        vx = _to_array(mtri.LinearTriInterpolator(triang, all_vx)(xi_grid, yi_grid))
+        vy = _to_array(mtri.LinearTriInterpolator(triang, all_vy)(xi_grid, yi_grid))
+        with np.errstate(invalid="ignore"):
+            speed = np.sqrt(vx ** 2 + vy ** 2)
+        direction = (90.0 - np.degrees(np.arctan2(vy, vx))) % 360.0
+        direction = np.where(np.isnan(vx), np.nan, direction)
+        if min_value is not None:
+            _low = speed < min_value
+            vx[_low] = vy[_low] = speed[_low] = direction[_low] = np.nan
+        band_arrays = [vx, vy, speed, direction]
+        band_names = ["Vx", "Vy", "Speed", "Direction_deg_from_N"]
+    else:
+        scalar = _to_array(
+            mtri.LinearTriInterpolator(triang, all_vals)(xi_grid, yi_grid)
+        )
+        if min_value is not None:
+            scalar[scalar < min_value] = np.nan
+        band_arrays = [scalar]
+        band_names = ["value"]
+
+    # ── Write GeoTIFF ──────────────────────────────────────────────────────
+    profile: dict = {
+        "driver": "GTiff",
+        "dtype": "float32",
+        "width": n_cols,
+        "height": n_rows,
+        "count": len(band_arrays),
+        "nodata": nodata,
+        "transform": out_transform,
+        "compress": "lzw",
+    }
+    if crs is not None:
+        profile["crs"] = crs
+
+    def _write_bands(dst: Any) -> None:
+        for band_idx, (arr, bname) in enumerate(zip(band_arrays, band_names), start=1):
+            data = arr.astype(np.float32)
+            data[np.isnan(data)] = nodata
+            dst.write(data, band_idx)
+            dst.update_tags(band_idx, name=bname)
+
+    if output_path is None:
+        memfile = rasterio.MemoryFile()
+        with memfile.open(**profile) as dst:
+            _write_bands(dst)
+        return memfile.open()
+
+    out_path = Path(output_path).resolve()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with rasterio.open(out_path, "w", **profile) as dst:
+        _write_bands(dst)
+    return out_path
+
+
 def _depth_from_wse_and_dem(
     wse_ds: rasterio.io.DatasetReader,
     reference_raster: str | Path,

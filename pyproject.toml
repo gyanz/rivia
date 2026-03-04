@@ -38,6 +38,7 @@ dependencies = [
 geo = [
     "geopandas",
     "rasterio",
+    "matplotlib",
 ]
 dev = [
     "pytest>=7.0",
