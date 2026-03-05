@@ -723,7 +723,7 @@ class FlowAreaResults(FlowArea):
         face_active_threshold: float = 0.0,
         vel_interp_method: Literal[
             "triangle_blend", "face_idw", "face_gradient",
-            "facepoint_blend", "scatter_interp",
+            "facepoint_blend", "scatter_interp", "scatter_interp2",
         ] | None = "triangle_blend",
     ) -> Path | rasterio.io.DatasetReader:
         """Interpolate a field to a GeoTIFF using mesh-conforming triangulation.

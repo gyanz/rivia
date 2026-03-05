@@ -787,7 +787,7 @@ class TestMeshToVelocityRasterInterpMethod:
 
     @pytest.mark.parametrize(
         "method",
-        ["triangle_blend", "face_idw", "face_gradient", "facepoint_blend", "scatter_interp"],
+        ["triangle_blend", "face_idw", "face_gradient", "facepoint_blend", "scatter_interp", "scatter_interp2"],
     )
     def test_returns_four_bands(self, method):
         from raspy.geo.raster import mesh_to_velocity_raster_interp
@@ -804,7 +804,7 @@ class TestMeshToVelocityRasterInterpMethod:
 
     @pytest.mark.parametrize(
         "method",
-        ["triangle_blend", "face_idw", "face_gradient", "facepoint_blend", "scatter_interp"],
+        ["triangle_blend", "face_idw", "face_gradient", "facepoint_blend", "scatter_interp", "scatter_interp2"],
     )
     def test_has_wet_pixels(self, method):
         from raspy.geo.raster import mesh_to_velocity_raster_interp
@@ -823,7 +823,7 @@ class TestMeshToVelocityRasterInterpMethod:
         assert wet.any(), f"Expected wet pixels for method={method!r}"
 
     @pytest.mark.parametrize(
-        "method", ["face_idw", "face_gradient", "facepoint_blend", "scatter_interp"]
+        "method", ["face_idw", "face_gradient", "facepoint_blend", "scatter_interp", "scatter_interp2"]
     )
     def test_uniform_flow_speed_approx_one(self, method):
         """Uniform u=(1,0) flow should give speed ≈ 1 at all wet pixels."""
@@ -851,6 +851,26 @@ class TestMeshToVelocityRasterInterpMethod:
             output_path=None,
             cell_size=2.0,
             method="scatter_interp",
+        )
+        vx = ds.read(1).astype(np.float64)
+        vy = ds.read(2).astype(np.float64)
+        ds.close()
+        nodata = -9999.0
+        wet = vx != nodata
+        assert wet.any()
+        np.testing.assert_allclose(vx[wet], 1.0, atol=1e-6)
+        np.testing.assert_allclose(vy[wet], 0.0, atol=1e-6)
+
+    def test_scatter_interp2_vx_vy_direction(self):
+        """scatter_interp2 (face midpoints only): uniform u=(1,0) → Vx≈1, Vy≈0."""
+        from raspy.geo.raster import mesh_to_velocity_raster_interp
+
+        vm = _minimal_vel_mesh()
+        ds = mesh_to_velocity_raster_interp(
+            **vm,
+            output_path=None,
+            cell_size=2.0,
+            method="scatter_interp2",
         )
         vx = ds.read(1).astype(np.float64)
         vy = ds.read(2).astype(np.float64)

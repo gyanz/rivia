@@ -1866,6 +1866,13 @@ def mesh_to_velocity_raster_interp(
             the point cloud are filled with NaN and subsequently masked by
             the WSE wet-extent raster.  Does not require fan-triangulation.
 
+        ``"scatter_interp2"``
+            Same as ``"scatter_interp"`` but the point cloud consists of
+            **wet face midpoints only** — cell-centre WLS velocities are
+            excluded.  This removes discontinuities that can originate at
+            cell centres when the WLS velocity differs from the surrounding
+            face-midpoint field.
+
     Returns
     -------
     Path
@@ -1897,7 +1904,7 @@ def mesh_to_velocity_raster_interp(
 
     _valid_methods = {
         "triangle_blend", "face_idw", "face_gradient",
-        "facepoint_blend", "scatter_interp",
+        "facepoint_blend", "scatter_interp", "scatter_interp2",
     }
     if method not in _valid_methods:
         raise ValueError(
@@ -1963,7 +1970,7 @@ def mesh_to_velocity_raster_interp(
     dry_mask = np.isnan(cell_wse_for_render)
 
     # ── Step 2a: Fan-triangulation (cell-local methods only). ────────────────
-    if method != "scatter_interp":
+    if method not in {"scatter_interp", "scatter_interp2"}:
         all_pts = np.vstack([cell_centers_arr, facepoint_coords_arr])
         counts = cell_face_info_arr[:, 1]
         starts = cell_face_info_arr[:, 0]
@@ -2022,11 +2029,10 @@ def mesh_to_velocity_raster_interp(
     )
 
     # ── Step 4: Interpolate velocities. ──────────────────────────────────────
-    if method == "scatter_interp":
-        # Global scattered interpolation over the combined point cloud of
-        # wet cell centres and wet face midpoints.  scipy LinearNDInterpolator
-        # builds one Delaunay triangulation over the whole mesh and
-        # interpolates continuously, eliminating all cell-boundary artefacts.
+    if method in {"scatter_interp", "scatter_interp2"}:
+        # Global scattered interpolation.  scipy LinearNDInterpolator builds
+        # one Delaunay triangulation over the whole mesh and interpolates
+        # continuously, eliminating all cell-boundary artefacts.
         try:
             from scipy.interpolate import LinearNDInterpolator
         except ImportError as exc:
@@ -2047,9 +2053,14 @@ def mesh_to_velocity_raster_interp(
             | ((right >= 0) & (right < n_cells) & ~dry_mask[right_safe])
         )
 
-        # Combine wet cell centres with wet face midpoints.
-        pts = np.vstack([cell_centers_arr[~dry_mask], face_midpoints[wet_face]])
-        vel = np.vstack([cell_velocity[~dry_mask],    face_vel_2d[wet_face]])
+        if method == "scatter_interp":
+            # Include wet cell centres in addition to face midpoints.
+            pts = np.vstack([cell_centers_arr[~dry_mask], face_midpoints[wet_face]])
+            vel = np.vstack([cell_velocity[~dry_mask],    face_vel_2d[wet_face]])
+        else:
+            # Face midpoints only — avoids discontinuities at cell centres.
+            pts = face_midpoints[wet_face]
+            vel = face_vel_2d[wet_face]
 
         interp_fn = LinearNDInterpolator(pts, vel, fill_value=np.nan)
         vel_grid = interp_fn(xi_grid, yi_grid)   # (n_rows, n_cols, 2)
