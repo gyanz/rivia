@@ -2077,7 +2077,7 @@ def mesh_to_velocity_raster_interp(
         xi_flat = np.column_stack([xi_grid.ravel(), yi_grid.ravel()])
         # griddata returns (n_pixels, 2); NaN outside convex hull.
         vel_flat = griddata(pts, vel, xi_flat, method=scatter_interp_method,
-                            fill_value=np.nan)
+                            fill_value=np.nan, rescale=True)
         vx = vel_flat[:, 0].reshape(n_rows, n_cols)
         vy = vel_flat[:, 1].reshape(n_rows, n_cols)
 

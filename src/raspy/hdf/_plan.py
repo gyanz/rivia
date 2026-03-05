@@ -714,17 +714,17 @@ class FlowAreaResults(FlowArea):
         crs: Any | None = None,
         nodata: float = -9999.0,
         render_mode: Literal["sloping", "horizontal", "hybrid"] = "sloping",
-        depth_min: float | None = None,
-        vel_min: float | None = None,
+        depth_min: float | None = 0.001,
+        vel_min: float | None = 0.0001,
         vel_weight_method: Literal[
             "area_weighted", "length_weighted", "flow_ratio"
         ] = "area_weighted",
         vel_wse_method: Literal["average", "sloped"] = "sloped",
-        face_active_threshold: float = 0.0,
         vel_interp_method: Literal[
+            "flat_cell_center",
             "triangle_blend", "face_idw", "face_gradient",
             "facepoint_blend", "scatter_interp", "scatter_interp2",
-        ] | None = "triangle_blend",
+        ] = "scatter_interp2",
         scatter_interp_method: Literal["nearest", "linear", "cubic"] = "linear",
     ) -> Path | rasterio.io.DatasetReader:
         """Interpolate a field to a GeoTIFF using mesh-conforming triangulation.
@@ -778,10 +778,11 @@ class FlowAreaResults(FlowArea):
             output pixels shallower than this value are set to *nodata*
             after DEM subtraction.
         vel_min:
-            Minimum speed (m/s).  Only used when ``variable="cell_speed"``
-            or ``"cell_velocity"``.  Cells whose WLS speed is below this
+            Minimum speed (m/s).  Cells whose WLS speed is below this
             threshold are excluded from the WSE wet-extent render and from
-            the final velocity output.
+            the final velocity output.  For ``render_mode="hybrid"``, also
+            used as the face-normal speed threshold to classify faces as
+            active (wet).  Default ``0.001``.
         vel_weight_method:
             Velocity reconstruction scheme passed to
             :meth:`cell_velocity_vectors`.
@@ -792,19 +793,12 @@ class FlowAreaResults(FlowArea):
             Water-surface rendering mode — ``"sloping"`` (default),
             ``"horizontal"``, or ``"hybrid"``.  See
             :func:`~raspy.geo.raster.mesh_to_raster` for full description.
-        face_active_threshold:
-            Velocity magnitude threshold (m/s) used to classify each face
-            as active (wet) for ``render_mode="hybrid"``.  A face is
-            considered active when
-            ``|face_velocity| > face_active_threshold``.  Default ``0.0``
-            treats any non-zero velocity as active.  Ignored for other
-            render modes.
         vel_interp_method:
             Intra-cell velocity interpolation method for ``"cell_velocity"``
-            and ``"cell_speed"``.  ``None`` paints the flat WLS cell-centre
-            velocity over all pixels inside the cell (fastest).  Otherwise
-            passes the value directly to
-            :func:`~raspy.geo.raster.mesh_to_velocity_raster_interp`:
+            and ``"cell_speed"``:
+
+            ``"flat_cell_center"`` — paint the flat WLS cell-centre velocity
+            over all pixels inside the cell (fastest; no spatial interpolation).
 
             ``"triangle_blend"`` *(default)* — barycentric blend of WLS
             cell-centre velocity and reconstructed face velocity within each
@@ -878,7 +872,7 @@ class FlowAreaResults(FlowArea):
             else:
                 face_active = (
                     np.abs(np.array(self.face_velocity[timestep, :]))
-                    > face_active_threshold
+                    > (vel_min if vel_min is not None else 0.0)
                 )
 
         # ── 1. Resolve values array ────────────────────────────────────
@@ -951,7 +945,17 @@ class FlowAreaResults(FlowArea):
             return result
 
         if variable == "cell_velocity":
-            if vel_interp_method is not None:
+            if vel_interp_method == "flat_cell_center":
+                # flat_cell_center: no spatial interpolation.
+                return _raster.mesh_to_velocity_raster(
+                    **mesh_kw,
+                    cell_wse=cell_vel_wse,
+                    cell_velocity=cell_vel_vecs,
+                    output_path=output_path,
+                    vel_min=vel_min,
+                    depth_min=depth_min,
+                )
+            else:
                 face_vel_arr = np.array(self.face_velocity[timestep, :])
                 return _raster.mesh_to_velocity_raster_interp(
                     **mesh_kw,
@@ -965,18 +969,19 @@ class FlowAreaResults(FlowArea):
                     method=vel_interp_method,
                     scatter_interp_method=scatter_interp_method,
                 )
-            # vel_interp_method=None: flat cell-centre velocity, no spatial interp.
-            return _raster.mesh_to_velocity_raster(
-                **mesh_kw,
-                cell_wse=cell_vel_wse,
-                cell_velocity=cell_vel_vecs,
-                output_path=output_path,
-                vel_min=vel_min,
-                depth_min=depth_min,
-            )
 
         if variable == "cell_speed":
-            if vel_interp_method is not None:
+            if vel_interp_method == "flat_cell_center":
+                vel_ds = _raster.mesh_to_velocity_raster(
+                    **mesh_kw,
+                    cell_wse=cell_vel_wse,
+                    cell_velocity=cell_vel_vecs,
+                    output_path=None,
+                    vel_min=vel_min,
+                    depth_min=depth_min,
+                )
+
+            else:
                 face_vel_arr = np.array(self.face_velocity[timestep, :])
                 vel_ds = _raster.mesh_to_velocity_raster_interp(
                     **mesh_kw,
@@ -988,15 +993,7 @@ class FlowAreaResults(FlowArea):
                     vel_min=vel_min,
                     depth_min=depth_min,
                     method=vel_interp_method,
-                )
-            else:
-                vel_ds = _raster.mesh_to_velocity_raster(
-                    **mesh_kw,
-                    cell_wse=cell_vel_wse,
-                    cell_velocity=cell_vel_vecs,
-                    output_path=None,
-                    vel_min=vel_min,
-                    depth_min=depth_min,
+                    scatter_interp_method=scatter_interp_method,
                 )
             return _raster._velocity_raster_to_speed(vel_ds, output_path, nodata)
 
