@@ -373,7 +373,7 @@ class FlowAreaResults(FlowArea):
         cell_idx: int,
         timestep: int,
         wse_interp: Literal["average", "sloped"] = "sloped",
-        vel_method: Literal[
+        vel_weight_method: Literal[
             "area_weighted", "length_weighted", "flow_ratio"
         ] = "length_weighted",
     ) -> None:
@@ -382,8 +382,19 @@ class FlowAreaResults(FlowArea):
         Displays the WLS input data for each face of the specified cell, then
         shows the reconstructed velocity for all available weight schemes.
         Optionally compares against the HEC-RAS stored ``Cell Velocity``
-        scalar when that dataset is present in the HDF file.  Also prints a
-        double-C stencil face velocity table using *vel_method* WLS vectors.
+        scalar when that dataset is present in the HDF file.
+
+        Prints three tables:
+
+        1. **WLS inputs** — per-face normal, length, V_n, face WSE, flow area.
+        2. **Double-C stencil face velocities** — full 2D face velocity
+           ``vn·n̂ + vt·t̂`` using the *vel_weight_method* WLS vectors for
+           the tangential component.  This is what all intra-cell interpolation
+           methods (``triangle_blend``, ``face_idw``, ``face_gradient``,
+           ``facepoint_blend``) use at the face midpoints.
+        3. **Facepoint velocities** — velocity assigned to each polygon vertex
+           by averaging the full 2D velocities of all adjacent wet faces.
+           This is what ``facepoint_blend`` interpolates between.
 
         Parameters
         ----------
@@ -393,9 +404,9 @@ class FlowAreaResults(FlowArea):
             0-based index into the time dimension.
         wse_interp:
             Face WSE interpolation method used for ``area_weighted`` weights.
-        vel_method:
+        vel_weight_method:
             WLS weight scheme used as V_L / V_R in the double-C stencil
-            reconstruction.  Defaults to ``"area_weighted"``.
+            reconstruction.  Defaults to ``"length_weighted"``.
         """
         from ._velocity import (
             _estimate_face_wse_average,
@@ -512,10 +523,10 @@ class FlowAreaResults(FlowArea):
         print()
         print(
             f"--- Double-C stencil face velocity reconstruction"
-            f" (vel_method={vel_method!r}) ---"
+            f" (vel_weight_method={vel_weight_method!r}) ---"
         )
         all_cell_vecs = self.cell_velocity_vectors(
-            timestep, method=vel_method, wse_interp=wse_interp
+            timestep, method=vel_weight_method, wse_interp=wse_interp
         )
         n_cells = self.n_cells
         face_ci = self.face_cell_indexes  # (n_faces, 2)
@@ -527,6 +538,11 @@ class FlowAreaResults(FlowArea):
         )
         print(hdr2)
         print("-" * len(hdr2))
+
+        # Collect full 2D face velocity for each of this cell's faces so we
+        # can reuse it for the facepoint section below.
+        face_vel_2d: dict[int, np.ndarray] = {}
+
         for fi, (nx, ny), v in zip(face_idxs, normals, vn, strict=False):
             t_hat = np.array([-ny, nx])
             left  = int(face_ci[fi, 0])
@@ -553,6 +569,8 @@ class FlowAreaResults(FlowArea):
                 side_label = "none"
 
             vf = v * np.array([nx, ny]) + vt_avg * t_hat
+            face_vel_2d[fi] = vf
+
             vt_L_str = f"{vt_L:>9.4f}" if valid_left  else f"{'n/a':>9}"
             vt_R_str = f"{vt_R:>9.4f}" if valid_right else f"{'n/a':>9}"
             print(
@@ -560,6 +578,91 @@ class FlowAreaResults(FlowArea):
                 f"{vt_L_str}  {vt_R_str}  {vt_avg:>9.4f}  "
                 f"{vf[0]:>9.4f}  {vf[1]:>9.4f}  {np.linalg.norm(vf):>9.4f}  "
                 f"{side_label:>6}"
+            )
+
+        # --- facepoint velocities (facepoint_blend method) ---
+        # For each unique facepoint of this cell, find all faces in the ENTIRE
+        # mesh that share it, average their full 2D face velocities (wet faces
+        # only), and display the result.  This is exactly the value that
+        # facepoint_blend would assign at each polygon vertex.
+        print()
+        print("--- Facepoint velocities (facepoint_blend) ---")
+
+        fp_idx_all = self.face_facepoint_indexes   # (n_faces, 2)
+        fp_coords  = self.facepoint_coordinates    # (n_fp, 2)
+
+        # Collect all wet-face 2D velocities for the full mesh so we can
+        # average over them per facepoint.  We reuse all_cell_vecs for the
+        # double-C stencil rather than re-computing per-face here.
+        dry_mask_full = np.isnan(cell_wse)
+
+        # Build full face_vel_2d for all faces via the double-C stencil.
+        face_vel_full = face_vel   # signed normal velocities for all faces
+        n_faces_all   = len(face_vel_full)
+        face_vel_2d_all = np.zeros((n_faces_all, 2), dtype=np.float64)
+        for gfi in range(n_faces_all):
+            gnx = float(self.face_normals[gfi, 0])
+            gny = float(self.face_normals[gfi, 1])
+            gt = np.array([-gny, gnx])
+            gl = int(face_ci[gfi, 0])
+            gr = int(face_ci[gfi, 1])
+            gl_ok = 0 <= gl < n_cells and not dry_mask_full[gl]
+            gr_ok = 0 <= gr < n_cells and not dry_mask_full[gr]
+            if gl_ok and gr_ok:
+                gvt = 0.5 * (
+                    float(np.dot(all_cell_vecs[gl], gt))
+                    + float(np.dot(all_cell_vecs[gr], gt))
+                )
+            elif gl_ok:
+                gvt = float(np.dot(all_cell_vecs[gl], gt))
+            elif gr_ok:
+                gvt = float(np.dot(all_cell_vecs[gr], gt))
+            else:
+                gvt = 0.0
+            face_vel_2d_all[gfi] = (
+                face_vel_full[gfi] * np.array([gnx, gny]) + gvt * gt
+            )
+
+        # Wet-face mask: at least one wet neighbour.
+        l_idx = face_ci[:, 0]
+        r_idx = face_ci[:, 1]
+        l_safe = np.where((l_idx >= 0) & (l_idx < n_cells), l_idx, 0)
+        r_safe = np.where((r_idx >= 0) & (r_idx < n_cells), r_idx, 0)
+        wet_face_mask = (
+            ((l_idx >= 0) & (l_idx < n_cells) & ~dry_mask_full[l_safe])
+            | ((r_idx >= 0) & (r_idx < n_cells) & ~dry_mask_full[r_safe])
+        )
+
+        # Unique facepoints for this cell, ordered by face.
+        seen: set[int] = set()
+        cell_fp_ordered: list[int] = []
+        for fi in face_idxs:
+            for fp in (int(fp_idx_all[fi, 0]), int(fp_idx_all[fi, 1])):
+                if fp not in seen:
+                    seen.add(fp)
+                    cell_fp_ordered.append(fp)
+
+        hdr3 = (
+            f"{'FP':>7}  {'x':>11}  {'y':>11}  "
+            f"{'Vfp_x':>9}  {'Vfp_y':>9}  {'|Vfp|':>9}  {'n_faces':>7}"
+        )
+        print(hdr3)
+        print("-" * len(hdr3))
+        for fp in cell_fp_ordered:
+            # All mesh faces that have this facepoint as an endpoint.
+            touching = np.where(
+                (fp_idx_all[:, 0] == fp) | (fp_idx_all[:, 1] == fp)
+            )[0]
+            wet_touching = touching[wet_face_mask[touching]]
+            if len(wet_touching) == 0:
+                vfp = np.zeros(2)
+            else:
+                vfp = face_vel_2d_all[wet_touching].mean(axis=0)
+            x, y = fp_coords[fp]
+            print(
+                f"{fp:>7}  {x:>11.3f}  {y:>11.3f}  "
+                f"{vfp[0]:>9.4f}  {vfp[1]:>9.4f}  "
+                f"{np.linalg.norm(vfp):>9.4f}  {len(wet_touching):>7}"
             )
 
     # ------------------------------------------------------------------
@@ -598,218 +701,6 @@ class FlowAreaResults(FlowArea):
 
         return max_speed, max_vecs
 
-    def _export_raster(
-        self,
-        variable: Literal["water_surface", "depth", "cell_speed", "cell_velocity"],
-        timestep: int | None = None,
-        output_path: str | Path | None = None,
-        *,
-        cell_size: float | None = None,
-        reference_transform: Any | None = None,
-        reference_raster: str | Path | None = None,
-        snap_to_reference_extent: bool = True,
-        crs: Any | None = None,
-        nodata: float = -9999.0,
-        interp_method: Literal["linear", "nearest", "cubic"] = "linear",
-        min_value: float | None = None,
-        use_adjacency: bool = True,
-        vel_method: Literal[
-            "area_weighted", "length_weighted", "flow_ratio"
-        ] = "area_weighted",
-        wse_interp: Literal["average", "sloped"] = "average",
-    ) -> Path | rasterio.io.DatasetReader:
-        """Interpolate a scalar or vector field to a GeoTIFF raster.
-
-        Requires ``scipy`` and ``rasterio`` (available via ``pip install
-        raspy[geo]``).  When these libraries are absent a clear
-        ``ImportError`` is raised; all other ``raspy.hdf`` functionality
-        remains available.
-
-        Parameters
-        ----------
-        variable:
-            ``"water_surface"`` — water-surface elevation.
-            ``"depth"``         — water depth from DEM subtraction (requires
-                                  *reference_raster*): WSE is interpolated then
-                                  the DEM pixel value is subtracted; negative
-                                  values are clamped to 0.
-            ``"cell_speed"``    — WLS-reconstructed velocity magnitude.
-            ``"cell_velocity"`` — WLS-reconstructed velocity vector
-                                  (writes 4 bands: Vx, Vy, Speed, Direction).
-        output_path:
-            Destination ``.tif`` file path.  When ``None`` (default), the
-            raster is written to an in-memory buffer and an open
-            ``rasterio.DatasetReader`` is returned; the caller must close it.
-        timestep:
-            0-based time index.  Pass ``None`` (default) to use maximum values.
-            For ``"water_surface"`` and ``"depth"``, pre-computed HDF summary
-            arrays are used.  For ``"cell_speed"`` and ``"cell_velocity"``,
-            all timesteps are iterated to find the per-cell peak speed.
-        cell_size:
-            Output pixel size in model coordinate units.  Ignored when
-            *reference_transform* or *reference_raster* is supplied.
-            Defaults to the median face length of this flow area.
-        reference_transform:
-            ``rasterio.transform.Affine`` reference transform.  The output
-            grid is snapped to this pixel grid so the result aligns exactly
-            with an existing raster.  Mutually exclusive with
-            *reference_raster*.
-        reference_raster:
-            Path to an existing GeoTIFF.  The transform *and* CRS are read
-            from this file.  Mutually exclusive with *transform*.  If *crs*
-            is also supplied it overrides the file CRS.  **Required** when
-            ``variable="depth"``.
-        snap_to_reference_extent:
-            Passed to :func:`~raspy.geo.raster.points_to_raster`.  Only
-            relevant when *reference_raster* is supplied.  When ``True``
-            (default) the output covers the full reference raster extent;
-            when ``False`` it is cropped to the point cloud.
-        crs:
-            Output CRS (e.g. ``"EPSG:26910"`` or an integer EPSG code).
-            When *reference_raster* is given and *crs* is ``None``, the
-            reference raster's CRS is inherited.
-        nodata:
-            Fill value for pixels outside the mesh convex hull.
-        interp_method:
-            SciPy ``griddata`` interpolation method: ``"linear"`` (default),
-            ``"nearest"``, or ``"cubic"``.
-        min_value:
-            Source cells whose value is below this threshold are excluded
-            from interpolation and set to *nodata*.  Useful for masking
-            near-dry cells (e.g. ``min_value=0.01`` for depth in metres).
-            For ``"depth"``, filtering is applied using HDF cell depths
-            (WSE minus cell minimum elevation) before WSE interpolation.
-        use_adjacency:
-            When ``True`` (default), mesh face connectivity is used to
-            prevent spurious interpolation across gaps between disconnected
-            wet areas.  Set to ``False`` to fall back to standard convex-hull
-            ``griddata`` interpolation (faster, no gap masking).
-        vel_method:
-            Velocity reconstruction weight scheme.  Passed to
-            :meth:`cell_velocity_vectors`; ignored for ``"water_surface"``
-            and ``"depth"``.
-        wse_interp:
-            Face WSE interpolation method.  Passed to
-            :meth:`cell_velocity_vectors`; ignored for ``"water_surface"``
-            and ``"depth"``.
-
-        Returns
-        -------
-        Path
-            Absolute path to the written GeoTIFF (when *output_path* is given).
-        rasterio.io.DatasetReader
-            Open in-memory dataset (when *output_path* is ``None``).
-            The caller must close it when done.
-        """
-        from raspy.geo import raster as _raster  # deferred — geo not required
-
-        # ── 0. Guard: depth requires a reference DEM ───────────────────
-        if variable == "depth" and reference_raster is None:
-            raise ValueError(
-                "reference_raster is required when variable='depth'. "
-                "Provide a path to a terrain DEM GeoTIFF."
-            )
-
-        # ── 1. Resolve values array (numpy only) ──────────────────────
-        if variable == "depth":
-            # Interpolate WSE; subtract DEM after interpolation.
-            # HDF depth (WSE - cell_min_elevation) is used only for
-            # min_value filtering so that the threshold applies to depth,
-            # not to raw WSE values.
-            if timestep is None:
-                wse_values      = self.max_water_surface["value"].to_numpy()
-                depth_at_cells  = self.max_depth()["value"].to_numpy()
-            else:
-                wse_values     = np.array(self.water_surface[timestep, : self.n_cells])
-                depth_at_cells = self.depth(timestep)
-
-            interp_points = self.cell_centers
-            if min_value is not None:
-                mask          = depth_at_cells >= min_value
-                interp_points = self.cell_centers[mask]
-                wse_values    = wse_values[mask]
-
-        elif timestep is None:
-            if variable == "water_surface":
-                values = self.max_water_surface["value"].to_numpy()
-            elif variable == "cell_speed":
-                values, _ = self._max_velocity(method=vel_method, wse_interp=wse_interp)
-            elif variable == "cell_velocity":
-                _, values = self._max_velocity(method=vel_method, wse_interp=wse_interp)
-            else:
-                raise ValueError(f"Unknown variable: {variable!r}")
-        else:
-            if variable == "water_surface":
-                values = np.array(self.water_surface[timestep, : self.n_cells])
-            elif variable == "cell_speed":
-                values = self.cell_speed(
-                    timestep, method=vel_method, wse_interp=wse_interp
-                )
-            elif variable == "cell_velocity":
-                values = self.cell_velocity_vectors(
-                    timestep, method=vel_method, wse_interp=wse_interp
-                )
-            else:
-                raise ValueError(f"Unknown variable: {variable!r}")
-
-        # ── 2. Default cell size (median face length) — computed here  ──
-        #       so raspy.geo does not need access to mesh geometry.
-        resolved_cell_size = cell_size
-        no_grid = reference_transform is None and reference_raster is None
-        if cell_size is None and no_grid:
-            resolved_cell_size = float(np.median(self.face_normals[:, 2]))
-
-        # ── 3. Delegate all rasterio logic to raspy.geo ────────────────
-        resolved_adjacency = self.face_cell_indexes if use_adjacency else None
-
-        if variable == "depth":
-            # Remap adjacency to the filtered interp_points index space when
-            # min_value pre-filtering has already reduced cell_centers to a subset.
-            fci = resolved_adjacency  # (n_faces, 2), -1 = boundary
-            if min_value is not None:
-                orig_to_new = np.full(self.n_cells, -1, dtype=np.int64)
-                orig_to_new[np.where(mask)[0]] = np.arange(int(mask.sum()))
-                depth_adjacency = np.where(
-                    fci >= 0, orig_to_new[np.maximum(fci, 0)], -1
-                )
-            else:
-                depth_adjacency = fci
-
-            wse_ds = _raster.points_to_raster(
-                interp_points,
-                wse_values,
-                output_path=None,  # always in-memory; written after DEM subtraction
-                cell_size=resolved_cell_size,
-                reference_transform=reference_transform,
-                reference_raster=reference_raster,
-                crs=crs,
-                nodata=nodata,
-                interp_method=interp_method,
-                min_value=None,
-                snap_to_reference_extent=snap_to_reference_extent,
-                adjacency=depth_adjacency,
-            )
-            result = _raster._depth_from_wse_and_dem(
-                wse_ds, reference_raster, nodata, output_path, min_value=min_value
-            )
-            wse_ds.close()
-            return result
-
-        return _raster.points_to_raster(
-            self.cell_centers,
-            values,
-            output_path,
-            cell_size=resolved_cell_size,
-            reference_transform=reference_transform,
-            reference_raster=reference_raster,
-            crs=crs,
-            nodata=nodata,
-            interp_method=interp_method,
-            min_value=min_value,
-            snap_to_reference_extent=snap_to_reference_extent,
-            adjacency=resolved_adjacency,
-        )
-
     def export_raster(
         self,
         variable: Literal["water_surface", "depth", "cell_speed", "cell_velocity"],
@@ -831,7 +722,8 @@ class FlowAreaResults(FlowArea):
         vel_wse_method: Literal["average", "sloped"] = "sloped",
         face_active_threshold: float = 0.0,
         vel_interp_method: Literal[
-            "triangle_blend", "face_idw", "face_gradient"
+            "triangle_blend", "face_idw", "face_gradient",
+            "facepoint_blend", "scatter_interp",
         ] | None = "triangle_blend",
     ) -> Path | rasterio.io.DatasetReader:
         """Interpolate a field to a GeoTIFF using mesh-conforming triangulation.
@@ -922,6 +814,11 @@ class FlowAreaResults(FlowArea):
 
             ``"face_gradient"`` — least-squares linear gradient fit inside
             each cell from face-midpoint velocities.
+
+            ``"facepoint_blend"`` — average face velocities onto each polygon
+            vertex (facepoint), then full 3-vertex barycentric interpolation
+            within each fan-triangle.  C0-continuous across all cell faces;
+            best choice for smooth flow-arrow rendering.
 
         Returns
         -------

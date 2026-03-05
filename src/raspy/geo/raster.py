@@ -1393,6 +1393,98 @@ def _cell_center_barycentric_weight(
     return np.clip(w0, 0.0, 1.0)
 
 
+def _barycentric_weights(
+    px: np.ndarray,
+    py: np.ndarray,
+    ax: np.ndarray,
+    ay: np.ndarray,
+    bx: np.ndarray,
+    by: np.ndarray,
+    cx: np.ndarray,
+    cy: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Full barycentric weights ``(w0, w1, w2)`` for points P in triangles ABC.
+
+    All arrays must be 1-D with the same length (one entry per pixel).
+
+    ``w0`` is the weight of vertex A, ``w1`` of B, ``w2`` of C.
+    The weights sum to 1; all are in ``[0, 1]`` for points strictly inside
+    the triangle.  Degenerate triangles (area ≈ 0) return ``(1, 0, 0)`` so
+    the result falls back to the A-vertex value.
+    """
+    denom = (by - cy) * (ax - cx) + (cx - bx) * (ay - cy)
+    degenerate = np.abs(denom) <= 1e-12
+    safe_denom = np.where(degenerate, 1.0, denom)
+
+    w0 = ((by - cy) * (px - cx) + (cx - bx) * (py - cy)) / safe_denom
+    w1 = ((cy - ay) * (px - cx) + (ax - cx) * (py - cy)) / safe_denom
+
+    w0 = np.where(degenerate, 1.0, w0)
+    w1 = np.where(degenerate, 0.0, w1)
+    w2 = 1.0 - w0 - w1
+    return w0, w1, w2
+
+
+def _compute_facepoint_velocities(
+    face_facepoint_indexes: np.ndarray,
+    face_vel_2d: np.ndarray,
+    n_facepoints: int,
+    face_cell_indexes: np.ndarray,
+    dry_mask: np.ndarray,
+    n_cells: int,
+) -> np.ndarray:
+    """Average face-midpoint 2D velocities onto each facepoint (polygon vertex).
+
+    Each facepoint is an endpoint of one or more faces.  Its velocity is the
+    unweighted average of the full 2D velocities of all *wet* adjacent faces.
+    A face is considered wet when at least one of its two neighbouring cells
+    is not dry.  Facepoints that border only dry or boundary-only faces
+    receive ``[0, 0]``.
+
+    Parameters
+    ----------
+    face_facepoint_indexes : ndarray, shape ``(n_faces, 2)``
+        Start and end facepoint index for each face.
+    face_vel_2d : ndarray, shape ``(n_faces, 2)``
+        Full 2D ``[Vx, Vy]`` velocity at each face midpoint.
+    n_facepoints : int
+        Total number of facepoints.
+    face_cell_indexes : ndarray, shape ``(n_faces, 2)``
+        Left/right cell indices; ``-1`` = boundary.
+    dry_mask : ndarray, shape ``(n_cells,)``, bool
+        ``True`` for dry cells.
+    n_cells : int
+        Number of real computational cells.
+
+    Returns
+    -------
+    ndarray, shape ``(n_facepoints, 2)``
+        ``[Vx, Vy]`` velocity estimate at each facepoint.
+    """
+    left = face_cell_indexes[:, 0]
+    right = face_cell_indexes[:, 1]
+    left_safe  = np.where((left  >= 0) & (left  < n_cells), left,  0)
+    right_safe = np.where((right >= 0) & (right < n_cells), right, 0)
+    valid_left  = (left  >= 0) & (left  < n_cells) & ~dry_mask[left_safe]
+    valid_right = (right >= 0) & (right < n_cells) & ~dry_mask[right_safe]
+    wet_face = valid_left | valid_right   # at least one wet neighbour
+
+    wet_fi = np.where(wet_face)[0]
+    fp0 = face_facepoint_indexes[wet_fi, 0]
+    fp1 = face_facepoint_indexes[wet_fi, 1]
+    fv  = face_vel_2d[wet_fi]              # (n_wet, 2)
+
+    fp_vel_sum = np.zeros((n_facepoints, 2), dtype=np.float64)
+    fp_count   = np.zeros(n_facepoints,      dtype=np.float64)
+    np.add.at(fp_vel_sum, fp0, fv)
+    np.add.at(fp_vel_sum, fp1, fv)
+    np.add.at(fp_count,   fp0, 1.0)
+    np.add.at(fp_count,   fp1, 1.0)
+
+    safe_count = np.maximum(fp_count, 1.0)[:, np.newaxis]
+    return fp_vel_sum / safe_count
+
+
 def _compute_face_midpoints(
     facepoint_coordinates: np.ndarray,
     face_facepoint_indexes: np.ndarray,
@@ -1755,6 +1847,25 @@ def mesh_to_velocity_raster_interp(
             Gy*(y-y0)`` centred at the cell centre.  Cells with fewer than 3
             faces fall back to the constant WLS cell-centre velocity.
 
+        ``"facepoint_blend"``
+            Assign a velocity to every facepoint (polygon vertex) by
+            averaging the full 2D face velocities of all adjacent wet faces,
+            then perform full 3-vertex barycentric interpolation within each
+            fan-triangle ``(cell_center, fp0, fp1)``.  Because facepoints are
+            shared between adjacent cells the field is C0-continuous across
+            all cell-face boundaries, eliminating the hard breaks seen in
+            ``"face_idw"``.  Produces smooth flow-arrow fields suitable for
+            vector rendering.
+
+        ``"scatter_interp"``
+            Build a global point cloud from wet cell centres and wet face
+            midpoints, then use ``scipy.interpolate.LinearNDInterpolator``
+            over the entire mesh in a single call.  Because face midpoints
+            are shared between adjacent cells the result is C0-continuous
+            across all cell boundaries.  Pixels outside the convex hull of
+            the point cloud are filled with NaN and subsequently masked by
+            the WSE wet-extent raster.  Does not require fan-triangulation.
+
     Returns
     -------
     Path
@@ -1783,15 +1894,11 @@ def mesh_to_velocity_raster_interp(
             "mesh_to_velocity_raster_interp requires rasterio. "
             "Install it with: pip install raspy[geo]"
         ) from exc
-    try:
-        import matplotlib.tri as mtri
-    except ImportError as exc:
-        raise ImportError(
-            "mesh_to_velocity_raster_interp requires matplotlib. "
-            "Install it with: pip install raspy[geo]"
-        ) from exc
 
-    _valid_methods = {"triangle_blend", "face_idw", "face_gradient"}
+    _valid_methods = {
+        "triangle_blend", "face_idw", "face_gradient",
+        "facepoint_blend", "scatter_interp",
+    }
     if method not in _valid_methods:
         raise ValueError(
             f"method must be one of {sorted(_valid_methods)}; got {method!r}"
@@ -1844,7 +1951,7 @@ def mesh_to_velocity_raster_interp(
     else:
         wet_mask = np.isfinite(wse_pixel)
 
-    # ── Step 2: Build mesh triangulation. ───────────────────────────────────
+    # ── Step 2: Array conversions (shared by all methods). ──────────────────
     cell_centers_arr = np.asarray(cell_centers, dtype=np.float64)
     facepoint_coords_arr = np.asarray(facepoint_coordinates, dtype=np.float64)
     face_fp_idx = np.asarray(face_facepoint_indexes, dtype=np.int64)
@@ -1855,38 +1962,47 @@ def mesh_to_velocity_raster_interp(
 
     dry_mask = np.isnan(cell_wse_for_render)
 
-    all_pts = np.vstack([cell_centers_arr, facepoint_coords_arr])
-    counts = cell_face_info_arr[:, 1]
-    starts = cell_face_info_arr[:, 0]
-    total = int(counts.sum())
+    # ── Step 2a: Fan-triangulation (cell-local methods only). ────────────────
+    if method != "scatter_interp":
+        all_pts = np.vstack([cell_centers_arr, facepoint_coords_arr])
+        counts = cell_face_info_arr[:, 1]
+        starts = cell_face_info_arr[:, 0]
+        total = int(counts.sum())
 
-    idx_step = np.ones(total, dtype=np.int64)
-    if n_cells > 1:
-        boundary_pos = np.cumsum(counts[:-1])
-        idx_step[boundary_pos] = starts[1:] - starts[:-1] - counts[:-1] + 1
-    idx_step[0] = starts[0]
-    entry_indices = np.cumsum(idx_step)
+        idx_step = np.ones(total, dtype=np.int64)
+        if n_cells > 1:
+            boundary_pos = np.cumsum(counts[:-1])
+            idx_step[boundary_pos] = starts[1:] - starts[:-1] - counts[:-1] + 1
+        idx_step[0] = starts[0]
+        entry_indices = np.cumsum(idx_step)
 
-    face_idx_arr = cell_face_values_arr[entry_indices, 0]
-    cell_for_entry = np.repeat(np.arange(n_cells, dtype=np.int64), counts)
+        face_idx_arr = cell_face_values_arr[entry_indices, 0]
+        cell_for_entry = np.repeat(np.arange(n_cells, dtype=np.int64), counts)
 
-    fp0 = face_fp_idx[face_idx_arr, 0]
-    fp1 = face_fp_idx[face_idx_arr, 1]
-    valid_tris = fp0 != fp1
+        fp0 = face_fp_idx[face_idx_arr, 0]
+        fp1 = face_fp_idx[face_idx_arr, 1]
+        valid_tris = fp0 != fp1
 
-    triangles = np.column_stack([
-        cell_for_entry[valid_tris],
-        n_cells + fp0[valid_tris],
-        n_cells + fp1[valid_tris],
-    ])
-    tri_to_cell = cell_for_entry[valid_tris]
-    tri_to_face = face_idx_arr[valid_tris]          # which face owns each triangle
-    tri_mask_arr = dry_mask[tri_to_cell]
+        triangles = np.column_stack([
+            cell_for_entry[valid_tris],
+            n_cells + fp0[valid_tris],
+            n_cells + fp1[valid_tris],
+        ])
+        tri_to_cell = cell_for_entry[valid_tris]
+        tri_to_face = face_idx_arr[valid_tris]
+        tri_mask_arr = dry_mask[tri_to_cell]
 
-    triang = mtri.Triangulation(all_pts[:, 0], all_pts[:, 1], triangles)
-    triang.set_mask(tri_mask_arr)
+        try:
+            import matplotlib.tri as mtri
+        except ImportError as exc:
+            raise ImportError(
+                "mesh_to_velocity_raster_interp requires matplotlib. "
+                "Install it with: pip install raspy[geo]"
+            ) from exc
+        triang = mtri.Triangulation(all_pts[:, 0], all_pts[:, 1], triangles)
+        triang.set_mask(tri_mask_arr)
 
-    # ── Step 2b: Precompute full 2D face velocity (double-C stencil). ────────
+    # ── Step 2b: Full 2D face velocity — double-C stencil (shared). ──────────
     face_ci_arr = np.asarray(face_cell_indexes, dtype=np.int64)
     face_vel_2d = _compute_face_velocity_2d(
         face_normals=face_normals_arr,
@@ -1897,72 +2013,134 @@ def mesh_to_velocity_raster_interp(
         n_cells=n_cells,
     )
 
-    # ── Step 3: Map each wet pixel to its triangle; interpolate velocities. ──
+    # ── Step 3: Raster grid coordinates (shared). ────────────────────────────
     dx = abs(out_transform.a)
     dy = abs(out_transform.e)
-    xi = out_transform.c + (np.arange(n_cols) + 0.5) * dx
-    yi = out_transform.f - (np.arange(n_rows) + 0.5) * dy
-    xi_grid, yi_grid = np.meshgrid(xi, yi)
+    xi_grid, yi_grid = np.meshgrid(
+        out_transform.c + (np.arange(n_cols) + 0.5) * dx,
+        out_transform.f - (np.arange(n_rows) + 0.5) * dy,
+    )
 
-    trifinder_fn = triang.get_trifinder()
-    tri_idx_flat = trifinder_fn(xi_grid.ravel(), yi_grid.ravel())
+    # ── Step 4: Interpolate velocities. ──────────────────────────────────────
+    if method == "scatter_interp":
+        # Global scattered interpolation over the combined point cloud of
+        # wet cell centres and wet face midpoints.  scipy LinearNDInterpolator
+        # builds one Delaunay triangulation over the whole mesh and
+        # interpolates continuously, eliminating all cell-boundary artefacts.
+        try:
+            from scipy.interpolate import LinearNDInterpolator
+        except ImportError as exc:
+            raise ImportError(
+                "scatter_interp requires scipy. "
+                "Install it with: pip install raspy[geo]"
+            ) from exc
 
-    # Identify pixels inside a valid (unmasked) triangle.
-    inside = (tri_idx_flat >= 0) & wet_mask.ravel()
-    inside_idx = np.where(inside)[0]
-    tri_hit = tri_idx_flat[inside_idx]
-
-    # Pixel coordinates for the inside pixels.
-    px = xi_grid.ravel()[inside_idx]
-    py = yi_grid.ravel()[inside_idx]
-
-    # Cell index for each inside pixel (shared by all methods).
-    cell_idx_hit = tri_to_cell[tri_hit]
-
-    if method == "triangle_blend":
-        # Barycentric blend: w0 * V_cell_WLS + (1-w0) * V_face (double-C).
-        v_cell_idx = triangles[tri_hit, 0]
-        v_fp0_idx  = triangles[tri_hit, 1]
-        v_fp1_idx  = triangles[tri_hit, 2]
-
-        ax, ay = all_pts[v_cell_idx, 0], all_pts[v_cell_idx, 1]
-        bx, by = all_pts[v_fp0_idx,  0], all_pts[v_fp0_idx,  1]
-        cx, cy = all_pts[v_fp1_idx,  0], all_pts[v_fp1_idx,  1]
-
-        w0 = _cell_center_barycentric_weight(px, py, ax, ay, bx, by, cx, cy)
-
-        v_cell = cell_velocity[cell_idx_hit]   # (m, 2)
-        v_cell = np.where(dry_mask[cell_idx_hit, np.newaxis], np.nan, v_cell)
-
-        face_idx_hit = tri_to_face[tri_hit]
-        v_face = face_vel_2d[face_idx_hit]     # (m, 2)
-
-        v_pixel = w0[:, np.newaxis] * v_cell + (1.0 - w0[:, np.newaxis]) * v_face
-
-    else:
-        # face_idw and face_gradient both need face midpoints.
         face_midpoints = _compute_face_midpoints(facepoint_coords_arr, face_fp_idx)
 
-        if method == "face_idw":
-            v_pixel = _interp_face_idw(
-                px, py, cell_idx_hit, n_cells,
-                cell_face_info_arr, cell_face_values_arr,
-                face_midpoints, face_vel_2d, dry_mask,
+        # Wet-face mask: at least one wet neighbour.
+        left  = face_ci_arr[:, 0]
+        right = face_ci_arr[:, 1]
+        left_safe  = np.where((left  >= 0) & (left  < n_cells), left,  0)
+        right_safe = np.where((right >= 0) & (right < n_cells), right, 0)
+        wet_face = (
+            ((left  >= 0) & (left  < n_cells) & ~dry_mask[left_safe])
+            | ((right >= 0) & (right < n_cells) & ~dry_mask[right_safe])
+        )
+
+        # Combine wet cell centres with wet face midpoints.
+        pts = np.vstack([cell_centers_arr[~dry_mask], face_midpoints[wet_face]])
+        vel = np.vstack([cell_velocity[~dry_mask],    face_vel_2d[wet_face]])
+
+        interp_fn = LinearNDInterpolator(pts, vel, fill_value=np.nan)
+        vel_grid = interp_fn(xi_grid, yi_grid)   # (n_rows, n_cols, 2)
+
+        vx = vel_grid[:, :, 0]
+        vy = vel_grid[:, :, 1]
+
+    else:
+        # ── Cell-local methods: map each pixel to its fan-triangle. ──────────
+        trifinder_fn = triang.get_trifinder()
+        tri_idx_flat = trifinder_fn(xi_grid.ravel(), yi_grid.ravel())
+
+        inside = (tri_idx_flat >= 0) & wet_mask.ravel()
+        inside_idx = np.where(inside)[0]
+        tri_hit = tri_idx_flat[inside_idx]
+
+        px = xi_grid.ravel()[inside_idx]
+        py = yi_grid.ravel()[inside_idx]
+
+        cell_idx_hit = tri_to_cell[tri_hit]
+
+        if method == "triangle_blend":
+            v_cell_idx = triangles[tri_hit, 0]
+            v_fp0_idx  = triangles[tri_hit, 1]
+            v_fp1_idx  = triangles[tri_hit, 2]
+
+            ax, ay = all_pts[v_cell_idx, 0], all_pts[v_cell_idx, 1]
+            bx, by = all_pts[v_fp0_idx,  0], all_pts[v_fp0_idx,  1]
+            cx, cy = all_pts[v_fp1_idx,  0], all_pts[v_fp1_idx,  1]
+
+            w0 = _cell_center_barycentric_weight(px, py, ax, ay, bx, by, cx, cy)
+
+            v_cell = cell_velocity[cell_idx_hit]
+            v_cell = np.where(dry_mask[cell_idx_hit, np.newaxis], np.nan, v_cell)
+
+            face_idx_hit = tri_to_face[tri_hit]
+            v_face = face_vel_2d[face_idx_hit]
+
+            v_pixel = w0[:, np.newaxis] * v_cell + (1.0 - w0[:, np.newaxis]) * v_face
+
+        elif method == "facepoint_blend":
+            v_fp_all = _compute_facepoint_velocities(
+                face_fp_idx, face_vel_2d, len(facepoint_coords_arr),
+                face_ci_arr, dry_mask, n_cells,
             )
-        else:  # face_gradient
-            v_pixel = _interp_face_gradient(
-                px, py, cell_idx_hit, n_cells,
-                cell_centers_arr, cell_face_info_arr, cell_face_values_arr,
-                face_midpoints, face_vel_2d, dry_mask, cell_velocity,
+
+            v_cell_idx = triangles[tri_hit, 0]
+            v_fp0_idx  = triangles[tri_hit, 1]
+            v_fp1_idx  = triangles[tri_hit, 2]
+
+            ax, ay = all_pts[v_cell_idx, 0], all_pts[v_cell_idx, 1]
+            bx, by = all_pts[v_fp0_idx,  0], all_pts[v_fp0_idx,  1]
+            cx, cy = all_pts[v_fp1_idx,  0], all_pts[v_fp1_idx,  1]
+
+            w0, w1, w2 = _barycentric_weights(px, py, ax, ay, bx, by, cx, cy)
+
+            v_cell = cell_velocity[cell_idx_hit]
+            v_cell = np.where(dry_mask[cell_idx_hit, np.newaxis], np.nan, v_cell)
+
+            v_fp0 = v_fp_all[v_fp0_idx - n_cells]
+            v_fp1 = v_fp_all[v_fp1_idx - n_cells]
+
+            v_pixel = (
+                w0[:, np.newaxis] * v_cell
+                + w1[:, np.newaxis] * v_fp0
+                + w2[:, np.newaxis] * v_fp1
             )
 
-    vel_flat = np.full((n_rows * n_cols, 2), np.nan)
-    vel_flat[inside_idx] = v_pixel
+        else:
+            face_midpoints = _compute_face_midpoints(facepoint_coords_arr, face_fp_idx)
 
-    vx = vel_flat[:, 0].reshape(n_rows, n_cols)
-    vy = vel_flat[:, 1].reshape(n_rows, n_cols)
+            if method == "face_idw":
+                v_pixel = _interp_face_idw(
+                    px, py, cell_idx_hit, n_cells,
+                    cell_face_info_arr, cell_face_values_arr,
+                    face_midpoints, face_vel_2d, dry_mask,
+                )
+            else:  # face_gradient
+                v_pixel = _interp_face_gradient(
+                    px, py, cell_idx_hit, n_cells,
+                    cell_centers_arr, cell_face_info_arr, cell_face_values_arr,
+                    face_midpoints, face_vel_2d, dry_mask, cell_velocity,
+                )
 
-    # WSE raster is the authoritative wet-extent mask.
+        vel_flat = np.full((n_rows * n_cols, 2), np.nan)
+        vel_flat[inside_idx] = v_pixel
+
+        vx = vel_flat[:, 0].reshape(n_rows, n_cols)
+        vy = vel_flat[:, 1].reshape(n_rows, n_cols)
+
+    # WSE raster is the authoritative wet-extent mask (applied to both paths).
     vx[~wet_mask] = np.nan
     vy[~wet_mask] = np.nan
 

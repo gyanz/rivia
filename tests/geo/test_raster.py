@@ -654,6 +654,117 @@ class TestInterpFaceGradient:
 
 
 # ---------------------------------------------------------------------------
+# _barycentric_weights
+# ---------------------------------------------------------------------------
+
+
+class TestBarycentricWeights:
+    def test_centroid_gives_equal_weights(self):
+        from raspy.geo.raster import _barycentric_weights
+
+        # Centroid of triangle (0,0)-(6,0)-(0,6) is (2,2).
+        w0, w1, w2 = _barycentric_weights(
+            np.array([2.0]), np.array([2.0]),
+            np.array([0.0]), np.array([0.0]),
+            np.array([6.0]), np.array([0.0]),
+            np.array([0.0]), np.array([6.0]),
+        )
+        np.testing.assert_allclose(w0, [1/3], atol=1e-12)
+        np.testing.assert_allclose(w1, [1/3], atol=1e-12)
+        np.testing.assert_allclose(w2, [1/3], atol=1e-12)
+
+    def test_at_vertex_a_weight_is_one(self):
+        from raspy.geo.raster import _barycentric_weights
+
+        w0, w1, w2 = _barycentric_weights(
+            np.array([0.0]), np.array([0.0]),
+            np.array([0.0]), np.array([0.0]),
+            np.array([6.0]), np.array([0.0]),
+            np.array([0.0]), np.array([6.0]),
+        )
+        np.testing.assert_allclose(w0, [1.0], atol=1e-12)
+        np.testing.assert_allclose(w1, [0.0], atol=1e-12)
+        np.testing.assert_allclose(w2, [0.0], atol=1e-12)
+
+    def test_weights_sum_to_one(self):
+        from raspy.geo.raster import _barycentric_weights
+
+        rng = np.random.default_rng(42)
+        # Random points inside the unit triangle (0,0)-(1,0)-(0,1).
+        u = rng.uniform(0, 1, 20)
+        v = rng.uniform(0, 1 - u, 20)
+        w0, w1, w2 = _barycentric_weights(
+            u, v,
+            np.zeros(20), np.zeros(20),
+            np.ones(20),  np.zeros(20),
+            np.zeros(20), np.ones(20),
+        )
+        np.testing.assert_allclose(w0 + w1 + w2, np.ones(20), atol=1e-12)
+
+    def test_degenerate_returns_vertex_a(self):
+        from raspy.geo.raster import _barycentric_weights
+
+        # fp0 == fp1 → degenerate triangle.
+        w0, w1, w2 = _barycentric_weights(
+            np.array([1.0]), np.array([1.0]),
+            np.array([0.0]), np.array([0.0]),
+            np.array([2.0]), np.array([2.0]),
+            np.array([2.0]), np.array([2.0]),  # B == C
+        )
+        np.testing.assert_array_equal(w0, [1.0])
+        np.testing.assert_array_equal(w1, [0.0])
+        np.testing.assert_array_equal(w2, [0.0])
+
+
+# ---------------------------------------------------------------------------
+# _compute_facepoint_velocities
+# ---------------------------------------------------------------------------
+
+
+class TestComputeFacepointVelocities:
+    def test_uniform_flow_all_facepoints_unit_x(self):
+        """For uniform u=(1,0), every facepoint should get velocity [1, 0]."""
+        from raspy.geo.raster import _compute_facepoint_velocities, _compute_face_velocity_2d
+
+        vm = _minimal_vel_mesh()
+        dry_mask = np.zeros(2, dtype=bool)
+        face_vel_2d = _compute_face_velocity_2d(
+            face_normals=np.asarray(vm["face_normals"]),
+            face_vel=np.asarray(vm["face_vel"]),
+            face_cell_indexes=np.asarray(vm["face_cell_indexes"]),
+            cell_velocity=np.asarray(vm["cell_velocity"]),
+            dry_mask=dry_mask,
+            n_cells=2,
+        )
+        n_fp = len(vm["facepoint_coordinates"])
+        fp_vel = _compute_facepoint_velocities(
+            np.asarray(vm["face_facepoint_indexes"]),
+            face_vel_2d, n_fp,
+            np.asarray(vm["face_cell_indexes"]),
+            dry_mask, 2,
+        )
+        assert fp_vel.shape == (n_fp, 2)
+        np.testing.assert_allclose(fp_vel[:, 0], 1.0, atol=1e-12)
+        np.testing.assert_allclose(fp_vel[:, 1], 0.0, atol=1e-12)
+
+    def test_all_dry_gives_zeros(self):
+        from raspy.geo.raster import _compute_facepoint_velocities
+
+        vm = _minimal_vel_mesh()
+        n_fp = len(vm["facepoint_coordinates"])
+        n_faces = len(vm["face_facepoint_indexes"])
+        dry_mask = np.ones(2, dtype=bool)
+        fp_vel = _compute_facepoint_velocities(
+            np.asarray(vm["face_facepoint_indexes"]),
+            np.ones((n_faces, 2)),
+            n_fp,
+            np.asarray(vm["face_cell_indexes"]),
+            dry_mask, 2,
+        )
+        np.testing.assert_array_equal(fp_vel, np.zeros((n_fp, 2)))
+
+
+# ---------------------------------------------------------------------------
 # mesh_to_velocity_raster_interp — method parameter
 # ---------------------------------------------------------------------------
 
@@ -674,7 +785,10 @@ class TestMeshToVelocityRasterInterpMethod:
                 method="bad_method",
             )
 
-    @pytest.mark.parametrize("method", ["triangle_blend", "face_idw", "face_gradient"])
+    @pytest.mark.parametrize(
+        "method",
+        ["triangle_blend", "face_idw", "face_gradient", "facepoint_blend", "scatter_interp"],
+    )
     def test_returns_four_bands(self, method):
         from raspy.geo.raster import mesh_to_velocity_raster_interp
 
@@ -688,7 +802,10 @@ class TestMeshToVelocityRasterInterpMethod:
         assert ds.count == 4
         ds.close()
 
-    @pytest.mark.parametrize("method", ["triangle_blend", "face_idw", "face_gradient"])
+    @pytest.mark.parametrize(
+        "method",
+        ["triangle_blend", "face_idw", "face_gradient", "facepoint_blend", "scatter_interp"],
+    )
     def test_has_wet_pixels(self, method):
         from raspy.geo.raster import mesh_to_velocity_raster_interp
 
@@ -705,7 +822,9 @@ class TestMeshToVelocityRasterInterpMethod:
         wet = speed != nodata
         assert wet.any(), f"Expected wet pixels for method={method!r}"
 
-    @pytest.mark.parametrize("method", ["face_idw", "face_gradient"])
+    @pytest.mark.parametrize(
+        "method", ["face_idw", "face_gradient", "facepoint_blend", "scatter_interp"]
+    )
     def test_uniform_flow_speed_approx_one(self, method):
         """Uniform u=(1,0) flow should give speed ≈ 1 at all wet pixels."""
         from raspy.geo.raster import mesh_to_velocity_raster_interp
@@ -721,3 +840,23 @@ class TestMeshToVelocityRasterInterpMethod:
         ds.close()
         wet = speed != -9999.0
         np.testing.assert_allclose(speed[wet], 1.0, atol=1e-6)
+
+    def test_scatter_interp_vx_vy_direction(self):
+        """scatter_interp: uniform u=(1,0) → Vx≈1, Vy≈0 at wet pixels."""
+        from raspy.geo.raster import mesh_to_velocity_raster_interp
+
+        vm = _minimal_vel_mesh()
+        ds = mesh_to_velocity_raster_interp(
+            **vm,
+            output_path=None,
+            cell_size=2.0,
+            method="scatter_interp",
+        )
+        vx = ds.read(1).astype(np.float64)
+        vy = ds.read(2).astype(np.float64)
+        ds.close()
+        nodata = -9999.0
+        wet = vx != nodata
+        assert wet.any()
+        np.testing.assert_allclose(vx[wet], 1.0, atol=1e-6)
+        np.testing.assert_allclose(vy[wet], 0.0, atol=1e-6)
