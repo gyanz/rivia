@@ -522,21 +522,18 @@ def _horizontal_from_trifind(
         -1 indicates the pixel is outside all unmasked triangles.
     tri_to_cell : ndarray, shape ``(n_triangles,)``
         Maps each triangle index to its originating cell index.
-    cell_cv : ndarray, shape ``(n_cells,)`` or ``(n_cells, 2)``
-        Cell-centre values; NaN for dry cells.
+    cell_cv : ndarray, shape ``(n_cells,)``
+        Cell-centre scalar values; NaN for dry cells.
     grid_shape : (n_rows, n_cols)
 
     Returns
     -------
-    ndarray, shape ``(n_rows, n_cols)`` or ``(n_rows, n_cols, 2)``
+    ndarray, shape ``(n_rows, n_cols)``
     """
     n_out = len(tri_idx_flat)
-    is_vector = cell_cv.ndim == 2
-    out: np.ndarray = np.full((n_out, 2) if is_vector else n_out, np.nan)
+    out: np.ndarray = np.full(n_out, np.nan)
     inside = tri_idx_flat >= 0
     out[inside] = cell_cv[tri_to_cell[tri_idx_flat[inside]]]
-    if is_vector:
-        return out.reshape(grid_shape[0], grid_shape[1], 2)
     return out.reshape(grid_shape)
 
 
@@ -620,6 +617,7 @@ def mesh_to_raster(
     crs: Any | None = None,
     nodata: float = -9999.0,
     min_value: float | None = None,
+    min_above_ref: float | None = None,
     snap_to_reference_extent: bool = True,
     render_mode: str = "sloping",
     face_active: np.ndarray | None = None,
@@ -661,8 +659,8 @@ def mesh_to_raster(
     cell_face_values : ndarray, shape ``(total_entries, 2)``
         ``[face_idx, orientation]`` for each cell-face association
         (``FlowArea.cell_face_values``).
-    cell_values : ndarray, shape ``(n_cells,)`` or ``(n_cells, 2)``
-        Scalar field or 2-component vector ``[Vx, Vy]`` at cell centres.
+    cell_values : ndarray, shape ``(n_cells,)``
+        Scalar field (e.g. WSE) at cell centres.
     output_path : str, Path, or None
         Destination GeoTIFF.  ``None`` returns an open in-memory
         ``rasterio.DatasetReader``; the caller must close it.
@@ -680,8 +678,15 @@ def mesh_to_raster(
     nodata : float
         Fill value written to pixels outside the wet mesh polygon.
     min_value : float, optional
-        Scalar / speed threshold: cells below this are treated as dry
+        Scalar threshold: cells whose value is below this are treated as dry
         and excluded before interpolation.
+    min_above_ref : float, optional
+        Minimum amount by which the interpolated scalar must exceed the
+        reference raster value.  Only used when *reference_raster* is given.
+        Pixels where ``scalar - reference_value < min_above_ref`` are masked
+        to ``NaN``.  When ``None`` (default), pixels where the scalar is at
+        or below the reference value are masked (equivalent to
+        ``min_above_ref=0``).
     snap_to_reference_extent : bool
         When *reference_raster* is given, extend the output to its full
         extent (default ``True``).
@@ -722,15 +727,8 @@ def mesh_to_raster(
 
     Notes
     -----
-    Band layout matches :func:`points_to_raster`:
-
-    +---------------------+---------+--------------------------------------------+
-    | *cell_values* shape | bands   | band names                                 |
-    +=====================+=========+============================================+
-    | ``(n,)`` scalar     | 1       | ``"value"``                                |
-    +---------------------+---------+--------------------------------------------+
-    | ``(n, 2)`` vector   | 4       | Vx, Vy, Speed, Direction_deg_from_N        |
-    +---------------------+---------+--------------------------------------------+
+    Always writes a single band named ``"value"``.  For velocity rasters use
+    :func:`mesh_to_velocity_raster` instead.
     """
     # ── Deferred imports ───────────────────────────────────────────────────
     try:
@@ -762,6 +760,12 @@ def mesh_to_raster(
             f"render_mode must be 'sloping', 'horizontal', or 'hybrid';"
             f" got {render_mode!r}."
         )
+    cell_values = np.asarray(cell_values, dtype=np.float64)
+    if cell_values.ndim != 1:
+        raise ValueError(
+            "mesh_to_raster only accepts scalar cell_values (shape (n_cells,)). "
+            "For velocity rasters use mesh_to_velocity_raster instead."
+        )
     if render_mode == "hybrid" and face_active is None:
         raise ValueError("face_active is required when render_mode='hybrid'.")
 
@@ -770,33 +774,21 @@ def mesh_to_raster(
     face_facepoint_indexes = np.asarray(face_facepoint_indexes, dtype=np.int64)
     face_cell_indexes = np.asarray(face_cell_indexes, dtype=np.int64)
     cell_face_values_arr = np.asarray(cell_face_values, dtype=np.int64)
-    cell_values = np.asarray(cell_values, dtype=np.float64)
+    # cell_values already converted and validated above the validate block.
 
     n_cells = len(cell_centers)
     # Slice to real cells only — HDF may append ghost/padding rows beyond n_cells.
     cell_face_info = np.asarray(cell_face_info, dtype=np.int64)[:n_cells]
     n_facepoints = len(facepoint_coordinates)
-    is_vector = cell_values.ndim == 2 and cell_values.shape[1] == 2
 
     # ── Dry-cell masking ───────────────────────────────────────────────────
-    if is_vector:
-        with np.errstate(invalid="ignore"):
-            magnitude = np.sqrt(cell_values[:, 0] ** 2 + cell_values[:, 1] ** 2)
-        dry_mask = (
-            magnitude < min_value
-            if min_value is not None
-            else np.zeros(n_cells, dtype=bool)
-        )
-        cv = cell_values.copy()
-        cv[dry_mask] = np.nan  # broadcasts over both components
-    else:
-        dry_mask = (
-            cell_values < min_value
-            if min_value is not None
-            else np.zeros(n_cells, dtype=bool)
-        )
-        cv = cell_values.copy()
-        cv[dry_mask] = np.nan
+    dry_mask = (
+        cell_values < min_value
+        if min_value is not None
+        else np.zeros(n_cells, dtype=bool)
+    )
+    cv = cell_values.copy()
+    cv[dry_mask] = np.nan
 
     # ── Facepoint values (sloping / hybrid only) ───────────────────────────
     # Horizontal mode assigns each pixel its cell-centre value directly, so
@@ -810,16 +802,9 @@ def mesh_to_raster(
             n_cells=n_cells,
             n_facepoints=n_facepoints,
         )
-        if is_vector:
-            fp_vx = _compute_facepoint_values(cv[:, 0], **_fpkw)
-            fp_vy = _compute_facepoint_values(cv[:, 1], **_fpkw)
-            all_vx = np.concatenate([cv[:, 0], fp_vx])
-            all_vy = np.concatenate([cv[:, 1], fp_vy])
-            vertex_nan = np.isnan(all_vx) | np.isnan(all_vy)
-        else:
-            fp_vals = _compute_facepoint_values(cv, **_fpkw)
-            all_vals = np.concatenate([cv, fp_vals])
-            vertex_nan = np.isnan(all_vals)
+        fp_vals = _compute_facepoint_values(cv, **_fpkw)
+        all_vals = np.concatenate([cv, fp_vals])
+        vertex_nan = np.isnan(all_vals)
 
     # ── Build unified point set ────────────────────────────────────────────
     # Cell centres occupy indices [0, n_cells);
@@ -940,20 +925,12 @@ def mesh_to_raster(
 
     # ── Render ────────────────────────────────────────────────────────────
     if render_mode == "horizontal":
-        if is_vector:
-            raw = _render_horizontal(triang, tri_to_cell, cv, xi_grid, yi_grid)
-            vx, vy = raw[..., 0].copy(), raw[..., 1].copy()
-        else:
-            scalar = _render_horizontal(triang, tri_to_cell, cv, xi_grid, yi_grid)
+        scalar = _render_horizontal(triang, tri_to_cell, cv, xi_grid, yi_grid)
 
     elif render_mode == "sloping":
-        if is_vector:
-            vx = _to_array(mtri.LinearTriInterpolator(triang, all_vx)(xi_grid, yi_grid))
-            vy = _to_array(mtri.LinearTriInterpolator(triang, all_vy)(xi_grid, yi_grid))
-        else:
-            scalar = _to_array(
-                mtri.LinearTriInterpolator(triang, all_vals)(xi_grid, yi_grid)
-            )
+        scalar = _to_array(
+            mtri.LinearTriInterpolator(triang, all_vals)(xi_grid, yi_grid)
+        )
 
     else:  # "hybrid"
         # Compute trifinder once; reuse for the horizontal render and for
@@ -969,53 +946,30 @@ def mesh_to_raster(
         pixel_is_horiz[inside] = is_horiz_cell[tri_to_cell[tri_idx_flat[inside]]]
         pixel_is_horiz = pixel_is_horiz.reshape(n_rows, n_cols)
 
-        if is_vector:
-            vx_slop = _to_array(
-                mtri.LinearTriInterpolator(triang, all_vx)(xi_grid, yi_grid)
-            )
-            vy_slop = _to_array(
-                mtri.LinearTriInterpolator(triang, all_vy)(xi_grid, yi_grid)
-            )
-            raw_h = _horizontal_from_trifind(
-                tri_idx_flat, tri_to_cell, cv, (n_rows, n_cols)
-            )
-            vx = np.where(pixel_is_horiz, raw_h[..., 0], vx_slop)
-            vy = np.where(pixel_is_horiz, raw_h[..., 1], vy_slop)
-        else:
-            scalar_slop = _to_array(
-                mtri.LinearTriInterpolator(triang, all_vals)(xi_grid, yi_grid)
-            )
-            scalar_horiz = _horizontal_from_trifind(
-                tri_idx_flat, tri_to_cell, cv, (n_rows, n_cols)
-            )
-            scalar = np.where(pixel_is_horiz, scalar_horiz, scalar_slop)
+        scalar_slop = _to_array(
+            mtri.LinearTriInterpolator(triang, all_vals)(xi_grid, yi_grid)
+        )
+        scalar_horiz = _horizontal_from_trifind(
+            tri_idx_flat, tri_to_cell, cv, (n_rows, n_cols)
+        )
+        scalar = np.where(pixel_is_horiz, scalar_horiz, scalar_slop)
 
     # ── Post-interpolation masking and band assembly ───────────────────────
-    if is_vector:
-        with np.errstate(invalid="ignore"):
-            speed = np.sqrt(vx ** 2 + vy ** 2)
-        direction = (90.0 - np.degrees(np.arctan2(vy, vx))) % 360.0
-        direction = np.where(np.isnan(vx), np.nan, direction)
-        if min_value is not None:
-            _low = speed < min_value
-            vx[_low] = vy[_low] = speed[_low] = direction[_low] = np.nan
-        band_arrays = [vx, vy, speed, direction]
-        band_names = ["Vx", "Vy", "Speed", "Direction_deg_from_N"]
-    else:
-        if min_value is not None:
-            scalar[scalar < min_value] = np.nan
-        if reference_raster is not None:
-            with rasterio.open(reference_raster) as dem_src:
-                dem_nodata = dem_src.nodata
-                dem_data = dem_src.read(
-                    1, window=Window(col_min, row_min, n_cols, n_rows)
-                ).astype(np.float64)
-            below_ground = scalar <= dem_data
-            if dem_nodata is not None:
-                below_ground |= dem_data == dem_nodata
-            scalar[below_ground] = np.nan
-        band_arrays = [scalar]
-        band_names = ["value"]
+    if min_value is not None:
+        scalar[scalar < min_value] = np.nan
+    if reference_raster is not None:
+        with rasterio.open(reference_raster) as dem_src:
+            dem_nodata = dem_src.nodata
+            dem_data = dem_src.read(
+                1, window=Window(col_min, row_min, n_cols, n_rows)
+            ).astype(np.float64)
+        threshold = min_above_ref if min_above_ref is not None else 0.0
+        dry_pixel = (scalar - dem_data) < threshold
+        if dem_nodata is not None:
+            dry_pixel |= dem_data == dem_nodata
+        scalar[dry_pixel] = np.nan
+    band_arrays = [scalar]
+    band_names = ["value"]
 
     # ── Write GeoTIFF ──────────────────────────────────────────────────────
     profile: dict = {
@@ -1067,7 +1021,8 @@ def mesh_to_velocity_raster(
     reference_raster: str | Path | None = None,
     crs: Any | None = None,
     nodata: float = -9999.0,
-    min_value: float | None = None,
+    vel_min: float | None = None,
+    depth_min: float | None = None,
     snap_to_reference_extent: bool = True,
     render_mode: str = "sloping",
     face_active: np.ndarray | None = None,
@@ -1122,10 +1077,15 @@ def mesh_to_velocity_raster(
         Output CRS (overrides *reference_raster* CRS when given).
     nodata : float
         Fill value for pixels outside the wet mesh.
-    min_value : float, optional
+    vel_min : float, optional
         Speed threshold (m/s).  Cells whose WLS speed is below this are
         excluded from the WSE rendering (treated as dry) and from the
         final velocity output.
+    depth_min : float, optional
+        Minimum depth threshold (m) passed to the internal WSE render.
+        Pixels where WSE minus DEM is less than this value are treated as
+        dry and excluded from the velocity output.  Only relevant when
+        *reference_raster* is given.
     snap_to_reference_extent : bool
         When *reference_raster* is given, extend the output to its full
         extent (default ``True``).
@@ -1167,13 +1127,13 @@ def mesh_to_velocity_raster(
     cell_velocity = np.asarray(cell_velocity, dtype=np.float64)  # (n_cells, 2)
     cell_wse_arr = np.asarray(cell_wse, dtype=np.float64)
 
-    # Pre-filter: mask cells whose speed is below min_value so that the WSE
+    # Pre-filter: mask cells whose speed is below vel_min so that the WSE
     # rendering treats them as dry and excludes them from the wet extent.
     cell_wse_for_render = cell_wse_arr.copy()
-    if min_value is not None:
+    if vel_min is not None:
         with np.errstate(invalid="ignore"):
             speed_pre = np.linalg.norm(cell_velocity, axis=1)
-        cell_wse_for_render[speed_pre < min_value] = np.nan
+        cell_wse_for_render[speed_pre < vel_min] = np.nan
 
     # ── Step 1: Render WSE in-memory to determine wet extent and grid. ──────
     wse_ds = mesh_to_raster(
@@ -1191,6 +1151,7 @@ def mesh_to_velocity_raster(
         crs=crs,
         nodata=nodata,
         min_value=None,  # dry cells already NaN-masked above
+        min_above_ref=depth_min,
         snap_to_reference_extent=snap_to_reference_extent,
         render_mode=render_mode,
         face_active=face_active,
@@ -1282,8 +1243,8 @@ def mesh_to_velocity_raster(
     direction = (90.0 - np.degrees(np.arctan2(vy, vx))) % 360.0
     direction = np.where(np.isnan(vx), np.nan, direction)
 
-    if min_value is not None:
-        low = speed < min_value
+    if vel_min is not None:
+        low = speed < vel_min
         vx[low] = vy[low] = speed[low] = direction[low] = np.nan
 
     band_arrays = [vx, vy, speed, direction]

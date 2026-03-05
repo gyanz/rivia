@@ -283,3 +283,174 @@ class TestErrors:
         # cell_size=None is passed explicitly to trigger the error path
         with pytest.raises(ValueError, match="cell_size"):
             points_to_raster(pts, vals, tmp_path / "out.tif", cell_size=None)
+
+
+# ---------------------------------------------------------------------------
+# mesh_to_raster
+# ---------------------------------------------------------------------------
+
+def _minimal_mesh():
+    """Return a tiny 2-cell mesh suitable for mesh_to_raster tests.
+
+    Layout (not to scale):
+        cell 0 centred at (5, 5),  cell 1 centred at (15, 5)
+        Three facepoints: (0,0), (10,0), (10,10), (0,10), (20,0), (20,10)
+        Two cells share the face between fp1=(10,0) and fp2=(10,10).
+    """
+    cell_centers = np.array([[5.0, 5.0], [15.0, 5.0]])
+    facepoint_coords = np.array([
+        [0.0, 0.0],
+        [10.0, 0.0],
+        [10.0, 10.0],
+        [0.0, 10.0],
+        [20.0, 0.0],
+        [20.0, 10.0],
+    ])
+    # Each face: [fp_start, fp_end]
+    face_facepoint_indexes = np.array([
+        [0, 1],  # face 0: bottom of cell 0
+        [1, 2],  # face 1: shared between cell 0 and cell 1
+        [2, 3],  # face 2: top of cell 0
+        [3, 0],  # face 3: left of cell 0
+        [1, 4],  # face 4: bottom of cell 1
+        [4, 5],  # face 5: right of cell 1
+        [5, 2],  # face 6: top of cell 1
+    ])
+    # [left_cell, right_cell]; -1 = boundary
+    face_cell_indexes = np.array([
+        [0, -1],
+        [0, 1],
+        [0, -1],
+        [0, -1],
+        [1, -1],
+        [1, -1],
+        [1, -1],
+    ])
+    # cell_face_info: [start, count] into cell_face_values
+    cell_face_info = np.array([
+        [0, 4],  # cell 0 uses entries 0..3
+        [4, 3],  # cell 1 uses entries 4..6
+    ])
+    # cell_face_values: [face_idx, orientation]
+    cell_face_values = np.array([
+        [0, 1], [1, 1], [2, 1], [3, 1],   # cell 0
+        [1, -1], [4, 1], [5, 1], [6, 1],  # cell 1 (face 1 is inward)
+    ])
+    return dict(
+        cell_centers=cell_centers,
+        facepoint_coordinates=facepoint_coords,
+        face_facepoint_indexes=face_facepoint_indexes,
+        face_cell_indexes=face_cell_indexes,
+        cell_face_info=cell_face_info,
+        cell_face_values=cell_face_values,
+    )
+
+
+class TestMeshToRaster:
+    def test_rejects_vector_cell_values(self, tmp_path):
+        """mesh_to_raster must raise when given a (n, 2) vector array."""
+        from raspy.geo.raster import mesh_to_raster
+
+        mesh = _minimal_mesh()
+        vector_values = np.ones((2, 2))  # (n_cells, 2) — invalid
+        with pytest.raises((ValueError, IndexError)):
+            mesh_to_raster(
+                **mesh,
+                cell_values=vector_values,
+                output_path=tmp_path / "out.tif",
+                cell_size=2.0,
+            )
+
+    def test_scalar_output_one_band(self, tmp_path):
+        """Scalar cell_values produce a single-band raster."""
+        from raspy.geo.raster import mesh_to_raster
+
+        mesh = _minimal_mesh()
+        cell_values = np.array([10.0, 12.0])
+        out = mesh_to_raster(
+            **mesh,
+            cell_values=cell_values,
+            output_path=tmp_path / "wse.tif",
+            cell_size=2.0,
+        )
+        with rasterio.open(out) as src:
+            assert src.count == 1
+
+    def test_min_above_ref_masks_shallow_pixels(self, tmp_path):
+        """min_above_ref with a reference DEM masks pixels shallower than the threshold."""
+        from rasterio.transform import from_origin
+        from raspy.geo.raster import mesh_to_raster
+
+        mesh = _minimal_mesh()
+        # DEM elevation = 8.0 everywhere; WSE = 9.0 → depth = 1.0
+        dem_path = tmp_path / "dem.tif"
+        dem_transform = from_origin(0.0, 10.0, 2.0, 2.0)
+        dem_profile = {
+            "driver": "GTiff", "dtype": "float32",
+            "width": 10, "height": 5, "count": 1,
+            "transform": dem_transform, "nodata": None,
+        }
+        dem_data = np.full((5, 10), 8.0, dtype="f4")
+        with rasterio.open(dem_path, "w", **dem_profile) as dst:
+            dst.write(dem_data, 1)
+
+        cell_wse = np.array([9.0, 9.0])  # depth = 1.0 everywhere
+
+        # min_above_ref=0.5: depth 1.0 >= 0.5 → pixels should remain
+        ds_keep = mesh_to_raster(
+            **mesh,
+            cell_values=cell_wse,
+            output_path=None,
+            reference_raster=dem_path,
+            snap_to_reference_extent=True,
+            min_above_ref=0.5,
+        )
+        data_keep = ds_keep.read(1)
+        ds_keep.close()
+        wet_keep = np.isfinite(data_keep) & (data_keep != -9999.0)
+        assert wet_keep.any(), "Expected wet pixels when depth > min_above_ref"
+
+        # min_above_ref=2.0: depth 1.0 < 2.0 → all pixels should be masked
+        ds_mask = mesh_to_raster(
+            **mesh,
+            cell_values=cell_wse,
+            output_path=None,
+            reference_raster=dem_path,
+            snap_to_reference_extent=True,
+            min_above_ref=2.0,
+        )
+        data_mask = ds_mask.read(1)
+        ds_mask.close()
+        wet_mask = np.isfinite(data_mask) & (data_mask != -9999.0)
+        assert not wet_mask.any(), "Expected all pixels masked when depth < min_above_ref"
+
+    def test_below_ground_masked_by_default(self, tmp_path):
+        """Without min_above_ref, pixels where WSE <= DEM are masked."""
+        from rasterio.transform import from_origin
+        from raspy.geo.raster import mesh_to_raster
+
+        mesh = _minimal_mesh()
+        dem_path = tmp_path / "dem.tif"
+        dem_transform = from_origin(0.0, 10.0, 2.0, 2.0)
+        dem_profile = {
+            "driver": "GTiff", "dtype": "float32",
+            "width": 10, "height": 5, "count": 1,
+            "transform": dem_transform, "nodata": None,
+        }
+        # DEM = 10.0; WSE = 9.0 → WSE below ground → should be masked
+        dem_data = np.full((5, 10), 10.0, dtype="f4")
+        with rasterio.open(dem_path, "w", **dem_profile) as dst:
+            dst.write(dem_data, 1)
+
+        cell_wse = np.array([9.0, 9.0])
+        ds = mesh_to_raster(
+            **mesh,
+            cell_values=cell_wse,
+            output_path=None,
+            reference_raster=dem_path,
+            snap_to_reference_extent=True,
+        )
+        data = ds.read(1)
+        ds.close()
+        wet = np.isfinite(data) & (data != -9999.0)
+        assert not wet.any(), "Expected all pixels masked when WSE <= DEM"

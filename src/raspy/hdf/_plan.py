@@ -947,6 +947,7 @@ class FlowAreaResults(FlowArea):
                 cell_values=cell_wse,
                 output_path=None,   # in-memory; depth written after DEM subtraction
                 min_value=None,     # dry cells already NaN-masked above
+                min_above_ref=depth_min,
             )
             result = _raster._depth_from_wse_and_dem(
                 wse_ds, reference_raster, nodata, output_path, min_value=depth_min
@@ -962,7 +963,8 @@ class FlowAreaResults(FlowArea):
                 cell_wse=cell_vel_wse,
                 cell_velocity=cell_vel_vecs,
                 output_path=output_path,
-                min_value=vel_min,
+                vel_min=vel_min,
+                depth_min=depth_min,
             )
 
         if variable == "cell_speed":
@@ -972,17 +974,19 @@ class FlowAreaResults(FlowArea):
                 cell_wse=cell_vel_wse,
                 cell_velocity=cell_vel_vecs,
                 output_path=None,
-                min_value=vel_min,
+                vel_min=vel_min,
+                depth_min=depth_min,
             )
             return _raster._velocity_raster_to_speed(vel_ds, output_path, nodata)
 
-        # water_surface: no min filtering — WSE is an absolute elevation and
-        # has no natural minimum threshold.
+        # water_surface: min_above_ref controls the wet/dry threshold relative
+        # to the DEM (when reference_raster is given); no scalar min_value needed.
         return _raster.mesh_to_raster(
             **mesh_kw,
             cell_values=values,
             output_path=output_path,
             min_value=None,
+            min_above_ref=depth_min,
         )
 
 
