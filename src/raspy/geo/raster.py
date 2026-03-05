@@ -575,6 +575,7 @@ def mesh_to_raster(
         import rasterio
         from rasterio.crs import CRS
         from rasterio.transform import Affine, from_origin
+        from rasterio.windows import Window
     except ImportError as exc:
         raise ImportError(
             "mesh_to_raster requires rasterio. "
@@ -769,6 +770,16 @@ def mesh_to_raster(
         )
         if min_value is not None:
             scalar[scalar < min_value] = np.nan
+        if reference_raster is not None:
+            with rasterio.open(reference_raster) as dem_src:
+                dem_nodata = dem_src.nodata
+                dem_data = dem_src.read(
+                    1, window=Window(col_min, row_min, n_cols, n_rows)
+                ).astype(np.float64)
+            below_ground = scalar <= dem_data
+            if dem_nodata is not None:
+                below_ground |= dem_data == dem_nodata
+            scalar[below_ground] = np.nan
         band_arrays = [scalar]
         band_names = ["value"]
 
