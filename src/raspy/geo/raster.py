@@ -1284,6 +1284,356 @@ def mesh_to_velocity_raster(
     return out_path
 
 
+def _cell_center_barycentric_weight(
+    px: np.ndarray,
+    py: np.ndarray,
+    ax: np.ndarray,
+    ay: np.ndarray,
+    bx: np.ndarray,
+    by: np.ndarray,
+    cx: np.ndarray,
+    cy: np.ndarray,
+) -> np.ndarray:
+    """Barycentric weight of vertex A (cell center) for points P in triangle ABC.
+
+    All arrays must be 1-D with the same length (one entry per pixel).
+
+    The weight is 1 at the cell center, 0 on the opposite face edge (BC),
+    and varies linearly in between.  Numerically degenerate triangles
+    (area ≈ 0) return weight 1 so they fall back to the cell-centre WLS
+    value.
+    """
+    denom = (by - cy) * (ax - cx) + (cx - bx) * (ay - cy)
+    # Guard against degenerate triangles (fp0 == fp1 already filtered, but
+    # floating-point coincident points can still produce near-zero area).
+    safe_denom = np.where(np.abs(denom) > 1e-12, denom, 1.0)
+    w0 = ((by - cy) * (px - cx) + (cx - bx) * (py - cy)) / safe_denom
+    w0 = np.where(np.abs(denom) > 1e-12, w0, 1.0)
+    return np.clip(w0, 0.0, 1.0)
+
+
+def mesh_to_velocity_raster_interp(
+    cell_centers: np.ndarray,
+    facepoint_coordinates: np.ndarray,
+    face_facepoint_indexes: np.ndarray,
+    face_cell_indexes: np.ndarray,
+    cell_face_info: np.ndarray,
+    cell_face_values: np.ndarray,
+    face_normals: np.ndarray,
+    face_vel: np.ndarray,
+    cell_wse: np.ndarray,
+    cell_velocity: np.ndarray,
+    output_path: str | Path | None = None,
+    *,
+    cell_size: float | None = None,
+    reference_transform: Any | None = None,
+    reference_raster: str | Path | None = None,
+    crs: Any | None = None,
+    nodata: float = -9999.0,
+    vel_min: float | None = None,
+    depth_min: float | None = None,
+    snap_to_reference_extent: bool = True,
+    render_mode: str = "sloping",
+    face_active: np.ndarray | None = None,
+) -> Path | rasterio.io.DatasetReader:
+    """Render a spatially varying velocity raster constrained within each mesh cell.
+
+    Extends :func:`mesh_to_velocity_raster` by replacing the uniform
+    cell-centre assignment with a **per-pixel barycentric blend** between
+    the cell-centre WLS velocity and the face-normal velocity on the
+    bounding face of each sub-triangle.
+
+    Within every triangle ``(cell_center, fp0, fp1)`` the velocity at a
+    pixel P is:
+
+    .. code-block:: text
+
+        V(P) = w0 * V_cell_WLS  +  (1 - w0) * vn * face_normal_2D
+
+    where ``w0`` is the barycentric weight of the cell-center vertex —
+    equal to 1 at the centre and 0 on the face edge.  Interpolation is
+    strictly confined to each mesh cell; no values bleed across face
+    boundaries.
+
+    Parameters
+    ----------
+    cell_centers : ndarray, shape ``(n_cells, 2)``
+        Cell-centre x, y coordinates.
+    facepoint_coordinates : ndarray, shape ``(n_facepoints, 2)``
+        Polygon-vertex x, y coordinates.
+    face_facepoint_indexes : ndarray, shape ``(n_faces, 2)``
+        Start/end facepoint index for each face.
+    face_cell_indexes : ndarray, shape ``(n_faces, 2)``
+        Left/right cell indices; ``-1`` = boundary.
+    cell_face_info : ndarray, shape ``(n_cells, 2)``
+        ``[start_idx, count]`` into *cell_face_values* for each cell.
+    cell_face_values : ndarray, shape ``(total_entries, 2)``
+        ``[face_idx, orientation]`` per cell-face association.
+    face_normals : ndarray, shape ``(n_faces, 3)``
+        ``[nx, ny, face_length]`` unit-normal vector and face length for
+        each face.  ``nx, ny`` must be a unit vector.
+    face_vel : ndarray, shape ``(n_faces,)``
+        Signed face-normal velocity for this timestep (positive = flow in
+        the direction of the normal).
+    cell_wse : ndarray, shape ``(n_cells,)``
+        Cell-centre water-surface elevations.  ``NaN`` marks dry cells.
+    cell_velocity : ndarray, shape ``(n_cells, 2)``
+        Pre-computed WLS velocity vectors ``[Vx, Vy]`` at each cell centre.
+    output_path : str, Path, or None
+        Destination GeoTIFF.  ``None`` returns an open in-memory
+        ``rasterio.DatasetReader``; the caller must close it.
+    cell_size : float, optional
+        Output pixel size.  Ignored when *reference_transform* or
+        *reference_raster* is supplied.
+    reference_transform : rasterio.transform.Affine, optional
+        Affine transform for pixel-perfect grid alignment.
+        Mutually exclusive with *reference_raster*.
+    reference_raster : str or Path, optional
+        Existing GeoTIFF whose transform and CRS are inherited.
+        Mutually exclusive with *reference_transform*.
+    crs : str, int, or rasterio.crs.CRS, optional
+        Output CRS.
+    nodata : float
+        Fill value for dry pixels.
+    vel_min : float, optional
+        Speed threshold (m/s).  Cells whose WLS speed is below this are
+        treated as dry.
+    depth_min : float, optional
+        Minimum depth threshold passed to the internal WSE render.
+    snap_to_reference_extent : bool
+        Extend output to the full reference raster extent (default ``True``).
+    render_mode : str
+        WSE rendering mode — ``"sloping"`` (default), ``"horizontal"``,
+        or ``"hybrid"``.
+    face_active : ndarray, shape ``(n_faces,)``, bool, optional
+        Per-face hydraulic activity flag required by ``render_mode="hybrid"``.
+
+    Returns
+    -------
+    Path
+        Written GeoTIFF path (when *output_path* is given).
+    rasterio.io.DatasetReader
+        Open in-memory 4-band dataset ``[Vx, Vy, Speed, Direction_deg_from_N]``
+        (when *output_path* is ``None``).  Caller must close it.
+
+    Raises
+    ------
+    ImportError
+        If ``rasterio`` or ``matplotlib`` are not installed.
+
+    Notes
+    -----
+    The face-normal velocity ``vn * (nx, ny)`` captures only the component
+    normal to the face.  The tangential component is implicitly zero at the
+    face edge, so the WLS vector (which captures both components) dominates
+    near the cell centre where ``w0 → 1``.
+    """
+    try:
+        import rasterio
+    except ImportError as exc:
+        raise ImportError(
+            "mesh_to_velocity_raster_interp requires rasterio. "
+            "Install it with: pip install raspy[geo]"
+        ) from exc
+    try:
+        import matplotlib.tri as mtri
+    except ImportError as exc:
+        raise ImportError(
+            "mesh_to_velocity_raster_interp requires matplotlib. "
+            "Install it with: pip install raspy[geo]"
+        ) from exc
+
+    cell_velocity = np.asarray(cell_velocity, dtype=np.float64)
+    cell_wse_arr = np.asarray(cell_wse, dtype=np.float64)
+    face_vel_arr = np.asarray(face_vel, dtype=np.float64)
+    face_normals_arr = np.asarray(face_normals, dtype=np.float64)
+
+    # Pre-filter: mask cells whose WLS speed is below vel_min.
+    cell_wse_for_render = cell_wse_arr.copy()
+    if vel_min is not None:
+        with np.errstate(invalid="ignore"):
+            speed_pre = np.linalg.norm(cell_velocity, axis=1)
+        cell_wse_for_render[speed_pre < vel_min] = np.nan
+
+    # ── Step 1: Render WSE in-memory to determine wet extent and grid. ──────
+    wse_ds = mesh_to_raster(
+        cell_centers=cell_centers,
+        facepoint_coordinates=facepoint_coordinates,
+        face_facepoint_indexes=face_facepoint_indexes,
+        face_cell_indexes=face_cell_indexes,
+        cell_face_info=cell_face_info,
+        cell_face_values=cell_face_values,
+        cell_values=cell_wse_for_render,
+        output_path=None,
+        cell_size=cell_size,
+        reference_transform=reference_transform,
+        reference_raster=reference_raster,
+        crs=crs,
+        nodata=nodata,
+        min_value=None,
+        min_above_ref=depth_min,
+        snap_to_reference_extent=snap_to_reference_extent,
+        render_mode=render_mode,
+        face_active=face_active,
+    )
+
+    out_transform = wse_ds.transform
+    n_rows = wse_ds.height
+    n_cols = wse_ds.width
+    out_crs = wse_ds.crs
+    wse_nodata_val = wse_ds.nodata
+    wse_pixel = wse_ds.read(1).astype(np.float64)
+    wse_ds.close()
+
+    if wse_nodata_val is not None:
+        wet_mask = wse_pixel != wse_nodata_val
+    else:
+        wet_mask = np.isfinite(wse_pixel)
+
+    # ── Step 2: Build mesh triangulation. ───────────────────────────────────
+    cell_centers_arr = np.asarray(cell_centers, dtype=np.float64)
+    facepoint_coords_arr = np.asarray(facepoint_coordinates, dtype=np.float64)
+    face_fp_idx = np.asarray(face_facepoint_indexes, dtype=np.int64)
+    cell_face_values_arr = np.asarray(cell_face_values, dtype=np.int64)
+
+    n_cells = len(cell_centers_arr)
+    cell_face_info_arr = np.asarray(cell_face_info, dtype=np.int64)[:n_cells]
+
+    dry_mask = np.isnan(cell_wse_for_render)
+
+    all_pts = np.vstack([cell_centers_arr, facepoint_coords_arr])
+    counts = cell_face_info_arr[:, 1]
+    starts = cell_face_info_arr[:, 0]
+    total = int(counts.sum())
+
+    idx_step = np.ones(total, dtype=np.int64)
+    if n_cells > 1:
+        boundary_pos = np.cumsum(counts[:-1])
+        idx_step[boundary_pos] = starts[1:] - starts[:-1] - counts[:-1] + 1
+    idx_step[0] = starts[0]
+    entry_indices = np.cumsum(idx_step)
+
+    face_idx_arr = cell_face_values_arr[entry_indices, 0]
+    cell_for_entry = np.repeat(np.arange(n_cells, dtype=np.int64), counts)
+
+    fp0 = face_fp_idx[face_idx_arr, 0]
+    fp1 = face_fp_idx[face_idx_arr, 1]
+    valid_tris = fp0 != fp1
+
+    triangles = np.column_stack([
+        cell_for_entry[valid_tris],
+        n_cells + fp0[valid_tris],
+        n_cells + fp1[valid_tris],
+    ])
+    tri_to_cell = cell_for_entry[valid_tris]
+    tri_to_face = face_idx_arr[valid_tris]          # which face owns each triangle
+    tri_mask_arr = dry_mask[tri_to_cell]
+
+    triang = mtri.Triangulation(all_pts[:, 0], all_pts[:, 1], triangles)
+    triang.set_mask(tri_mask_arr)
+
+    # ── Step 3: Map each wet pixel to its triangle; blend velocities. ────────
+    dx = abs(out_transform.a)
+    dy = abs(out_transform.e)
+    xi = out_transform.c + (np.arange(n_cols) + 0.5) * dx
+    yi = out_transform.f - (np.arange(n_rows) + 0.5) * dy
+    xi_grid, yi_grid = np.meshgrid(xi, yi)
+
+    trifinder_fn = triang.get_trifinder()
+    tri_idx_flat = trifinder_fn(xi_grid.ravel(), yi_grid.ravel())
+
+    # Identify pixels inside a valid (unmasked) triangle.
+    inside = (tri_idx_flat >= 0) & wet_mask.ravel()
+    inside_idx = np.where(inside)[0]
+    tri_hit = tri_idx_flat[inside_idx]
+
+    # Pixel coordinates for the inside pixels.
+    px = xi_grid.ravel()[inside_idx]
+    py = yi_grid.ravel()[inside_idx]
+
+    # Triangle vertex positions.
+    v_cell_idx = triangles[tri_hit, 0]          # index into all_pts (cell centers)
+    v_fp0_idx  = triangles[tri_hit, 1]
+    v_fp1_idx  = triangles[tri_hit, 2]
+
+    ax, ay = all_pts[v_cell_idx, 0], all_pts[v_cell_idx, 1]
+    bx, by = all_pts[v_fp0_idx,  0], all_pts[v_fp0_idx,  1]
+    cx, cy = all_pts[v_fp1_idx,  0], all_pts[v_fp1_idx,  1]
+
+    w0 = _cell_center_barycentric_weight(px, py, ax, ay, bx, by, cx, cy)
+
+    # Cell-centre WLS velocity (both components).
+    cell_idx_hit = tri_to_cell[tri_hit]
+    v_cell = cell_velocity[cell_idx_hit]             # (m, 2)
+    # Zero out dry cells.
+    v_cell = np.where(dry_mask[cell_idx_hit, np.newaxis], np.nan, v_cell)
+
+    # Face-normal velocity projected to 2D: vn * [nx, ny].
+    face_idx_hit = tri_to_face[tri_hit]
+    vn = face_vel_arr[face_idx_hit]                  # (m,)
+    nx_ny = face_normals_arr[face_idx_hit, :2]       # (m, 2)
+    v_face = vn[:, np.newaxis] * nx_ny               # (m, 2)
+
+    # Per-pixel blend.
+    v_pixel = w0[:, np.newaxis] * v_cell + (1.0 - w0[:, np.newaxis]) * v_face
+
+    vel_flat = np.full((n_rows * n_cols, 2), np.nan)
+    vel_flat[inside_idx] = v_pixel
+
+    vx = vel_flat[:, 0].reshape(n_rows, n_cols)
+    vy = vel_flat[:, 1].reshape(n_rows, n_cols)
+
+    # WSE raster is the authoritative wet-extent mask.
+    vx[~wet_mask] = np.nan
+    vy[~wet_mask] = np.nan
+
+    # ── Step 4: Speed, direction, vel_min post-mask. ─────────────────────────
+    with np.errstate(invalid="ignore"):
+        speed = np.sqrt(vx ** 2 + vy ** 2)
+    direction = (90.0 - np.degrees(np.arctan2(vy, vx))) % 360.0
+    direction = np.where(np.isnan(vx), np.nan, direction)
+
+    if vel_min is not None:
+        low = speed < vel_min
+        vx[low] = vy[low] = speed[low] = direction[low] = np.nan
+
+    band_arrays = [vx, vy, speed, direction]
+    band_names = ["Vx", "Vy", "Speed", "Direction_deg_from_N"]
+
+    # ── Step 5: Write output raster. ─────────────────────────────────────────
+    profile: dict = {
+        "driver": "GTiff",
+        "dtype": "float32",
+        "width": n_cols,
+        "height": n_rows,
+        "count": 4,
+        "nodata": nodata,
+        "transform": out_transform,
+        "compress": "lzw",
+    }
+    if out_crs is not None:
+        profile["crs"] = out_crs
+
+    def _write_vel_bands(dst: Any) -> None:
+        for band_idx, (arr, bname) in enumerate(zip(band_arrays, band_names), start=1):
+            data = arr.astype(np.float32)
+            data[np.isnan(data)] = nodata
+            dst.write(data, band_idx)
+            dst.update_tags(band_idx, name=bname)
+
+    if output_path is None:
+        memfile = rasterio.MemoryFile()
+        with memfile.open(**profile) as dst:
+            _write_vel_bands(dst)
+        return memfile.open()
+
+    out_path = Path(output_path).resolve()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with rasterio.open(out_path, "w", **profile) as dst:
+        _write_vel_bands(dst)
+    return out_path
+
+
 def _velocity_raster_to_speed(
     vel_ds: Any,
     output_path: str | Path | None,
