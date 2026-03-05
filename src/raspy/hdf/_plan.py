@@ -822,15 +822,17 @@ class FlowAreaResults(FlowArea):
         snap_to_reference_extent: bool = True,
         crs: Any | None = None,
         nodata: float = -9999.0,
+        render_mode: Literal["sloping", "horizontal", "hybrid"] = "sloping",
         depth_min: float | None = None,
         vel_min: float | None = None,
-        vel_method: Literal[
+        vel_weight_method: Literal[
             "area_weighted", "length_weighted", "flow_ratio"
         ] = "area_weighted",
         vel_wse_method: Literal["average", "sloped"] = "sloped",
-        render_mode: Literal["sloping", "horizontal", "hybrid"] = "sloping",
         face_active_threshold: float = 0.0,
-        vel_interp: bool = True,
+        vel_interp_method: Literal[
+            "triangle_blend", "face_idw", "face_gradient"
+        ] | None = "triangle_blend",
     ) -> Path | rasterio.io.DatasetReader:
         """Interpolate a field to a GeoTIFF using mesh-conforming triangulation.
 
@@ -887,7 +889,7 @@ class FlowAreaResults(FlowArea):
             or ``"cell_velocity"``.  Cells whose WLS speed is below this
             threshold are excluded from the WSE wet-extent render and from
             the final velocity output.
-        vel_method:
+        vel_weight_method:
             Velocity reconstruction scheme passed to
             :meth:`cell_velocity_vectors`.
         vel_wse_method:
@@ -904,16 +906,22 @@ class FlowAreaResults(FlowArea):
             ``|face_velocity| > face_active_threshold``.  Default ``0.0``
             treats any non-zero velocity as active.  Ignored for other
             render modes.
-        vel_interp:
-            When ``True`` and *variable* is ``"cell_velocity"`` or
-            ``"cell_speed"``, use spatially varying interpolation within
-            each mesh cell (HEC-RAS double-C stencil).  Each pixel's
-            velocity is a barycentric blend of the WLS cell-centre vector
-            and the reconstructed face vector, so the field varies
-            smoothly within a cell while remaining strictly confined to
-            its boundaries.  When ``False`` (default), the uniform
-            cell-centre WLS velocity is painted over all wet pixels
-            inside the cell, matching the original behaviour.
+        vel_interp_method:
+            Intra-cell velocity interpolation method for ``"cell_velocity"``
+            and ``"cell_speed"``.  ``None`` paints the flat WLS cell-centre
+            velocity over all pixels inside the cell (fastest).  Otherwise
+            passes the value directly to
+            :func:`~raspy.geo.raster.mesh_to_velocity_raster_interp`:
+
+            ``"triangle_blend"`` *(default)* — barycentric blend of WLS
+            cell-centre velocity and reconstructed face velocity within each
+            fan-triangle.
+
+            ``"face_idw"`` — inverse-distance-weighted average of all
+            face-midpoint 2D velocities within the owning cell.
+
+            ``"face_gradient"`` — least-squares linear gradient fit inside
+            each cell from face-midpoint velocities.
 
         Returns
         -------
@@ -988,7 +996,7 @@ class FlowAreaResults(FlowArea):
             # assigns velocity per-cell (no spatial interpolation across cells).
             cell_vel_wse = np.array(self.water_surface[timestep, : self.n_cells])
             cell_vel_vecs = self.cell_velocity_vectors(
-                timestep, method=vel_method, wse_interp=vel_wse_method
+                timestep, method=vel_weight_method, wse_interp=vel_wse_method
             )
         else:
             raise ValueError(f"Unknown variable: {variable!r}")
@@ -1034,10 +1042,7 @@ class FlowAreaResults(FlowArea):
             return result
 
         if variable == "cell_velocity":
-            if vel_interp:
-                # Spatially varying interpolation within each mesh cell using
-                # the HEC-RAS double-C stencil (barycentric blend of WLS
-                # cell-centre velocity and reconstructed face velocity).
+            if vel_interp_method is not None:
                 face_vel_arr = np.array(self.face_velocity[timestep, :])
                 return _raster.mesh_to_velocity_raster_interp(
                     **mesh_kw,
@@ -1048,9 +1053,9 @@ class FlowAreaResults(FlowArea):
                     output_path=output_path,
                     vel_min=vel_min,
                     depth_min=depth_min,
+                    method=vel_interp_method,
                 )
-            # WSE-based wet extent; velocity assigned per-cell without spatial
-            # interpolation across cell boundaries.
+            # vel_interp_method=None: flat cell-centre velocity, no spatial interp.
             return _raster.mesh_to_velocity_raster(
                 **mesh_kw,
                 cell_wse=cell_vel_wse,
@@ -1061,8 +1066,7 @@ class FlowAreaResults(FlowArea):
             )
 
         if variable == "cell_speed":
-            # Same rendering as cell_velocity; extract the speed band only.
-            if vel_interp:
+            if vel_interp_method is not None:
                 face_vel_arr = np.array(self.face_velocity[timestep, :])
                 vel_ds = _raster.mesh_to_velocity_raster_interp(
                     **mesh_kw,
@@ -1073,6 +1077,7 @@ class FlowAreaResults(FlowArea):
                     output_path=None,
                     vel_min=vel_min,
                     depth_min=depth_min,
+                    method=vel_interp_method,
                 )
             else:
                 vel_ds = _raster.mesh_to_velocity_raster(

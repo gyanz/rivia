@@ -454,3 +454,270 @@ class TestMeshToRaster:
         ds.close()
         wet = np.isfinite(data) & (data != -9999.0)
         assert not wet.any(), "Expected all pixels masked when WSE <= DEM"
+
+
+# ---------------------------------------------------------------------------
+# Helpers for velocity-interp tests
+# ---------------------------------------------------------------------------
+
+
+def _minimal_vel_mesh() -> dict:
+    """Extend _minimal_mesh() with uniform-flow velocity fields.
+
+    Uniform flow u=(1, 0) m/s so face normal velocities are u·n̂ and
+    both cells have WLS velocity [1.0, 0.0].
+    """
+    mesh = _minimal_mesh()
+    face_normals = np.array([
+        [0.0, -1.0, 10.0],   # face 0: south boundary of cell 0
+        [1.0,  0.0, 10.0],   # face 1: shared face, normal east
+        [0.0,  1.0, 10.0],   # face 2: north boundary of cell 0
+        [-1.0, 0.0, 10.0],   # face 3: west boundary of cell 0
+        [0.0, -1.0, 10.0],   # face 4: south boundary of cell 1
+        [1.0,  0.0, 10.0],   # face 5: east boundary of cell 1
+        [0.0,  1.0, 10.0],   # face 6: north boundary of cell 1
+    ])
+    # vn = u · n̂  for u=(1,0)
+    face_vel = np.array([0.0, 1.0, 0.0, -1.0, 0.0, 1.0, 0.0])
+    cell_wse = np.array([5.0, 5.0])
+    cell_velocity = np.array([[1.0, 0.0], [1.0, 0.0]])
+    return dict(**mesh, face_normals=face_normals, face_vel=face_vel,
+                cell_wse=cell_wse, cell_velocity=cell_velocity)
+
+
+# ---------------------------------------------------------------------------
+# _compute_face_midpoints
+# ---------------------------------------------------------------------------
+
+
+class TestComputeFaceMidpoints:
+    def test_basic(self):
+        from raspy.geo.raster import _compute_face_midpoints
+
+        fp_coords = np.array([[0.0, 0.0], [10.0, 0.0], [10.0, 10.0]])
+        fp_idx = np.array([[0, 1], [1, 2], [2, 0]])
+        midpoints = _compute_face_midpoints(fp_coords, fp_idx)
+        expected = np.array([[5.0, 0.0], [10.0, 5.0], [5.0, 5.0]])
+        np.testing.assert_allclose(midpoints, expected)
+
+    def test_shape(self):
+        from raspy.geo.raster import _compute_face_midpoints
+
+        mesh = _minimal_mesh()
+        mp = _compute_face_midpoints(
+            mesh["facepoint_coordinates"],
+            mesh["face_facepoint_indexes"],
+        )
+        assert mp.shape == (len(mesh["face_facepoint_indexes"]), 2)
+
+
+# ---------------------------------------------------------------------------
+# _interp_face_idw
+# ---------------------------------------------------------------------------
+
+
+class TestInterpFaceIdw:
+    def _face_midpoints_and_vel2d(self):
+        """Pre-compute face midpoints and 2D face velocities for uniform flow."""
+        from raspy.geo.raster import _compute_face_midpoints, _compute_face_velocity_2d
+
+        vm = _minimal_vel_mesh()
+        face_midpoints = _compute_face_midpoints(
+            vm["facepoint_coordinates"], vm["face_facepoint_indexes"]
+        )
+        dry_mask = np.isnan(vm["cell_wse"])
+        face_vel_2d = _compute_face_velocity_2d(
+            face_normals=np.asarray(vm["face_normals"]),
+            face_vel=np.asarray(vm["face_vel"]),
+            face_cell_indexes=np.asarray(vm["face_cell_indexes"]),
+            cell_velocity=np.asarray(vm["cell_velocity"]),
+            dry_mask=dry_mask,
+            n_cells=2,
+        )
+        return vm, face_midpoints, face_vel_2d, dry_mask
+
+    def test_output_shape(self):
+        from raspy.geo.raster import _interp_face_idw
+
+        vm, face_midpoints, face_vel_2d, dry_mask = self._face_midpoints_and_vel2d()
+        px = np.array([5.0, 15.0, 3.0])
+        py = np.array([5.0, 5.0, 7.0])
+        cell_idx_hit = np.array([0, 1, 0])
+        result = _interp_face_idw(
+            px, py, cell_idx_hit, 2,
+            vm["cell_face_info"], vm["cell_face_values"],
+            face_midpoints, face_vel_2d, dry_mask,
+        )
+        assert result.shape == (3, 2)
+
+    def test_uniform_flow_returns_unit_x(self):
+        """For uniform u=(1,0) flow, IDW must return [1, 0] at every pixel."""
+        from raspy.geo.raster import _interp_face_idw
+
+        vm, face_midpoints, face_vel_2d, dry_mask = self._face_midpoints_and_vel2d()
+        px = np.array([5.0, 5.0, 15.0, 15.0])
+        py = np.array([2.0, 8.0, 2.0, 8.0])
+        cell_idx_hit = np.array([0, 0, 1, 1])
+        result = _interp_face_idw(
+            px, py, cell_idx_hit, 2,
+            vm["cell_face_info"], vm["cell_face_values"],
+            face_midpoints, face_vel_2d, dry_mask,
+        )
+        np.testing.assert_allclose(result[:, 0], 1.0, atol=1e-12)
+        np.testing.assert_allclose(result[:, 1], 0.0, atol=1e-12)
+
+    def test_dry_cell_returns_zeros(self):
+        from raspy.geo.raster import _interp_face_idw
+
+        vm, face_midpoints, face_vel_2d, _ = self._face_midpoints_and_vel2d()
+        dry_mask = np.array([True, False])   # cell 0 is dry
+        px = np.array([5.0])
+        py = np.array([5.0])
+        cell_idx_hit = np.array([0])
+        result = _interp_face_idw(
+            px, py, cell_idx_hit, 2,
+            vm["cell_face_info"], vm["cell_face_values"],
+            face_midpoints, face_vel_2d, dry_mask,
+        )
+        np.testing.assert_array_equal(result, [[0.0, 0.0]])
+
+
+# ---------------------------------------------------------------------------
+# _interp_face_gradient
+# ---------------------------------------------------------------------------
+
+
+class TestInterpFaceGradient:
+    def _face_midpoints_and_vel2d(self):
+        from raspy.geo.raster import _compute_face_midpoints, _compute_face_velocity_2d
+
+        vm = _minimal_vel_mesh()
+        face_midpoints = _compute_face_midpoints(
+            vm["facepoint_coordinates"], vm["face_facepoint_indexes"]
+        )
+        dry_mask = np.isnan(vm["cell_wse"])
+        face_vel_2d = _compute_face_velocity_2d(
+            face_normals=np.asarray(vm["face_normals"]),
+            face_vel=np.asarray(vm["face_vel"]),
+            face_cell_indexes=np.asarray(vm["face_cell_indexes"]),
+            cell_velocity=np.asarray(vm["cell_velocity"]),
+            dry_mask=dry_mask,
+            n_cells=2,
+        )
+        return vm, face_midpoints, face_vel_2d, dry_mask
+
+    def test_output_shape(self):
+        from raspy.geo.raster import _interp_face_gradient
+
+        vm, face_midpoints, face_vel_2d, dry_mask = self._face_midpoints_and_vel2d()
+        px = np.array([5.0, 15.0])
+        py = np.array([5.0, 5.0])
+        cell_idx_hit = np.array([0, 1])
+        result = _interp_face_gradient(
+            px, py, cell_idx_hit, 2,
+            vm["cell_centers"], vm["cell_face_info"], vm["cell_face_values"],
+            face_midpoints, face_vel_2d, dry_mask, vm["cell_velocity"],
+        )
+        assert result.shape == (2, 2)
+
+    def test_uniform_flow_exact(self):
+        """Constant velocity field must be recovered exactly by the gradient fit."""
+        from raspy.geo.raster import _interp_face_gradient
+
+        vm, face_midpoints, face_vel_2d, dry_mask = self._face_midpoints_and_vel2d()
+        px = np.array([3.0, 7.0, 5.0])
+        py = np.array([3.0, 7.0, 5.0])
+        cell_idx_hit = np.array([0, 0, 0])
+        result = _interp_face_gradient(
+            px, py, cell_idx_hit, 2,
+            vm["cell_centers"], vm["cell_face_info"], vm["cell_face_values"],
+            face_midpoints, face_vel_2d, dry_mask, vm["cell_velocity"],
+        )
+        # Constant field [1, 0] must be recovered with machine precision.
+        np.testing.assert_allclose(result[:, 0], 1.0, atol=1e-12)
+        np.testing.assert_allclose(result[:, 1], 0.0, atol=1e-12)
+
+    def test_dry_cell_returns_zeros(self):
+        from raspy.geo.raster import _interp_face_gradient
+
+        vm, face_midpoints, face_vel_2d, _ = self._face_midpoints_and_vel2d()
+        dry_mask = np.array([True, False])
+        px = np.array([5.0])
+        py = np.array([5.0])
+        cell_idx_hit = np.array([0])
+        result = _interp_face_gradient(
+            px, py, cell_idx_hit, 2,
+            vm["cell_centers"], vm["cell_face_info"], vm["cell_face_values"],
+            face_midpoints, face_vel_2d, dry_mask, vm["cell_velocity"],
+        )
+        np.testing.assert_array_equal(result, [[0.0, 0.0]])
+
+
+# ---------------------------------------------------------------------------
+# mesh_to_velocity_raster_interp — method parameter
+# ---------------------------------------------------------------------------
+
+
+matplotlib = pytest.importorskip("matplotlib", reason="matplotlib not installed")
+
+
+class TestMeshToVelocityRasterInterpMethod:
+    def test_invalid_method_raises(self):
+        from raspy.geo.raster import mesh_to_velocity_raster_interp
+
+        vm = _minimal_vel_mesh()
+        with pytest.raises(ValueError, match="method must be"):
+            mesh_to_velocity_raster_interp(
+                **vm,
+                output_path=None,
+                cell_size=2.0,
+                method="bad_method",
+            )
+
+    @pytest.mark.parametrize("method", ["triangle_blend", "face_idw", "face_gradient"])
+    def test_returns_four_bands(self, method):
+        from raspy.geo.raster import mesh_to_velocity_raster_interp
+
+        vm = _minimal_vel_mesh()
+        ds = mesh_to_velocity_raster_interp(
+            **vm,
+            output_path=None,
+            cell_size=2.0,
+            method=method,
+        )
+        assert ds.count == 4
+        ds.close()
+
+    @pytest.mark.parametrize("method", ["triangle_blend", "face_idw", "face_gradient"])
+    def test_has_wet_pixels(self, method):
+        from raspy.geo.raster import mesh_to_velocity_raster_interp
+
+        vm = _minimal_vel_mesh()
+        ds = mesh_to_velocity_raster_interp(
+            **vm,
+            output_path=None,
+            cell_size=2.0,
+            method=method,
+        )
+        speed = ds.read(3).astype(np.float64)
+        ds.close()
+        nodata = -9999.0
+        wet = speed != nodata
+        assert wet.any(), f"Expected wet pixels for method={method!r}"
+
+    @pytest.mark.parametrize("method", ["face_idw", "face_gradient"])
+    def test_uniform_flow_speed_approx_one(self, method):
+        """Uniform u=(1,0) flow should give speed ≈ 1 at all wet pixels."""
+        from raspy.geo.raster import mesh_to_velocity_raster_interp
+
+        vm = _minimal_vel_mesh()
+        ds = mesh_to_velocity_raster_interp(
+            **vm,
+            output_path=None,
+            cell_size=2.0,
+            method=method,
+        )
+        speed = ds.read(3).astype(np.float64)
+        ds.close()
+        wet = speed != -9999.0
+        np.testing.assert_allclose(speed[wet], 1.0, atol=1e-6)

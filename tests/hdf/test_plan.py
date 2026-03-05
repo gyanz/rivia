@@ -237,7 +237,7 @@ class TestExportRasterGeoGuard:
         with PlanHdf(synthetic_plan_hdf) as hdf:
             with pytest.raises(ValueError, match="method"):
                 hdf.flow_areas[AREA].export_raster(
-                    "cell_speed", timestep=0, output_path="out.tif", vel_method="bad"
+                    "cell_speed", timestep=0, output_path="out.tif", vel_weight_method="bad"
                 )
 
     def test_invalid_wse_interp_raises(self, synthetic_plan_hdf):

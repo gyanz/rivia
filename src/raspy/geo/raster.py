@@ -1393,6 +1393,240 @@ def _cell_center_barycentric_weight(
     return np.clip(w0, 0.0, 1.0)
 
 
+def _compute_face_midpoints(
+    facepoint_coordinates: np.ndarray,
+    face_facepoint_indexes: np.ndarray,
+) -> np.ndarray:
+    """Return the midpoint coordinate of each face.
+
+    Parameters
+    ----------
+    facepoint_coordinates : ndarray, shape ``(n_fp, 2)``
+        X, Y coordinates of all facepoints.
+    face_facepoint_indexes : ndarray, shape ``(n_faces, 2)``
+        Start and end facepoint index for each face.
+
+    Returns
+    -------
+    ndarray, shape ``(n_faces, 2)``
+        Midpoint ``[x, y]`` for each face.
+    """
+    fp0 = face_facepoint_indexes[:, 0]
+    fp1 = face_facepoint_indexes[:, 1]
+    return 0.5 * (facepoint_coordinates[fp0] + facepoint_coordinates[fp1])
+
+
+def _interp_face_idw(
+    px: np.ndarray,
+    py: np.ndarray,
+    cell_idx_hit: np.ndarray,
+    n_cells: int,
+    cell_face_info: np.ndarray,
+    cell_face_values: np.ndarray,
+    face_midpoints: np.ndarray,
+    face_vel_2d: np.ndarray,
+    dry_mask: np.ndarray,
+    power: float = 2.0,
+    min_dist: float = 1e-3,
+) -> np.ndarray:
+    """Interpolate pixel velocities using IDW from face midpoints.
+
+    For each pixel P inside cell C the velocity is the inverse-distance-
+    weighted average of the full 2D face velocities located at the midpoints
+    of all faces bounding C:
+
+    .. code-block:: text
+
+        w_i  = 1 / max(d(P, m_i), min_dist) ^ power
+        V(P) = Σ w_i V_face_i / Σ w_i
+
+    This eliminates the triangulation-edge discontinuities of the
+    ``"triangle_blend"`` method while preserving the exact face-normal
+    velocity at each face midpoint.
+
+    Parameters
+    ----------
+    px, py : ndarray, shape ``(m,)``
+        Pixel x, y coordinates (one entry per wet pixel).
+    cell_idx_hit : ndarray, shape ``(m,)``
+        Index of the cell that contains each pixel.
+    n_cells : int
+        Number of real computational cells.
+    cell_face_info : ndarray, shape ``(>= n_cells, 2)``
+        ``[start_index, count]`` into *cell_face_values* for each cell.
+    cell_face_values : ndarray, shape ``(total, 2)``
+        ``[face_index, orientation]`` per cell-face association.
+    face_midpoints : ndarray, shape ``(n_faces, 2)``
+        X, Y midpoint coordinate of each face.
+    face_vel_2d : ndarray, shape ``(n_faces, 2)``
+        Full 2D ``[Vx, Vy]`` velocity at each face midpoint.
+    dry_mask : ndarray, shape ``(n_cells,)``, bool
+        ``True`` for dry cells; their pixels receive ``[0, 0]``.
+    power : float
+        IDW exponent (default 2).
+    min_dist : float
+        Distance floor to avoid division by zero (default 1e-3 m).
+
+    Returns
+    -------
+    ndarray, shape ``(m, 2)``
+        Interpolated ``[Vx, Vy]`` at each pixel.
+    """
+    m = len(px)
+    result = np.zeros((m, 2), dtype=np.float64)
+
+    cell_face_info_arr = np.asarray(cell_face_info, dtype=np.int64)[:n_cells]
+    cell_face_values_arr = np.asarray(cell_face_values, dtype=np.int64)
+
+    # Group pixels by cell for vectorised per-cell IDW.
+    sort_order = np.argsort(cell_idx_hit, kind="stable")
+    sorted_cells = cell_idx_hit[sort_order]
+    unique_cells, seg_start = np.unique(sorted_cells, return_index=True)
+    seg_end = np.empty_like(seg_start)
+    seg_end[:-1] = seg_start[1:]
+    seg_end[-1] = m
+
+    for i, c in enumerate(unique_cells):
+        if dry_mask[c]:
+            continue
+
+        pix_slice = sort_order[seg_start[i] : seg_end[i]]
+        ppx = px[pix_slice]
+        ppy = py[pix_slice]
+
+        start = int(cell_face_info_arr[c, 0])
+        count = int(cell_face_info_arr[c, 1])
+        fi = cell_face_values_arr[start : start + count, 0].astype(int)
+
+        mp = face_midpoints[fi]   # (N, 2)
+        fv = face_vel_2d[fi]      # (N, 2)
+
+        # Distance from each pixel to each face midpoint: (n_pix, N)
+        ddx = ppx[:, np.newaxis] - mp[np.newaxis, :, 0]
+        ddy = ppy[:, np.newaxis] - mp[np.newaxis, :, 1]
+        dist = np.hypot(ddx, ddy)
+
+        w = 1.0 / np.maximum(dist, min_dist) ** power   # (n_pix, N)
+        result[pix_slice] = (w @ fv) / w.sum(axis=1, keepdims=True)
+
+    return result
+
+
+def _interp_face_gradient(
+    px: np.ndarray,
+    py: np.ndarray,
+    cell_idx_hit: np.ndarray,
+    n_cells: int,
+    cell_centers: np.ndarray,
+    cell_face_info: np.ndarray,
+    cell_face_values: np.ndarray,
+    face_midpoints: np.ndarray,
+    face_vel_2d: np.ndarray,
+    dry_mask: np.ndarray,
+    cell_velocity: np.ndarray,
+) -> np.ndarray:
+    """Interpolate pixel velocities using a per-cell linear gradient fit.
+
+    For each cell C a local linear velocity field is fitted to the face
+    midpoint velocities via ordinary least squares:
+
+    .. code-block:: text
+
+        V(x, y) = V0 + Gx * (x - x0) + Gy * (y - y0)
+
+    where ``(x0, y0)`` is the cell centre and the 2x3 coefficient matrix
+    ``[V0, Gx, Gy]`` is found by solving the (N x 3) system
+
+    .. code-block:: text
+
+        A @ coeff = fv,   A = [[1, xi-x0, yi-y0], ...]
+
+    using ``numpy.linalg.lstsq``.  Cells with fewer than 3 faces (degenerate)
+    fall back to the constant cell-centre WLS velocity.
+
+    Parameters
+    ----------
+    px, py : ndarray, shape ``(m,)``
+        Pixel x, y coordinates.
+    cell_idx_hit : ndarray, shape ``(m,)``
+        Cell index for each pixel.
+    n_cells : int
+        Number of real computational cells.
+    cell_centers : ndarray, shape ``(n_cells, 2)``
+        X, Y coordinates of each cell centre.
+    cell_face_info : ndarray, shape ``(>= n_cells, 2)``
+        ``[start_index, count]`` into *cell_face_values* per cell.
+    cell_face_values : ndarray, shape ``(total, 2)``
+        ``[face_index, orientation]`` per cell-face association.
+    face_midpoints : ndarray, shape ``(n_faces, 2)``
+        X, Y midpoint of each face.
+    face_vel_2d : ndarray, shape ``(n_faces, 2)``
+        Full 2D ``[Vx, Vy]`` velocity at each face midpoint.
+    dry_mask : ndarray, shape ``(n_cells,)``, bool
+        ``True`` for dry cells; their pixels receive ``[0, 0]``.
+    cell_velocity : ndarray, shape ``(n_cells, 2)``
+        WLS cell-centre velocities used as fallback when N < 3.
+
+    Returns
+    -------
+    ndarray, shape ``(m, 2)``
+        Interpolated ``[Vx, Vy]`` at each pixel.
+    """
+    m = len(px)
+    result = np.zeros((m, 2), dtype=np.float64)
+
+    cell_face_info_arr = np.asarray(cell_face_info, dtype=np.int64)[:n_cells]
+    cell_face_values_arr = np.asarray(cell_face_values, dtype=np.int64)
+    cell_centers_arr = np.asarray(cell_centers, dtype=np.float64)
+
+    sort_order = np.argsort(cell_idx_hit, kind="stable")
+    sorted_cells = cell_idx_hit[sort_order]
+    unique_cells, seg_start = np.unique(sorted_cells, return_index=True)
+    seg_end = np.empty_like(seg_start)
+    seg_end[:-1] = seg_start[1:]
+    seg_end[-1] = m
+
+    for i, c in enumerate(unique_cells):
+        if dry_mask[c]:
+            continue
+
+        pix_slice = sort_order[seg_start[i] : seg_end[i]]
+        ppx = px[pix_slice]
+        ppy = py[pix_slice]
+
+        start = int(cell_face_info_arr[c, 0])
+        count = int(cell_face_info_arr[c, 1])
+        fi = cell_face_values_arr[start : start + count, 0].astype(int)
+
+        mp = face_midpoints[fi]   # (N, 2)
+        fv = face_vel_2d[fi]      # (N, 2)
+        N = len(fi)
+
+        if N < 3:
+            # Degenerate cell: fall back to constant cell-centre velocity.
+            result[pix_slice] = cell_velocity[c]
+            continue
+
+        x0, y0 = cell_centers_arr[c]
+        xi = mp[:, 0] - x0   # (N,)
+        yi = mp[:, 1] - y0   # (N,)
+        A = np.column_stack([np.ones(N), xi, yi])   # (N, 3)
+
+        # Solve A @ coeff = fv  →  coeff shape (3, 2)
+        coeff, _, _, _ = np.linalg.lstsq(A, fv, rcond=None)
+
+        dxp = ppx - x0   # (n_pix,)
+        dyp = ppy - y0   # (n_pix,)
+        # V(P) = coeff[0] + dxp * coeff[1] + dyp * coeff[2]
+        result[pix_slice] = (
+            coeff[0]
+            + dxp[:, np.newaxis] * coeff[1]
+            + dyp[:, np.newaxis] * coeff[2]
+        )
+
+    return result
+
+
 def mesh_to_velocity_raster_interp(
     cell_centers: np.ndarray,
     facepoint_coordinates: np.ndarray,
@@ -1416,6 +1650,7 @@ def mesh_to_velocity_raster_interp(
     snap_to_reference_extent: bool = True,
     render_mode: str = "sloping",
     face_active: np.ndarray | None = None,
+    method: str = "triangle_blend",
 ) -> Path | rasterio.io.DatasetReader:
     """Render a spatially varying velocity raster constrained within each mesh cell.
 
@@ -1497,6 +1732,28 @@ def mesh_to_velocity_raster_interp(
         or ``"hybrid"``.
     face_active : ndarray, shape ``(n_faces,)``, bool, optional
         Per-face hydraulic activity flag required by ``render_mode="hybrid"``.
+    method : str
+        Intra-cell velocity interpolation method:
+
+        ``"triangle_blend"`` *(default)*
+            Fan-triangulate each cell into ``(cell_center, fp0, fp1)``
+            sub-triangles and blend the WLS cell-centre velocity with the
+            face's full 2D velocity (double-C stencil) using the barycentric
+            weight of the cell-centre vertex.  Fast but shows a discontinuity
+            at sub-triangle edges inside each cell.
+
+        ``"face_idw"``
+            Inverse-distance-weighted average of all face-midpoint 2D
+            velocities within the owning cell.  Eliminates triangulation
+            artefacts; velocity varies smoothly inside each cell.  Face
+            normal velocity is exactly reproduced at each face midpoint.
+
+        ``"face_gradient"``
+            Fit a local linear velocity gradient inside each cell by solving
+            a least-squares system built from all face-midpoint velocities.
+            Gives a smooth linear field ``V(x,y) = V0 + Gx*(x-x0) +
+            Gy*(y-y0)`` centred at the cell centre.  Cells with fewer than 3
+            faces fall back to the constant WLS cell-centre velocity.
 
     Returns
     -------
@@ -1510,14 +1767,14 @@ def mesh_to_velocity_raster_interp(
     ------
     ImportError
         If ``rasterio`` or ``matplotlib`` are not installed.
+    ValueError
+        If *method* is not one of the recognised strings.
 
     Notes
     -----
-    The double-C stencil keeps ``vn`` exact (as stored in the HDF) and
-    estimates the tangential component from WLS velocities of adjacent cells.
-    For boundary faces (one real neighbour), only that cell's tangential
-    projection is used.  Faces with no wet neighbour retain a zero tangential
-    component, so only the normal contribution survives.
+    All three methods use the double-C stencil to reconstruct the full 2D
+    face velocity (``vn·n̂ + vt·t̂``), keeping ``vn`` exact as stored in
+    the HDF and estimating ``vt`` from adjacent-cell WLS projections.
     """
     try:
         import rasterio
@@ -1533,6 +1790,12 @@ def mesh_to_velocity_raster_interp(
             "mesh_to_velocity_raster_interp requires matplotlib. "
             "Install it with: pip install raspy[geo]"
         ) from exc
+
+    _valid_methods = {"triangle_blend", "face_idw", "face_gradient"}
+    if method not in _valid_methods:
+        raise ValueError(
+            f"method must be one of {sorted(_valid_methods)}; got {method!r}"
+        )
 
     cell_velocity = np.asarray(cell_velocity, dtype=np.float64)
     cell_wse_arr = np.asarray(cell_wse, dtype=np.float64)
@@ -1634,7 +1897,7 @@ def mesh_to_velocity_raster_interp(
         n_cells=n_cells,
     )
 
-    # ── Step 3: Map each wet pixel to its triangle; blend velocities. ────────
+    # ── Step 3: Map each wet pixel to its triangle; interpolate velocities. ──
     dx = abs(out_transform.a)
     dy = abs(out_transform.e)
     xi = out_transform.c + (np.arange(n_cols) + 0.5) * dx
@@ -1653,29 +1916,45 @@ def mesh_to_velocity_raster_interp(
     px = xi_grid.ravel()[inside_idx]
     py = yi_grid.ravel()[inside_idx]
 
-    # Triangle vertex positions.
-    v_cell_idx = triangles[tri_hit, 0]          # index into all_pts (cell centers)
-    v_fp0_idx  = triangles[tri_hit, 1]
-    v_fp1_idx  = triangles[tri_hit, 2]
-
-    ax, ay = all_pts[v_cell_idx, 0], all_pts[v_cell_idx, 1]
-    bx, by = all_pts[v_fp0_idx,  0], all_pts[v_fp0_idx,  1]
-    cx, cy = all_pts[v_fp1_idx,  0], all_pts[v_fp1_idx,  1]
-
-    w0 = _cell_center_barycentric_weight(px, py, ax, ay, bx, by, cx, cy)
-
-    # Cell-centre WLS velocity (both components).
+    # Cell index for each inside pixel (shared by all methods).
     cell_idx_hit = tri_to_cell[tri_hit]
-    v_cell = cell_velocity[cell_idx_hit]             # (m, 2)
-    # Zero out dry cells.
-    v_cell = np.where(dry_mask[cell_idx_hit, np.newaxis], np.nan, v_cell)
 
-    # Full 2D face velocity from double-C stencil: vn*n_hat + vt*t_hat.
-    face_idx_hit = tri_to_face[tri_hit]
-    v_face = face_vel_2d[face_idx_hit]               # (m, 2)
+    if method == "triangle_blend":
+        # Barycentric blend: w0 * V_cell_WLS + (1-w0) * V_face (double-C).
+        v_cell_idx = triangles[tri_hit, 0]
+        v_fp0_idx  = triangles[tri_hit, 1]
+        v_fp1_idx  = triangles[tri_hit, 2]
 
-    # Per-pixel blend.
-    v_pixel = w0[:, np.newaxis] * v_cell + (1.0 - w0[:, np.newaxis]) * v_face
+        ax, ay = all_pts[v_cell_idx, 0], all_pts[v_cell_idx, 1]
+        bx, by = all_pts[v_fp0_idx,  0], all_pts[v_fp0_idx,  1]
+        cx, cy = all_pts[v_fp1_idx,  0], all_pts[v_fp1_idx,  1]
+
+        w0 = _cell_center_barycentric_weight(px, py, ax, ay, bx, by, cx, cy)
+
+        v_cell = cell_velocity[cell_idx_hit]   # (m, 2)
+        v_cell = np.where(dry_mask[cell_idx_hit, np.newaxis], np.nan, v_cell)
+
+        face_idx_hit = tri_to_face[tri_hit]
+        v_face = face_vel_2d[face_idx_hit]     # (m, 2)
+
+        v_pixel = w0[:, np.newaxis] * v_cell + (1.0 - w0[:, np.newaxis]) * v_face
+
+    else:
+        # face_idw and face_gradient both need face midpoints.
+        face_midpoints = _compute_face_midpoints(facepoint_coords_arr, face_fp_idx)
+
+        if method == "face_idw":
+            v_pixel = _interp_face_idw(
+                px, py, cell_idx_hit, n_cells,
+                cell_face_info_arr, cell_face_values_arr,
+                face_midpoints, face_vel_2d, dry_mask,
+            )
+        else:  # face_gradient
+            v_pixel = _interp_face_gradient(
+                px, py, cell_idx_hit, n_cells,
+                cell_centers_arr, cell_face_info_arr, cell_face_values_arr,
+                face_midpoints, face_vel_2d, dry_mask, cell_velocity,
+            )
 
     vel_flat = np.full((n_rows * n_cols, 2), np.nan)
     vel_flat[inside_idx] = v_pixel
