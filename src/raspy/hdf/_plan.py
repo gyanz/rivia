@@ -725,6 +725,7 @@ class FlowAreaResults(FlowArea):
             "triangle_blend", "face_idw", "face_gradient",
             "facepoint_blend", "scatter_interp", "scatter_interp2",
         ] | None = "triangle_blend",
+        scatter_interp_method: Literal["nearest", "linear", "cubic"] = "linear",
     ) -> Path | rasterio.io.DatasetReader:
         """Interpolate a field to a GeoTIFF using mesh-conforming triangulation.
 
@@ -819,6 +820,17 @@ class FlowAreaResults(FlowArea):
             vertex (facepoint), then full 3-vertex barycentric interpolation
             within each fan-triangle.  C0-continuous across all cell faces;
             best choice for smooth flow-arrow rendering.
+
+            ``"scatter_interp"`` — global ``scipy.griddata`` over wet cell
+            centres and wet face midpoints.
+
+            ``"scatter_interp2"`` — same but face midpoints only; avoids
+            discontinuities originating at cell centres.
+        scatter_interp_method:
+            ``scipy.interpolate.griddata`` *method* used by
+            ``"scatter_interp"`` and ``"scatter_interp2"``.  One of
+            ``"nearest"``, ``"linear"`` *(default)*, ``"cubic"``.  Ignored
+            for all other *vel_interp_method* values.
 
         Returns
         -------
@@ -951,6 +963,7 @@ class FlowAreaResults(FlowArea):
                     vel_min=vel_min,
                     depth_min=depth_min,
                     method=vel_interp_method,
+                    scatter_interp_method=scatter_interp_method,
                 )
             # vel_interp_method=None: flat cell-centre velocity, no spatial interp.
             return _raster.mesh_to_velocity_raster(

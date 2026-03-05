@@ -880,3 +880,33 @@ class TestMeshToVelocityRasterInterpMethod:
         assert wet.any()
         np.testing.assert_allclose(vx[wet], 1.0, atol=1e-6)
         np.testing.assert_allclose(vy[wet], 0.0, atol=1e-6)
+
+    def test_invalid_scatter_interp_method_raises(self):
+        from raspy.geo.raster import mesh_to_velocity_raster_interp
+
+        vm = _minimal_vel_mesh()
+        with pytest.raises(ValueError, match="scatter_interp_method"):
+            mesh_to_velocity_raster_interp(
+                **vm,
+                output_path=None,
+                cell_size=2.0,
+                method="scatter_interp",
+                scatter_interp_method="bad",
+            )
+
+    @pytest.mark.parametrize("sci_method", ["nearest", "linear", "cubic"])
+    def test_scatter_interp_scipy_methods(self, sci_method):
+        """All scipy griddata methods produce wet pixels with uniform flow."""
+        from raspy.geo.raster import mesh_to_velocity_raster_interp
+
+        vm = _minimal_vel_mesh()
+        ds = mesh_to_velocity_raster_interp(
+            **vm,
+            output_path=None,
+            cell_size=2.0,
+            method="scatter_interp",
+            scatter_interp_method=sci_method,
+        )
+        speed = ds.read(3).astype(np.float64)
+        ds.close()
+        assert (speed != -9999.0).any()

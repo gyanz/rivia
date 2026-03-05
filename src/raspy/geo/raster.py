@@ -1743,6 +1743,7 @@ def mesh_to_velocity_raster_interp(
     render_mode: str = "sloping",
     face_active: np.ndarray | None = None,
     method: str = "triangle_blend",
+    scatter_interp_method: str = "linear",
 ) -> Path | rasterio.io.DatasetReader:
     """Render a spatially varying velocity raster constrained within each mesh cell.
 
@@ -1872,6 +1873,11 @@ def mesh_to_velocity_raster_interp(
             excluded.  This removes discontinuities that can originate at
             cell centres when the WLS velocity differs from the surrounding
             face-midpoint field.
+    scatter_interp_method : str
+        ``scipy.interpolate.griddata`` *method* argument used by
+        ``"scatter_interp"`` and ``"scatter_interp2"``.  Accepted values:
+        ``"nearest"``, ``"linear"`` *(default)*, ``"cubic"``.  Ignored for
+        all other interpolation methods.
 
     Returns
     -------
@@ -1909,6 +1915,12 @@ def mesh_to_velocity_raster_interp(
     if method not in _valid_methods:
         raise ValueError(
             f"method must be one of {sorted(_valid_methods)}; got {method!r}"
+        )
+    _valid_scatter = {"nearest", "linear", "cubic"}
+    if scatter_interp_method not in _valid_scatter:
+        raise ValueError(
+            f"scatter_interp_method must be one of {sorted(_valid_scatter)}; "
+            f"got {scatter_interp_method!r}"
         )
 
     cell_velocity = np.asarray(cell_velocity, dtype=np.float64)
@@ -2034,7 +2046,7 @@ def mesh_to_velocity_raster_interp(
         # one Delaunay triangulation over the whole mesh and interpolates
         # continuously, eliminating all cell-boundary artefacts.
         try:
-            from scipy.interpolate import LinearNDInterpolator
+            from scipy.interpolate import griddata
         except ImportError as exc:
             raise ImportError(
                 "scatter_interp requires scipy. "
@@ -2062,11 +2074,12 @@ def mesh_to_velocity_raster_interp(
             pts = face_midpoints[wet_face]
             vel = face_vel_2d[wet_face]
 
-        interp_fn = LinearNDInterpolator(pts, vel, fill_value=np.nan)
-        vel_grid = interp_fn(xi_grid, yi_grid)   # (n_rows, n_cols, 2)
-
-        vx = vel_grid[:, :, 0]
-        vy = vel_grid[:, :, 1]
+        xi_flat = np.column_stack([xi_grid.ravel(), yi_grid.ravel()])
+        # griddata returns (n_pixels, 2); NaN outside convex hull.
+        vel_flat = griddata(pts, vel, xi_flat, method=scatter_interp_method,
+                            fill_value=np.nan)
+        vx = vel_flat[:, 0].reshape(n_rows, n_cols)
+        vy = vel_flat[:, 1].reshape(n_rows, n_cols)
 
     else:
         # ── Cell-local methods: map each pixel to its fan-triangle. ──────────
