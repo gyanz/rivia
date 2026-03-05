@@ -2267,6 +2267,36 @@ def _velocity_raster_to_speed(
     return out_path
 
 
+def _write_dataset(
+    src: rasterio.io.DatasetReader,
+    output_path: str | Path,
+) -> Path:
+    """Write an open rasterio dataset to a GeoTIFF file.
+
+    The source dataset is **not** closed; the caller remains responsible for
+    closing it (useful when *src* is shared with other operations).
+
+    Parameters
+    ----------
+    src:
+        Open rasterio dataset to copy.
+    output_path:
+        Destination GeoTIFF path.
+
+    Returns
+    -------
+    Path
+        Resolved path of the written file.
+    """
+    import rasterio
+
+    out_path = Path(output_path).resolve()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with rasterio.open(out_path, "w", **src.profile) as dst:
+        dst.write(src.read())
+    return out_path
+
+
 def _depth_from_wse_and_dem(
     wse_ds: rasterio.io.DatasetReader,
     reference_raster: str | Path,

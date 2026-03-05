@@ -1007,6 +1007,200 @@ class FlowAreaResults(FlowArea):
             min_above_ref=depth_min,
         )
 
+    def export_hydraulic_rasters(
+        self,
+        timestep: int,
+        reference_raster: str | Path,
+        *,
+        wse_path: str | Path | None = None,
+        depth_path: str | Path | None = None,
+        speed_path: str | Path | None = None,
+        snap_to_reference_extent: bool = True,
+        nodata: float = -9999.0,
+        render_mode: Literal["sloping", "horizontal", "hybrid"] = "horizontal",
+        depth_min: float | None = 0.001,
+        vel_min: float | None = 0.0001,
+        vel_weight_method: Literal[
+            "area_weighted", "length_weighted", "flow_ratio"
+        ] = "area_weighted",
+        vel_wse_method: Literal["average", "sloped"] = "sloped",
+        vel_interp_method: Literal[
+            "flat_cell_center",
+            "triangle_blend", "face_idw", "face_gradient",
+            "facepoint_blend", "scatter_interp", "scatter_interp2",
+        ] = "scatter_interp2",
+        scatter_interp_method: Literal["nearest", "linear", "cubic"] = "linear",
+    ) -> dict[str, Path | rasterio.io.DatasetReader]:
+        """Export water-surface elevation, depth, and speed rasters in one pass.
+
+        Computes all three hydraulic output rasters for a single timestep while
+        sharing intermediate results: the ``water_surface`` HDF dataset is read
+        once, ``cell_velocity_vectors()`` (WLS reconstruction) is called once,
+        and the ``face_velocity`` HDF dataset is read once.  The in-memory WSE
+        raster produced for the WSE output is reused directly for the depth
+        DEM-subtraction step.
+
+        Parameters
+        ----------
+        timestep:
+            0-based time index.  Required — all three outputs need a specific
+            timestep (speed has no max-value fallback).
+        reference_raster:
+            Path to the terrain DEM GeoTIFF.  Required — used to derive depth
+            (WSE minus DEM) and to inherit the output CRS and transform.
+        wse_path:
+            Destination ``.tif`` for the water-surface elevation raster.
+            ``None`` returns an open in-memory ``rasterio.DatasetReader``.
+        depth_path:
+            Destination ``.tif`` for the depth raster.
+            ``None`` returns an open in-memory ``rasterio.DatasetReader``.
+        speed_path:
+            Destination ``.tif`` for the cell speed raster.
+            ``None`` returns an open in-memory ``rasterio.DatasetReader``.
+        snap_to_reference_extent:
+            Extend the output to the full extent of *reference_raster*
+            (default ``True``).
+        nodata:
+            Fill value for pixels outside the wet mesh.
+        render_mode:
+            Water-surface rendering mode — ``"sloping"``,
+            ``"horizontal"`` (default), or ``"hybrid"``.
+        depth_min:
+            Minimum water depth.  Cells shallower than this are excluded from
+            WSE interpolation; output depth pixels below this are set to
+            *nodata*.
+        vel_min:
+            Minimum speed threshold for velocity reconstruction and wet-extent
+            classification in ``render_mode="hybrid"``.
+        vel_weight_method:
+            Velocity reconstruction scheme passed to
+            :meth:`cell_velocity_vectors`.
+        vel_wse_method:
+            Face WSE interpolation method passed to
+            :meth:`cell_velocity_vectors`.
+        vel_interp_method:
+            Intra-cell velocity interpolation method.  See
+            :meth:`export_raster` for full description of each option.
+        scatter_interp_method:
+            ``scipy.interpolate.griddata`` *method* used by
+            ``"scatter_interp"`` / ``"scatter_interp2"``.
+
+        Returns
+        -------
+        dict with keys ``"water_surface"``, ``"depth"``, ``"speed"``.
+        Each value is the written ``Path`` (when the corresponding ``*_path``
+        argument is given) or an open in-memory ``rasterio.DatasetReader``
+        (when the argument is ``None``).  The caller must close any in-memory
+        datasets.
+
+        Raises
+        ------
+        ImportError
+            If ``rasterio`` or ``matplotlib`` are not installed.
+        """
+        from raspy.geo import raster as _raster  # deferred — geo not required
+
+        # ── 0. Hybrid face-active mask ─────────────────────────────────
+        _render_mode = render_mode
+        face_active: np.ndarray | None = None
+        if _render_mode == "hybrid":
+            face_active = (
+                np.abs(np.array(self.face_velocity[timestep, :]))
+                > (vel_min if vel_min is not None else 0.0)
+            )
+
+        # ── 1. Read HDF data once ──────────────────────────────────────
+        wse_values = np.array(self.water_surface[timestep, : self.n_cells])
+        depth_at_cells = self.depth(timestep)
+        face_vel_arr = np.array(self.face_velocity[timestep, :])
+
+        # ── 2. WLS velocity vectors once ──────────────────────────────
+        cell_vel_vecs = self.cell_velocity_vectors(
+            timestep, method=vel_weight_method, wse_interp=vel_wse_method
+        )
+
+        # ── 3. Shared mesh topology kwargs ────────────────────────────
+        _cfi, _cfv = self.cell_face_info
+        mesh_kw: dict[str, Any] = dict(
+            cell_centers=self.cell_centers,
+            facepoint_coordinates=self.facepoint_coordinates,
+            face_facepoint_indexes=self.face_facepoint_indexes,
+            face_cell_indexes=self.face_cell_indexes,
+            cell_face_info=_cfi,
+            cell_face_values=_cfv,
+            reference_raster=reference_raster,
+            nodata=nodata,
+            snap_to_reference_extent=snap_to_reference_extent,
+            render_mode=_render_mode,
+            face_active=face_active,
+        )
+
+        # ── 5. WSE raster in-memory (shared for WSE output + depth) ───
+        cell_wse_masked = wse_values.copy()
+        if depth_min is not None:
+            cell_wse_masked[depth_at_cells < depth_min] = np.nan
+
+        wse_ds = _raster.mesh_to_raster(
+            **mesh_kw,
+            cell_values=cell_wse_masked,
+            output_path=None,
+            min_value=None,
+            min_above_ref=depth_min,
+        )
+
+        # ── 6. WSE output ──────────────────────────────────────────────
+        if wse_path is not None:
+            wse_result: Path | rasterio.io.DatasetReader = (
+                _raster._write_dataset(wse_ds, wse_path)
+            )
+        else:
+            wse_result = wse_ds
+
+        # ── 7. Depth output ────────────────────────────────────────────
+        depth_result: Path | rasterio.io.DatasetReader = (
+            _raster._depth_from_wse_and_dem(
+                wse_ds, reference_raster, nodata, depth_path, min_value=depth_min
+            )
+        )
+
+        # Close shared in-memory WSE dataset once both consumers are done.
+        # Only close if we are NOT returning it to the caller.
+        if wse_path is not None:
+            wse_ds.close()
+
+        # ── 8. Speed output ────────────────────────────────────────────
+        if vel_interp_method == "flat_cell_center":
+            vel_ds = _raster.mesh_to_velocity_raster(
+                **mesh_kw,
+                cell_wse=wse_values,
+                cell_velocity=cell_vel_vecs,
+                output_path=None,
+                vel_min=vel_min,
+                depth_min=depth_min,
+            )
+        else:
+            vel_ds = _raster.mesh_to_velocity_raster_interp(
+                **mesh_kw,
+                face_normals=self.face_normals,
+                face_vel=face_vel_arr,
+                cell_wse=wse_values,
+                cell_velocity=cell_vel_vecs,
+                output_path=None,
+                vel_min=vel_min,
+                depth_min=depth_min,
+                method=vel_interp_method,
+                scatter_interp_method=scatter_interp_method,
+            )
+        speed_result: Path | rasterio.io.DatasetReader = (
+            _raster._velocity_raster_to_speed(vel_ds, speed_path, nodata)
+        )
+
+        return {
+            "water_surface": wse_result,
+            "depth": depth_result,
+            "speed": speed_result,
+        }
+
 
 # ---------------------------------------------------------------------------
 # FlowAreaResultsCollection
