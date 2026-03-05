@@ -1284,6 +1284,87 @@ def mesh_to_velocity_raster(
     return out_path
 
 
+def _compute_face_velocity_2d(
+    face_normals: np.ndarray,
+    face_vel: np.ndarray,
+    face_cell_indexes: np.ndarray,
+    cell_velocity: np.ndarray,
+    dry_mask: np.ndarray,
+    n_cells: int,
+) -> np.ndarray:
+    """Reconstruct full 2D face velocity using the HEC-RAS double-C stencil.
+
+    HEC-RAS stores only the face-normal velocity ``vn``.  The tangential
+    component is recovered by projecting each adjacent cell's WLS velocity
+    vector onto the face tangential direction, then arithmetically averaging
+    the two sides (left and right).  This mirrors the double-C stencil
+    described in the HEC-RAS 2D Technical Reference Manual:
+
+    .. code-block:: text
+
+        vt_L = cell_velocity[L] · t_hat
+        vt_R = cell_velocity[R] · t_hat
+        vt   = (vt_L + vt_R) / 2          (both cells hydraulically connected)
+        V_face = vn * n_hat + vt * t_hat
+
+    The normal component ``vn`` is kept exactly as stored in the HDF; only
+    the tangential component is estimated from the WLS reconstruction.
+
+    Parameters
+    ----------
+    face_normals : ndarray, shape ``(n_faces, 3)``
+        ``[nx, ny, face_length]``; ``(nx, ny)`` must be a unit normal vector.
+    face_vel : ndarray, shape ``(n_faces,)``
+        Signed face-normal velocities for this timestep.
+    face_cell_indexes : ndarray, shape ``(n_faces, 2)``
+        Left and right cell indices; ``-1`` = boundary.
+    cell_velocity : ndarray, shape ``(n_cells, 2)``
+        WLS velocity vectors ``[Vx, Vy]`` at each cell centre.
+    dry_mask : ndarray, shape ``(n_cells,)``, bool
+        ``True`` where a cell is dry; its WLS velocity is excluded.
+    n_cells : int
+        Number of real computational cells.
+
+    Returns
+    -------
+    ndarray, shape ``(n_faces, 2)``
+        Full ``[Vx, Vy]`` velocity at each face midpoint.
+        Faces where *both* adjacent cells are dry receive ``[0, 0]``.
+    """
+    n_faces = len(face_normals)
+    nx_ny = face_normals[:, :2]                         # (n_faces, 2)
+    t_hat = np.column_stack([-nx_ny[:, 1], nx_ny[:, 0]])  # (n_faces, 2) — 90° CCW
+
+    left  = face_cell_indexes[:, 0]
+    right = face_cell_indexes[:, 1]
+
+    # Clamp indices for safe array lookup (out-of-range cases handled by masks).
+    left_safe  = np.where((left  >= 0) & (left  < n_cells), left,  0)
+    right_safe = np.where((right >= 0) & (right < n_cells), right, 0)
+
+    valid_left  = (left  >= 0) & (left  < n_cells) & ~dry_mask[left_safe]
+    valid_right = (right >= 0) & (right < n_cells) & ~dry_mask[right_safe]
+
+    # Tangential projection: dot(V_cell, t_hat) for each side.
+    vt_L = np.sum(cell_velocity[left_safe]  * t_hat, axis=1)  # (n_faces,)
+    vt_R = np.sum(cell_velocity[right_safe] * t_hat, axis=1)
+
+    # Arithmetic average following the manual; fall back to single side at
+    # boundary or dry-neighbour faces.
+    vt = np.zeros(n_faces, dtype=np.float64)
+    both       = valid_left & valid_right
+    left_only  = valid_left & ~valid_right
+    right_only = ~valid_left & valid_right
+
+    vt[both]       = 0.5 * (vt_L[both] + vt_R[both])
+    vt[left_only]  = vt_L[left_only]
+    vt[right_only] = vt_R[right_only]
+    # Faces with no valid neighbour: vt stays 0 — normal component still correct.
+
+    # Compose: preserve measured vn on the normal axis; add estimated vt.
+    return face_vel[:, np.newaxis] * nx_ny + vt[:, np.newaxis] * t_hat
+
+
 def _cell_center_barycentric_weight(
     px: np.ndarray,
     py: np.ndarray,
@@ -1348,10 +1429,19 @@ def mesh_to_velocity_raster_interp(
 
     .. code-block:: text
 
-        V(P) = w0 * V_cell_WLS  +  (1 - w0) * vn * face_normal_2D
+        V(P) = w0 * V_cell_WLS  +  (1 - w0) * V_face
 
     where ``w0`` is the barycentric weight of the cell-center vertex —
-    equal to 1 at the centre and 0 on the face edge.  Interpolation is
+    equal to 1 at the centre and 0 on the face edge — and ``V_face`` is
+    the full 2D face velocity reconstructed via the **double-C stencil**:
+
+    .. code-block:: text
+
+        vt   = (V_cell[L] · t_hat + V_cell[R] · t_hat) / 2
+        V_face = vn * n_hat  +  vt * t_hat
+
+    ``vn`` is preserved exactly from the HDF; only the tangential component
+    ``vt`` is estimated from adjacent-cell WLS velocities.  Interpolation is
     strictly confined to each mesh cell; no values bleed across face
     boundaries.
 
@@ -1423,10 +1513,11 @@ def mesh_to_velocity_raster_interp(
 
     Notes
     -----
-    The face-normal velocity ``vn * (nx, ny)`` captures only the component
-    normal to the face.  The tangential component is implicitly zero at the
-    face edge, so the WLS vector (which captures both components) dominates
-    near the cell centre where ``w0 → 1``.
+    The double-C stencil keeps ``vn`` exact (as stored in the HDF) and
+    estimates the tangential component from WLS velocities of adjacent cells.
+    For boundary faces (one real neighbour), only that cell's tangential
+    projection is used.  Faces with no wet neighbour retain a zero tangential
+    component, so only the normal contribution survives.
     """
     try:
         import rasterio
@@ -1532,6 +1623,17 @@ def mesh_to_velocity_raster_interp(
     triang = mtri.Triangulation(all_pts[:, 0], all_pts[:, 1], triangles)
     triang.set_mask(tri_mask_arr)
 
+    # ── Step 2b: Precompute full 2D face velocity (double-C stencil). ────────
+    face_ci_arr = np.asarray(face_cell_indexes, dtype=np.int64)
+    face_vel_2d = _compute_face_velocity_2d(
+        face_normals=face_normals_arr,
+        face_vel=face_vel_arr,
+        face_cell_indexes=face_ci_arr,
+        cell_velocity=cell_velocity,
+        dry_mask=dry_mask,
+        n_cells=n_cells,
+    )
+
     # ── Step 3: Map each wet pixel to its triangle; blend velocities. ────────
     dx = abs(out_transform.a)
     dy = abs(out_transform.e)
@@ -1568,11 +1670,9 @@ def mesh_to_velocity_raster_interp(
     # Zero out dry cells.
     v_cell = np.where(dry_mask[cell_idx_hit, np.newaxis], np.nan, v_cell)
 
-    # Face-normal velocity projected to 2D: vn * [nx, ny].
+    # Full 2D face velocity from double-C stencil: vn*n_hat + vt*t_hat.
     face_idx_hit = tri_to_face[tri_hit]
-    vn = face_vel_arr[face_idx_hit]                  # (m,)
-    nx_ny = face_normals_arr[face_idx_hit, :2]       # (m, 2)
-    v_face = vn[:, np.newaxis] * nx_ny               # (m, 2)
+    v_face = face_vel_2d[face_idx_hit]               # (m, 2)
 
     # Per-pixel blend.
     v_pixel = w0[:, np.newaxis] * v_cell + (1.0 - w0[:, np.newaxis]) * v_face
