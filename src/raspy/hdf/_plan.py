@@ -372,14 +372,18 @@ class FlowAreaResults(FlowArea):
         self,
         cell_idx: int,
         timestep: int,
-        wse_interp: Literal["average", "sloped"] = "average",
+        wse_interp: Literal["average", "sloped"] = "sloped",
+        vel_method: Literal[
+            "area_weighted", "length_weighted", "flow_ratio"
+        ] = "length_weighted",
     ) -> None:
         """Print a detailed per-face breakdown of velocity reconstruction.
 
         Displays the WLS input data for each face of the specified cell, then
         shows the reconstructed velocity for all available weight schemes.
         Optionally compares against the HEC-RAS stored ``Cell Velocity``
-        scalar when that dataset is present in the HDF file.
+        scalar when that dataset is present in the HDF file.  Also prints a
+        double-C stencil face velocity table using *vel_method* WLS vectors.
 
         Parameters
         ----------
@@ -389,6 +393,9 @@ class FlowAreaResults(FlowArea):
             0-based index into the time dimension.
         wse_interp:
             Face WSE interpolation method used for ``area_weighted`` weights.
+        vel_method:
+            WLS weight scheme used as V_L / V_R in the double-C stencil
+            reconstruction.  Defaults to ``"area_weighted"``.
         """
         from ._velocity import (
             _estimate_face_wse_average,
@@ -463,17 +470,23 @@ class FlowAreaResults(FlowArea):
                 f"{L:>9.2f}  {v:>9.4f}  {fwse:>9.4f}  {a:>9.4f}"
             )
 
+        def _angle(v: np.ndarray) -> str:
+            spd = np.linalg.norm(v)
+            if spd < 1e-10:
+                return "     n/a"
+            return f"{(90.0 - np.degrees(np.arctan2(v[1], v[0]))) % 360.0:>8.2f}"
+
         # --- velocity results for each method ---
         print()
         vel_aw = _wls_velocity(vn, areas, normals)
         vel_lw = _wls_velocity(vn, lengths, normals)
         print(
             f"area_weighted  : Vx={vel_aw[0]:+.4f}  Vy={vel_aw[1]:+.4f}"
-            f"  speed={np.linalg.norm(vel_aw):.4f}"
+            f"  speed={np.linalg.norm(vel_aw):.4f}  dir={_angle(vel_aw)}°"
         )
         print(
             f"length_weighted: Vx={vel_lw[0]:+.4f}  Vy={vel_lw[1]:+.4f}"
-            f"  speed={np.linalg.norm(vel_lw):.4f}"
+            f"  speed={np.linalg.norm(vel_lw):.4f}  dir={_angle(vel_lw)}°"
         )
 
         if self.face_flow is not None:
@@ -483,7 +496,7 @@ class FlowAreaResults(FlowArea):
             vel_fr = _wls_velocity(vn, weights_fr, normals)
             print(
                 f"flow_ratio     : Vx={vel_fr[0]:+.4f}  Vy={vel_fr[1]:+.4f}"
-                f"  speed={np.linalg.norm(vel_fr):.4f}"
+                f"  speed={np.linalg.norm(vel_fr):.4f}  dir={_angle(vel_fr)}°"
             )
             print(f"  Face Flows at cell faces : {face_flow[face_idxs]}")
         else:
@@ -494,6 +507,60 @@ class FlowAreaResults(FlowArea):
             print(f"\nHEC-RAS stored Cell Velocity : {ras_speed:.4f}")
         else:
             print("\n  (Cell Velocity scalar not stored in HDF)")
+
+        # --- double-C stencil: per-face tangential velocity reconstruction ---
+        print()
+        print(
+            f"--- Double-C stencil face velocity reconstruction"
+            f" (vel_method={vel_method!r}) ---"
+        )
+        all_cell_vecs = self.cell_velocity_vectors(
+            timestep, method=vel_method, wse_interp=wse_interp
+        )
+        n_cells = self.n_cells
+        face_ci = self.face_cell_indexes  # (n_faces, 2)
+
+        hdr2 = (
+            f"{'Face':>7}  {'tx':>8}  {'ty':>8}  "
+            f"{'vt_L':>9}  {'vt_R':>9}  {'vt_avg':>9}  "
+            f"{'Vfx':>9}  {'Vfy':>9}  {'|Vf|':>9}  {'side':>6}"
+        )
+        print(hdr2)
+        print("-" * len(hdr2))
+        for fi, (nx, ny), v in zip(face_idxs, normals, vn, strict=False):
+            t_hat = np.array([-ny, nx])
+            left  = int(face_ci[fi, 0])
+            right = int(face_ci[fi, 1])
+
+            valid_left  = 0 <= left  < n_cells
+            valid_right = 0 <= right < n_cells
+
+            _nan = float("nan")
+            vt_L = float(np.dot(all_cell_vecs[left],  t_hat)) if valid_left  else _nan
+            vt_R = float(np.dot(all_cell_vecs[right], t_hat)) if valid_right else _nan
+
+            if valid_left and valid_right:
+                vt_avg = 0.5 * (vt_L + vt_R)
+                side_label = "both"
+            elif valid_left:
+                vt_avg = vt_L
+                side_label = "L only"
+            elif valid_right:
+                vt_avg = vt_R
+                side_label = "R only"
+            else:
+                vt_avg = 0.0
+                side_label = "none"
+
+            vf = v * np.array([nx, ny]) + vt_avg * t_hat
+            vt_L_str = f"{vt_L:>9.4f}" if valid_left  else f"{'n/a':>9}"
+            vt_R_str = f"{vt_R:>9.4f}" if valid_right else f"{'n/a':>9}"
+            print(
+                f"{fi:>7}  {t_hat[0]:>8.4f}  {t_hat[1]:>8.4f}  "
+                f"{vt_L_str}  {vt_R_str}  {vt_avg:>9.4f}  "
+                f"{vf[0]:>9.4f}  {vf[1]:>9.4f}  {np.linalg.norm(vf):>9.4f}  "
+                f"{side_label:>6}"
+            )
 
     # ------------------------------------------------------------------
     # Raster export — delegates to raspy.geo (deferred import)
