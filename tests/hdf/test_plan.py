@@ -223,28 +223,28 @@ class TestExportRasterGeoGuard:
         with PlanHdf(synthetic_plan_hdf) as hdf:
             with pytest.raises(ValueError, match="Unknown variable"):
                 hdf.flow_areas[AREA].export_raster(
-                    "bad_variable", "out.tif", timestep=0
+                    "bad_variable", timestep=0, output_path="out.tif"
                 )
 
     def test_max_for_velocity_raises_value_error(self, synthetic_plan_hdf):
         with PlanHdf(synthetic_plan_hdf) as hdf:
             with pytest.raises(ValueError, match="timestep=None"):
                 hdf.flow_areas[AREA].export_raster(
-                    "cell_speed", "out.tif", timestep=None
+                    "cell_speed", timestep=None, output_path="out.tif"
                 )
 
     def test_invalid_vel_method_raises(self, synthetic_plan_hdf):
         with PlanHdf(synthetic_plan_hdf) as hdf:
             with pytest.raises(ValueError, match="method"):
                 hdf.flow_areas[AREA].export_raster(
-                    "cell_speed", "out.tif", timestep=0, vel_method="bad"
+                    "cell_speed", timestep=0, output_path="out.tif", vel_method="bad"
                 )
 
     def test_invalid_wse_interp_raises(self, synthetic_plan_hdf):
         with PlanHdf(synthetic_plan_hdf) as hdf:
             with pytest.raises(ValueError, match="wse_interp"):
                 hdf.flow_areas[AREA].export_raster(
-                    "cell_velocity", "out.tif", timestep=0, wse_interp="bad"
+                    "cell_velocity", timestep=0, output_path="out.tif", vel_wse_method="bad"
                 )
 
 

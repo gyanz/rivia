@@ -402,23 +402,36 @@ def points_to_raster(
 
 def _compute_facepoint_values(
     cell_vals: np.ndarray,
+    cell_centers: np.ndarray,
+    facepoint_coordinates: np.ndarray,
     face_facepoint_indexes: np.ndarray,
     face_cell_indexes: np.ndarray,
     n_cells: int,
     n_facepoints: int,
 ) -> np.ndarray:
-    """Assign interpolated values at mesh facepoints.
+    """Assign distance-weighted interpolated values at mesh facepoints.
 
-    For each facepoint the value is the mean of the face-midpoint values from
-    all adjacent faces.  Each face midpoint is the NaN-aware mean of its two
-    adjacent cell values (or the single cell value for boundary faces).
-    Averaging via face midpoints avoids double-counting a cell that shares two
-    faces at the same vertex.
+    For each interior face the value is computed by linearly interpolating
+    between the two adjacent cell-centre values, weighted by the distance
+    from each cell centre to the face centre (midpoint of the face's two
+    bounding facepoints).  This correctly accounts for irregular cell
+    geometry: when the face lies closer to one cell centre its value is
+    pulled toward that cell, rather than being a simple average.
+
+    Boundary faces (one adjacent cell only) and faces adjacent to a dry
+    cell (``NaN`` value) use the single available wet-cell value directly.
+
+    Each facepoint value is then the simple mean of the values from all
+    adjacent valid (wet) faces.
 
     Parameters
     ----------
     cell_vals : ndarray, shape ``(n_cells,)``
         Cell-centre scalar values; ``NaN`` marks dry / excluded cells.
+    cell_centers : ndarray, shape ``(n_cells, 2)``
+        Cell-centre x, y coordinates.
+    facepoint_coordinates : ndarray, shape ``(n_facepoints, 2)``
+        Facepoint x, y coordinates.
     face_facepoint_indexes : ndarray, shape ``(n_faces, 2)``
         Start and end facepoint index for each face.
     face_cell_indexes : ndarray, shape ``(n_faces, 2)``
@@ -431,27 +444,53 @@ def _compute_facepoint_values(
         ``NaN`` where every adjacent face is dry or out-of-domain.
     """
     n_faces = len(face_facepoint_indexes)
+    fp0 = face_facepoint_indexes[:, 0]
+    fp1 = face_facepoint_indexes[:, 1]
     left_cells = face_cell_indexes[:, 0]
     right_cells = face_cell_indexes[:, 1]
 
+    # Cell values at each face's adjacent cells (NaN for boundary / dry).
     left_vals = np.full(n_faces, np.nan)
     right_vals = np.full(n_faces, np.nan)
-
     valid_left = (left_cells >= 0) & (left_cells < n_cells)
     valid_right = (right_cells >= 0) & (right_cells < n_cells)
     left_vals[valid_left] = cell_vals[left_cells[valid_left]]
     right_vals[valid_right] = cell_vals[right_cells[valid_right]]
 
-    # Face midpoint value: NaN-aware mean of adjacent cells.
-    with np.errstate(all="ignore"):
-        face_vals = np.nanmean(np.column_stack([left_vals, right_vals]), axis=1)
+    # Face centre = midpoint of its two bounding facepoints.
+    face_cx = (facepoint_coordinates[fp0, 0] + facepoint_coordinates[fp1, 0]) * 0.5
+    face_cy = (facepoint_coordinates[fp0, 1] + facepoint_coordinates[fp1, 1]) * 0.5
 
-    # Accumulate face midpoint values at each of the two bounding facepoints.
+    face_vals = np.full(n_faces, np.nan)
+
+    # Interior faces where both adjacent cells are wet: distance-weighted.
+    both_wet = ~np.isnan(left_vals) & ~np.isnan(right_vals)
+    if both_wet.any():
+        lc = left_cells[both_wet]
+        rc = right_cells[both_wet]
+        dl = np.hypot(
+            face_cx[both_wet] - cell_centers[lc, 0],
+            face_cy[both_wet] - cell_centers[lc, 1],
+        )
+        dr = np.hypot(
+            face_cx[both_wet] - cell_centers[rc, 0],
+            face_cy[both_wet] - cell_centers[rc, 1],
+        )
+        d_sum = dl + dr
+        # t = 0 → value at left cell centre; t = 1 → value at right cell centre.
+        t = np.where(d_sum > 0.0, dl / d_sum, 0.5)
+        face_vals[both_wet] = (1.0 - t) * left_vals[both_wet] + t * right_vals[both_wet]
+
+    # Boundary or dry-neighbour: use whichever cell value is available.
+    left_only = ~np.isnan(left_vals) & np.isnan(right_vals)
+    face_vals[left_only] = left_vals[left_only]
+    right_only = np.isnan(left_vals) & ~np.isnan(right_vals)
+    face_vals[right_only] = right_vals[right_only]
+
+    # Accumulate face values at each bounding facepoint (simple mean).
     fp_sum = np.zeros(n_facepoints)
     fp_count = np.zeros(n_facepoints, dtype=np.int64)
     valid_faces = ~np.isnan(face_vals)
-    fp0 = face_facepoint_indexes[:, 0]
-    fp1 = face_facepoint_indexes[:, 1]
     np.add.at(fp_sum, fp0[valid_faces], face_vals[valid_faces])
     np.add.at(fp_count, fp0[valid_faces], 1)
     np.add.at(fp_sum, fp1[valid_faces], face_vals[valid_faces])
@@ -459,6 +498,110 @@ def _compute_facepoint_values(
 
     with np.errstate(all="ignore"):
         return np.where(fp_count > 0, fp_sum / fp_count, np.nan)
+
+
+# ---------------------------------------------------------------------------
+# Rendering helpers — called from mesh_to_raster
+# ---------------------------------------------------------------------------
+
+
+def _horizontal_from_trifind(
+    tri_idx_flat: np.ndarray,
+    tri_to_cell: np.ndarray,
+    cell_cv: np.ndarray,
+    grid_shape: tuple[int, int],
+) -> np.ndarray:
+    """Map a flat trifinder result to per-cell constant values.
+
+    Pixels whose triangle index is -1 (outside the mesh) are set to NaN.
+
+    Parameters
+    ----------
+    tri_idx_flat : ndarray, shape ``(n_pixels,)``
+        Triangle index per pixel from ``Triangulation.get_trifinder()(x, y)``.
+        -1 indicates the pixel is outside all unmasked triangles.
+    tri_to_cell : ndarray, shape ``(n_triangles,)``
+        Maps each triangle index to its originating cell index.
+    cell_cv : ndarray, shape ``(n_cells,)`` or ``(n_cells, 2)``
+        Cell-centre values; NaN for dry cells.
+    grid_shape : (n_rows, n_cols)
+
+    Returns
+    -------
+    ndarray, shape ``(n_rows, n_cols)`` or ``(n_rows, n_cols, 2)``
+    """
+    n_out = len(tri_idx_flat)
+    is_vector = cell_cv.ndim == 2
+    out: np.ndarray = np.full((n_out, 2) if is_vector else n_out, np.nan)
+    inside = tri_idx_flat >= 0
+    out[inside] = cell_cv[tri_to_cell[tri_idx_flat[inside]]]
+    if is_vector:
+        return out.reshape(grid_shape[0], grid_shape[1], 2)
+    return out.reshape(grid_shape)
+
+
+def _render_horizontal(
+    triang: Any,
+    tri_to_cell: np.ndarray,
+    cell_cv: np.ndarray,
+    xi_grid: np.ndarray,
+    yi_grid: np.ndarray,
+) -> np.ndarray:
+    """Assign each output pixel the constant value of the cell it falls inside.
+
+    Wraps ``_horizontal_from_trifind`` for the common case where no
+    ``tri_idx`` array is available yet.
+
+    Returns
+    -------
+    ndarray, shape ``(n_rows, n_cols)`` or ``(n_rows, n_cols, 2)``
+    """
+    trifinder_fn = triang.get_trifinder()
+    tri_idx_flat = trifinder_fn(xi_grid.ravel(), yi_grid.ravel())
+    return _horizontal_from_trifind(tri_idx_flat, tri_to_cell, cell_cv, xi_grid.shape)
+
+
+def _classify_horizontal_cells(
+    face_cell_indexes: np.ndarray,
+    dry_mask: np.ndarray,
+    face_active: np.ndarray,
+) -> np.ndarray:
+    """Return a bool mask: True where a cell should use horizontal rendering.
+
+    A wet cell is flagged when it has at least one wet neighbour that is
+    separated from it by a *dry* (inactive) face.  Both cells in such a
+    pair are flagged.  This matches HEC-RAS RASMapper's hybrid mode: sloping
+    is used where the water surface is hydraulically connected; horizontal is
+    used across dry-face boundaries between otherwise-wet cells.
+
+    Parameters
+    ----------
+    face_cell_indexes : ndarray, shape ``(n_faces, 2)``
+        Left/right cell index per face; -1 = boundary.
+    dry_mask : ndarray, shape ``(n_cells,)``, bool
+        True where a cell is dry (excluded from interpolation).
+    face_active : ndarray, shape ``(n_faces,)``, bool
+        True where the face is hydraulically active (wet).
+
+    Returns
+    -------
+    ndarray, shape ``(n_cells,)``, bool
+    """
+    n_cells = len(dry_mask)
+    use_horizontal = np.zeros(n_cells, dtype=bool)
+
+    left = face_cell_indexes[:, 0]
+    right = face_cell_indexes[:, 1]
+    interior = (left >= 0) & (left < n_cells) & (right >= 0) & (right < n_cells)
+    lc, rc = left[interior], right[interior]
+    active = face_active[interior]
+
+    both_wet = ~dry_mask[lc] & ~dry_mask[rc]
+    disconnected = both_wet & ~active
+    np.logical_or.at(use_horizontal, lc[disconnected], True)
+    np.logical_or.at(use_horizontal, rc[disconnected], True)
+    use_horizontal[dry_mask] = False
+    return use_horizontal
 
 
 def mesh_to_raster(
@@ -478,6 +621,8 @@ def mesh_to_raster(
     nodata: float = -9999.0,
     min_value: float | None = None,
     snap_to_reference_extent: bool = True,
+    render_mode: str = "sloping",
+    face_active: np.ndarray | None = None,
 ) -> Path | rasterio.io.DatasetReader:
     """Interpolate HEC-RAS mesh results to a raster using mesh-conforming triangulation.
 
@@ -540,6 +685,25 @@ def mesh_to_raster(
     snap_to_reference_extent : bool
         When *reference_raster* is given, extend the output to its full
         extent (default ``True``).
+    render_mode : str
+        Water-surface rendering mode, matching HEC-RAS RASMapper options:
+
+        ``"sloping"`` *(default)* — interpolates WSE between cell centres
+        using distance-weighted face values and linear triangular
+        interpolation, producing a smooth, continuous inundation surface.
+
+        ``"horizontal"`` — assigns each output pixel the flat cell-centre
+        WSE of the cell it falls inside.  Produces a stepped "patchwork"
+        appearance at cell boundaries; useful for checking raw model output.
+
+        ``"hybrid"`` — uses sloping rendering where adjacent wet cells are
+        hydraulically connected (active face between them) and horizontal
+        rendering where they are separated by a dry face.  Requires
+        *face_active*.
+    face_active : ndarray, shape ``(n_faces,)``, bool, optional
+        Per-face hydraulic activity flag: ``True`` = face is wet/active.
+        Required when *render_mode* is ``"hybrid"``; ignored otherwise.
+        Typically derived from face velocity: ``abs(face_vel) > threshold``.
 
     Returns
     -------
@@ -593,6 +757,13 @@ def mesh_to_raster(
         raise ValueError(
             "Specify either reference_raster or reference_transform, not both."
         )
+    if render_mode not in ("sloping", "horizontal", "hybrid"):
+        raise ValueError(
+            f"render_mode must be 'sloping', 'horizontal', or 'hybrid';"
+            f" got {render_mode!r}."
+        )
+    if render_mode == "hybrid" and face_active is None:
+        raise ValueError("face_active is required when render_mode='hybrid'.")
 
     cell_centers = np.asarray(cell_centers, dtype=np.float64)
     facepoint_coordinates = np.asarray(facepoint_coordinates, dtype=np.float64)
@@ -607,7 +778,7 @@ def mesh_to_raster(
     n_facepoints = len(facepoint_coordinates)
     is_vector = cell_values.ndim == 2 and cell_values.shape[1] == 2
 
-    # ── Dry-cell masking and facepoint value computation ───────────────────
+    # ── Dry-cell masking ───────────────────────────────────────────────────
     if is_vector:
         with np.errstate(invalid="ignore"):
             magnitude = np.sqrt(cell_values[:, 0] ** 2 + cell_values[:, 1] ** 2)
@@ -618,15 +789,6 @@ def mesh_to_raster(
         )
         cv = cell_values.copy()
         cv[dry_mask] = np.nan  # broadcasts over both components
-        fp_vx = _compute_facepoint_values(
-            cv[:, 0], face_facepoint_indexes, face_cell_indexes, n_cells, n_facepoints
-        )
-        fp_vy = _compute_facepoint_values(
-            cv[:, 1], face_facepoint_indexes, face_cell_indexes, n_cells, n_facepoints
-        )
-        all_vx = np.concatenate([cv[:, 0], fp_vx])
-        all_vy = np.concatenate([cv[:, 1], fp_vy])
-        vertex_nan = np.isnan(all_vx) | np.isnan(all_vy)
     else:
         dry_mask = (
             cell_values < min_value
@@ -635,11 +797,29 @@ def mesh_to_raster(
         )
         cv = cell_values.copy()
         cv[dry_mask] = np.nan
-        fp_vals = _compute_facepoint_values(
-            cv, face_facepoint_indexes, face_cell_indexes, n_cells, n_facepoints
+
+    # ── Facepoint values (sloping / hybrid only) ───────────────────────────
+    # Horizontal mode assigns each pixel its cell-centre value directly, so
+    # facepoint interpolation is unnecessary.
+    if render_mode in ("sloping", "hybrid"):
+        _fpkw = dict(
+            cell_centers=cell_centers,
+            facepoint_coordinates=facepoint_coordinates,
+            face_facepoint_indexes=face_facepoint_indexes,
+            face_cell_indexes=face_cell_indexes,
+            n_cells=n_cells,
+            n_facepoints=n_facepoints,
         )
-        all_vals = np.concatenate([cv, fp_vals])
-        vertex_nan = np.isnan(all_vals)
+        if is_vector:
+            fp_vx = _compute_facepoint_values(cv[:, 0], **_fpkw)
+            fp_vy = _compute_facepoint_values(cv[:, 1], **_fpkw)
+            all_vx = np.concatenate([cv[:, 0], fp_vx])
+            all_vy = np.concatenate([cv[:, 1], fp_vy])
+            vertex_nan = np.isnan(all_vx) | np.isnan(all_vy)
+        else:
+            fp_vals = _compute_facepoint_values(cv, **_fpkw)
+            all_vals = np.concatenate([cv, fp_vals])
+            vertex_nan = np.isnan(all_vals)
 
     # ── Build unified point set ────────────────────────────────────────────
     # Cell centres occupy indices [0, n_cells);
@@ -676,8 +856,16 @@ def mesh_to_raster(
         n_cells + fp1_per_entry[valid],
     ])
 
-    # Mask triangles whose cell-centre vertex is dry or has any NaN vertex.
-    tri_mask = np.any(vertex_nan[triangles], axis=1)
+    # Cell index for each triangle — needed by horizontal and hybrid renders.
+    tri_to_cell = cell_for_entry[valid]
+
+    # Mask triangles based on render mode.
+    # Horizontal: only the cell-centre vertex matters (facepoint NaN irrelevant).
+    # Sloping / hybrid: any NaN vertex (cell or facepoint) masks the triangle.
+    if render_mode == "horizontal":
+        tri_mask = dry_mask[tri_to_cell]
+    else:
+        tri_mask = np.any(vertex_nan[triangles], axis=1)
 
     # ── Resolve transform and CRS ──────────────────────────────────────────
     ref_width: int | None = None
@@ -740,7 +928,7 @@ def mesh_to_raster(
     n_rows, n_cols = len(yi), len(xi)
     xi_grid, yi_grid = np.meshgrid(xi, yi)
 
-    # ── Build triangulation and interpolate ────────────────────────────────
+    # ── Build triangulation ────────────────────────────────────────────────
     triang = mtri.Triangulation(all_pts[:, 0], all_pts[:, 1], triangles)
     triang.set_mask(tri_mask)
 
@@ -750,9 +938,60 @@ def mesh_to_raster(
             return masked.filled(np.nan)
         return np.asarray(masked, dtype=np.float64)
 
+    # ── Render ────────────────────────────────────────────────────────────
+    if render_mode == "horizontal":
+        if is_vector:
+            raw = _render_horizontal(triang, tri_to_cell, cv, xi_grid, yi_grid)
+            vx, vy = raw[..., 0].copy(), raw[..., 1].copy()
+        else:
+            scalar = _render_horizontal(triang, tri_to_cell, cv, xi_grid, yi_grid)
+
+    elif render_mode == "sloping":
+        if is_vector:
+            vx = _to_array(mtri.LinearTriInterpolator(triang, all_vx)(xi_grid, yi_grid))
+            vy = _to_array(mtri.LinearTriInterpolator(triang, all_vy)(xi_grid, yi_grid))
+        else:
+            scalar = _to_array(
+                mtri.LinearTriInterpolator(triang, all_vals)(xi_grid, yi_grid)
+            )
+
+    else:  # "hybrid"
+        # Compute trifinder once; reuse for the horizontal render and for
+        # mapping each pixel to its cell to determine the rendering mode.
+        trifinder_fn = triang.get_trifinder()
+        tri_idx_flat = trifinder_fn(xi_grid.ravel(), yi_grid.ravel())
+
+        is_horiz_cell = _classify_horizontal_cells(
+            face_cell_indexes, dry_mask, np.asarray(face_active, dtype=bool)
+        )
+        pixel_is_horiz = np.zeros(len(tri_idx_flat), dtype=bool)
+        inside = tri_idx_flat >= 0
+        pixel_is_horiz[inside] = is_horiz_cell[tri_to_cell[tri_idx_flat[inside]]]
+        pixel_is_horiz = pixel_is_horiz.reshape(n_rows, n_cols)
+
+        if is_vector:
+            vx_slop = _to_array(
+                mtri.LinearTriInterpolator(triang, all_vx)(xi_grid, yi_grid)
+            )
+            vy_slop = _to_array(
+                mtri.LinearTriInterpolator(triang, all_vy)(xi_grid, yi_grid)
+            )
+            raw_h = _horizontal_from_trifind(
+                tri_idx_flat, tri_to_cell, cv, (n_rows, n_cols)
+            )
+            vx = np.where(pixel_is_horiz, raw_h[..., 0], vx_slop)
+            vy = np.where(pixel_is_horiz, raw_h[..., 1], vy_slop)
+        else:
+            scalar_slop = _to_array(
+                mtri.LinearTriInterpolator(triang, all_vals)(xi_grid, yi_grid)
+            )
+            scalar_horiz = _horizontal_from_trifind(
+                tri_idx_flat, tri_to_cell, cv, (n_rows, n_cols)
+            )
+            scalar = np.where(pixel_is_horiz, scalar_horiz, scalar_slop)
+
+    # ── Post-interpolation masking and band assembly ───────────────────────
     if is_vector:
-        vx = _to_array(mtri.LinearTriInterpolator(triang, all_vx)(xi_grid, yi_grid))
-        vy = _to_array(mtri.LinearTriInterpolator(triang, all_vy)(xi_grid, yi_grid))
         with np.errstate(invalid="ignore"):
             speed = np.sqrt(vx ** 2 + vy ** 2)
         direction = (90.0 - np.degrees(np.arctan2(vy, vx))) % 360.0
@@ -763,9 +1002,6 @@ def mesh_to_raster(
         band_arrays = [vx, vy, speed, direction]
         band_names = ["Vx", "Vy", "Speed", "Direction_deg_from_N"]
     else:
-        scalar = _to_array(
-            mtri.LinearTriInterpolator(triang, all_vals)(xi_grid, yi_grid)
-        )
         if min_value is not None:
             scalar[scalar < min_value] = np.nan
         if reference_raster is not None:
@@ -812,6 +1048,330 @@ def mesh_to_raster(
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with rasterio.open(out_path, "w", **profile) as dst:
         _write_bands(dst)
+    return out_path
+
+
+def mesh_to_velocity_raster(
+    cell_centers: np.ndarray,
+    facepoint_coordinates: np.ndarray,
+    face_facepoint_indexes: np.ndarray,
+    face_cell_indexes: np.ndarray,
+    cell_face_info: np.ndarray,
+    cell_face_values: np.ndarray,
+    cell_wse: np.ndarray,
+    cell_velocity: np.ndarray,
+    output_path: str | Path | None = None,
+    *,
+    cell_size: float | None = None,
+    reference_transform: Any | None = None,
+    reference_raster: str | Path | None = None,
+    crs: Any | None = None,
+    nodata: float = -9999.0,
+    min_value: float | None = None,
+    snap_to_reference_extent: bool = True,
+    render_mode: str = "sloping",
+    face_active: np.ndarray | None = None,
+) -> Path | rasterio.io.DatasetReader:
+    """Render a HEC-RAS velocity raster with WSE-based wet extent.
+
+    HEC-RAS determines the wetted raster extent from the rendered
+    (interpolated) water-surface elevation, then assigns velocity within
+    those wet pixels.  This function replicates that two-step process:
+
+    1. **Render WSE** in-memory using :func:`mesh_to_raster` with the
+       requested *render_mode* — this determines which raster pixels are
+       wet and, for sloping/hybrid modes, the pixel-level WSE.
+    2. **Assign velocity horizontally** — each wet pixel is mapped to
+       its parent mesh cell via a trifinder, then receives that cell's
+       pre-computed WLS velocity vector ``[Vx, Vy]``.  Velocity is *not*
+       spatially interpolated across cell boundaries, which would be
+       physically incorrect because velocity can be discontinuous at faces.
+
+    Parameters
+    ----------
+    cell_centers : ndarray, shape ``(n_cells, 2)``
+        Cell-centre x, y coordinates (``FlowArea.cell_centers``).
+    facepoint_coordinates : ndarray, shape ``(n_facepoints, 2)``
+        Polygon-vertex x, y coordinates.
+    face_facepoint_indexes : ndarray, shape ``(n_faces, 2)``
+        Start/end facepoint index for each face.
+    face_cell_indexes : ndarray, shape ``(n_faces, 2)``
+        Left/right cell indices; ``-1`` = boundary.
+    cell_face_info : ndarray, shape ``(n_cells, 2)``
+        ``[start_idx, count]`` into *cell_face_values* for each cell.
+    cell_face_values : ndarray, shape ``(total_entries, 2)``
+        ``[face_idx, orientation]`` per cell-face association.
+    cell_wse : ndarray, shape ``(n_cells,)``
+        Cell-centre water-surface elevations.  ``NaN`` marks dry cells;
+        these are excluded from both the WSE render and velocity output.
+    cell_velocity : ndarray, shape ``(n_cells, 2)``
+        Pre-computed WLS velocity vectors ``[Vx, Vy]`` at each cell centre.
+    output_path : str, Path, or None
+        Destination GeoTIFF.  ``None`` returns an open in-memory
+        ``rasterio.DatasetReader``; the caller must close it.
+    cell_size : float, optional
+        Output pixel size.  Ignored when *reference_transform* or
+        *reference_raster* is supplied.
+    reference_transform : rasterio.transform.Affine, optional
+        Affine transform for pixel-perfect grid alignment.
+        Mutually exclusive with *reference_raster*.
+    reference_raster : str or Path, optional
+        Existing GeoTIFF whose transform and CRS are inherited.
+        Mutually exclusive with *reference_transform*.
+    crs : str, int, or rasterio.crs.CRS, optional
+        Output CRS (overrides *reference_raster* CRS when given).
+    nodata : float
+        Fill value for pixels outside the wet mesh.
+    min_value : float, optional
+        Speed threshold (m/s).  Cells whose WLS speed is below this are
+        excluded from the WSE rendering (treated as dry) and from the
+        final velocity output.
+    snap_to_reference_extent : bool
+        When *reference_raster* is given, extend the output to its full
+        extent (default ``True``).
+    render_mode : str
+        Water-surface rendering mode — ``"sloping"`` (default),
+        ``"horizontal"``, or ``"hybrid"``.  Controls which pixels are
+        considered wet and therefore receive a velocity value.
+    face_active : ndarray, shape ``(n_faces,)``, bool, optional
+        Per-face hydraulic activity flag required by ``render_mode="hybrid"``.
+
+    Returns
+    -------
+    Path
+        Written GeoTIFF path (when *output_path* is given).
+    rasterio.io.DatasetReader
+        Open in-memory 4-band dataset ``[Vx, Vy, Speed, Direction_deg_from_N]``
+        (when *output_path* is ``None``).  Caller must close it.
+
+    Raises
+    ------
+    ImportError
+        If ``rasterio`` or ``matplotlib`` are not installed.
+    """
+    try:
+        import rasterio
+    except ImportError as exc:
+        raise ImportError(
+            "mesh_to_velocity_raster requires rasterio. "
+            "Install it with: pip install raspy[geo]"
+        ) from exc
+    try:
+        import matplotlib.tri as mtri
+    except ImportError as exc:
+        raise ImportError(
+            "mesh_to_velocity_raster requires matplotlib. "
+            "Install it with: pip install raspy[geo]"
+        ) from exc
+
+    cell_velocity = np.asarray(cell_velocity, dtype=np.float64)  # (n_cells, 2)
+    cell_wse_arr = np.asarray(cell_wse, dtype=np.float64)
+
+    # Pre-filter: mask cells whose speed is below min_value so that the WSE
+    # rendering treats them as dry and excludes them from the wet extent.
+    cell_wse_for_render = cell_wse_arr.copy()
+    if min_value is not None:
+        with np.errstate(invalid="ignore"):
+            speed_pre = np.linalg.norm(cell_velocity, axis=1)
+        cell_wse_for_render[speed_pre < min_value] = np.nan
+
+    # ── Step 1: Render WSE in-memory to determine wet extent and grid. ──────
+    wse_ds = mesh_to_raster(
+        cell_centers=cell_centers,
+        facepoint_coordinates=facepoint_coordinates,
+        face_facepoint_indexes=face_facepoint_indexes,
+        face_cell_indexes=face_cell_indexes,
+        cell_face_info=cell_face_info,
+        cell_face_values=cell_face_values,
+        cell_values=cell_wse_for_render,
+        output_path=None,
+        cell_size=cell_size,
+        reference_transform=reference_transform,
+        reference_raster=reference_raster,
+        crs=crs,
+        nodata=nodata,
+        min_value=None,  # dry cells already NaN-masked above
+        snap_to_reference_extent=snap_to_reference_extent,
+        render_mode=render_mode,
+        face_active=face_active,
+    )
+
+    out_transform = wse_ds.transform
+    n_rows = wse_ds.height
+    n_cols = wse_ds.width
+    out_crs = wse_ds.crs
+    wse_nodata_val = wse_ds.nodata
+    wse_pixel = wse_ds.read(1).astype(np.float64)
+    wse_ds.close()
+
+    # Pixels where WSE raster is valid → wet; velocity is nodata everywhere else.
+    if wse_nodata_val is not None:
+        wet_mask = wse_pixel != wse_nodata_val
+    else:
+        wet_mask = np.isfinite(wse_pixel)
+
+    # ── Step 2: Build mesh triangulation for cell-ownership lookup. ──────────
+    cell_centers_arr = np.asarray(cell_centers, dtype=np.float64)
+    facepoint_coords_arr = np.asarray(facepoint_coordinates, dtype=np.float64)
+    face_fp_idx = np.asarray(face_facepoint_indexes, dtype=np.int64)
+    cell_face_values_arr = np.asarray(cell_face_values, dtype=np.int64)
+
+    n_cells = len(cell_centers_arr)
+    cell_face_info_arr = np.asarray(cell_face_info, dtype=np.int64)[:n_cells]
+
+    dry_mask = np.isnan(cell_wse_for_render)
+
+    all_pts = np.vstack([cell_centers_arr, facepoint_coords_arr])
+    counts = cell_face_info_arr[:, 1]
+    starts = cell_face_info_arr[:, 0]
+    total = int(counts.sum())
+
+    # Reproduce the vectorised entry-index array from mesh_to_raster.
+    idx_step = np.ones(total, dtype=np.int64)
+    if n_cells > 1:
+        boundary_pos = np.cumsum(counts[:-1])
+        idx_step[boundary_pos] = starts[1:] - starts[:-1] - counts[:-1] + 1
+    idx_step[0] = starts[0]
+    entry_indices = np.cumsum(idx_step)
+
+    face_idx_arr = cell_face_values_arr[entry_indices, 0]
+    cell_for_entry = np.repeat(np.arange(n_cells, dtype=np.int64), counts)
+
+    fp0 = face_fp_idx[face_idx_arr, 0]
+    fp1 = face_fp_idx[face_idx_arr, 1]
+    valid_tris = fp0 != fp1
+
+    triangles = np.column_stack([
+        cell_for_entry[valid_tris],
+        n_cells + fp0[valid_tris],
+        n_cells + fp1[valid_tris],
+    ])
+    tri_to_cell = cell_for_entry[valid_tris]
+    tri_mask_arr = dry_mask[tri_to_cell]
+
+    triang = mtri.Triangulation(all_pts[:, 0], all_pts[:, 1], triangles)
+    triang.set_mask(tri_mask_arr)
+
+    # ── Step 3: Map each pixel to its parent cell; assign velocity. ──────────
+    dx = abs(out_transform.a)
+    dy = abs(out_transform.e)
+    xi = out_transform.c + (np.arange(n_cols) + 0.5) * dx
+    yi = out_transform.f - (np.arange(n_rows) + 0.5) * dy
+    xi_grid, yi_grid = np.meshgrid(xi, yi)
+
+    trifinder_fn = triang.get_trifinder()
+    tri_idx_flat = trifinder_fn(xi_grid.ravel(), yi_grid.ravel())
+
+    cell_vel = cell_velocity.copy()
+    cell_vel[dry_mask] = np.nan  # propagate dry-cell exclusion
+
+    vel_flat = np.full((n_rows * n_cols, 2), np.nan)
+    inside = tri_idx_flat >= 0
+    vel_flat[inside] = cell_vel[tri_to_cell[tri_idx_flat[inside]]]
+
+    vx = vel_flat[:, 0].reshape(n_rows, n_cols)
+    vy = vel_flat[:, 1].reshape(n_rows, n_cols)
+
+    # The WSE raster is the authoritative wet-extent mask.
+    vx[~wet_mask] = np.nan
+    vy[~wet_mask] = np.nan
+
+    # ── Step 4: Speed, direction, min_value post-mask. ───────────────────────
+    with np.errstate(invalid="ignore"):
+        speed = np.sqrt(vx ** 2 + vy ** 2)
+    direction = (90.0 - np.degrees(np.arctan2(vy, vx))) % 360.0
+    direction = np.where(np.isnan(vx), np.nan, direction)
+
+    if min_value is not None:
+        low = speed < min_value
+        vx[low] = vy[low] = speed[low] = direction[low] = np.nan
+
+    band_arrays = [vx, vy, speed, direction]
+    band_names = ["Vx", "Vy", "Speed", "Direction_deg_from_N"]
+
+    # ── Step 5: Write output raster. ─────────────────────────────────────────
+    profile: dict = {
+        "driver": "GTiff",
+        "dtype": "float32",
+        "width": n_cols,
+        "height": n_rows,
+        "count": 4,
+        "nodata": nodata,
+        "transform": out_transform,
+        "compress": "lzw",
+    }
+    if out_crs is not None:
+        profile["crs"] = out_crs
+
+    def _write_vel_bands(dst: Any) -> None:
+        for band_idx, (arr, bname) in enumerate(zip(band_arrays, band_names), start=1):
+            data = arr.astype(np.float32)
+            data[np.isnan(data)] = nodata
+            dst.write(data, band_idx)
+            dst.update_tags(band_idx, name=bname)
+
+    if output_path is None:
+        memfile = rasterio.MemoryFile()
+        with memfile.open(**profile) as dst:
+            _write_vel_bands(dst)
+        return memfile.open()
+
+    out_path = Path(output_path).resolve()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with rasterio.open(out_path, "w", **profile) as dst:
+        _write_vel_bands(dst)
+    return out_path
+
+
+def _velocity_raster_to_speed(
+    vel_ds: Any,
+    output_path: str | Path | None,
+    nodata: float,
+) -> Path | rasterio.io.DatasetReader:
+    """Extract the Speed band from a 4-band velocity raster.
+
+    Parameters
+    ----------
+    vel_ds : rasterio.io.DatasetReader
+        Open 4-band velocity dataset produced by :func:`mesh_to_velocity_raster`.
+        **Closed by this function.**
+    output_path : str, Path, or None
+        Destination GeoTIFF.  ``None`` returns an in-memory
+        ``rasterio.DatasetReader``; caller must close it.
+    nodata : float
+        Nodata value for the output raster.
+
+    Returns
+    -------
+    Path or rasterio.io.DatasetReader
+    """
+    try:
+        import rasterio
+    except ImportError as exc:
+        raise ImportError(
+            "_velocity_raster_to_speed requires rasterio. "
+            "Install it with: pip install raspy[geo]"
+        ) from exc
+
+    speed_arr = vel_ds.read(3)  # band 3 = Speed (1-indexed)
+    profile = dict(vel_ds.profile)
+    profile["count"] = 1
+    vel_ds.close()
+
+    def _write(dst: Any) -> None:
+        dst.write(speed_arr, 1)
+        dst.update_tags(1, name="Speed")
+
+    if output_path is None:
+        memfile = rasterio.MemoryFile()
+        with memfile.open(**profile) as dst:
+            _write(dst)
+        return memfile.open()
+
+    out_path = Path(output_path).resolve()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with rasterio.open(out_path, "w", **profile) as dst:
+        _write(dst)
     return out_path
 
 

@@ -15,6 +15,7 @@ archive/ras_tools/r2d/ras2d_cell_velocity.py.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -23,12 +24,12 @@ import pandas as pd
 
 from ._base import _HdfFile
 from ._geometry import (
+    _SA_ROOT,
     FlowArea,
     FlowAreaCollection,
     GeometryHdf,
     StorageArea,
     StorageAreaCollection,
-    _SA_ROOT,
     _decode,
 )
 
@@ -754,11 +755,14 @@ class FlowAreaResults(FlowArea):
         snap_to_reference_extent: bool = True,
         crs: Any | None = None,
         nodata: float = -9999.0,
-        min_value: float | None = None,
+        depth_min: float | None = None,
+        vel_min: float | None = None,
         vel_method: Literal[
             "area_weighted", "length_weighted", "flow_ratio"
         ] = "area_weighted",
-        wse_interp: Literal["average", "sloped"] = "average",
+        vel_wse_method: Literal["average", "sloped"] = "sloped",
+        render_mode: Literal["sloping", "horizontal", "hybrid"] = "sloping",
+        face_active_threshold: float = 0.0,
     ) -> Path | rasterio.io.DatasetReader:
         """Interpolate a field to a GeoTIFF using mesh-conforming triangulation.
 
@@ -804,18 +808,34 @@ class FlowAreaResults(FlowArea):
             ``None``, the reference raster CRS is inherited.
         nodata:
             Fill value for pixels outside the wet mesh.
-        min_value:
-            Dry-cell threshold.  For ``"depth"``, cells whose HDF depth
-            (WSE minus cell minimum elevation) is below this value are
-            excluded before interpolation.  For other variables, cells
-            whose scalar value (or vector speed) is below this threshold
-            are excluded.
+        depth_min:
+            Minimum water depth (m).  Only used when ``variable="depth"``.
+            Cells whose HDF depth (WSE minus cell minimum elevation) is
+            below this value are excluded before WSE interpolation, and
+            output pixels shallower than this value are set to *nodata*
+            after DEM subtraction.
+        vel_min:
+            Minimum speed (m/s).  Only used when ``variable="cell_speed"``
+            or ``"cell_velocity"``.  Cells whose WLS speed is below this
+            threshold are excluded from the WSE wet-extent render and from
+            the final velocity output.
         vel_method:
             Velocity reconstruction scheme passed to
             :meth:`cell_velocity_vectors`.
-        wse_interp:
+        vel_wse_method:
             Face WSE interpolation method passed to
             :meth:`cell_velocity_vectors`.
+        render_mode:
+            Water-surface rendering mode — ``"sloping"`` (default),
+            ``"horizontal"``, or ``"hybrid"``.  See
+            :func:`~raspy.geo.raster.mesh_to_raster` for full description.
+        face_active_threshold:
+            Velocity magnitude threshold (m/s) used to classify each face
+            as active (wet) for ``render_mode="hybrid"``.  A face is
+            considered active when
+            ``|face_velocity| > face_active_threshold``.  Default ``0.0``
+            treats any non-zero velocity as active.  Ignored for other
+            render modes.
 
         Returns
         -------
@@ -847,6 +867,25 @@ class FlowAreaResults(FlowArea):
                 "Provide an explicit timestep index."
             )
 
+        # ── 0b. Hybrid face-active mask ────────────────────────────────
+        # Hybrid mode requires per-timestep face velocities.  When timestep
+        # is None (max-value maps) no such data exists; fall back to sloping.
+        _render_mode = render_mode
+        face_active: np.ndarray | None = None
+        if _render_mode == "hybrid":
+            if timestep is None:
+                logging.warning(
+                    "render_mode='hybrid' is not supported when timestep=None "
+                    "(no per-timestep face data for max-value maps). "
+                    "Falling back to render_mode='sloping'."
+                )
+                _render_mode = "sloping"
+            else:
+                face_active = (
+                    np.abs(np.array(self.face_velocity[timestep, :]))
+                    > face_active_threshold
+                )
+
         # ── 1. Resolve values array ────────────────────────────────────
         if variable == "depth":
             if timestep is None:
@@ -858,18 +897,20 @@ class FlowAreaResults(FlowArea):
             # Pre-mask dry cells by depth so mesh_to_raster sees NaN at those
             # cell centres and excludes the corresponding triangles.
             cell_wse = wse_values.copy()
-            if min_value is not None:
-                cell_wse[depth_at_cells < min_value] = np.nan
+            if depth_min is not None:
+                cell_wse[depth_at_cells < depth_min] = np.nan
         elif variable == "water_surface":
             if timestep is None:
                 values = self.max_water_surface["value"].to_numpy()
             else:
                 values = np.array(self.water_surface[timestep, : self.n_cells])
-        elif variable == "cell_speed":
-            values = self.cell_speed(timestep, method=vel_method, wse_interp=wse_interp)
-        elif variable == "cell_velocity":
-            values = self.cell_velocity_vectors(
-                timestep, method=vel_method, wse_interp=wse_interp
+        elif variable in ("cell_speed", "cell_velocity"):
+            # Compute WLS velocity vectors and cell WSE for the velocity raster.
+            # mesh_to_velocity_raster renders WSE to determine wet extent, then
+            # assigns velocity per-cell (no spatial interpolation across cells).
+            cell_vel_wse = np.array(self.water_surface[timestep, : self.n_cells])
+            cell_vel_vecs = self.cell_velocity_vectors(
+                timestep, method=vel_method, wse_interp=vel_wse_method
             )
         else:
             raise ValueError(f"Unknown variable: {variable!r}")
@@ -895,9 +936,11 @@ class FlowAreaResults(FlowArea):
             crs=crs,
             nodata=nodata,
             snap_to_reference_extent=snap_to_reference_extent,
+            render_mode=_render_mode,
+            face_active=face_active,
         )
 
-        # ── 4. Delegate to mesh_to_raster ─────────────────────────────
+        # ── 4. Delegate to mesh_to_raster / mesh_to_velocity_raster ──────
         if variable == "depth":
             wse_ds = _raster.mesh_to_raster(
                 **mesh_kw,
@@ -906,16 +949,40 @@ class FlowAreaResults(FlowArea):
                 min_value=None,     # dry cells already NaN-masked above
             )
             result = _raster._depth_from_wse_and_dem(
-                wse_ds, reference_raster, nodata, output_path, min_value=min_value
+                wse_ds, reference_raster, nodata, output_path, min_value=depth_min
             )
             wse_ds.close()
             return result
 
+        if variable == "cell_velocity":
+            # WSE-based wet extent; velocity assigned per-cell without spatial
+            # interpolation across cell boundaries.
+            return _raster.mesh_to_velocity_raster(
+                **mesh_kw,
+                cell_wse=cell_vel_wse,
+                cell_velocity=cell_vel_vecs,
+                output_path=output_path,
+                min_value=vel_min,
+            )
+
+        if variable == "cell_speed":
+            # Same rendering as cell_velocity; extract the speed band only.
+            vel_ds = _raster.mesh_to_velocity_raster(
+                **mesh_kw,
+                cell_wse=cell_vel_wse,
+                cell_velocity=cell_vel_vecs,
+                output_path=None,
+                min_value=vel_min,
+            )
+            return _raster._velocity_raster_to_speed(vel_ds, output_path, nodata)
+
+        # water_surface: no min filtering — WSE is an absolute elevation and
+        # has no natural minimum threshold.
         return _raster.mesh_to_raster(
             **mesh_kw,
             cell_values=values,
             output_path=output_path,
-            min_value=min_value,
+            min_value=None,
         )
 
 
