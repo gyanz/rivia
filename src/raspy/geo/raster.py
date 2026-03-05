@@ -481,9 +481,7 @@ def mesh_to_raster(
 ) -> Path | rasterio.io.DatasetReader:
     """Interpolate HEC-RAS mesh results to a raster using mesh-conforming triangulation.
 
-    Unlike :func:`points_to_raster`, which Delaunay-triangulates scattered cell
-    centres and can produce spurious fill across dry gaps or disconnected wet
-    islands, this function builds a triangulation that exactly conforms to the
+    This function builds a triangulation that exactly conforms to the
     cell polygons — mirroring how HEC-RAS RASMapper creates its result maps.
 
     **Algorithm**
