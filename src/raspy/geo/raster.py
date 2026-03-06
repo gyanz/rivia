@@ -405,6 +405,39 @@ def points_to_raster(
 # ---------------------------------------------------------------------------
 
 
+def _tight_pixel_bounds(
+    transform: Any,
+    x_min: float,
+    x_max: float,
+    y_min: float,
+    y_max: float,
+    max_cols: int | None,
+    max_rows: int | None,
+) -> tuple[int, int, int, int]:
+    """Pixel column/row bounds for the geographic extent [x_min..x_max, y_min..y_max].
+
+    Converts geographic coordinates to pixel indices aligned to *transform*.
+    When *max_cols* and *max_rows* are given the result is clamped to
+    ``[0, max_cols] × [0, max_rows]`` (pass ``None`` to skip clamping).
+
+    Returns
+    -------
+    col_min, col_max, row_min, row_max : int
+    """
+    dx = abs(transform.a)
+    dy = abs(transform.e)
+    col_min = int(np.floor((x_min - transform.c) / dx))
+    col_max = int(np.ceil((x_max - transform.c) / dx))
+    row_min = int(np.floor((transform.f - y_max) / dy))
+    row_max = int(np.ceil((transform.f - y_min) / dy))
+    if max_cols is not None:
+        col_min = max(col_min, 0)
+        col_max = min(col_max, max_cols)
+        row_min = max(row_min, 0)
+        row_max = min(row_max, max_rows)  # type: ignore[arg-type]
+    return col_min, col_max, row_min, row_max
+
+
 def _build_wet_kdtree(
     cell_centers: np.ndarray,
     dry_mask: np.ndarray,
@@ -781,52 +814,37 @@ def mesh_to_raster(
     x_min, y_min = all_pts.min(axis=0)
     x_max, y_max = all_pts.max(axis=0)
 
-    # Track whether the KDTree result (computed on a tight mesh-extent grid)
-    # must be embedded into a larger full-reference-extent output array.
-    _embed_tight = False
-    _tight_col_min = _tight_col_max = _tight_row_min = _tight_row_max = 0
-    _dem_col_off = _dem_row_off = 0  # DEM window offset for post-render masking
-
     if transform is not None:
         dx = abs(transform.a)
         dy = abs(transform.e)
 
-        # Always derive the tight column/row range from the point-cloud extent,
-        # aligned to the reference pixel grid.  KDTree queries run only on this
-        # smaller grid, avoiding work on pixels that are guaranteed to be NaN.
-        col_min = int(np.floor((x_min - transform.c) / dx))
-        col_max = int(np.ceil((x_max - transform.c) / dx))
-        row_min = int(np.floor((transform.f - y_max) / dy))
-        row_max = int(np.ceil((transform.f - y_min) / dy))
-
-        if ref_width is not None:
-            col_min = max(col_min, 0)
-            col_max = min(col_max, ref_width)
-            row_min = max(row_min, 0)
-            row_max = min(row_max, ref_height)  # type: ignore[arg-type]
-
+        # Tight pixel bounds from the point-cloud extent, aligned to the
+        # reference grid.  KDTree queries run only on this sub-grid, skipping
+        # pixels outside the mesh bounding box that are guaranteed to be NaN.
+        # ref_width/ref_height may be None (reference_transform given without a
+        # reference_raster), in which case _tight_pixel_bounds skips clamping.
+        col_min, col_max, row_min, row_max = _tight_pixel_bounds(
+            transform, x_min, x_max, y_min, y_max, ref_width, ref_height
+        )
         xi = transform.c + (np.arange(col_min, col_max) + 0.5) * dx
         yi = transform.f - (np.arange(row_min, row_max) + 0.5) * dy
 
         if snap_to_reference_extent and ref_width is not None:
             # Output covers the full reference raster extent so rasters from
-            # different point clouds are pixel-aligned.  The KDTree result
-            # (computed on the tight grid) is embedded into a full-size NaN
-            # array after rendering.
-            _embed_tight = True
-            _tight_col_min, _tight_col_max = col_min, col_max
-            _tight_row_min, _tight_row_max = row_min, row_max
+            # different point clouds are pixel-aligned.  The tight KDTree result
+            # is pasted into a full-size NaN array after rendering.
+            embed_tight = True
             n_rows, n_cols = ref_height, ref_width  # type: ignore[assignment]
             out_transform = Affine(dx, 0.0, transform.c, 0.0, -dy, transform.f)
-            _dem_col_off = _dem_row_off = 0
         else:
+            embed_tight = False
             n_rows, n_cols = len(yi), len(xi)
             out_transform = Affine(
                 dx, 0.0, transform.c + col_min * dx,
                 0.0, -dy, transform.f - row_min * dy,
             )
-            _dem_col_off, _dem_row_off = col_min, row_min
     else:
+        embed_tight = False
         if cell_size is None or cell_size <= 0:
             raise ValueError(
                 "cell_size must be a positive number when transform and "
@@ -875,12 +893,12 @@ def mesh_to_raster(
         scalar = np.where(pixel_is_horiz, scalar_horiz, scalar_slop)
 
     # ── Embed tight result into full output array ──────────────────────────
-    # When snap_to_reference_extent=True the KDTree was run on a smaller tight
-    # grid; paste that result into a full-size NaN array now.
-    if _embed_tight:
-        _full = np.full((n_rows, n_cols), np.nan)
-        _full[_tight_row_min:_tight_row_max, _tight_col_min:_tight_col_max] = scalar
-        scalar = _full
+    # When snap_to_reference_extent=True the KDTree ran on a tight sub-grid;
+    # paste that result into a full-size NaN array now.
+    if embed_tight:
+        full = np.full((n_rows, n_cols), np.nan)
+        full[row_min:row_max, col_min:col_max] = scalar
+        scalar = full
 
     # ── Post-interpolation masking and band assembly ───────────────────────
     if min_value is not None:
@@ -888,9 +906,14 @@ def mesh_to_raster(
     if reference_raster is not None:
         with rasterio.open(reference_raster) as dem_src:
             dem_nodata = dem_src.nodata
-            dem_data = dem_src.read(
-                1, window=Window(_dem_col_off, _dem_row_off, n_cols, n_rows)
-            ).astype(np.float64)
+            if embed_tight:
+                # Output covers the full reference raster; read the entire DEM.
+                dem_data = dem_src.read(1).astype(np.float64)
+            else:
+                # Output is a tight sub-grid; read only the matching DEM window.
+                dem_data = dem_src.read(
+                    1, window=Window(col_min, row_min, n_cols, n_rows)
+                ).astype(np.float64)
         threshold = min_above_ref if min_above_ref is not None else 0.0
         dry_pixel = (scalar - dem_data) < threshold
         if dem_nodata is not None:
@@ -1105,20 +1128,18 @@ def mesh_to_velocity_raster(
     dx = abs(out_transform.a)
     dy = abs(out_transform.e)
 
-    # Tight grid: KDTree queries run only on the mesh bounding box, which is
-    # much smaller than the full reference raster extent.  The result is
-    # embedded into the full output array afterwards.
-    _all_pts_m = np.vstack([cell_centers_arr, facepoint_coords_arr])
-    _xmin_m, _ymin_m = _all_pts_m.min(axis=0)
-    _xmax_m, _ymax_m = _all_pts_m.max(axis=0)
-    _tc_min = max(0, int(np.floor((_xmin_m - out_transform.c) / dx)))
-    _tc_max = min(n_cols, int(np.ceil((_xmax_m - out_transform.c) / dx)))
-    _tr_min = max(0, int(np.floor((out_transform.f - _ymax_m) / dy)))
-    _tr_max = min(n_rows, int(np.ceil((out_transform.f - _ymin_m) / dy)))
-
-    xi = out_transform.c + (np.arange(_tc_min, _tc_max) + 0.5) * dx
-    yi = out_transform.f - (np.arange(_tr_min, _tr_max) + 0.5) * dy
-    xi_grid, yi_grid = np.meshgrid(xi, yi)
+    # Build and query the KDTree on the tight mesh bounding box only; embed
+    # the result into the full output grid to avoid querying distant NaN pixels.
+    mesh_pts = np.vstack([cell_centers_arr, facepoint_coords_arr])
+    x_min, y_min = mesh_pts.min(axis=0)
+    x_max, y_max = mesh_pts.max(axis=0)
+    col_min, col_max, row_min, row_max = _tight_pixel_bounds(
+        out_transform, x_min, x_max, y_min, y_max, n_cols, n_rows
+    )
+    xi_grid, yi_grid = np.meshgrid(
+        out_transform.c + (np.arange(col_min, col_max) + 0.5) * dx,
+        out_transform.f - (np.arange(row_min, row_max) + 0.5) * dy,
+    )
 
     tree, wet_indices, max_radius = _build_wet_kdtree(
         cell_centers_arr, dry_mask, facepoint_coords_arr
@@ -1127,7 +1148,7 @@ def mesh_to_velocity_raster(
         tree, wet_indices, cell_vel, max_radius, xi_grid, yi_grid
     )
     vel_full = np.full((n_rows, n_cols, 2), np.nan)
-    vel_full[_tr_min:_tr_max, _tc_min:_tc_max] = vel_tight
+    vel_full[row_min:row_max, col_min:col_max] = vel_tight
     vx = vel_full[:, :, 0]
     vy = vel_full[:, :, 1]
 
@@ -1880,23 +1901,6 @@ def mesh_to_velocity_raster_interp(
 
     dry_mask = np.isnan(cell_wse_for_render)
 
-    # ── Tight sub-grid bounds (used in Steps 3 & 4). ─────────────────────────
-    # Compute the mesh bounding box in raster pixel space so that all
-    # interpolation work is confined to the tight extent.  The result is
-    # embedded into the full output array once at the end.
-    _dx_t = abs(out_transform.a)
-    _dy_t = abs(out_transform.e)
-    _all_pts_t = np.vstack([cell_centers_arr, facepoint_coords_arr])
-    _xmin_t, _ymin_t = _all_pts_t.min(axis=0)
-    _xmax_t, _ymax_t = _all_pts_t.max(axis=0)
-    _tc_min = max(0, int(np.floor((_xmin_t - out_transform.c) / _dx_t)))
-    _tc_max = min(n_cols, int(np.ceil((_xmax_t - out_transform.c) / _dx_t)))
-    _tr_min = max(0, int(np.floor((out_transform.f - _ymax_t) / _dy_t)))
-    _tr_max = min(n_rows, int(np.ceil((out_transform.f - _ymin_t) / _dy_t)))
-    n_tight_rows = _tr_max - _tr_min
-    n_tight_cols = _tc_max - _tc_min
-    wet_mask_tight = wet_mask[_tr_min:_tr_max, _tc_min:_tc_max]
-
     # ── Step 2a: Fan-triangulation (cell-local methods only). ────────────────
     if method not in {"scatter_interp", "scatter_interp2"}:
         all_pts = np.vstack([cell_centers_arr, facepoint_coords_arr])
@@ -1967,11 +1971,22 @@ def mesh_to_velocity_raster_interp(
     )
 
     # ── Step 3: Tight raster grid (mesh bounding box only). ──────────────────
+    # KDTree and trifinder queries run only on this sub-grid; the result is
+    # embedded into the full output array at the end.
     dx = abs(out_transform.a)
     dy = abs(out_transform.e)
+    mesh_pts = np.vstack([cell_centers_arr, facepoint_coords_arr])
+    x_min, y_min = mesh_pts.min(axis=0)
+    x_max, y_max = mesh_pts.max(axis=0)
+    col_min, col_max, row_min, row_max = _tight_pixel_bounds(
+        out_transform, x_min, x_max, y_min, y_max, n_cols, n_rows
+    )
+    n_tight_rows = row_max - row_min
+    n_tight_cols = col_max - col_min
+    wet_mask_tight = wet_mask[row_min:row_max, col_min:col_max]
     xi_grid, yi_grid = np.meshgrid(
-        out_transform.c + (np.arange(_tc_min, _tc_max) + 0.5) * dx,
-        out_transform.f - (np.arange(_tr_min, _tr_max) + 0.5) * dy,
+        out_transform.c + (np.arange(col_min, col_max) + 0.5) * dx,
+        out_transform.f - (np.arange(row_min, row_max) + 0.5) * dy,
     )
 
     # ── Step 4: Interpolate velocities. ──────────────────────────────────────
@@ -2123,8 +2138,8 @@ def mesh_to_velocity_raster_interp(
     # Embed tight result into full output arrays.
     vx_full = np.full((n_rows, n_cols), np.nan)
     vy_full = np.full((n_rows, n_cols), np.nan)
-    vx_full[_tr_min:_tr_max, _tc_min:_tc_max] = vx
-    vy_full[_tr_min:_tr_max, _tc_min:_tc_max] = vy
+    vx_full[row_min:row_max, col_min:col_max] = vx
+    vy_full[row_min:row_max, col_min:col_max] = vy
     vx, vy = vx_full, vy_full
 
     # WSE raster is the authoritative wet-extent mask (applied to both paths).
