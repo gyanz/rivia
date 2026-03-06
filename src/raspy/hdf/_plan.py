@@ -22,6 +22,8 @@ from typing import TYPE_CHECKING, Any, Literal
 import numpy as np
 import pandas as pd
 
+from raspy.utils import timed
+
 from ._base import _HdfFile
 from ._geometry import (
     _SA_ROOT,
@@ -701,6 +703,7 @@ class FlowAreaResults(FlowArea):
 
         return max_speed, max_vecs
 
+    @timed(logging.INFO)
     def export_raster(
         self,
         variable: Literal["water_surface", "depth", "cell_speed", "cell_velocity"],
@@ -1014,6 +1017,7 @@ class FlowAreaResults(FlowArea):
             min_above_ref=depth_min,
         )
 
+    @timed(logging.INFO)
     def export_hydraulic_rasters(
         self,
         timestep: int,
