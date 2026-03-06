@@ -726,6 +726,7 @@ class FlowAreaResults(FlowArea):
             "facepoint_blend", "scatter_interp", "scatter_interp2",
         ] = "scatter_interp2",
         scatter_interp_method: Literal["nearest", "linear", "cubic"] = "linear",
+        fix_triangulation: bool = True,
     ) -> Path | rasterio.io.DatasetReader:
         """Interpolate a field to a GeoTIFF using mesh-conforming triangulation.
 
@@ -825,6 +826,11 @@ class FlowAreaResults(FlowArea):
             ``"scatter_interp"`` and ``"scatter_interp2"``.  One of
             ``"nearest"``, ``"linear"`` *(default)*, ``"cubic"``.  Ignored
             for all other *vel_interp_method* values.
+        fix_triangulation:
+            When ``True`` (default), deduplicate coincident mesh vertices and
+            remove zero-area triangles before building the triangulation.
+            Prevents ``RuntimeError: Triangulation is invalid`` on meshes with
+            unusual cell geometry.  Set ``False`` to skip on large, clean meshes.
 
         Returns
         -------
@@ -927,6 +933,7 @@ class FlowAreaResults(FlowArea):
             snap_to_reference_extent=snap_to_reference_extent,
             render_mode=_render_mode,
             face_active=face_active,
+            fix_triangulation=fix_triangulation,
         )
 
         # ── 4. Delegate to mesh_to_raster / mesh_to_velocity_raster ──────
@@ -1030,6 +1037,7 @@ class FlowAreaResults(FlowArea):
             "facepoint_blend", "scatter_interp", "scatter_interp2",
         ] = "scatter_interp2",
         scatter_interp_method: Literal["nearest", "linear", "cubic"] = "linear",
+        fix_triangulation: bool = True,
     ) -> dict[str, Path | rasterio.io.DatasetReader]:
         """Export water-surface elevation, depth, and speed rasters in one pass.
 
@@ -1084,6 +1092,11 @@ class FlowAreaResults(FlowArea):
         scatter_interp_method:
             ``scipy.interpolate.griddata`` *method* used by
             ``"scatter_interp"`` / ``"scatter_interp2"``.
+        fix_triangulation:
+            When ``True`` (default), deduplicate coincident mesh vertices and
+            remove zero-area triangles before building the triangulation.
+            Prevents ``RuntimeError: Triangulation is invalid`` on meshes with
+            unusual cell geometry.  Set ``False`` to skip on large, clean meshes.
 
         Returns
         -------
@@ -1133,6 +1146,7 @@ class FlowAreaResults(FlowArea):
             snap_to_reference_extent=snap_to_reference_extent,
             render_mode=_render_mode,
             face_active=face_active,
+            fix_triangulation=fix_triangulation,
         )
 
         # ── 5. WSE raster in-memory (shared for WSE output + depth) ───

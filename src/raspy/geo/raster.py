@@ -621,6 +621,7 @@ def mesh_to_raster(
     snap_to_reference_extent: bool = True,
     render_mode: str = "sloping",
     face_active: np.ndarray | None = None,
+    fix_triangulation: bool = True,
 ) -> Path | rasterio.io.DatasetReader:
     """Interpolate HEC-RAS mesh results to a raster using mesh-conforming triangulation.
 
@@ -709,6 +710,13 @@ def mesh_to_raster(
         Per-face hydraulic activity flag: ``True`` = face is wet/active.
         Required when *render_mode* is ``"hybrid"``; ignored otherwise.
         Typically derived from face velocity: ``abs(face_vel) > threshold``.
+    fix_triangulation : bool
+        When ``True`` (default), deduplicate coincident mesh vertices and
+        remove zero-area triangles before building the triangulation.  These
+        defects cause ``matplotlib``'s ``TrapezoidMapTriFinder`` to raise
+        ``RuntimeError: Triangulation is invalid``.  Disable to skip the
+        extra work on meshes known to be clean (saves a few milliseconds on
+        very large models).
 
     Returns
     -------
@@ -811,6 +819,22 @@ def mesh_to_raster(
     # facepoints occupy [n_cells, n_cells + n_facepoints).
     all_pts = np.vstack([cell_centers, facepoint_coordinates])
 
+    # Deduplicate points when requested — coincident points (e.g. a cell
+    # centre sharing coordinates with a facepoint) cause
+    # TrapezoidMapTriFinder to raise "Triangulation is invalid".
+    if fix_triangulation:
+        _, _uniq_idx, _inv_idx = np.unique(
+            all_pts, axis=0, return_index=True, return_inverse=True
+        )
+        _had_duplicates = len(_uniq_idx) < len(all_pts)
+        if _had_duplicates:
+            all_pts = all_pts[_uniq_idx]
+            if render_mode in ("sloping", "hybrid"):
+                all_vals = all_vals[_uniq_idx]
+                vertex_nan = vertex_nan[_uniq_idx]
+    else:
+        _had_duplicates = False
+
     # ── Build mesh-conforming triangles (vectorised, no Python loop) ───────
     # For every cell-face association produce triangle
     # [cell_idx, n_cells + fp0, n_cells + fp1].
@@ -843,6 +867,27 @@ def mesh_to_raster(
 
     # Cell index for each triangle — needed by horizontal and hybrid renders.
     tri_to_cell = cell_for_entry[valid]
+
+    if fix_triangulation:
+        # Remap vertex indices to the deduplicated point set (no-op when
+        # there were no duplicates, but _inv_idx is still valid).
+        if _had_duplicates:
+            triangles = _inv_idx[triangles]
+
+        # Remove degenerate and zero-area triangles — both can invalidate
+        # matplotlib's TrapezoidMapTriFinder.  Degenerate triangles have a
+        # repeated vertex after dedup; zero-area triangles arise when a cell
+        # centre is collinear with its two face facepoints.
+        _t0, _t1, _t2 = triangles[:, 0], triangles[:, 1], triangles[:, 2]
+        _nondegen = (_t0 != _t1) & (_t1 != _t2) & (_t0 != _t2)
+        _p0, _p1, _p2 = all_pts[_t0], all_pts[_t1], all_pts[_t2]
+        _cross_z = (
+            (_p1[:, 0] - _p0[:, 0]) * (_p2[:, 1] - _p0[:, 1])
+            - (_p2[:, 0] - _p0[:, 0]) * (_p1[:, 1] - _p0[:, 1])
+        )
+        _keep = _nondegen & (_cross_z != 0.0)
+        triangles = triangles[_keep]
+        tri_to_cell = tri_to_cell[_keep]
 
     # Mask triangles based on render mode.
     # Horizontal: only the cell-centre vertex matters (facepoint NaN irrelevant).
@@ -1026,6 +1071,7 @@ def mesh_to_velocity_raster(
     snap_to_reference_extent: bool = True,
     render_mode: str = "sloping",
     face_active: np.ndarray | None = None,
+    fix_triangulation: bool = True,
 ) -> Path | rasterio.io.DatasetReader:
     """Render a HEC-RAS velocity raster with WSE-based wet extent.
 
@@ -1155,6 +1201,7 @@ def mesh_to_velocity_raster(
         snap_to_reference_extent=snap_to_reference_extent,
         render_mode=render_mode,
         face_active=face_active,
+        fix_triangulation=fix_triangulation,
     )
 
     out_transform = wse_ds.transform
@@ -1208,6 +1255,25 @@ def mesh_to_velocity_raster(
         n_cells + fp1[valid_tris],
     ])
     tri_to_cell = cell_for_entry[valid_tris]
+
+    if fix_triangulation:
+        _, _uniq_idx, _inv_idx = np.unique(
+            all_pts, axis=0, return_index=True, return_inverse=True
+        )
+        if len(_uniq_idx) < len(all_pts):
+            all_pts = all_pts[_uniq_idx]
+            triangles = _inv_idx[triangles]
+        _t0, _t1, _t2 = triangles[:, 0], triangles[:, 1], triangles[:, 2]
+        _nondegen = (_t0 != _t1) & (_t1 != _t2) & (_t0 != _t2)
+        _p0, _p1, _p2 = all_pts[_t0], all_pts[_t1], all_pts[_t2]
+        _cross_z = (
+            (_p1[:, 0] - _p0[:, 0]) * (_p2[:, 1] - _p0[:, 1])
+            - (_p2[:, 0] - _p0[:, 0]) * (_p1[:, 1] - _p0[:, 1])
+        )
+        _keep = _nondegen & (_cross_z != 0.0)
+        triangles = triangles[_keep]
+        tri_to_cell = tri_to_cell[_keep]
+
     tri_mask_arr = dry_mask[tri_to_cell]
 
     triang = mtri.Triangulation(all_pts[:, 0], all_pts[:, 1], triangles)
@@ -1744,6 +1810,7 @@ def mesh_to_velocity_raster_interp(
     face_active: np.ndarray | None = None,
     method: str = "triangle_blend",
     scatter_interp_method: str = "linear",
+    fix_triangulation: bool = True,
 ) -> Path | rasterio.io.DatasetReader:
     """Render a spatially varying velocity raster constrained within each mesh cell.
 
@@ -2009,6 +2076,24 @@ def mesh_to_velocity_raster_interp(
         ])
         tri_to_cell = cell_for_entry[valid_tris]
         tri_to_face = face_idx_arr[valid_tris]
+
+        if fix_triangulation:
+            # Remove degenerate and zero-area triangles — both can invalidate
+            # TrapezoidMapTriFinder.  Note: full point deduplication is not
+            # applied here because facepoint_blend indexes into v_fp_all via
+            # `vertex_idx - n_cells`, which relies on the original index layout.
+            _t0, _t1, _t2 = triangles[:, 0], triangles[:, 1], triangles[:, 2]
+            _nondegen = (_t0 != _t1) & (_t1 != _t2) & (_t0 != _t2)
+            _p0, _p1, _p2 = all_pts[_t0], all_pts[_t1], all_pts[_t2]
+            _cross_z = (
+                (_p1[:, 0] - _p0[:, 0]) * (_p2[:, 1] - _p0[:, 1])
+                - (_p2[:, 0] - _p0[:, 0]) * (_p1[:, 1] - _p0[:, 1])
+            )
+            _keep = _nondegen & (_cross_z != 0.0)
+            triangles  = triangles[_keep]
+            tri_to_cell = tri_to_cell[_keep]
+            tri_to_face = tri_to_face[_keep]
+
         tri_mask_arr = dry_mask[tri_to_cell]
 
         try:
