@@ -400,232 +400,121 @@ def points_to_raster(
     return out_path
 
 
-def _compute_facepoint_values(
-    cell_vals: np.ndarray,
+# ---------------------------------------------------------------------------
+# KDTree rendering helpers — called from mesh_to_raster and mesh_to_velocity_raster
+# ---------------------------------------------------------------------------
+
+
+def _build_wet_kdtree(
     cell_centers: np.ndarray,
+    dry_mask: np.ndarray,
     facepoint_coordinates: np.ndarray,
-    face_facepoint_indexes: np.ndarray,
-    face_cell_indexes: np.ndarray,
-    n_cells: int,
-    n_facepoints: int,
-) -> np.ndarray:
-    """Assign distance-weighted interpolated values at mesh facepoints.
-
-    For each interior face the value is computed by linearly interpolating
-    between the two adjacent cell-centre values, weighted by the distance
-    from each cell centre to the face centre (midpoint of the face's two
-    bounding facepoints).  This correctly accounts for irregular cell
-    geometry: when the face lies closer to one cell centre its value is
-    pulled toward that cell, rather than being a simple average.
-
-    Boundary faces (one adjacent cell only) and faces adjacent to a dry
-    cell (``NaN`` value) use the single available wet-cell value directly.
-
-    Each facepoint value is then the simple mean of the values from all
-    adjacent valid (wet) faces.
+) -> tuple[Any, np.ndarray, float]:
+    """Build a ``cKDTree`` on wet cell centres and estimate the mesh boundary radius.
 
     Parameters
     ----------
-    cell_vals : ndarray, shape ``(n_cells,)``
-        Cell-centre scalar values; ``NaN`` marks dry / excluded cells.
     cell_centers : ndarray, shape ``(n_cells, 2)``
-        Cell-centre x, y coordinates.
+    dry_mask : ndarray, shape ``(n_cells,)``, bool
+        True where a cell is dry (excluded from interpolation).
     facepoint_coordinates : ndarray, shape ``(n_facepoints, 2)``
-        Facepoint x, y coordinates.
-    face_facepoint_indexes : ndarray, shape ``(n_faces, 2)``
-        Start and end facepoint index for each face.
-    face_cell_indexes : ndarray, shape ``(n_faces, 2)``
-        Left and right cell indices; ``-1`` for boundary faces.
-    n_cells, n_facepoints : int
+        Used to estimate the maximum cell "radius" for boundary masking.
 
     Returns
     -------
-    ndarray, shape ``(n_facepoints,)``
-        ``NaN`` where every adjacent face is dry or out-of-domain.
+    tree : cKDTree or None
+        Built on wet cell-centre coordinates.  ``None`` when no wet cells exist.
+    wet_indices : ndarray of int, shape ``(n_wet,)``
+        Indices into the full cell arrays for each point in *tree*.
+    max_radius : float
+        Maximum distance from any facepoint to its nearest wet cell centre.
+        Pixels farther than this from every wet centre are outside the mesh.
     """
-    n_faces = len(face_facepoint_indexes)
-    fp0 = face_facepoint_indexes[:, 0]
-    fp1 = face_facepoint_indexes[:, 1]
-    left_cells = face_cell_indexes[:, 0]
-    right_cells = face_cell_indexes[:, 1]
+    from scipy.spatial import cKDTree
 
-    # Cell values at each face's adjacent cells (NaN for boundary / dry).
-    left_vals = np.full(n_faces, np.nan)
-    right_vals = np.full(n_faces, np.nan)
-    valid_left = (left_cells >= 0) & (left_cells < n_cells)
-    valid_right = (right_cells >= 0) & (right_cells < n_cells)
-    left_vals[valid_left] = cell_vals[left_cells[valid_left]]
-    right_vals[valid_right] = cell_vals[right_cells[valid_right]]
+    wet_indices = np.where(~dry_mask)[0]
+    wet_centers = cell_centers[wet_indices]
+    if len(wet_centers) == 0:
+        return None, wet_indices, 0.0
 
-    # Face centre = midpoint of its two bounding facepoints.
-    face_cx = (facepoint_coordinates[fp0, 0] + facepoint_coordinates[fp1, 0]) * 0.5
-    face_cy = (facepoint_coordinates[fp0, 1] + facepoint_coordinates[fp1, 1]) * 0.5
+    tree = cKDTree(wet_centers)
+    if len(facepoint_coordinates) == 0:
+        max_radius = 0.0
+    else:
+        fp_dists, _ = tree.query(facepoint_coordinates)
+        max_radius = float(fp_dists.max())
 
-    face_vals = np.full(n_faces, np.nan)
-
-    # Interior faces where both adjacent cells are wet: distance-weighted.
-    both_wet = ~np.isnan(left_vals) & ~np.isnan(right_vals)
-    if both_wet.any():
-        lc = left_cells[both_wet]
-        rc = right_cells[both_wet]
-        dl = np.hypot(
-            face_cx[both_wet] - cell_centers[lc, 0],
-            face_cy[both_wet] - cell_centers[lc, 1],
-        )
-        dr = np.hypot(
-            face_cx[both_wet] - cell_centers[rc, 0],
-            face_cy[both_wet] - cell_centers[rc, 1],
-        )
-        d_sum = dl + dr
-        # t = 0 → value at left cell centre; t = 1 → value at right cell centre.
-        t = np.where(d_sum > 0.0, dl / d_sum, 0.5)
-        face_vals[both_wet] = (1.0 - t) * left_vals[both_wet] + t * right_vals[both_wet]
-
-    # Boundary or dry-neighbour: use whichever cell value is available.
-    left_only = ~np.isnan(left_vals) & np.isnan(right_vals)
-    face_vals[left_only] = left_vals[left_only]
-    right_only = np.isnan(left_vals) & ~np.isnan(right_vals)
-    face_vals[right_only] = right_vals[right_only]
-
-    # Accumulate face values at each bounding facepoint (simple mean).
-    fp_sum = np.zeros(n_facepoints)
-    fp_count = np.zeros(n_facepoints, dtype=np.int64)
-    valid_faces = ~np.isnan(face_vals)
-    np.add.at(fp_sum, fp0[valid_faces], face_vals[valid_faces])
-    np.add.at(fp_count, fp0[valid_faces], 1)
-    np.add.at(fp_sum, fp1[valid_faces], face_vals[valid_faces])
-    np.add.at(fp_count, fp1[valid_faces], 1)
-
-    with np.errstate(all="ignore"):
-        return np.where(fp_count > 0, fp_sum / fp_count, np.nan)
+    return tree, wet_indices, max_radius
 
 
-# ---------------------------------------------------------------------------
-# Rendering helpers — called from mesh_to_raster
-# ---------------------------------------------------------------------------
-
-
-def _horizontal_from_trifind(
-    tri_idx_flat: np.ndarray,
-    tri_to_cell: np.ndarray,
-    cell_cv: np.ndarray,
-    grid_shape: tuple[int, int],
-) -> np.ndarray:
-    """Map a flat trifinder result to per-cell constant values.
-
-    Pixels whose triangle index is -1 (outside the mesh) are set to NaN.
-
-    Parameters
-    ----------
-    tri_idx_flat : ndarray, shape ``(n_pixels,)``
-        Triangle index per pixel from ``Triangulation.get_trifinder()(x, y)``.
-        -1 indicates the pixel is outside all unmasked triangles.
-    tri_to_cell : ndarray, shape ``(n_triangles,)``
-        Maps each triangle index to its originating cell index.
-    cell_cv : ndarray, shape ``(n_cells,)``
-        Cell-centre scalar values; NaN for dry cells.
-    grid_shape : (n_rows, n_cols)
-
-    Returns
-    -------
-    ndarray, shape ``(n_rows, n_cols)``
-    """
-    n_out = len(tri_idx_flat)
-    out: np.ndarray = np.full(n_out, np.nan)
-    inside = tri_idx_flat >= 0
-    out[inside] = cell_cv[tri_to_cell[tri_idx_flat[inside]]]
-    return out.reshape(grid_shape)
-
-
-def _render_horizontal_kdtree(
-    triang: Any,
-    tri_to_cell: np.ndarray,
-    cell_cv: np.ndarray,
+def _kdtree_nearest(
+    tree: Any,
+    wet_indices: np.ndarray,
+    cell_values: np.ndarray,
+    max_radius: float,
     xi_grid: np.ndarray,
     yi_grid: np.ndarray,
 ) -> np.ndarray:
-    """KDTree nearest-neighbour fallback for horizontal rendering.
+    """Assign each output pixel the value of its nearest wet cell centre.
 
-    Used when ``TrapezoidMapTriFinder`` raises ``RuntimeError: Triangulation
-    is invalid`` (e.g. overlapping fan-triangles from non-convex mesh cells).
-
-    Each output pixel is assigned the value of the nearest wet cell centre.
-    Pixels farther from every wet centre than the maximum cell radius
-    (max centre-to-facepoint distance across all unmasked triangles) are set
-    to NaN — they are outside the wet mesh extent.
-
-    Requires ``scipy``.
+    Pixels whose nearest wet centre is farther than *max_radius* receive NaN
+    (outside the wet mesh extent).  Works for scalar ``(n_cells,)`` and
+    vector ``(n_cells, k)`` *cell_values*.
     """
-    try:
-        from scipy.spatial import cKDTree
-    except ImportError as exc:
-        raise RuntimeError(
-            "matplotlib's TrapezoidMapTriFinder raised 'Triangulation is invalid' "
-            "and scipy is not installed for the KDTree fallback.  "
-            "Install scipy (pip install scipy) or use fix_triangulation=True."
-        ) from exc
-
-    # Determine which triangles are unmasked (wet).
-    if triang.mask is not None and len(triang.mask):
-        wet = ~np.asarray(triang.mask, dtype=bool)
-    else:
-        wet = np.ones(len(tri_to_cell), dtype=bool)
-
-    extra = cell_cv.shape[1:]  # () for scalar, (2,) for velocity vector, etc.
-    if not wet.any():
+    extra = cell_values.shape[1:]  # () for scalar, (2,) for velocity vector
+    if tree is None:
         return np.full(xi_grid.shape + extra, np.nan)
 
-    tri_verts = triang.triangles[wet]   # shape (n_wet, 3): [cell_vtx, fp0, fp1]
-    tc_wet    = tri_to_cell[wet]        # original cell index per wet triangle
-
-    # Max cell "radius" = max centre-to-facepoint distance across all wet triangles.
-    # Used as the boundary threshold: pixels beyond this distance are outside the mesh.
-    cell_vtx = tri_verts[:, 0]
-    cx_all = triang.x[cell_vtx]
-    cy_all = triang.y[cell_vtx]
-    d0 = np.hypot(triang.x[tri_verts[:, 1]] - cx_all, triang.y[tri_verts[:, 1]] - cy_all)
-    d1 = np.hypot(triang.x[tri_verts[:, 2]] - cx_all, triang.y[tri_verts[:, 2]] - cy_all)
-    max_radius = float(max(d0.max(), d1.max()))
-
-    # One entry per unique cell centre vertex → one point per wet cell.
-    _, uniq_i = np.unique(cell_vtx, return_index=True)
-    cx = cx_all[uniq_i]
-    cy = cy_all[uniq_i]
-    orig_cell = tc_wet[uniq_i]
-
-    tree = cKDTree(np.column_stack([cx, cy]))
-    dist, idx = tree.query(np.column_stack([xi_grid.ravel(), yi_grid.ravel()]))
-
+    pts = np.column_stack([xi_grid.ravel(), yi_grid.ravel()])
+    # Example: wet_indices = [3, 7, 10], and query gives idx=1, dist=2.4
+    # for a pixel.  The nearest wet centre is 2.4 units away, and idx=1 maps
+    # back to original cell id wet_indices[1] == 7.
+    dist, idx = tree.query(pts)
     out = np.full((xi_grid.size,) + extra, np.nan)
     in_mesh = dist <= max_radius
-    out[in_mesh] = cell_cv[orig_cell[idx[in_mesh]]]
+    out[in_mesh] = cell_values[wet_indices[idx[in_mesh]]]
     return out.reshape(xi_grid.shape + extra)
 
 
-def _render_horizontal(
-    triang: Any,
-    tri_to_cell: np.ndarray,
-    cell_cv: np.ndarray,
+def _kdtree_idw(
+    tree: Any,
+    wet_indices: np.ndarray,
+    cell_values: np.ndarray,
+    max_radius: float,
     xi_grid: np.ndarray,
     yi_grid: np.ndarray,
+    k: int = 4,
 ) -> np.ndarray:
-    """Assign each output pixel the constant value of the cell it falls inside.
+    """IDW interpolation from *k* nearest wet cell centres (sloping mode).
 
-    Wraps ``_horizontal_from_trifind`` for the common case where no
-    ``tri_idx`` array is available yet.  Falls back to KDTree nearest-neighbour
-    lookup (via ``_render_horizontal_kdtree``) if ``TrapezoidMapTriFinder``
-    raises ``RuntimeError: Triangulation is invalid``.
-
-    Returns
-    -------
-    ndarray, shape ``(n_rows, n_cols)``
+    Pixels whose nearest wet centre is farther than *max_radius* receive NaN.
+    Only supports scalar *cell_values* (shape ``(n_cells,)``).
     """
-    try:
-        trifinder_fn = triang.get_trifinder()
-    except RuntimeError:
-        return _render_horizontal_kdtree(triang, tri_to_cell, cell_cv, xi_grid, yi_grid)
-    tri_idx_flat = trifinder_fn(xi_grid.ravel(), yi_grid.ravel())
-    return _horizontal_from_trifind(tri_idx_flat, tri_to_cell, cell_cv, xi_grid.shape)
+    if tree is None:
+        return np.full(xi_grid.shape, np.nan)
+
+    n_wet = len(wet_indices)
+    k_use = min(k, n_wet)
+    pts = np.column_stack([xi_grid.ravel(), yi_grid.ravel()])
+    dist, idx = tree.query(pts, k=k_use)
+
+    if k_use == 1:
+        dist = dist[:, np.newaxis]
+        idx = idx[:, np.newaxis]
+
+    in_mesh = dist[:, 0] <= max_radius
+    out = np.full(xi_grid.size, np.nan)
+    if in_mesh.any():
+        d = dist[in_mesh]
+        i = idx[in_mesh]
+        # Exact hit: pixel coincides with a cell centre — use that value directly.
+        exact = d[:, 0] == 0.0
+        weights = 1.0 / np.maximum(d, 1e-14) ** 2
+        weights[exact, 0] = 1.0
+        weights[exact, 1:] = 0.0
+        vals = cell_values[wet_indices[i]]
+        out[in_mesh] = (weights * vals).sum(axis=1) / weights.sum(axis=1)
+    return out.reshape(xi_grid.shape)
 
 
 def _classify_horizontal_cells(
@@ -821,10 +710,10 @@ def mesh_to_raster(
         ) from exc
 
     try:
-        import matplotlib.tri as mtri
+        from scipy.spatial import cKDTree as _cKDTree  # noqa: F401
     except ImportError as exc:
         raise ImportError(
-            "mesh_to_raster requires matplotlib. "
+            "mesh_to_raster requires scipy. "
             "Install it with: pip install raspy[geo]"
         ) from exc
 
@@ -868,104 +757,8 @@ def mesh_to_raster(
     cv = cell_values.copy()
     cv[dry_mask] = np.nan
 
-    # ── Facepoint values (sloping / hybrid only) ───────────────────────────
-    # Horizontal mode assigns each pixel its cell-centre value directly, so
-    # facepoint interpolation is unnecessary.
-    if render_mode in ("sloping", "hybrid"):
-        _fpkw = dict(
-            cell_centers=cell_centers,
-            facepoint_coordinates=facepoint_coordinates,
-            face_facepoint_indexes=face_facepoint_indexes,
-            face_cell_indexes=face_cell_indexes,
-            n_cells=n_cells,
-            n_facepoints=n_facepoints,
-        )
-        fp_vals = _compute_facepoint_values(cv, **_fpkw)
-        all_vals = np.concatenate([cv, fp_vals])
-        vertex_nan = np.isnan(all_vals)
-
-    # ── Build unified point set ────────────────────────────────────────────
-    # Cell centres occupy indices [0, n_cells);
-    # facepoints occupy [n_cells, n_cells + n_facepoints).
+    # ── Build unified point set for extent calculation ──────────────────────
     all_pts = np.vstack([cell_centers, facepoint_coordinates])
-
-    # Deduplicate points when requested — coincident points (e.g. a cell
-    # centre sharing coordinates with a facepoint) cause
-    # TrapezoidMapTriFinder to raise "Triangulation is invalid".
-    if fix_triangulation:
-        _, _uniq_idx, _inv_idx = np.unique(
-            all_pts, axis=0, return_index=True, return_inverse=True
-        )
-        _had_duplicates = len(_uniq_idx) < len(all_pts)
-        if _had_duplicates:
-            all_pts = all_pts[_uniq_idx]
-            if render_mode in ("sloping", "hybrid"):
-                all_vals = all_vals[_uniq_idx]
-                vertex_nan = vertex_nan[_uniq_idx]
-    else:
-        _had_duplicates = False
-
-    # ── Build mesh-conforming triangles (vectorised, no Python loop) ───────
-    # For every cell-face association produce triangle
-    # [cell_idx, n_cells + fp0, n_cells + fp1].
-    counts = cell_face_info[:, 1]
-    starts = cell_face_info[:, 0]
-    total = int(counts.sum())
-
-    # Generate the flat index array into cell_face_values using the cumsum trick
-    # so that non-contiguous start offsets (if any) are handled correctly.
-    idx_step = np.ones(total, dtype=np.int64)
-    if n_cells > 1:
-        boundary_pos = np.cumsum(counts[:-1])
-        idx_step[boundary_pos] = starts[1:] - starts[:-1] - counts[:-1] + 1
-    idx_step[0] = starts[0]
-    entry_indices = np.cumsum(idx_step)
-
-    face_idx_arr = cell_face_values_arr[entry_indices, 0]
-    cell_for_entry = np.repeat(np.arange(n_cells, dtype=np.int64), counts)
-
-    fp0_per_entry = face_facepoint_indexes[face_idx_arr, 0]
-    fp1_per_entry = face_facepoint_indexes[face_idx_arr, 1]
-
-    # Discard degenerate faces (identical facepoints on both ends).
-    valid = fp0_per_entry != fp1_per_entry
-    triangles = np.column_stack([
-        cell_for_entry[valid],
-        n_cells + fp0_per_entry[valid],
-        n_cells + fp1_per_entry[valid],
-    ])
-
-    # Cell index for each triangle — needed by horizontal and hybrid renders.
-    tri_to_cell = cell_for_entry[valid]
-
-    if fix_triangulation:
-        # Remap vertex indices to the deduplicated point set (no-op when
-        # there were no duplicates, but _inv_idx is still valid).
-        if _had_duplicates:
-            triangles = _inv_idx[triangles]
-
-        # Remove degenerate and zero-area triangles — both can invalidate
-        # matplotlib's TrapezoidMapTriFinder.  Degenerate triangles have a
-        # repeated vertex after dedup; zero-area triangles arise when a cell
-        # centre is collinear with its two face facepoints.
-        _t0, _t1, _t2 = triangles[:, 0], triangles[:, 1], triangles[:, 2]
-        _nondegen = (_t0 != _t1) & (_t1 != _t2) & (_t0 != _t2)
-        _p0, _p1, _p2 = all_pts[_t0], all_pts[_t1], all_pts[_t2]
-        _cross_z = (
-            (_p1[:, 0] - _p0[:, 0]) * (_p2[:, 1] - _p0[:, 1])
-            - (_p2[:, 0] - _p0[:, 0]) * (_p1[:, 1] - _p0[:, 1])
-        )
-        _keep = _nondegen & (_cross_z != 0.0)
-        triangles = triangles[_keep]
-        tri_to_cell = tri_to_cell[_keep]
-
-    # Mask triangles based on render mode.
-    # Horizontal: only the cell-centre vertex matters (facepoint NaN irrelevant).
-    # Sloping / hybrid: any NaN vertex (cell or facepoint) masks the triangle.
-    if render_mode == "horizontal":
-        tri_mask = dry_mask[tri_to_cell]
-    else:
-        tri_mask = np.any(vertex_nan[triangles], axis=1)
 
     # ── Resolve transform and CRS ──────────────────────────────────────────
     ref_width: int | None = None
@@ -988,31 +781,51 @@ def mesh_to_raster(
     x_min, y_min = all_pts.min(axis=0)
     x_max, y_max = all_pts.max(axis=0)
 
+    # Track whether the KDTree result (computed on a tight mesh-extent grid)
+    # must be embedded into a larger full-reference-extent output array.
+    _embed_tight = False
+    _tight_col_min = _tight_col_max = _tight_row_min = _tight_row_max = 0
+    _dem_col_off = _dem_row_off = 0  # DEM window offset for post-render masking
+
     if transform is not None:
         dx = abs(transform.a)
         dy = abs(transform.e)
 
-        if snap_to_reference_extent and ref_width is not None:
-            col_min, col_max = 0, ref_width
-            row_min, row_max = 0, ref_height  # type: ignore[assignment]
-        else:
-            col_min = int(np.floor((x_min - transform.c) / dx))
-            col_max = int(np.ceil((x_max - transform.c) / dx))
-            row_min = int(np.floor((transform.f - y_max) / dy))
-            row_max = int(np.ceil((transform.f - y_min) / dy))
+        # Always derive the tight column/row range from the point-cloud extent,
+        # aligned to the reference pixel grid.  KDTree queries run only on this
+        # smaller grid, avoiding work on pixels that are guaranteed to be NaN.
+        col_min = int(np.floor((x_min - transform.c) / dx))
+        col_max = int(np.ceil((x_max - transform.c) / dx))
+        row_min = int(np.floor((transform.f - y_max) / dy))
+        row_max = int(np.ceil((transform.f - y_min) / dy))
 
-            if ref_width is not None:
-                col_min = max(col_min, 0)
-                col_max = min(col_max, ref_width)
-                row_min = max(row_min, 0)
-                row_max = min(row_max, ref_height)  # type: ignore[arg-type]
+        if ref_width is not None:
+            col_min = max(col_min, 0)
+            col_max = min(col_max, ref_width)
+            row_min = max(row_min, 0)
+            row_max = min(row_max, ref_height)  # type: ignore[arg-type]
 
         xi = transform.c + (np.arange(col_min, col_max) + 0.5) * dx
         yi = transform.f - (np.arange(row_min, row_max) + 0.5) * dy
-        out_transform = Affine(
-            dx, 0.0, transform.c + col_min * dx,
-            0.0, -dy, transform.f - row_min * dy,
-        )
+
+        if snap_to_reference_extent and ref_width is not None:
+            # Output covers the full reference raster extent so rasters from
+            # different point clouds are pixel-aligned.  The KDTree result
+            # (computed on the tight grid) is embedded into a full-size NaN
+            # array after rendering.
+            _embed_tight = True
+            _tight_col_min, _tight_col_max = col_min, col_max
+            _tight_row_min, _tight_row_max = row_min, row_max
+            n_rows, n_cols = ref_height, ref_width  # type: ignore[assignment]
+            out_transform = Affine(dx, 0.0, transform.c, 0.0, -dy, transform.f)
+            _dem_col_off = _dem_row_off = 0
+        else:
+            n_rows, n_cols = len(yi), len(xi)
+            out_transform = Affine(
+                dx, 0.0, transform.c + col_min * dx,
+                0.0, -dy, transform.f - row_min * dy,
+            )
+            _dem_col_off, _dem_row_off = col_min, row_min
     else:
         if cell_size is None or cell_size <= 0:
             raise ValueError(
@@ -1023,63 +836,51 @@ def mesh_to_raster(
         north = np.ceil(y_max / cell_size) * cell_size
         xi = np.arange(west + cell_size / 2, x_max + cell_size, cell_size)
         yi = np.arange(north - cell_size / 2, y_min - cell_size, -cell_size)
+        n_rows, n_cols = len(yi), len(xi)
         out_transform = from_origin(west, north, cell_size, cell_size)
 
-    n_rows, n_cols = len(yi), len(xi)
     xi_grid, yi_grid = np.meshgrid(xi, yi)
 
-    # ── Build triangulation ────────────────────────────────────────────────
-    triang = mtri.Triangulation(all_pts[:, 0], all_pts[:, 1], triangles)
-    triang.set_mask(tri_mask)
-
-    def _to_array(masked: Any) -> np.ndarray:
-        """Convert a matplotlib masked array to a plain ndarray with NaN fill."""
-        if hasattr(masked, "filled"):
-            return masked.filled(np.nan)
-        return np.asarray(masked, dtype=np.float64)
+    # ── Build KDTree on wet cell centres ──────────────────────────────────
+    tree, wet_indices, max_radius = _build_wet_kdtree(
+        cell_centers, dry_mask, facepoint_coordinates
+    )
 
     # ── Render ────────────────────────────────────────────────────────────
     if render_mode == "horizontal":
-        scalar = _render_horizontal(triang, tri_to_cell, cv, xi_grid, yi_grid)
+        scalar = _kdtree_nearest(tree, wet_indices, cv, max_radius, xi_grid, yi_grid)
 
     elif render_mode == "sloping":
-        scalar = _to_array(
-            mtri.LinearTriInterpolator(triang, all_vals)(xi_grid, yi_grid)
-        )
+        scalar = _kdtree_idw(tree, wet_indices, cv, max_radius, xi_grid, yi_grid)
 
     else:  # "hybrid"
-        # Compute trifinder once; reuse for the horizontal render and for
-        # mapping each pixel to its cell to determine the rendering mode.
-        # Fall back to pure horizontal rendering if the trifinder cannot
-        # be initialised (e.g. overlapping fan-triangles from non-convex cells).
-        try:
-            trifinder_fn = triang.get_trifinder()
-            _trifinder_ok = True
-        except RuntimeError:
-            _trifinder_ok = False
-
-        if _trifinder_ok:
-            tri_idx_flat = trifinder_fn(xi_grid.ravel(), yi_grid.ravel())
-
-            is_horiz_cell = _classify_horizontal_cells(
-                face_cell_indexes, dry_mask, np.asarray(face_active, dtype=bool)
-            )
-            pixel_is_horiz = np.zeros(len(tri_idx_flat), dtype=bool)
-            inside = tri_idx_flat >= 0
-            pixel_is_horiz[inside] = is_horiz_cell[tri_to_cell[tri_idx_flat[inside]]]
-            pixel_is_horiz = pixel_is_horiz.reshape(n_rows, n_cols)
-
-            scalar_slop = _to_array(
-                mtri.LinearTriInterpolator(triang, all_vals)(xi_grid, yi_grid)
-            )
-            scalar_horiz = _horizontal_from_trifind(
-                tri_idx_flat, tri_to_cell, cv, (n_rows, n_cols)
-            )
-            scalar = np.where(pixel_is_horiz, scalar_horiz, scalar_slop)
+        is_horiz_cell = _classify_horizontal_cells(
+            face_cell_indexes, dry_mask, np.asarray(face_active, dtype=bool)
+        )
+        if tree is not None:
+            pts_flat = np.column_stack([xi_grid.ravel(), yi_grid.ravel()])
+            dist_flat, idx_flat = tree.query(pts_flat)
+            in_mesh = dist_flat <= max_radius
+            pixel_is_horiz = np.zeros(xi_grid.size, dtype=bool)
+            pixel_is_horiz[in_mesh] = is_horiz_cell[wet_indices[idx_flat[in_mesh]]]
         else:
-            scalar = _render_horizontal_kdtree(
-                triang, tri_to_cell, cv, xi_grid, yi_grid
-            )
+            pixel_is_horiz = np.zeros(xi_grid.size, dtype=bool)
+        pixel_is_horiz = pixel_is_horiz.reshape(xi_grid.shape)
+        scalar_horiz = _kdtree_nearest(
+            tree, wet_indices, cv, max_radius, xi_grid, yi_grid
+        )
+        scalar_slop = _kdtree_idw(
+            tree, wet_indices, cv, max_radius, xi_grid, yi_grid
+        )
+        scalar = np.where(pixel_is_horiz, scalar_horiz, scalar_slop)
+
+    # ── Embed tight result into full output array ──────────────────────────
+    # When snap_to_reference_extent=True the KDTree was run on a smaller tight
+    # grid; paste that result into a full-size NaN array now.
+    if _embed_tight:
+        _full = np.full((n_rows, n_cols), np.nan)
+        _full[_tight_row_min:_tight_row_max, _tight_col_min:_tight_col_max] = scalar
+        scalar = _full
 
     # ── Post-interpolation masking and band assembly ───────────────────────
     if min_value is not None:
@@ -1088,7 +889,7 @@ def mesh_to_raster(
         with rasterio.open(reference_raster) as dem_src:
             dem_nodata = dem_src.nodata
             dem_data = dem_src.read(
-                1, window=Window(col_min, row_min, n_cols, n_rows)
+                1, window=Window(_dem_col_off, _dem_row_off, n_cols, n_rows)
             ).astype(np.float64)
         threshold = min_above_ref if min_above_ref is not None else 0.0
         dry_pixel = (scalar - dem_data) < threshold
@@ -1244,14 +1045,6 @@ def mesh_to_velocity_raster(
             "mesh_to_velocity_raster requires rasterio. "
             "Install it with: pip install raspy[geo]"
         ) from exc
-    try:
-        import matplotlib.tri as mtri
-    except ImportError as exc:
-        raise ImportError(
-            "mesh_to_velocity_raster requires matplotlib. "
-            "Install it with: pip install raspy[geo]"
-        ) from exc
-
     cell_velocity = np.asarray(cell_velocity, dtype=np.float64)  # (n_cells, 2)
     cell_wse_arr = np.asarray(cell_wse, dtype=np.float64)
 
@@ -1300,92 +1093,43 @@ def mesh_to_velocity_raster(
     else:
         wet_mask = np.isfinite(wse_pixel)
 
-    # ── Step 2: Build mesh triangulation for cell-ownership lookup. ──────────
+    # ── Step 2: Build KDTree for cell-ownership lookup; assign velocity. ────
     cell_centers_arr = np.asarray(cell_centers, dtype=np.float64)
     facepoint_coords_arr = np.asarray(facepoint_coordinates, dtype=np.float64)
-    face_fp_idx = np.asarray(face_facepoint_indexes, dtype=np.int64)
-    cell_face_values_arr = np.asarray(cell_face_values, dtype=np.int64)
-
-    n_cells = len(cell_centers_arr)
-    cell_face_info_arr = np.asarray(cell_face_info, dtype=np.int64)[:n_cells]
-
     dry_mask = np.isnan(cell_wse_for_render)
-
-    all_pts = np.vstack([cell_centers_arr, facepoint_coords_arr])
-    counts = cell_face_info_arr[:, 1]
-    starts = cell_face_info_arr[:, 0]
-    total = int(counts.sum())
-
-    # Reproduce the vectorised entry-index array from mesh_to_raster.
-    idx_step = np.ones(total, dtype=np.int64)
-    if n_cells > 1:
-        boundary_pos = np.cumsum(counts[:-1])
-        idx_step[boundary_pos] = starts[1:] - starts[:-1] - counts[:-1] + 1
-    idx_step[0] = starts[0]
-    entry_indices = np.cumsum(idx_step)
-
-    face_idx_arr = cell_face_values_arr[entry_indices, 0]
-    cell_for_entry = np.repeat(np.arange(n_cells, dtype=np.int64), counts)
-
-    fp0 = face_fp_idx[face_idx_arr, 0]
-    fp1 = face_fp_idx[face_idx_arr, 1]
-    valid_tris = fp0 != fp1
-
-    triangles = np.column_stack([
-        cell_for_entry[valid_tris],
-        n_cells + fp0[valid_tris],
-        n_cells + fp1[valid_tris],
-    ])
-    tri_to_cell = cell_for_entry[valid_tris]
-
-    if fix_triangulation:
-        _, _uniq_idx, _inv_idx = np.unique(
-            all_pts, axis=0, return_index=True, return_inverse=True
-        )
-        if len(_uniq_idx) < len(all_pts):
-            all_pts = all_pts[_uniq_idx]
-            triangles = _inv_idx[triangles]
-        _t0, _t1, _t2 = triangles[:, 0], triangles[:, 1], triangles[:, 2]
-        _nondegen = (_t0 != _t1) & (_t1 != _t2) & (_t0 != _t2)
-        _p0, _p1, _p2 = all_pts[_t0], all_pts[_t1], all_pts[_t2]
-        _cross_z = (
-            (_p1[:, 0] - _p0[:, 0]) * (_p2[:, 1] - _p0[:, 1])
-            - (_p2[:, 0] - _p0[:, 0]) * (_p1[:, 1] - _p0[:, 1])
-        )
-        _keep = _nondegen & (_cross_z != 0.0)
-        triangles = triangles[_keep]
-        tri_to_cell = tri_to_cell[_keep]
-
-    tri_mask_arr = dry_mask[tri_to_cell]
-
-    triang = mtri.Triangulation(all_pts[:, 0], all_pts[:, 1], triangles)
-    triang.set_mask(tri_mask_arr)
-
-    # ── Step 3: Map each pixel to its parent cell; assign velocity. ──────────
-    dx = abs(out_transform.a)
-    dy = abs(out_transform.e)
-    xi = out_transform.c + (np.arange(n_cols) + 0.5) * dx
-    yi = out_transform.f - (np.arange(n_rows) + 0.5) * dy
-    xi_grid, yi_grid = np.meshgrid(xi, yi)
 
     cell_vel = cell_velocity.copy()
     cell_vel[dry_mask] = np.nan  # propagate dry-cell exclusion
 
-    try:
-        trifinder_fn = triang.get_trifinder()
-        tri_idx_flat = trifinder_fn(xi_grid.ravel(), yi_grid.ravel())
-        vel_flat = np.full((n_rows * n_cols, 2), np.nan)
-        inside = tri_idx_flat >= 0
-        vel_flat[inside] = cell_vel[tri_to_cell[tri_idx_flat[inside]]]
-    except RuntimeError:
-        # Trifinder failed — fall back to KDTree nearest-cell lookup.
-        # _render_horizontal_kdtree handles ND cell values; returns (rows, cols, 2).
-        vel_flat = _render_horizontal_kdtree(
-            triang, tri_to_cell, cell_vel, xi_grid, yi_grid
-        ).reshape(-1, 2)
+    # ── Step 3: Map each pixel to its parent cell; assign velocity. ──────────
+    dx = abs(out_transform.a)
+    dy = abs(out_transform.e)
 
-    vx = vel_flat[:, 0].reshape(n_rows, n_cols)
-    vy = vel_flat[:, 1].reshape(n_rows, n_cols)
+    # Tight grid: KDTree queries run only on the mesh bounding box, which is
+    # much smaller than the full reference raster extent.  The result is
+    # embedded into the full output array afterwards.
+    _all_pts_m = np.vstack([cell_centers_arr, facepoint_coords_arr])
+    _xmin_m, _ymin_m = _all_pts_m.min(axis=0)
+    _xmax_m, _ymax_m = _all_pts_m.max(axis=0)
+    _tc_min = max(0, int(np.floor((_xmin_m - out_transform.c) / dx)))
+    _tc_max = min(n_cols, int(np.ceil((_xmax_m - out_transform.c) / dx)))
+    _tr_min = max(0, int(np.floor((out_transform.f - _ymax_m) / dy)))
+    _tr_max = min(n_rows, int(np.ceil((out_transform.f - _ymin_m) / dy)))
+
+    xi = out_transform.c + (np.arange(_tc_min, _tc_max) + 0.5) * dx
+    yi = out_transform.f - (np.arange(_tr_min, _tr_max) + 0.5) * dy
+    xi_grid, yi_grid = np.meshgrid(xi, yi)
+
+    tree, wet_indices, max_radius = _build_wet_kdtree(
+        cell_centers_arr, dry_mask, facepoint_coords_arr
+    )
+    vel_tight = _kdtree_nearest(
+        tree, wet_indices, cell_vel, max_radius, xi_grid, yi_grid
+    )
+    vel_full = np.full((n_rows, n_cols, 2), np.nan)
+    vel_full[_tr_min:_tr_max, _tc_min:_tc_max] = vel_tight
+    vx = vel_full[:, :, 0]
+    vy = vel_full[:, :, 1]
 
     # The WSE raster is the authoritative wet-extent mask.
     vx[~wet_mask] = np.nan
@@ -2136,6 +1880,23 @@ def mesh_to_velocity_raster_interp(
 
     dry_mask = np.isnan(cell_wse_for_render)
 
+    # ── Tight sub-grid bounds (used in Steps 3 & 4). ─────────────────────────
+    # Compute the mesh bounding box in raster pixel space so that all
+    # interpolation work is confined to the tight extent.  The result is
+    # embedded into the full output array once at the end.
+    _dx_t = abs(out_transform.a)
+    _dy_t = abs(out_transform.e)
+    _all_pts_t = np.vstack([cell_centers_arr, facepoint_coords_arr])
+    _xmin_t, _ymin_t = _all_pts_t.min(axis=0)
+    _xmax_t, _ymax_t = _all_pts_t.max(axis=0)
+    _tc_min = max(0, int(np.floor((_xmin_t - out_transform.c) / _dx_t)))
+    _tc_max = min(n_cols, int(np.ceil((_xmax_t - out_transform.c) / _dx_t)))
+    _tr_min = max(0, int(np.floor((out_transform.f - _ymax_t) / _dy_t)))
+    _tr_max = min(n_rows, int(np.ceil((out_transform.f - _ymin_t) / _dy_t)))
+    n_tight_rows = _tr_max - _tr_min
+    n_tight_cols = _tc_max - _tc_min
+    wet_mask_tight = wet_mask[_tr_min:_tr_max, _tc_min:_tc_max]
+
     # ── Step 2a: Fan-triangulation (cell-local methods only). ────────────────
     if method not in {"scatter_interp", "scatter_interp2"}:
         all_pts = np.vstack([cell_centers_arr, facepoint_coords_arr])
@@ -2205,12 +1966,12 @@ def mesh_to_velocity_raster_interp(
         n_cells=n_cells,
     )
 
-    # ── Step 3: Raster grid coordinates (shared). ────────────────────────────
+    # ── Step 3: Tight raster grid (mesh bounding box only). ──────────────────
     dx = abs(out_transform.a)
     dy = abs(out_transform.e)
     xi_grid, yi_grid = np.meshgrid(
-        out_transform.c + (np.arange(n_cols) + 0.5) * dx,
-        out_transform.f - (np.arange(n_rows) + 0.5) * dy,
+        out_transform.c + (np.arange(_tc_min, _tc_max) + 0.5) * dx,
+        out_transform.f - (np.arange(_tr_min, _tr_max) + 0.5) * dy,
     )
 
     # ── Step 4: Interpolate velocities. ──────────────────────────────────────
@@ -2251,8 +2012,8 @@ def mesh_to_velocity_raster_interp(
         # griddata returns (n_pixels, 2); NaN outside convex hull.
         vel_flat = griddata(pts, vel, xi_flat, method=scatter_interp_method,
                             fill_value=np.nan, rescale=True)
-        vx = vel_flat[:, 0].reshape(n_rows, n_cols)
-        vy = vel_flat[:, 1].reshape(n_rows, n_cols)
+        vx = vel_flat[:, 0].reshape(n_tight_rows, n_tight_cols)
+        vy = vel_flat[:, 1].reshape(n_tight_rows, n_tight_cols)
 
     else:
         # ── Cell-local methods: map each pixel to its fan-triangle. ──────────
@@ -2267,14 +2028,17 @@ def mesh_to_velocity_raster_interp(
         if not _trifinder_ok:
             cell_vel_nd = cell_velocity.copy()
             cell_vel_nd[dry_mask] = np.nan
-            vel_flat = _render_horizontal_kdtree(
-                triang, tri_to_cell, cell_vel_nd, xi_grid, yi_grid
+            _tree, _wet_idx, _max_r = _build_wet_kdtree(
+                cell_centers_arr, dry_mask, facepoint_coords_arr
+            )
+            vel_flat = _kdtree_nearest(
+                _tree, _wet_idx, cell_vel_nd, _max_r, xi_grid, yi_grid
             ).reshape(-1, 2)
         else:
             # ── trifinder succeeded — run cell-local interpolation ────────────
             tri_idx_flat = trifinder_fn(xi_grid.ravel(), yi_grid.ravel())
 
-            inside = (tri_idx_flat >= 0) & wet_mask.ravel()
+            inside = (tri_idx_flat >= 0) & wet_mask_tight.ravel()
             inside_idx = np.where(inside)[0]
             tri_hit = tri_idx_flat[inside_idx]
 
@@ -2350,11 +2114,18 @@ def mesh_to_velocity_raster_interp(
                         face_midpoints, face_vel_2d, dry_mask, cell_velocity,
                     )
 
-            vel_flat = np.full((n_rows * n_cols, 2), np.nan)
+            vel_flat = np.full((n_tight_rows * n_tight_cols, 2), np.nan)
             vel_flat[inside_idx] = v_pixel
 
-        vx = vel_flat[:, 0].reshape(n_rows, n_cols)
-        vy = vel_flat[:, 1].reshape(n_rows, n_cols)
+        vx = vel_flat[:, 0].reshape(n_tight_rows, n_tight_cols)
+        vy = vel_flat[:, 1].reshape(n_tight_rows, n_tight_cols)
+
+    # Embed tight result into full output arrays.
+    vx_full = np.full((n_rows, n_cols), np.nan)
+    vy_full = np.full((n_rows, n_cols), np.nan)
+    vx_full[_tr_min:_tr_max, _tc_min:_tc_max] = vx
+    vy_full[_tr_min:_tr_max, _tc_min:_tc_max] = vy
+    vx, vy = vx_full, vy_full
 
     # WSE raster is the authoritative wet-extent mask (applied to both paths).
     vx[~wet_mask] = np.nan
@@ -2582,3 +2353,4 @@ def _depth_from_wse_and_dem(
         dst.write(data, 1)
         dst.update_tags(1, name="depth")
     return out_path
+
