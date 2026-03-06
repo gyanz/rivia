@@ -214,6 +214,45 @@ class FlowArea:
         """Boundary polygon of the 2-D flow area.  Shape ``(n_pts, 2)``."""
         return self._load("Perimeter")
 
+    def check_cells(
+        self,
+        *,
+        check_boundary: bool = True,
+        tol: float = 1e-10,
+    ) -> dict:
+        """Check all mesh cells against HEC-RAS geometric validity rules.
+
+        Calls :func:`raspy.geo.mesh_validation.check_mesh_cells` with the
+        HDF arrays for this flow area.
+
+        Parameters
+        ----------
+        check_boundary :
+            When ``True`` (default) each cell centre is also tested against
+            the 2D flow area perimeter polygon (rule 5).
+        tol :
+            Absolute tolerance for near-collinear edge detection.
+
+        Returns
+        -------
+        dict
+            Full validation report.  Pass to
+            :func:`raspy.geo.mesh_validation.print_mesh_report` for a
+            human-readable summary.
+        """
+        from raspy.geo.mesh_validation import check_mesh_cells
+
+        cfi, cfv = self.cell_face_info
+        return check_mesh_cells(
+            cell_centers=self.cell_centers,
+            facepoint_coordinates=self.facepoint_coordinates,
+            face_facepoint_indexes=self.face_facepoint_indexes,
+            cell_face_info=cfi,
+            cell_face_values=cfv,
+            boundary_polygon=self.perimeter if check_boundary else None,
+            tol=tol,
+        )
+
 
 # ---------------------------------------------------------------------------
 # FlowAreaCollection — dict-like access to all flow areas in the HDF file

@@ -1215,6 +1215,297 @@ class FlowAreaResults(FlowArea):
             "speed": speed_result,
         }
 
+    def debug_raster_export(
+        self,
+        timestep: int | None = None,
+        *,
+        render_mode: Literal["sloping", "horizontal", "hybrid"] = "horizontal",
+        depth_min: float | None = 0.001,
+        vel_min: float | None = 0.0001,
+        check_boundary: bool = True,
+        verbose: bool = True,
+    ) -> dict:
+        """Diagnose why ``export_raster`` / ``export_hydraulic_rasters`` may fail.
+
+        Runs two complementary checks and combines them into one report:
+
+        1. **Mesh geometry** (:func:`~raspy.geo.mesh_validation.check_mesh_cells`)
+           — validates every cell against the HEC-RAS rules (convexity, face
+           count, duplicate points, cell centre location).
+        2. **Triangulation probe** — actually builds the fan-triangulation used
+           by :func:`~raspy.geo.raster.mesh_to_raster` and attempts to
+           initialise ``matplotlib``'s ``TrapezoidMapTriFinder``, both with and
+           without the ``fix_triangulation`` pre-processing step, so you can see
+           whether the fix resolves the problem or whether the KDTree fallback
+           will be needed.
+
+        Parameters
+        ----------
+        timestep :
+            0-based time index used to build the dry-cell mask (cells whose
+            WSE is below *depth_min* are excluded from the triangulation probe).
+            ``None`` uses the max-WSE summary and always treats every cell as wet
+            (conservative: more triangles are included).
+        render_mode :
+            Render mode to probe.  ``"horizontal"`` (default) is the mode most
+            likely to trigger the triangulation error.
+        depth_min :
+            Depth threshold for the dry-cell mask (same default as
+            :meth:`export_raster`).
+        vel_min :
+            Speed threshold used to build the ``face_active`` mask when
+            ``render_mode='hybrid'``.
+        check_boundary :
+            Pass ``True`` (default) to include the flow-area perimeter check
+            (rule 5) in the mesh validation step.
+        verbose :
+            Print the report to stdout as well as returning it.
+
+        Returns
+        -------
+        dict with keys:
+
+        ``mesh_report``
+            Full output of :func:`~raspy.geo.mesh_validation.check_mesh_cells`.
+        ``triangulation``
+            Sub-dict describing the triangulation probe result:
+
+            - ``n_triangles_raw`` — triangles before fix.
+            - ``n_triangles_after_fix`` — triangles after dedup + zero-area filter.
+            - ``n_removed_by_fix`` — triangles removed.
+            - ``trifinder_without_fix`` — ``"ok"`` / ``"failed"`` / ``"not_tested"``.
+            - ``trifinder_with_fix`` — ``"ok"`` / ``"failed"``.
+            - ``fallback_needed`` — ``True`` when even the fixed triangulation
+              cannot initialise the trifinder (KDTree fallback will be used).
+        """
+        import matplotlib.tri as mtri
+
+        from raspy.geo.mesh_validation import print_mesh_report
+
+        # ── Step 1: Mesh geometry validation ──────────────────────────────
+        mesh_report = self.check_cells(check_boundary=check_boundary)
+
+        if verbose:
+            print(f"=== debug_raster_export: {self.name} ===\n")
+            print_mesh_report(mesh_report)
+
+        # ── Step 2: Build dry-cell mask ───────────────────────────────────
+        if timestep is not None:
+            wse = np.array(self.water_surface[timestep, : self.n_cells])
+            if depth_min is not None:
+                depth = self.depth(timestep)
+                dry_mask = depth < depth_min
+            else:
+                dry_mask = np.zeros(self.n_cells, dtype=bool)
+        else:
+            wse = self.max_water_surface["value"].to_numpy()
+            dry_mask = np.zeros(self.n_cells, dtype=bool)  # treat all as wet
+
+        cv = wse.copy()
+        cv[dry_mask] = np.nan
+        n_wet = int((~dry_mask).sum())
+
+        # ── Step 3: Build the fan-triangulation ───────────────────────────
+        cfi, cfv = self.cell_face_info
+        cfi = np.asarray(cfi, dtype=np.int64)[: self.n_cells]
+        cfv = np.asarray(cfv, dtype=np.int64)
+        fp_coords = np.asarray(self.facepoint_coordinates, dtype=np.float64)
+        fp_idx = np.asarray(self.face_facepoint_indexes, dtype=np.int64)
+        cc = np.asarray(self.cell_centers, dtype=np.float64)
+        n_cells = self.n_cells
+
+        all_pts = np.vstack([cc, fp_coords])
+
+        counts = cfi[:, 1]
+        starts = cfi[:, 0]
+        total = int(counts.sum())
+        idx_step = np.ones(total, dtype=np.int64)
+        if n_cells > 1:
+            bp = np.cumsum(counts[:-1])
+            idx_step[bp] = starts[1:] - starts[:-1] - counts[:-1] + 1
+        idx_step[0] = starts[0]
+        entry_indices = np.cumsum(idx_step)
+
+        face_idx_arr = cfv[entry_indices, 0]
+        cell_for_entry = np.repeat(np.arange(n_cells, dtype=np.int64), counts)
+        fp0 = fp_idx[face_idx_arr, 0]
+        fp1 = fp_idx[face_idx_arr, 1]
+        valid = fp0 != fp1
+        triangles_raw = np.column_stack([
+            cell_for_entry[valid],
+            n_cells + fp0[valid],
+            n_cells + fp1[valid],
+        ])
+        tri_to_cell_raw = cell_for_entry[valid]
+
+        if render_mode == "horizontal":
+            tri_mask_raw = dry_mask[tri_to_cell_raw]
+        else:
+            tri_mask_raw = np.zeros(len(triangles_raw), dtype=bool)
+
+        n_raw = len(triangles_raw)
+
+        # ── Step 4: Probe trifinder WITHOUT fix ───────────────────────────
+        try:
+            triang_raw = mtri.Triangulation(
+                all_pts[:, 0], all_pts[:, 1], triangles_raw
+            )
+            triang_raw.set_mask(tri_mask_raw)
+            triang_raw.get_trifinder()
+            result_without_fix: str = "ok"
+        except RuntimeError:
+            result_without_fix = "failed"
+        except Exception as exc:
+            result_without_fix = f"error: {exc}"
+
+        # ── Step 5: Apply fix — track exactly what is removed and why ────────
+        _, _uniq_idx, _inv_idx = np.unique(
+            all_pts, axis=0, return_index=True, return_inverse=True
+        )
+        all_pts_fixed = all_pts[_uniq_idx]
+        triangles_fixed = _inv_idx[triangles_raw]
+
+        t0, t1, t2 = triangles_fixed[:, 0], triangles_fixed[:, 1], triangles_fixed[:, 2]
+        nondegen = (t0 != t1) & (t1 != t2) & (t0 != t2)
+        p0, p1, p2 = all_pts_fixed[t0], all_pts_fixed[t1], all_pts_fixed[t2]
+        cross_z = (
+            (p1[:, 0] - p0[:, 0]) * (p2[:, 1] - p0[:, 1])
+            - (p2[:, 0] - p0[:, 0]) * (p1[:, 1] - p0[:, 1])
+        )
+        nonzero = cross_z != 0.0
+        keep = nondegen & nonzero
+
+        # Classify removed triangles.
+        removed_degenerate = ~nondegen          # collapsed to point/line after dedup
+        removed_zero_area  = nondegen & ~nonzero  # collinear but distinct vertices
+
+        def _removed_detail(mask: np.ndarray, reason: str) -> list[dict]:
+            """Build a list of location records for removed triangles."""
+            records = []
+            for i in np.where(mask)[0]:
+                cell_idx = int(tri_to_cell_raw[i])
+                cx_, cy_ = float(cc[cell_idx, 0]), float(cc[cell_idx, 1])
+                records.append({
+                    "reason": reason,
+                    "cell_idx": cell_idx,
+                    "cell_x": cx_,
+                    "cell_y": cy_,
+                    # original (pre-dedup) vertex indices into all_pts
+                    "vertex_indices": triangles_raw[i].tolist(),
+                    "vertex_coords": all_pts[triangles_raw[i]].tolist(),
+                })
+            return records
+
+        removed_locations = (
+            _removed_detail(removed_degenerate, "duplicate_vertex")
+            + _removed_detail(removed_zero_area,  "zero_area")
+        )
+
+        # Duplicate facepoints (global — cause duplicate vertices in all_pts).
+        dup_fp_locations: list[dict] = []
+        for fp_a, fp_b in mesh_report["duplicate_facepoints"]:
+            coord = fp_coords[fp_a].tolist()
+            dup_fp_locations.append({
+                "facepoint_a": fp_a,
+                "facepoint_b": fp_b,
+                "x": coord[0],
+                "y": coord[1],
+            })
+
+        # Duplicate cell centres (global).
+        dup_cc_locations: list[dict] = []
+        for cc_a, cc_b in mesh_report["duplicate_cell_centers"]:
+            coord = cc[cc_a].tolist()
+            dup_cc_locations.append({
+                "cell_a": cc_a,
+                "cell_b": cc_b,
+                "x": coord[0],
+                "y": coord[1],
+            })
+
+        triangles_fixed = triangles_fixed[keep]
+        tri_mask_fixed = tri_mask_raw[keep]
+        n_fixed = len(triangles_fixed)
+        n_removed = n_raw - n_fixed
+
+        try:
+            triang_fixed = mtri.Triangulation(
+                all_pts_fixed[:, 0], all_pts_fixed[:, 1], triangles_fixed
+            )
+            triang_fixed.set_mask(tri_mask_fixed)
+            triang_fixed.get_trifinder()
+            result_with_fix: str = "ok"
+        except RuntimeError:
+            result_with_fix = "failed"
+        except Exception as exc:
+            result_with_fix = f"error: {exc}"
+
+        fallback_needed = result_with_fix != "ok"
+
+        tri_report = {
+            "render_mode": render_mode,
+            "n_cells_total": n_cells,
+            "n_cells_wet": n_wet,
+            "n_triangles_raw": n_raw,
+            "n_triangles_after_fix": n_fixed,
+            "n_removed_by_fix": n_removed,
+            "n_removed_duplicate_vertex": int(removed_degenerate.sum()),
+            "n_removed_zero_area": int(removed_zero_area.sum()),
+            "trifinder_without_fix": result_without_fix,
+            "trifinder_with_fix": result_with_fix,
+            "fallback_needed": fallback_needed,
+            "removed_triangles": removed_locations,
+            "duplicate_facepoints": dup_fp_locations,
+            "duplicate_cell_centers": dup_cc_locations,
+        }
+
+        if verbose:
+            print()
+            print("Triangulation probe")
+            print(f"  render_mode            : {render_mode}")
+            print(f"  wet cells              : {n_wet:,} / {n_cells:,}")
+            print(f"  triangles (raw)        : {n_raw:,}")
+            print(f"  triangles (after fix)  : {n_fixed:,}  ({n_removed:,} removed)")
+            if n_removed:
+                print(f"    duplicate vertex     : {int(removed_degenerate.sum()):,}")
+                print(f"    zero area            : {int(removed_zero_area.sum()):,}")
+            print(f"  trifinder without fix  : {result_without_fix}")
+            print(f"  trifinder with fix     : {result_with_fix}")
+            if fallback_needed:
+                print("  *** KDTree fallback will be used for horizontal rendering ***")
+            else:
+                print("  fix_triangulation=True is sufficient — no fallback needed")
+
+            if dup_fp_locations:
+                print(f"\n  Duplicate facepoints ({len(dup_fp_locations)}):")
+                for d in dup_fp_locations:
+                    print(
+                        f"    fp {d['facepoint_a']:>8,} == fp {d['facepoint_b']:>8,}"
+                        f"  @ ({d['x']:.3f}, {d['y']:.3f})"
+                    )
+
+            if dup_cc_locations:
+                print(f"\n  Duplicate cell centres ({len(dup_cc_locations)}):")
+                for d in dup_cc_locations:
+                    print(
+                        f"    cell {d['cell_a']:>8,} == cell {d['cell_b']:>8,}"
+                        f"  @ ({d['x']:.3f}, {d['y']:.3f})"
+                    )
+
+            if removed_locations:
+                print(f"\n  Removed triangles ({len(removed_locations)}):")
+                for r in removed_locations:
+                    print(
+                        f"    cell {r['cell_idx']:>8,}"
+                        f"  centre ({r['cell_x']:.3f}, {r['cell_y']:.3f})"
+                        f"  reason: {r['reason']}"
+                    )
+
+        return {
+            "mesh_report": mesh_report,
+            "triangulation": tri_report,
+        }
+
 
 # ---------------------------------------------------------------------------
 # FlowAreaResultsCollection

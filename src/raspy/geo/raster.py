@@ -537,6 +537,71 @@ def _horizontal_from_trifind(
     return out.reshape(grid_shape)
 
 
+def _render_horizontal_kdtree(
+    triang: Any,
+    tri_to_cell: np.ndarray,
+    cell_cv: np.ndarray,
+    xi_grid: np.ndarray,
+    yi_grid: np.ndarray,
+) -> np.ndarray:
+    """KDTree nearest-neighbour fallback for horizontal rendering.
+
+    Used when ``TrapezoidMapTriFinder`` raises ``RuntimeError: Triangulation
+    is invalid`` (e.g. overlapping fan-triangles from non-convex mesh cells).
+
+    Each output pixel is assigned the value of the nearest wet cell centre.
+    Pixels farther from every wet centre than the maximum cell radius
+    (max centre-to-facepoint distance across all unmasked triangles) are set
+    to NaN — they are outside the wet mesh extent.
+
+    Requires ``scipy``.
+    """
+    try:
+        from scipy.spatial import cKDTree
+    except ImportError as exc:
+        raise RuntimeError(
+            "matplotlib's TrapezoidMapTriFinder raised 'Triangulation is invalid' "
+            "and scipy is not installed for the KDTree fallback.  "
+            "Install scipy (pip install scipy) or use fix_triangulation=True."
+        ) from exc
+
+    # Determine which triangles are unmasked (wet).
+    if triang.mask is not None and len(triang.mask):
+        wet = ~np.asarray(triang.mask, dtype=bool)
+    else:
+        wet = np.ones(len(tri_to_cell), dtype=bool)
+
+    extra = cell_cv.shape[1:]  # () for scalar, (2,) for velocity vector, etc.
+    if not wet.any():
+        return np.full(xi_grid.shape + extra, np.nan)
+
+    tri_verts = triang.triangles[wet]   # shape (n_wet, 3): [cell_vtx, fp0, fp1]
+    tc_wet    = tri_to_cell[wet]        # original cell index per wet triangle
+
+    # Max cell "radius" = max centre-to-facepoint distance across all wet triangles.
+    # Used as the boundary threshold: pixels beyond this distance are outside the mesh.
+    cell_vtx = tri_verts[:, 0]
+    cx_all = triang.x[cell_vtx]
+    cy_all = triang.y[cell_vtx]
+    d0 = np.hypot(triang.x[tri_verts[:, 1]] - cx_all, triang.y[tri_verts[:, 1]] - cy_all)
+    d1 = np.hypot(triang.x[tri_verts[:, 2]] - cx_all, triang.y[tri_verts[:, 2]] - cy_all)
+    max_radius = float(max(d0.max(), d1.max()))
+
+    # One entry per unique cell centre vertex → one point per wet cell.
+    _, uniq_i = np.unique(cell_vtx, return_index=True)
+    cx = cx_all[uniq_i]
+    cy = cy_all[uniq_i]
+    orig_cell = tc_wet[uniq_i]
+
+    tree = cKDTree(np.column_stack([cx, cy]))
+    dist, idx = tree.query(np.column_stack([xi_grid.ravel(), yi_grid.ravel()]))
+
+    out = np.full((xi_grid.size,) + extra, np.nan)
+    in_mesh = dist <= max_radius
+    out[in_mesh] = cell_cv[orig_cell[idx[in_mesh]]]
+    return out.reshape(xi_grid.shape + extra)
+
+
 def _render_horizontal(
     triang: Any,
     tri_to_cell: np.ndarray,
@@ -547,13 +612,18 @@ def _render_horizontal(
     """Assign each output pixel the constant value of the cell it falls inside.
 
     Wraps ``_horizontal_from_trifind`` for the common case where no
-    ``tri_idx`` array is available yet.
+    ``tri_idx`` array is available yet.  Falls back to KDTree nearest-neighbour
+    lookup (via ``_render_horizontal_kdtree``) if ``TrapezoidMapTriFinder``
+    raises ``RuntimeError: Triangulation is invalid``.
 
     Returns
     -------
-    ndarray, shape ``(n_rows, n_cols)`` or ``(n_rows, n_cols, 2)``
+    ndarray, shape ``(n_rows, n_cols)``
     """
-    trifinder_fn = triang.get_trifinder()
+    try:
+        trifinder_fn = triang.get_trifinder()
+    except RuntimeError:
+        return _render_horizontal_kdtree(triang, tri_to_cell, cell_cv, xi_grid, yi_grid)
     tri_idx_flat = trifinder_fn(xi_grid.ravel(), yi_grid.ravel())
     return _horizontal_from_trifind(tri_idx_flat, tri_to_cell, cell_cv, xi_grid.shape)
 
@@ -980,24 +1050,36 @@ def mesh_to_raster(
     else:  # "hybrid"
         # Compute trifinder once; reuse for the horizontal render and for
         # mapping each pixel to its cell to determine the rendering mode.
-        trifinder_fn = triang.get_trifinder()
-        tri_idx_flat = trifinder_fn(xi_grid.ravel(), yi_grid.ravel())
+        # Fall back to pure horizontal rendering if the trifinder cannot
+        # be initialised (e.g. overlapping fan-triangles from non-convex cells).
+        try:
+            trifinder_fn = triang.get_trifinder()
+            _trifinder_ok = True
+        except RuntimeError:
+            _trifinder_ok = False
 
-        is_horiz_cell = _classify_horizontal_cells(
-            face_cell_indexes, dry_mask, np.asarray(face_active, dtype=bool)
-        )
-        pixel_is_horiz = np.zeros(len(tri_idx_flat), dtype=bool)
-        inside = tri_idx_flat >= 0
-        pixel_is_horiz[inside] = is_horiz_cell[tri_to_cell[tri_idx_flat[inside]]]
-        pixel_is_horiz = pixel_is_horiz.reshape(n_rows, n_cols)
+        if _trifinder_ok:
+            tri_idx_flat = trifinder_fn(xi_grid.ravel(), yi_grid.ravel())
 
-        scalar_slop = _to_array(
-            mtri.LinearTriInterpolator(triang, all_vals)(xi_grid, yi_grid)
-        )
-        scalar_horiz = _horizontal_from_trifind(
-            tri_idx_flat, tri_to_cell, cv, (n_rows, n_cols)
-        )
-        scalar = np.where(pixel_is_horiz, scalar_horiz, scalar_slop)
+            is_horiz_cell = _classify_horizontal_cells(
+                face_cell_indexes, dry_mask, np.asarray(face_active, dtype=bool)
+            )
+            pixel_is_horiz = np.zeros(len(tri_idx_flat), dtype=bool)
+            inside = tri_idx_flat >= 0
+            pixel_is_horiz[inside] = is_horiz_cell[tri_to_cell[tri_idx_flat[inside]]]
+            pixel_is_horiz = pixel_is_horiz.reshape(n_rows, n_cols)
+
+            scalar_slop = _to_array(
+                mtri.LinearTriInterpolator(triang, all_vals)(xi_grid, yi_grid)
+            )
+            scalar_horiz = _horizontal_from_trifind(
+                tri_idx_flat, tri_to_cell, cv, (n_rows, n_cols)
+            )
+            scalar = np.where(pixel_is_horiz, scalar_horiz, scalar_slop)
+        else:
+            scalar = _render_horizontal_kdtree(
+                triang, tri_to_cell, cv, xi_grid, yi_grid
+            )
 
     # ── Post-interpolation masking and band assembly ───────────────────────
     if min_value is not None:
@@ -1286,15 +1368,21 @@ def mesh_to_velocity_raster(
     yi = out_transform.f - (np.arange(n_rows) + 0.5) * dy
     xi_grid, yi_grid = np.meshgrid(xi, yi)
 
-    trifinder_fn = triang.get_trifinder()
-    tri_idx_flat = trifinder_fn(xi_grid.ravel(), yi_grid.ravel())
-
     cell_vel = cell_velocity.copy()
     cell_vel[dry_mask] = np.nan  # propagate dry-cell exclusion
 
-    vel_flat = np.full((n_rows * n_cols, 2), np.nan)
-    inside = tri_idx_flat >= 0
-    vel_flat[inside] = cell_vel[tri_to_cell[tri_idx_flat[inside]]]
+    try:
+        trifinder_fn = triang.get_trifinder()
+        tri_idx_flat = trifinder_fn(xi_grid.ravel(), yi_grid.ravel())
+        vel_flat = np.full((n_rows * n_cols, 2), np.nan)
+        inside = tri_idx_flat >= 0
+        vel_flat[inside] = cell_vel[tri_to_cell[tri_idx_flat[inside]]]
+    except RuntimeError:
+        # Trifinder failed — fall back to KDTree nearest-cell lookup.
+        # _render_horizontal_kdtree handles ND cell values; returns (rows, cols, 2).
+        vel_flat = _render_horizontal_kdtree(
+            triang, tri_to_cell, cell_vel, xi_grid, yi_grid
+        ).reshape(-1, 2)
 
     vx = vel_flat[:, 0].reshape(n_rows, n_cols)
     vy = vel_flat[:, 1].reshape(n_rows, n_cols)
@@ -2168,83 +2256,102 @@ def mesh_to_velocity_raster_interp(
 
     else:
         # ── Cell-local methods: map each pixel to its fan-triangle. ──────────
-        trifinder_fn = triang.get_trifinder()
-        tri_idx_flat = trifinder_fn(xi_grid.ravel(), yi_grid.ravel())
+        # If TrapezoidMapTriFinder fails (e.g. overlapping fan-triangles from
+        # non-convex cells), fall back to KDTree flat cell-centre assignment.
+        try:
+            trifinder_fn = triang.get_trifinder()
+            _trifinder_ok = True
+        except RuntimeError:
+            _trifinder_ok = False
 
-        inside = (tri_idx_flat >= 0) & wet_mask.ravel()
-        inside_idx = np.where(inside)[0]
-        tri_hit = tri_idx_flat[inside_idx]
-
-        px = xi_grid.ravel()[inside_idx]
-        py = yi_grid.ravel()[inside_idx]
-
-        cell_idx_hit = tri_to_cell[tri_hit]
-
-        if method == "triangle_blend":
-            v_cell_idx = triangles[tri_hit, 0]
-            v_fp0_idx  = triangles[tri_hit, 1]
-            v_fp1_idx  = triangles[tri_hit, 2]
-
-            ax, ay = all_pts[v_cell_idx, 0], all_pts[v_cell_idx, 1]
-            bx, by = all_pts[v_fp0_idx,  0], all_pts[v_fp0_idx,  1]
-            cx, cy = all_pts[v_fp1_idx,  0], all_pts[v_fp1_idx,  1]
-
-            w0 = _cell_center_barycentric_weight(px, py, ax, ay, bx, by, cx, cy)
-
-            v_cell = cell_velocity[cell_idx_hit]
-            v_cell = np.where(dry_mask[cell_idx_hit, np.newaxis], np.nan, v_cell)
-
-            face_idx_hit = tri_to_face[tri_hit]
-            v_face = face_vel_2d[face_idx_hit]
-
-            v_pixel = w0[:, np.newaxis] * v_cell + (1.0 - w0[:, np.newaxis]) * v_face
-
-        elif method == "facepoint_blend":
-            v_fp_all = _compute_facepoint_velocities(
-                face_fp_idx, face_vel_2d, len(facepoint_coords_arr),
-                face_ci_arr, dry_mask, n_cells,
-            )
-
-            v_cell_idx = triangles[tri_hit, 0]
-            v_fp0_idx  = triangles[tri_hit, 1]
-            v_fp1_idx  = triangles[tri_hit, 2]
-
-            ax, ay = all_pts[v_cell_idx, 0], all_pts[v_cell_idx, 1]
-            bx, by = all_pts[v_fp0_idx,  0], all_pts[v_fp0_idx,  1]
-            cx, cy = all_pts[v_fp1_idx,  0], all_pts[v_fp1_idx,  1]
-
-            w0, w1, w2 = _barycentric_weights(px, py, ax, ay, bx, by, cx, cy)
-
-            v_cell = cell_velocity[cell_idx_hit]
-            v_cell = np.where(dry_mask[cell_idx_hit, np.newaxis], np.nan, v_cell)
-
-            v_fp0 = v_fp_all[v_fp0_idx - n_cells]
-            v_fp1 = v_fp_all[v_fp1_idx - n_cells]
-
-            v_pixel = (
-                w0[:, np.newaxis] * v_cell
-                + w1[:, np.newaxis] * v_fp0
-                + w2[:, np.newaxis] * v_fp1
-            )
-
+        if not _trifinder_ok:
+            cell_vel_nd = cell_velocity.copy()
+            cell_vel_nd[dry_mask] = np.nan
+            vel_flat = _render_horizontal_kdtree(
+                triang, tri_to_cell, cell_vel_nd, xi_grid, yi_grid
+            ).reshape(-1, 2)
         else:
-            face_midpoints = _compute_face_midpoints(facepoint_coords_arr, face_fp_idx)
+            # ── trifinder succeeded — run cell-local interpolation ────────────
+            tri_idx_flat = trifinder_fn(xi_grid.ravel(), yi_grid.ravel())
 
-            if method == "face_idw":
-                v_pixel = _interp_face_idw(
-                    px, py, cell_idx_hit, n_cells,
-                    cell_face_info_arr, cell_face_values_arr,
-                    face_midpoints, face_vel_2d, dry_mask,
-                )
-            else:  # face_gradient
-                v_pixel = _interp_face_gradient(
-                    px, py, cell_idx_hit, n_cells,
-                    cell_centers_arr, cell_face_info_arr, cell_face_values_arr,
-                    face_midpoints, face_vel_2d, dry_mask, cell_velocity,
+            inside = (tri_idx_flat >= 0) & wet_mask.ravel()
+            inside_idx = np.where(inside)[0]
+            tri_hit = tri_idx_flat[inside_idx]
+
+            px = xi_grid.ravel()[inside_idx]
+            py = yi_grid.ravel()[inside_idx]
+
+            cell_idx_hit = tri_to_cell[tri_hit]
+
+            if method == "triangle_blend":
+                v_cell_idx = triangles[tri_hit, 0]
+                v_fp0_idx  = triangles[tri_hit, 1]
+                v_fp1_idx  = triangles[tri_hit, 2]
+
+                ax, ay = all_pts[v_cell_idx, 0], all_pts[v_cell_idx, 1]
+                bx, by = all_pts[v_fp0_idx,  0], all_pts[v_fp0_idx,  1]
+                cx, cy = all_pts[v_fp1_idx,  0], all_pts[v_fp1_idx,  1]
+
+                w0 = _cell_center_barycentric_weight(px, py, ax, ay, bx, by, cx, cy)
+
+                v_cell = cell_velocity[cell_idx_hit]
+                v_cell = np.where(dry_mask[cell_idx_hit, np.newaxis], np.nan, v_cell)
+
+                face_idx_hit = tri_to_face[tri_hit]
+                v_face = face_vel_2d[face_idx_hit]
+
+                v_pixel = (
+                    w0[:, np.newaxis] * v_cell
+                    + (1.0 - w0[:, np.newaxis]) * v_face
                 )
 
-        vel_flat = np.full((n_rows * n_cols, 2), np.nan)
-        vel_flat[inside_idx] = v_pixel
+            elif method == "facepoint_blend":
+                v_fp_all = _compute_facepoint_velocities(
+                    face_fp_idx, face_vel_2d, len(facepoint_coords_arr),
+                    face_ci_arr, dry_mask, n_cells,
+                )
+
+                v_cell_idx = triangles[tri_hit, 0]
+                v_fp0_idx  = triangles[tri_hit, 1]
+                v_fp1_idx  = triangles[tri_hit, 2]
+
+                ax, ay = all_pts[v_cell_idx, 0], all_pts[v_cell_idx, 1]
+                bx, by = all_pts[v_fp0_idx,  0], all_pts[v_fp0_idx,  1]
+                cx, cy = all_pts[v_fp1_idx,  0], all_pts[v_fp1_idx,  1]
+
+                w0, w1, w2 = _barycentric_weights(px, py, ax, ay, bx, by, cx, cy)
+
+                v_cell = cell_velocity[cell_idx_hit]
+                v_cell = np.where(dry_mask[cell_idx_hit, np.newaxis], np.nan, v_cell)
+
+                v_fp0 = v_fp_all[v_fp0_idx - n_cells]
+                v_fp1 = v_fp_all[v_fp1_idx - n_cells]
+
+                v_pixel = (
+                    w0[:, np.newaxis] * v_cell
+                    + w1[:, np.newaxis] * v_fp0
+                    + w2[:, np.newaxis] * v_fp1
+                )
+
+            else:
+                face_midpoints = _compute_face_midpoints(
+                    facepoint_coords_arr, face_fp_idx
+                )
+                if method == "face_idw":
+                    v_pixel = _interp_face_idw(
+                        px, py, cell_idx_hit, n_cells,
+                        cell_face_info_arr, cell_face_values_arr,
+                        face_midpoints, face_vel_2d, dry_mask,
+                    )
+                else:  # face_gradient
+                    v_pixel = _interp_face_gradient(
+                        px, py, cell_idx_hit, n_cells,
+                        cell_centers_arr, cell_face_info_arr, cell_face_values_arr,
+                        face_midpoints, face_vel_2d, dry_mask, cell_velocity,
+                    )
+
+            vel_flat = np.full((n_rows * n_cols, 2), np.nan)
+            vel_flat[inside_idx] = v_pixel
 
         vx = vel_flat[:, 0].reshape(n_rows, n_cols)
         vy = vel_flat[:, 1].reshape(n_rows, n_cols)

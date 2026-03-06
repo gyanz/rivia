@@ -1,5 +1,5 @@
 """Perform geospatial analysis and IO."""
 
-from . import raster
+from . import mesh_validation, raster
 
-__all__ = ["raster"]
+__all__ = ["mesh_validation", "raster"]
