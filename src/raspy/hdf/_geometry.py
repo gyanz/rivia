@@ -142,6 +142,19 @@ class FlowArea:
             Columns: ``[face_index, orientation]``.
             Orientation ``+1`` means the stored face normal points outward
             from this cell; ``-1`` means inward.
+
+        Example
+        -------
+        Given::
+
+            info = np.array([[0, 3], [3, 4]])
+            values = np.array([
+                [10, +1], [11, -1], [12, +1],
+                [20, +1], [21, +1], [22, -1], [23, +1],
+            ])
+
+        Cell ``0`` uses ``values[0:3]`` (faces ``10, 11, 12``), and cell ``1``
+        uses ``values[3:7]`` (faces ``20, 21, 22, 23``).
         """
         return (
             self._load("Cells Face and Orientation Info"),
@@ -159,6 +172,18 @@ class FlowArea:
         Shape ``(n_faces, 3)``.  Columns: ``[nx, ny, length]``.
         The normal points from the *left* cell to the *right* cell as
         defined by :attr:`face_cell_indexes`.
+
+        Example
+        -------
+        Given::
+
+            face_normals = np.array([
+                [1.0, 0.0, 12.5],
+                [0.0, -1.0, 8.0],
+            ])
+
+        Face ``0`` has a unit normal pointing in ``+nx`` with length ``12.5``.
+        Face ``1`` has a unit normal pointing in ``-ny`` with length ``8.0``.
         """
         return self._load("Faces NormalUnitVector and Length")
 
@@ -168,6 +193,21 @@ class FlowArea:
 
         Shape ``(n_faces, 2)``.  A value of ``-1`` indicates a boundary
         face with no neighbour on that side.
+
+        Example
+        -------
+        Given::
+
+            face_cell_indexes = np.array([
+                [0, 1],
+                [1, 2],
+                [2, -1],
+                [-1, 0],
+            ])
+
+        Face ``0`` is interior between cells ``0`` (left) and ``1`` (right).
+        Face ``2`` is a boundary face for cell ``2`` on the left side, and
+        face ``3`` is a boundary face for cell ``0`` on the right side.
         """
         return self._load("Faces Cell Indexes")
 
@@ -181,6 +221,19 @@ class FlowArea:
         """Start and end face-point indices for each face.
 
         Shape ``(n_faces, 2)``.
+
+        Example
+        -------
+        Given::
+
+            face_facepoint_indexes = np.array([
+                [12, 18],
+                [18, 24],
+                [24, 12],
+            ])
+
+        Face ``0`` connects facepoints ``12`` and ``18``; face ``1`` connects
+        ``18`` and ``24``; face ``2`` connects ``24`` and ``12``.
         """
         return self._load("Faces FacePoint Indexes")
 
@@ -199,6 +252,26 @@ class FlowArea:
             Columns: ``[start_index, count]`` into *values*.
         values : ndarray, shape ``(total, 4)``
             Columns: ``[elevation, flow_area, wetted_perimeter, mannings_n]``.
+
+        Example
+        -------
+        Given::
+
+            info = np.array([[0, 2], [2, 3]])
+            values = np.array([
+                [100.0, 0.0, 10.0, 0.030],
+                [101.0, 5.0, 11.0, 0.030],
+                [100.0, 0.0, 12.0, 0.035],
+                [101.0, 6.0, 13.0, 0.035],
+                [102.0, 9.0, 14.0, 0.035],
+            ])
+
+        Face ``0`` uses ``values[0:2]`` and face ``1`` uses ``values[2:5]``.
+        For face ``0`` specifically:
+        ``[100.0, 0.0, 10.0, 0.030]`` means at elevation ``100.0`` the flow
+        area is ``0.0`` (dry threshold), wetted perimeter is ``10.0``, and
+        Manning's ``n`` is ``0.030``; ``[101.0, 5.0, 11.0, 0.030]`` is the
+        next stage row with larger flow area/perimeter at elevation ``101.0``.
         """
         return (
             self._load("Faces Area Elevation Info"),
@@ -1230,3 +1303,10 @@ class GeometryHdf(_HdfFile):
         if self._structures is None:
             self._structures = StructureCollection(self._hdf)
         return self._structures
+
+
+
+
+
+
+
