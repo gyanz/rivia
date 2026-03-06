@@ -1150,6 +1150,8 @@ class FlowAreaResults(FlowArea):
         )
 
         # ── 5. WSE raster in-memory (shared for WSE output + depth) ───
+        logging.info("Building water-surface raster (shared for depth output)...")
+
         cell_wse_masked = wse_values.copy()
         if depth_min is not None:
             cell_wse_masked[depth_at_cells < depth_min] = np.nan
@@ -1171,6 +1173,8 @@ class FlowAreaResults(FlowArea):
             wse_result = wse_ds
 
         # ── 7. Depth output ────────────────────────────────────────────
+        logging.info("Building depth raster from WSE raster and DEM...")
+
         depth_result: Path | rasterio.io.DatasetReader = (
             _raster._depth_from_wse_and_dem(
                 wse_ds, reference_raster, nodata, depth_path, min_value=depth_min
@@ -1183,6 +1187,8 @@ class FlowAreaResults(FlowArea):
             wse_ds.close()
 
         # ── 8. Speed output ────────────────────────────────────────────
+        logging.info("Building velocity raster for speed output...")
+
         if vel_interp_method == "flat_cell_center":
             vel_ds = _raster.mesh_to_velocity_raster(
                 **mesh_kw,
