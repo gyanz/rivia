@@ -1,7 +1,47 @@
 """Shared helper functions used across raspy subpackages."""
 
 import datetime as dt
+import functools
+import logging
+import time
 from pathlib import Path
+
+
+def timed(level: int = logging.DEBUG):
+    """Decorator that logs the elapsed wall-clock time of a function call.
+
+    Parameters
+    ----------
+    level : int
+        ``logging`` level constant (e.g. ``logging.INFO``, ``logging.DEBUG``).
+        Defaults to ``logging.DEBUG``.
+
+    Examples
+    --------
+    >>> from raspy.utils import timed
+    >>> import logging
+    >>> @timed(logging.INFO)
+    ... def my_func(): ...
+    """
+
+    def decorator(fn: callable) -> callable:
+        _log = logging.getLogger(fn.__module__)
+
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            t0 = time.perf_counter()
+            result = fn(*args, **kwargs)
+            _log.log(
+                level,
+                "%s completed in %.3fs",
+                fn.__qualname__,
+                time.perf_counter() - t0,
+            )
+            return result
+
+        return wrapper
+
+    return decorator
 
 
 def fix_ras_dates(dates: list) -> list[dt.datetime]:

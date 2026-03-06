@@ -49,6 +49,8 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from raspy.utils import timed
+
 if TYPE_CHECKING:
     import rasterio.io
 
@@ -58,6 +60,7 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 
+@timed(logging.INFO)
 def points_to_raster(
     points: np.ndarray,
     values: np.ndarray,
@@ -438,6 +441,7 @@ def _tight_pixel_bounds(
     return col_min, col_max, row_min, row_max
 
 
+@timed(logging.DEBUG)
 def _build_wet_kdtree(
     cell_centers: np.ndarray,
     dry_mask: np.ndarray,
@@ -480,6 +484,7 @@ def _build_wet_kdtree(
     return tree, wet_indices, max_radius
 
 
+@timed(logging.DEBUG)
 def _kdtree_nearest(
     tree: Any,
     wet_indices: np.ndarray,
@@ -509,6 +514,7 @@ def _kdtree_nearest(
     return out.reshape(xi_grid.shape + extra)
 
 
+@timed(logging.DEBUG)
 def _kdtree_idw(
     tree: Any,
     wet_indices: np.ndarray,
@@ -593,6 +599,7 @@ def _classify_horizontal_cells(
     return use_horizontal
 
 
+@timed(logging.INFO)
 def mesh_to_raster(
     cell_centers: np.ndarray,
     facepoint_coordinates: np.ndarray,
@@ -956,6 +963,7 @@ def mesh_to_raster(
     return out_path
 
 
+@timed(logging.INFO)
 def mesh_to_velocity_raster(
     cell_centers: np.ndarray,
     facepoint_coordinates: np.ndarray,
@@ -1203,6 +1211,7 @@ def mesh_to_velocity_raster(
     return out_path
 
 
+@timed(logging.DEBUG)
 def _compute_face_velocity_2d(
     face_normals: np.ndarray,
     face_vel: np.ndarray,
@@ -1344,6 +1353,7 @@ def _barycentric_weights(
     return w0, w1, w2
 
 
+@timed(logging.DEBUG)
 def _compute_facepoint_velocities(
     face_facepoint_indexes: np.ndarray,
     face_vel_2d: np.ndarray,
@@ -1404,6 +1414,7 @@ def _compute_facepoint_velocities(
     return fp_vel_sum / safe_count
 
 
+@timed(logging.DEBUG)
 def _compute_face_midpoints(
     facepoint_coordinates: np.ndarray,
     face_facepoint_indexes: np.ndarray,
@@ -1427,6 +1438,7 @@ def _compute_face_midpoints(
     return 0.5 * (facepoint_coordinates[fp0] + facepoint_coordinates[fp1])
 
 
+@timed(logging.DEBUG)
 def _interp_face_idw(
     px: np.ndarray,
     py: np.ndarray,
@@ -1523,6 +1535,7 @@ def _interp_face_idw(
     return result
 
 
+@timed(logging.DEBUG)
 def _interp_face_gradient(
     px: np.ndarray,
     py: np.ndarray,
@@ -1638,6 +1651,7 @@ def _interp_face_gradient(
     return result
 
 
+@timed(logging.INFO)
 def mesh_to_velocity_raster_interp(
     cell_centers: np.ndarray,
     facepoint_coordinates: np.ndarray,
@@ -2193,6 +2207,7 @@ def mesh_to_velocity_raster_interp(
     return out_path
 
 
+@timed(logging.DEBUG)
 def _velocity_raster_to_speed(
     vel_ds: Any,
     output_path: str | Path | None,
