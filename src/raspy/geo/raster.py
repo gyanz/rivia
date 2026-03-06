@@ -2384,3 +2384,67 @@ def _depth_from_wse_and_dem(
         dst.update_tags(1, name="depth")
     return out_path
 
+
+def _mask_outside_polygon(
+    ds: rasterio.io.DatasetReader,
+    polygon_xy: np.ndarray,
+    nodata: float,
+    output_path: str | Path | None,
+) -> Path | rasterio.io.DatasetReader:
+    """Set all pixels outside *polygon_xy* to *nodata* in every band.
+
+    The input dataset *ds* is not closed; the caller remains responsible for
+    closing it.
+
+    Parameters
+    ----------
+    ds:
+        Open rasterio dataset to mask.  Must be in the same coordinate system
+        as *polygon_xy*.
+    polygon_xy:
+        Mesh boundary polygon as an ``(n_pts, 2)`` float array of
+        ``[x, y]`` pairs in model coordinates.  The ring is automatically
+        closed if the first and last points differ.
+    nodata:
+        Fill value written to pixels outside the polygon.
+    output_path:
+        Destination GeoTIFF path.  ``None`` returns an open in-memory
+        ``rasterio.DatasetReader``; the caller must close it.
+
+    Returns
+    -------
+    Path or rasterio.io.DatasetReader
+    """
+    import rasterio
+    from rasterio.features import geometry_mask
+
+    coords = polygon_xy.tolist()
+    if coords[0] != coords[-1]:
+        coords.append(coords[0])
+    geom = {"type": "Polygon", "coordinates": [coords]}
+
+    outside = geometry_mask(
+        [geom],
+        transform=ds.transform,
+        out_shape=(ds.height, ds.width),
+        invert=False,  # False → True where OUTSIDE the polygon
+    )
+
+    data = ds.read()  # shape: (n_bands, height, width)
+    data[:, outside] = nodata
+
+    profile = ds.profile.copy()
+    profile["nodata"] = nodata
+
+    if output_path is None:
+        memfile = rasterio.MemoryFile()
+        with memfile.open(**profile) as dst:
+            dst.write(data)
+        return memfile.open()
+
+    out_path = Path(output_path).resolve()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with rasterio.open(out_path, "w", **profile) as dst:
+        dst.write(data)
+    return out_path
+

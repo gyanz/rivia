@@ -730,6 +730,7 @@ class FlowAreaResults(FlowArea):
         ] = "scatter_interp2",
         scatter_interp_method: Literal["nearest", "linear", "cubic"] = "linear",
         fix_triangulation: bool = True,
+        clip_to_perimeter: bool = False,
     ) -> Path | rasterio.io.DatasetReader:
         """Interpolate a field to a GeoTIFF using mesh-conforming triangulation.
 
@@ -834,6 +835,13 @@ class FlowAreaResults(FlowArea):
             remove zero-area triangles before building the triangulation.
             Prevents ``RuntimeError: Triangulation is invalid`` on meshes with
             unusual cell geometry.  Set ``False`` to skip on large, clean meshes.
+        clip_to_perimeter:
+            When ``True``, pixels outside the 2-D flow area boundary polygon
+            (``FlowArea.perimeter``) are set to *nodata* after interpolation.
+            Also disables ``snap_to_reference_extent`` so the output covers
+            only the mesh footprint rather than the full reference raster
+            extent.  Useful when malformed boundary cells cause KDTree noise
+            outside the model domain.  Default ``False``.
 
         Returns
         -------
@@ -921,6 +929,10 @@ class FlowAreaResults(FlowArea):
 
         # ── 3. Common mesh topology keyword arguments ──────────────────
         _cfi, _cfv = self.cell_face_info  # property returns (info, values) tuple
+        # When clipping to the perimeter, disable snap_to_reference_extent so
+        # the output covers only the mesh footprint (facepoint bounding box),
+        # not the full reference raster.  The polygon mask is applied after.
+        _snap = snap_to_reference_extent and not clip_to_perimeter
         mesh_kw: dict[str, Any] = dict(
             cell_centers=self.cell_centers,
             facepoint_coordinates=self.facepoint_coordinates,
@@ -933,7 +945,7 @@ class FlowAreaResults(FlowArea):
             reference_raster=reference_raster,
             crs=crs,
             nodata=nodata,
-            snap_to_reference_extent=snap_to_reference_extent,
+            snap_to_reference_extent=_snap,
             render_mode=_render_mode,
             face_active=face_active,
             fix_triangulation=fix_triangulation,
@@ -948,37 +960,51 @@ class FlowAreaResults(FlowArea):
                 min_value=None,     # dry cells already NaN-masked above
                 min_above_ref=depth_min,
             )
-            result = _raster._depth_from_wse_and_dem(
-                wse_ds, reference_raster, nodata, output_path, min_value=depth_min
+            depth_ds = _raster._depth_from_wse_and_dem(
+                wse_ds, reference_raster, nodata,
+                None if clip_to_perimeter else output_path,
+                min_value=depth_min,
             )
             wse_ds.close()
-            return result
+            if clip_to_perimeter:
+                result = _raster._mask_outside_polygon(
+                    depth_ds, self.perimeter, nodata, output_path
+                )
+                depth_ds.close()
+                return result
+            return depth_ds
 
         if variable == "cell_velocity":
             if vel_interp_method == "flat_cell_center":
-                # flat_cell_center: no spatial interpolation.
-                return _raster.mesh_to_velocity_raster(
+                vel_ds = _raster.mesh_to_velocity_raster(
                     **mesh_kw,
                     cell_wse=cell_vel_wse,
                     cell_velocity=cell_vel_vecs,
-                    output_path=output_path,
+                    output_path=None if clip_to_perimeter else output_path,
                     vel_min=vel_min,
                     depth_min=depth_min,
                 )
             else:
                 face_vel_arr = np.array(self.face_velocity[timestep, :])
-                return _raster.mesh_to_velocity_raster_interp(
+                vel_ds = _raster.mesh_to_velocity_raster_interp(
                     **mesh_kw,
                     face_normals=self.face_normals,
                     face_vel=face_vel_arr,
                     cell_wse=cell_vel_wse,
                     cell_velocity=cell_vel_vecs,
-                    output_path=output_path,
+                    output_path=None if clip_to_perimeter else output_path,
                     vel_min=vel_min,
                     depth_min=depth_min,
                     method=vel_interp_method,
                     scatter_interp_method=scatter_interp_method,
                 )
+            if clip_to_perimeter:
+                result = _raster._mask_outside_polygon(
+                    vel_ds, self.perimeter, nodata, output_path
+                )
+                vel_ds.close()
+                return result
+            return vel_ds
 
         if variable == "cell_speed":
             if vel_interp_method == "flat_cell_center":
@@ -990,7 +1016,6 @@ class FlowAreaResults(FlowArea):
                     vel_min=vel_min,
                     depth_min=depth_min,
                 )
-
             else:
                 face_vel_arr = np.array(self.face_velocity[timestep, :])
                 vel_ds = _raster.mesh_to_velocity_raster_interp(
@@ -1005,17 +1030,33 @@ class FlowAreaResults(FlowArea):
                     method=vel_interp_method,
                     scatter_interp_method=scatter_interp_method,
                 )
-            return _raster._velocity_raster_to_speed(vel_ds, output_path, nodata)
+            speed_ds = _raster._velocity_raster_to_speed(
+                vel_ds, None if clip_to_perimeter else output_path, nodata
+            )
+            if clip_to_perimeter:
+                result = _raster._mask_outside_polygon(
+                    speed_ds, self.perimeter, nodata, output_path
+                )
+                speed_ds.close()
+                return result
+            return speed_ds
 
         # water_surface: min_above_ref controls the wet/dry threshold relative
         # to the DEM (when reference_raster is given); no scalar min_value needed.
-        return _raster.mesh_to_raster(
+        wse_ds = _raster.mesh_to_raster(
             **mesh_kw,
             cell_values=values,
-            output_path=output_path,
+            output_path=None if clip_to_perimeter else output_path,
             min_value=None,
             min_above_ref=depth_min,
         )
+        if clip_to_perimeter:
+            result = _raster._mask_outside_polygon(
+                wse_ds, self.perimeter, nodata, output_path
+            )
+            wse_ds.close()
+            return result
+        return wse_ds
 
     @timed(logging.INFO)
     def export_hydraulic_rasters(
@@ -1042,6 +1083,7 @@ class FlowAreaResults(FlowArea):
         ] = "scatter_interp2",
         scatter_interp_method: Literal["nearest", "linear", "cubic"] = "linear",
         fix_triangulation: bool = True,
+        clip_to_perimeter: bool = False,
     ) -> dict[str, Path | rasterio.io.DatasetReader]:
         """Export water-surface elevation, depth, and speed rasters in one pass.
 
@@ -1101,6 +1143,11 @@ class FlowAreaResults(FlowArea):
             remove zero-area triangles before building the triangulation.
             Prevents ``RuntimeError: Triangulation is invalid`` on meshes with
             unusual cell geometry.  Set ``False`` to skip on large, clean meshes.
+        clip_to_perimeter:
+            When ``True``, pixels outside the 2-D flow area boundary polygon
+            are set to *nodata* in all three output rasters.  Also disables
+            ``snap_to_reference_extent`` so outputs cover only the mesh
+            footprint.  Default ``False``.
 
         Returns
         -------
@@ -1138,6 +1185,9 @@ class FlowAreaResults(FlowArea):
 
         # ── 3. Shared mesh topology kwargs ────────────────────────────
         _cfi, _cfv = self.cell_face_info
+        # When clipping to the perimeter, disable snap_to_reference_extent so
+        # outputs cover only the mesh footprint, not the full reference raster.
+        _snap = snap_to_reference_extent and not clip_to_perimeter
         mesh_kw: dict[str, Any] = dict(
             cell_centers=self.cell_centers,
             facepoint_coordinates=self.facepoint_coordinates,
@@ -1147,7 +1197,7 @@ class FlowAreaResults(FlowArea):
             cell_face_values=_cfv,
             reference_raster=reference_raster,
             nodata=nodata,
-            snap_to_reference_extent=snap_to_reference_extent,
+            snap_to_reference_extent=_snap,
             render_mode=_render_mode,
             face_active=face_active,
             fix_triangulation=fix_triangulation,
@@ -1169,25 +1219,38 @@ class FlowAreaResults(FlowArea):
         )
 
         # ── 6. WSE output ──────────────────────────────────────────────
-        if wse_path is not None:
+        if clip_to_perimeter:
             wse_result: Path | rasterio.io.DatasetReader = (
-                _raster._write_dataset(wse_ds, wse_path)
+                _raster._mask_outside_polygon(wse_ds, self.perimeter, nodata, wse_path)
             )
+        elif wse_path is not None:
+            wse_result = _raster._write_dataset(wse_ds, wse_path)
         else:
             wse_result = wse_ds
 
         # ── 7. Depth output ────────────────────────────────────────────
         logging.info("Building depth raster from WSE raster and DEM...")
 
-        depth_result: Path | rasterio.io.DatasetReader = (
-            _raster._depth_from_wse_and_dem(
-                wse_ds, reference_raster, nodata, depth_path, min_value=depth_min
-            )
+        depth_ds = _raster._depth_from_wse_and_dem(
+            wse_ds, reference_raster, nodata,
+            None if clip_to_perimeter else depth_path,
+            min_value=depth_min,
         )
+        if clip_to_perimeter:
+            depth_result: Path | rasterio.io.DatasetReader = (
+                _raster._mask_outside_polygon(
+                    depth_ds, self.perimeter, nodata, depth_path
+                )
+            )
+            depth_ds.close()
+        else:
+            depth_result = depth_ds
 
         # Close shared in-memory WSE dataset once both consumers are done.
-        # Only close if we are NOT returning it to the caller.
-        if wse_path is not None:
+        # When clip_to_perimeter=True, wse_result is a new dataset so wse_ds
+        # is always safe to close here.  Without clipping, only close it when
+        # it was written to a file (otherwise wse_result IS wse_ds).
+        if clip_to_perimeter or wse_path is not None:
             wse_ds.close()
 
         # ── 8. Speed output ────────────────────────────────────────────
@@ -1215,9 +1278,18 @@ class FlowAreaResults(FlowArea):
                 method=vel_interp_method,
                 scatter_interp_method=scatter_interp_method,
             )
-        speed_result: Path | rasterio.io.DatasetReader = (
-            _raster._velocity_raster_to_speed(vel_ds, speed_path, nodata)
+        speed_ds = _raster._velocity_raster_to_speed(
+            vel_ds, None if clip_to_perimeter else speed_path, nodata
         )
+        if clip_to_perimeter:
+            speed_result: Path | rasterio.io.DatasetReader = (
+                _raster._mask_outside_polygon(
+                    speed_ds, self.perimeter, nodata, speed_path
+                )
+            )
+            speed_ds.close()
+        else:
+            speed_result = speed_ds
 
         return {
             "water_surface": wse_result,
