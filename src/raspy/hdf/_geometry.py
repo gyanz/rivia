@@ -35,6 +35,33 @@ _STRUCT_ROOT = "Geometry/Structures"
 
 
 # ---------------------------------------------------------------------------
+# Private geometry utilities
+# ---------------------------------------------------------------------------
+
+
+def _point_in_polygon(px: float, py: float, polygon: np.ndarray) -> bool:
+    """Ray-casting point-in-polygon test for a simple polygon.
+
+    Parameters
+    ----------
+    px, py:
+        Query point coordinates.
+    polygon:
+        Ordered vertices, shape ``(n, 2)``.
+    """
+    n = len(polygon)
+    inside = False
+    j = n - 1
+    for i in range(n):
+        xi, yi = float(polygon[i, 0]), float(polygon[i, 1])
+        xj, yj = float(polygon[j, 0]), float(polygon[j, 1])
+        if ((yi > py) != (yj > py)) and px < (xj - xi) * (py - yi) / (yj - yi) + xi:
+            inside = not inside
+        j = i
+    return inside
+
+
+# ---------------------------------------------------------------------------
 # FlowArea — geometry for a single 2-D flow area
 # ---------------------------------------------------------------------------
 
@@ -536,6 +563,413 @@ class FlowArea:
             boundary_polygon=self.perimeter if check_boundary else None,
             tol=tol,
         )
+
+    # ------------------------------------------------------------------
+    # Derived topology and geometry helpers (computed from HDF arrays)
+    # ------------------------------------------------------------------
+
+    @property
+    def facepoint_to_faces(self) -> list[np.ndarray]:
+        """Face indices adjacent to each facepoint.
+
+        Returns a list of length ``n_facepoints``.  Element ``i`` is an
+        ``int64`` array of face indices whose endpoints include facepoint
+        ``i``.  Most interior facepoints are shared by exactly two faces;
+        boundary facepoints may appear in more.
+
+        Computed once and cached.
+        """
+        cache_key = "_facepoint_to_faces"
+        if cache_key in self._cache:
+            return self._cache[cache_key]  # type: ignore[return-value]
+
+        fp_idx = self.face_facepoint_indexes  # (n_faces, 2)
+        n_fp = len(self.facepoint_coordinates)
+        n_faces = len(fp_idx)
+
+        buckets: list[list[int]] = [[] for _ in range(n_fp)]
+        for fi in range(n_faces):
+            buckets[int(fp_idx[fi, 0])].append(fi)
+            buckets[int(fp_idx[fi, 1])].append(fi)
+
+        result = [np.array(b, dtype=np.int64) for b in buckets]
+        self._cache[cache_key] = result  # type: ignore[assignment]
+        return result
+
+    @property
+    def facepoint_to_cells(self) -> list[np.ndarray]:
+        """Real cell indices surrounding each facepoint.
+
+        Returns a list of length ``n_facepoints``.  Element ``i`` is a
+        sorted ``int64`` array of cell indices (``< n_cells``) that include
+        facepoint ``i`` as a polygon corner.  Ghost cells and the sentinel
+        value ``-1`` are excluded.
+
+        Computed once and cached.
+        """
+        cache_key = "_facepoint_to_cells"
+        if cache_key in self._cache:
+            return self._cache[cache_key]  # type: ignore[return-value]
+
+        fp_to_faces = self.facepoint_to_faces
+        fci = self.face_cell_indexes  # (n_faces, 2)
+        n = self._n_cells
+
+        result: list[np.ndarray] = []
+        for faces in fp_to_faces:
+            cells: set[int] = set()
+            for fi in faces:
+                c0, c1 = int(fci[fi, 0]), int(fci[fi, 1])
+                if 0 <= c0 < n:
+                    cells.add(c0)
+                if 0 <= c1 < n:
+                    cells.add(c1)
+            result.append(np.array(sorted(cells), dtype=np.int64))
+
+        self._cache[cache_key] = result  # type: ignore[assignment]
+        return result
+
+    @property
+    def cell_neighbors(self) -> list[np.ndarray]:
+        """Adjacent real cell indices for each cell.
+
+        Returns a list of length ``n_cells``.  Element ``c`` is an
+        ``int64`` array of real cell indices (``< n_cells``) that share a
+        face with cell ``c``.  Boundary faces (where the neighbour index is
+        ``-1``) contribute no entry.  Order follows the face order in
+        :attr:`cell_face_info`.
+
+        Computed once and cached.
+        """
+        cache_key = "_cell_neighbors"
+        if cache_key in self._cache:
+            return self._cache[cache_key]  # type: ignore[return-value]
+
+        cfi, cfv = self.cell_face_info
+        fci = self.face_cell_indexes
+        n = self._n_cells
+
+        neighbors: list[np.ndarray] = []
+        for c in range(n):
+            start = int(cfi[c, 0])
+            count = int(cfi[c, 1])
+            nb: list[int] = []
+            for fi in cfv[start : start + count, 0]:
+                c0, c1 = int(fci[fi, 0]), int(fci[fi, 1])
+                other = c1 if c0 == c else c0
+                if 0 <= other < n:
+                    nb.append(other)
+            neighbors.append(np.array(nb, dtype=np.int64))
+
+        self._cache[cache_key] = neighbors  # type: ignore[assignment]
+        return neighbors
+
+    @property
+    def boundary_face_mask(self) -> np.ndarray:
+        """Boolean mask of faces on the 2D flow area perimeter.
+
+        Shape ``(n_faces,)``.  ``True`` for faces where one side has no
+        neighbouring cell (``face_cell_indexes`` value is ``-1``).
+
+        Computed once and cached.
+        """
+        cache_key = "_boundary_face_mask"
+        if cache_key in self._cache:
+            return self._cache[cache_key]
+        fci = self.face_cell_indexes
+        mask = (fci[:, 0] < 0) | (fci[:, 1] < 0)
+        self._cache[cache_key] = mask
+        return mask
+
+    @property
+    def boundary_cell_mask(self) -> np.ndarray:
+        """Boolean mask of cells that touch the flow area perimeter.
+
+        Shape ``(n_cells,)``.  ``True`` for any real cell that has at least
+        one boundary face (see :attr:`boundary_face_mask`).
+
+        Computed once and cached.
+        """
+        cache_key = "_boundary_cell_mask"
+        if cache_key in self._cache:
+            return self._cache[cache_key]
+
+        bfm = self.boundary_face_mask
+        fci = self.face_cell_indexes
+        n = self._n_cells
+
+        bfi = np.where(bfm)[0]
+        bc = fci[bfi].flatten()
+        bc = bc[(bc >= 0) & (bc < n)]
+        mask = np.zeros(n, dtype=bool)
+        mask[bc] = True
+        self._cache[cache_key] = mask
+        return mask
+
+    @property
+    def face_polylines(self) -> list[np.ndarray]:
+        """Full vertex sequence for each face.
+
+        Returns a list of length ``n_faces``.  Each element is an
+        ``ndarray`` of shape ``(n_pts, 2)`` in canonical HDF order
+        (facepoint 0 → interior points → facepoint 1).  Straight faces
+        yield 2-point arrays; curved faces have 3 or more points.
+
+        Computed once and cached.
+        """
+        cache_key = "_face_polylines"
+        if cache_key in self._cache:
+            return self._cache[cache_key]  # type: ignore[return-value]
+
+        fp_idx = self.face_facepoint_indexes    # (n_faces, 2)
+        fp_coords = self.facepoint_coordinates  # (n_facepoints, 2)
+        peri_info, peri_vals = self.face_perimeter
+        n_faces = len(fp_idx)
+
+        fp0 = fp_coords[fp_idx[:, 0]]  # (n_faces, 2)
+        fp1 = fp_coords[fp_idx[:, 1]]  # (n_faces, 2)
+
+        polylines: list[np.ndarray] = [
+            np.array([fp0[fi], fp1[fi]]) for fi in range(n_faces)
+        ]
+        for fi in np.where(peri_info[:, 1] > 0)[0]:
+            start = int(peri_info[fi, 0])
+            n_int = int(peri_info[fi, 1])
+            polylines[fi] = np.vstack(
+                [fp0[fi], peri_vals[start : start + n_int], fp1[fi]]
+            )
+
+        self._cache[cache_key] = polylines  # type: ignore[assignment]
+        return polylines
+
+    @property
+    def face_lengths(self) -> np.ndarray:
+        """Arc length of each face polyline.  Shape ``(n_faces,)``.
+
+        Straight faces: Euclidean chord length (equals column 2 of
+        :attr:`face_normals`).  Curved faces: sum of segment lengths along
+        the full polyline from :attr:`face_perimeter`.
+
+        Computed once and cached.
+        """
+        cache_key = "_face_lengths"
+        if cache_key in self._cache:
+            return self._cache[cache_key]
+
+        fp_idx = self.face_facepoint_indexes
+        fp_coords = self.facepoint_coordinates
+        peri_info, peri_vals = self.face_perimeter
+
+        fp0 = fp_coords[fp_idx[:, 0]]
+        fp1 = fp_coords[fp_idx[:, 1]]
+        lengths = np.linalg.norm(fp1 - fp0, axis=1).copy()
+
+        for fi in np.where(peri_info[:, 1] > 0)[0]:
+            start = int(peri_info[fi, 0])
+            n_int = int(peri_info[fi, 1])
+            pts = np.vstack([fp0[fi], peri_vals[start : start + n_int], fp1[fi]])
+            lengths[fi] = float(np.linalg.norm(np.diff(pts, axis=0), axis=1).sum())
+
+        self._cache[cache_key] = lengths
+        return lengths
+
+    @property
+    def cell_bbox(self) -> np.ndarray:
+        """Axis-aligned bounding box per cell.  Shape ``(n_cells, 4)``.
+
+        Columns: ``[xmin, ymin, xmax, ymax]``.  Derived from the polygon
+        corner facepoints in :attr:`cell_facepoint_indexes`.  Interior
+        perimeter points on curved faces are not included; the error is
+        negligible for the near-convex cells HEC-RAS requires.
+
+        Computed once and cached.
+        """
+        cache_key = "_cell_bbox"
+        if cache_key in self._cache:
+            return self._cache[cache_key]
+
+        cell_fp_idx = self.cell_facepoint_indexes  # (n_cells, 8)
+        fp_coords = self.facepoint_coordinates     # (n_facepoints, 2)
+
+        valid = cell_fp_idx >= 0
+        safe = np.where(valid, cell_fp_idx, 0)
+        coords = fp_coords[safe]  # (n_cells, 8, 2)
+
+        cx = np.where(valid, coords[:, :, 0], np.nan)
+        cy = np.where(valid, coords[:, :, 1], np.nan)
+        bbox = np.column_stack([
+            np.nanmin(cx, axis=1),
+            np.nanmin(cy, axis=1),
+            np.nanmax(cx, axis=1),
+            np.nanmax(cy, axis=1),
+        ])
+        self._cache[cache_key] = bbox
+        return bbox
+
+    @property
+    def mesh_bbox(self) -> np.ndarray:
+        """Overall bounding box of the flow area.  Shape ``(4,)``.
+
+        Returns ``[xmin, ymin, xmax, ymax]`` covering all cells.
+        """
+        b = self.cell_bbox
+        return np.array([b[:, 0].min(), b[:, 1].min(), b[:, 2].max(), b[:, 3].max()])
+
+    @property
+    def cell_aspect_ratio(self) -> np.ndarray:
+        """Aspect ratio of each cell.  Shape ``(n_cells,)``.
+
+        Ratio of the longest face to the shortest face (by arc length from
+        :attr:`face_lengths`).  Value of ``1.0`` for a regular cell; large
+        values indicate elongated cells.
+
+        Computed once and cached.
+        """
+        cache_key = "_cell_aspect_ratio"
+        if cache_key in self._cache:
+            return self._cache[cache_key]
+
+        face_len = self.face_lengths
+        cfi, cfv = self.cell_face_info
+        n = self._n_cells
+
+        ratios = np.ones(n)
+        for c in range(n):
+            start = int(cfi[c, 0])
+            count = int(cfi[c, 1])
+            lens = face_len[cfv[start : start + count, 0]]
+            mn = float(lens.min())
+            if mn > 0.0:
+                ratios[c] = float(lens.max()) / mn
+
+        self._cache[cache_key] = ratios
+        return ratios
+
+    @property
+    def cell_compactness(self) -> np.ndarray:
+        """Isoperimetric compactness of each cell.  Shape ``(n_cells,)``.
+
+        ``compactness = 4π × area / perimeter²``.  A circle scores ``1.0``;
+        elongated or irregular cells score lower.  Uses :attr:`cell_surface_area`
+        for area and :attr:`face_lengths` for the perimeter.
+
+        Computed once and cached.
+        """
+        cache_key = "_cell_compactness"
+        if cache_key in self._cache:
+            return self._cache[cache_key]
+
+        area = self.cell_surface_area
+        face_len = self.face_lengths
+        cfi, cfv = self.cell_face_info
+        n = self._n_cells
+
+        perimeter = np.zeros(n)
+        for c in range(n):
+            start = int(cfi[c, 0])
+            count = int(cfi[c, 1])
+            perimeter[c] = face_len[cfv[start : start + count, 0]].sum()
+
+        with np.errstate(invalid="ignore", divide="ignore"):
+            compactness = np.where(
+                perimeter > 0.0,
+                4.0 * np.pi * area / perimeter**2,
+                np.nan,
+            )
+        self._cache[cache_key] = compactness
+        return compactness
+
+    def cells_containing_points(self, xy: np.ndarray) -> np.ndarray:
+        """Return the cell index containing each query point.
+
+        Parameters
+        ----------
+        xy : ndarray, shape ``(m, 2)`` or ``(2,)``
+            Query ``(x, y)`` coordinates.
+
+        Returns
+        -------
+        ndarray, shape ``(m,)``, dtype ``int64``
+            0-based cell index for each point, or ``-1`` when outside all
+            cells (or the cell polygon is malformed).
+
+        Notes
+        -----
+        Uses :attr:`cell_bbox` for a fast bounding-box pre-filter then
+        :attr:`cell_polygons` for exact ray-casting containment.  No
+        spatial index is built; for very large query sets consider
+        building an external RTree over :attr:`cell_bbox`.
+        """
+        xy = np.asarray(xy, dtype=np.float64)
+        scalar = xy.ndim == 1
+        if scalar:
+            xy = xy[np.newaxis]
+        m = len(xy)
+
+        bbox = self.cell_bbox      # (n_cells, 4)
+        polygons = self.cell_polygons
+
+        result = np.full(m, -1, dtype=np.int64)
+        for qi in range(m):
+            px, py = float(xy[qi, 0]), float(xy[qi, 1])
+            candidates = np.where(
+                (px >= bbox[:, 0]) & (px <= bbox[:, 2]) &
+                (py >= bbox[:, 1]) & (py <= bbox[:, 3])
+            )[0]
+            for ci in candidates:
+                poly = polygons[ci]
+                if len(poly) >= 3 and _point_in_polygon(px, py, poly):
+                    result[qi] = int(ci)
+                    break
+
+        return int(result[0]) if scalar else result
+
+    def wse_at_facepoints(self, cell_wse: np.ndarray) -> np.ndarray:
+        """Interpolate water-surface elevation to facepoints.
+
+        Two-step face-midpoint average:
+
+        1. **Face WSE** — NaN-aware mean of the WSEs of the two bordering
+           cells.  For boundary faces the single adjacent cell WSE is used.
+        2. **Facepoint WSE** — mean of the face WSEs of all faces sharing
+           that facepoint.
+
+        Parameters
+        ----------
+        cell_wse : ndarray, shape ``(n_cells,)``
+            Water-surface elevation per cell.  Use ``nan`` for dry cells.
+
+        Returns
+        -------
+        ndarray, shape ``(n_facepoints,)``
+            Interpolated WSE at each facepoint.  ``nan`` where all adjacent
+            faces are dry.
+        """
+        cell_wse = np.asarray(cell_wse, dtype=np.float64)
+        fci = self.face_cell_indexes          # (n_faces, 2)
+        fp_idx = self.face_facepoint_indexes  # (n_faces, 2)
+        n_fp = len(self.facepoint_coordinates)
+        n_cells = len(cell_wse)
+
+        # Step 1: face WSE = NaN-aware mean of bordering cell WSEs.
+        c0 = fci[:, 0]
+        c1 = fci[:, 1]
+        wse0 = np.where(c0 >= 0, cell_wse[np.clip(c0, 0, n_cells - 1)], np.nan)
+        wse1 = np.where(c1 >= 0, cell_wse[np.clip(c1, 0, n_cells - 1)], np.nan)
+        wse0 = np.where(c0 < 0, np.nan, wse0)
+        wse1 = np.where(c1 < 0, np.nan, wse1)
+        face_wse = np.nanmean(np.stack([wse0, wse1], axis=1), axis=1)
+
+        # Step 2: facepoint WSE = mean of adjacent face WSEs (vectorised).
+        valid = ~np.isnan(face_wse)
+        fp_sum = np.zeros(n_fp)
+        fp_count = np.zeros(n_fp, dtype=np.int64)
+        for col in (0, 1):
+            fp = fp_idx[:, col]
+            np.add.at(fp_sum, fp[valid], face_wse[valid])
+            np.add.at(fp_count, fp[valid], 1)
+
+        return np.where(fp_count > 0, fp_sum / fp_count, np.nan)
 
 
 # ---------------------------------------------------------------------------

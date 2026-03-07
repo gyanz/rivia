@@ -1635,6 +1635,73 @@ class FlowAreaResults(FlowArea):
             "triangulation": tri_report,
         }
 
+    # ------------------------------------------------------------------
+    # Derived results helpers (computed from HDF result arrays)
+    # ------------------------------------------------------------------
+
+    def water_surface_at_facepoints(self, timestep: int) -> np.ndarray:
+        """WSE interpolated to facepoints for one timestep.
+
+        Convenience wrapper around :meth:`~FlowArea.wse_at_facepoints` that
+        reads the water-surface time series internally.
+
+        Parameters
+        ----------
+        timestep:
+            0-based index into the time dimension.
+
+        Returns
+        -------
+        ndarray, shape ``(n_facepoints,)``
+            Facepoint WSE.  ``nan`` where all adjacent cells are dry.
+        """
+        cell_wse = np.array(self.water_surface[timestep, : self.n_cells])
+        return self.wse_at_facepoints(cell_wse)
+
+    def wet_cells(self, timestep: int, depth_min: float = 0.0) -> np.ndarray:
+        """Boolean mask of wet cells for one timestep.
+
+        A cell is wet when ``WSE - cell_min_elevation > depth_min``.
+
+        Parameters
+        ----------
+        timestep:
+            0-based index into the time dimension.
+        depth_min:
+            Minimum depth threshold in model units.  Default ``0.0``.
+
+        Returns
+        -------
+        ndarray, shape ``(n_cells,)``, dtype bool
+        """
+        wse = np.array(self.water_surface[timestep, : self.n_cells])
+        return (wse - self.cell_min_elevation) > depth_min
+
+    def wet_faces(self, timestep: int, depth_min: float = 0.0) -> np.ndarray:
+        """Boolean mask of wet faces for one timestep.
+
+        A face is wet when at least one of its adjacent cells is wet
+        (see :meth:`wet_cells`).  Boundary faces are wet when their single
+        adjacent real cell is wet.
+
+        Parameters
+        ----------
+        timestep:
+            0-based index into the time dimension.
+        depth_min:
+            Minimum cell depth threshold passed to :meth:`wet_cells`.
+
+        Returns
+        -------
+        ndarray, shape ``(n_faces,)``, dtype bool
+        """
+        wc = self.wet_cells(timestep, depth_min)
+        fci = self.face_cell_indexes  # (n_faces, 2)
+        n = self.n_cells
+        c0_wet = np.where(fci[:, 0] >= 0, wc[np.clip(fci[:, 0], 0, n - 1)], False)
+        c1_wet = np.where(fci[:, 1] >= 0, wc[np.clip(fci[:, 1], 0, n - 1)], False)
+        return c0_wet | c1_wet
+
 
 # ---------------------------------------------------------------------------
 # FlowAreaResultsCollection
