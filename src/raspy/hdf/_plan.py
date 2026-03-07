@@ -941,6 +941,25 @@ class FlowAreaResults(FlowArea):
         if cell_size is None and no_grid:
             resolved_cell_size = float(np.median(self.face_normals[:, 2]))
 
+        # ── 2b. Facepoint WSE for sloping render ───────────────────────
+        # Compute facepoint values from the dry-masked cell WSE so
+        # mesh_to_raster receives them for the griddata sloping path.
+        # For velocity variables the vel_min mask is applied first.
+        _fp_wse: np.ndarray | None = None
+        _fp_wse_vel: np.ndarray | None = None
+        if _render_mode == "sloping":
+            if variable == "water_surface":
+                _fp_wse = self.wse_at_facepoints(values)
+            elif variable == "depth":
+                _fp_wse = self.wse_at_facepoints(cell_wse)
+            elif variable in ("cell_velocity", "cell_speed"):
+                _vel_wse_masked = cell_vel_wse.copy()
+                if vel_min is not None:
+                    with np.errstate(invalid="ignore"):
+                        _speed = np.linalg.norm(cell_vel_vecs, axis=1)
+                    _vel_wse_masked[_speed < vel_min] = np.nan
+                _fp_wse_vel = self.wse_at_facepoints(_vel_wse_masked)
+
         # ── 3. Common mesh topology keyword arguments ──────────────────
         _cfi, _cfv = self.cell_face_info  # property returns (info, values) tuple
         # When clipping to the perimeter, use the perimeter polygon bounding
@@ -972,6 +991,9 @@ class FlowAreaResults(FlowArea):
             face_active=face_active,
             fix_triangulation=fix_triangulation,
             extent_bbox=_perimeter_bbox,
+            facepoint_values=_fp_wse,
+            scatter_interp_method=scatter_interp_method,
+            cell_facepoint_indexes=self.cell_facepoint_indexes,
         )
 
         # ── 4. Delegate to mesh_to_raster / mesh_to_velocity_raster ──────
@@ -1006,6 +1028,7 @@ class FlowAreaResults(FlowArea):
                     output_path=None if clip_to_perimeter else output_path,
                     vel_min=vel_min,
                     depth_min=depth_min,
+                    facepoint_values=_fp_wse_vel,
                 )
             else:
                 face_vel_arr = np.array(self.face_velocity[timestep, :])
@@ -1039,6 +1062,7 @@ class FlowAreaResults(FlowArea):
                     output_path=None,
                     vel_min=vel_min,
                     depth_min=depth_min,
+                    facepoint_values=_fp_wse_vel,
                 )
             else:
                 face_vel_arr = np.array(self.face_velocity[timestep, :])
@@ -1256,6 +1280,23 @@ class FlowAreaResults(FlowArea):
         if depth_min is not None:
             cell_wse_masked[depth_at_cells < depth_min] = np.nan
 
+        # Facepoint WSE for sloping render — computed once for WSE/depth;
+        # velocity uses a separate vel_min-masked array.
+        _fp_wse: np.ndarray | None = None
+        _fp_wse_vel: np.ndarray | None = None
+        if _render_mode == "sloping":
+            _fp_wse = self.wse_at_facepoints(cell_wse_masked)
+            _vel_wse_masked = wse_values.copy()
+            if vel_min is not None:
+                with np.errstate(invalid="ignore"):
+                    _speed = np.linalg.norm(cell_vel_vecs, axis=1)
+                _vel_wse_masked[_speed < vel_min] = np.nan
+            _fp_wse_vel = self.wse_at_facepoints(_vel_wse_masked)
+
+        mesh_kw["facepoint_values"] = _fp_wse
+        mesh_kw["scatter_interp_method"] = scatter_interp_method
+        mesh_kw["cell_facepoint_indexes"] = self.cell_facepoint_indexes
+
         wse_ds = _raster.mesh_to_raster(
             **mesh_kw,
             cell_values=cell_wse_masked,
@@ -1310,6 +1351,7 @@ class FlowAreaResults(FlowArea):
                 output_path=None,
                 vel_min=vel_min,
                 depth_min=depth_min,
+                facepoint_values=_fp_wse_vel,
             )
         else:
             vel_ds = _raster.mesh_to_velocity_raster_interp(

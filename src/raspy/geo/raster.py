@@ -210,6 +210,115 @@ def _kdtree_idw(
     return out.reshape(xi_grid.shape)
 
 
+@timed(logging.DEBUG)
+def _griddata_facepoint_sloping(
+    facepoint_coordinates: np.ndarray,
+    facepoint_values: np.ndarray,
+    cell_facepoint_indexes: np.ndarray | None,
+    dry_mask: np.ndarray,
+    tree: Any,
+    max_radius: float,
+    xi_grid: np.ndarray,
+    yi_grid: np.ndarray,
+    method: str = "linear",
+) -> np.ndarray:
+    """Interpolate facepoint WSE to raster pixels using ``scipy.interpolate.griddata``.
+
+    Parameters
+    ----------
+    facepoint_coordinates : ndarray, shape ``(n_fp, 2)``
+        Polygon-vertex coordinates.
+    facepoint_values : ndarray, shape ``(n_fp,)``
+        Pre-computed WSE at each facepoint (e.g. from
+        ``FlowArea.wse_at_facepoints``).  ``NaN`` where all adjacent cells
+        are dry.
+    cell_facepoint_indexes : ndarray, shape ``(n_cells, k)``, -1 padded
+        Corner facepoint indices per cell in polygon order
+        (``FlowArea.cell_facepoint_indexes``).  Used to rasterize wet cell
+        polygons so that pixels outside every wet cell are set to NaN.
+    dry_mask : ndarray, shape ``(n_cells,)``, bool
+        ``True`` where a cell is dry.
+    tree : cKDTree or None
+        KDTree built on wet cell centres (used to clip outside-mesh pixels
+        when ``method='cubic'``).
+    max_radius : float
+        Maximum distance from a pixel to its nearest wet cell centre before
+        it is considered outside the wet mesh.
+    xi_grid, yi_grid : ndarray, shape ``(n_rows, n_cols)``
+        Pixel-centre coordinate grids.
+    method : str
+        Passed directly to ``scipy.interpolate.griddata``: ``'nearest'``,
+        ``'linear'``, or ``'cubic'``.
+
+    Returns
+    -------
+    ndarray, shape ``(n_rows, n_cols)``
+        Interpolated scalar raster with ``NaN`` outside the wet extent and
+        inside dry cells.
+    """
+    from scipy.interpolate import griddata
+
+    valid = ~np.isnan(facepoint_values)
+    pts_valid = facepoint_coordinates[valid]
+    vals_valid = facepoint_values[valid]
+
+    pts_query = np.column_stack([xi_grid.ravel(), yi_grid.ravel()])
+
+    if len(pts_valid) < 3:
+        return np.full(xi_grid.shape, np.nan)
+
+    scalar_flat = griddata(pts_valid, vals_valid, pts_query, method=method).astype(
+        np.float64
+    )
+
+    # Wet-cell mask: rasterize the exact wet cell polygons onto the output grid,
+    # then NaN any pixel that does not fall inside at least one wet cell.
+    # This is more robust than masking dry cells one-by-one because it handles
+    # gaps between cells and avoids the polygon-ordering issues of the
+    # ConvexHull approach.  Skipped when cell_facepoint_indexes is not provided.
+    if cell_facepoint_indexes is not None:
+        from rasterio.features import rasterize as _rasterize
+        from rasterio.transform import Affine as _Affine
+
+        xi = xi_grid[0, :]
+        yi = yi_grid[:, 0]
+        dx = float(xi[1] - xi[0]) if len(xi) > 1 else 1.0
+        dy = float(yi[0] - yi[1]) if len(yi) > 1 else 1.0  # positive (top > bottom)
+        # Affine maps pixel (col, row) → world (x, y): origin is top-left corner
+        burn_transform = _Affine(dx, 0.0, float(xi[0]) - dx / 2.0,
+                                 0.0, -dy, float(yi[0]) + dy / 2.0)
+
+        wet_cell_idxs = np.where(~dry_mask)[0]
+        shapes = []
+        for ci in wet_cell_idxs:
+            fp_idx = cell_facepoint_indexes[ci]
+            fp_idx = fp_idx[fp_idx >= 0]  # strip -1 padding
+            if len(fp_idx) < 3:
+                continue
+            verts = facepoint_coordinates[fp_idx].tolist()
+            verts.append(verts[0])  # close the ring
+            shapes.append(({"type": "Polygon", "coordinates": [verts]}, 1))
+
+        n_rows, n_cols = xi_grid.shape
+        if shapes:
+            wet_raster = _rasterize(
+                shapes,
+                out_shape=(n_rows, n_cols),
+                transform=burn_transform,
+                fill=0,
+                dtype=np.uint8,
+            )
+            scalar_flat[wet_raster.ravel() == 0] = np.nan
+
+    # For cubic, griddata may extrapolate beyond the convex hull of the wet
+    # facepoints.  Apply the same boundary clamp used by other render paths.
+    if method == "cubic" and tree is not None:
+        dist, _ = tree.query(pts_query)
+        scalar_flat[dist > max_radius] = np.nan
+
+    return scalar_flat.reshape(xi_grid.shape)
+
+
 def _classify_horizontal_cells(
     face_cell_indexes: np.ndarray,
     dry_mask: np.ndarray,
@@ -276,6 +385,9 @@ def mesh_to_raster(
     face_active: np.ndarray | None = None,
     fix_triangulation: bool = True,
     extent_bbox: tuple[float, float, float, float] | None = None,
+    facepoint_values: np.ndarray | None = None,
+    scatter_interp_method: str = "linear",
+    cell_facepoint_indexes: np.ndarray | None = None,
 ) -> Path | rasterio.io.DatasetReader:
     """Interpolate HEC-RAS mesh results to a raster using mesh-conforming triangulation.
 
@@ -380,6 +492,25 @@ def mesh_to_raster(
         Intended for use with ``clip_to_perimeter`` in the plan layer so
         the raster extent is driven by the mesh perimeter polygon rather
         than the full facepoint cloud.
+    facepoint_values : ndarray, shape ``(n_facepoints,)``, optional
+        Pre-computed WSE at every facepoint, typically obtained by calling
+        ``FlowArea.wse_at_facepoints(cell_wse)``.  ``NaN`` where all
+        adjacent cells are dry.  When supplied and
+        ``render_mode='sloping'``, the sloping path uses
+        :func:`_griddata_facepoint_sloping` instead of IDW: only facepoint
+        coordinates and values are used as scatter points — cell centres
+        are *not* included.  Ignored for ``'horizontal'`` and ``'hybrid'``
+        modes.
+    scatter_interp_method : str, default ``"linear"``
+        Interpolation method forwarded to ``scipy.interpolate.griddata``
+        when *facepoint_values* is provided.  One of ``'nearest'``,
+        ``'linear'``, or ``'cubic'``.  Ignored when *facepoint_values* is
+        ``None``.
+    cell_facepoint_indexes : ndarray, shape ``(n_cells, k)``, -1 padded, optional
+        Corner facepoint indices per cell (``FlowArea.cell_facepoint_indexes``).
+        When provided, dry-cell masking in the sloping path uses exact polygon
+        containment (``matplotlib.path.Path``) instead of a nearest-centre
+        Voronoi approximation.
 
     Returns
     -------
@@ -431,6 +562,16 @@ def mesh_to_raster(
             f"render_mode must be 'sloping', 'horizontal', or 'hybrid';"
             f" got {render_mode!r}."
         )
+    if render_mode == "sloping" and facepoint_values is None:
+        raise ValueError(
+            "facepoint_values is required when render_mode='sloping'. "
+            "Compute it with FlowArea.wse_at_facepoints(cell_wse)."
+        )
+    if scatter_interp_method not in ("nearest", "linear", "cubic"):
+        raise ValueError(
+            f"scatter_interp_method must be 'nearest', 'linear', or 'cubic';"
+            f" got {scatter_interp_method!r}."
+        )
     cell_values = np.asarray(cell_values, dtype=np.float64)
     if cell_values.ndim != 1:
         raise ValueError(
@@ -452,12 +593,13 @@ def mesh_to_raster(
     cell_face_info = np.asarray(cell_face_info, dtype=np.int64)[:n_cells]
     n_facepoints = len(facepoint_coordinates)
 
-    #  Dry-cell masking 
-    dry_mask = (
-        cell_values < min_value
-        if min_value is not None
-        else np.zeros(n_cells, dtype=bool)
-    )
+    #  Dry-cell masking
+    # NaN cell values always indicate dry cells (set by caller before passing in).
+    # min_value provides an additional scalar threshold.
+    dry_mask = np.isnan(cell_values)
+    if min_value is not None:
+        with np.errstate(invalid="ignore"):
+            dry_mask = dry_mask | (cell_values < min_value)
     cv = cell_values.copy()
     cv[dry_mask] = np.nan
 
@@ -544,7 +686,22 @@ def mesh_to_raster(
         scalar = _kdtree_nearest(tree, wet_indices, cv, max_radius, xi_grid, yi_grid)
 
     elif render_mode == "sloping":
-        scalar = _kdtree_idw(tree, wet_indices, cv, max_radius, xi_grid, yi_grid)
+        _cfi = (
+            np.asarray(cell_facepoint_indexes, dtype=np.int64)
+            if cell_facepoint_indexes is not None
+            else None
+        )
+        scalar = _griddata_facepoint_sloping(
+            facepoint_coordinates,
+            np.asarray(facepoint_values, dtype=np.float64),
+            _cfi,
+            dry_mask,
+            tree,
+            max_radius,
+            xi_grid,
+            yi_grid,
+            scatter_interp_method,
+        )
 
     else:  # "hybrid"
         is_horiz_cell = _classify_horizontal_cells(
@@ -655,6 +812,9 @@ def mesh_to_velocity_raster(
     face_active: np.ndarray | None = None,
     fix_triangulation: bool = True,
     extent_bbox: tuple[float, float, float, float] | None = None,
+    facepoint_values: np.ndarray | None = None,
+    scatter_interp_method: str = "linear",
+    cell_facepoint_indexes: np.ndarray | None = None,
 ) -> Path | rasterio.io.DatasetReader:
     """Render a HEC-RAS velocity raster with WSE-based wet extent.
 
@@ -728,6 +888,12 @@ def mesh_to_velocity_raster(
         Override bounding box ``(x_min, y_min, x_max, y_max)`` passed
         through to the internal :func:`mesh_to_raster` call.  See that
         function for full description.
+    facepoint_values : ndarray, shape ``(n_facepoints,)``, optional
+        Pre-computed WSE at every facepoint passed through to the internal
+        :func:`mesh_to_raster` call.  See that function for full description.
+    scatter_interp_method : str, default ``"linear"``
+        Griddata interpolation method passed through to
+        :func:`mesh_to_raster` when *facepoint_values* is provided.
 
     Returns
     -------
@@ -782,6 +948,9 @@ def mesh_to_velocity_raster(
         face_active=face_active,
         fix_triangulation=fix_triangulation,
         extent_bbox=extent_bbox,
+        facepoint_values=facepoint_values,
+        scatter_interp_method=scatter_interp_method,
+        cell_facepoint_indexes=cell_facepoint_indexes,
     )
 
     out_transform = wse_ds.transform
@@ -1329,7 +1498,7 @@ def mesh_to_velocity_raster_interp(
     render_mode: str = "sloping",
     face_active: np.ndarray | None = None,
     method: str = "triangle_blend",
-    scatter_interp_method: str = "linear",
+    scatter_scatter_interp_method: str = "linear",
     fix_triangulation: bool = True,
     extent_bbox: tuple[float, float, float, float] | None = None,
 ) -> Path | rasterio.io.DatasetReader:
@@ -1461,7 +1630,7 @@ def mesh_to_velocity_raster_interp(
             excluded.  This removes discontinuities that can originate at
             cell centres when the WLS velocity differs from the surrounding
             face-midpoint field.
-    scatter_interp_method : str
+    scatter_scatter_interp_method : str
         ``scipy.interpolate.griddata`` *method* argument used by
         ``"scatter_interp"`` and ``"scatter_interp2"``.  Accepted values:
         ``"nearest"``, ``"linear"`` *(default)*, ``"cubic"``.  Ignored for
@@ -1509,10 +1678,10 @@ def mesh_to_velocity_raster_interp(
             f"method must be one of {sorted(_valid_methods)}; got {method!r}"
         )
     _valid_scatter = {"nearest", "linear", "cubic"}
-    if scatter_interp_method not in _valid_scatter:
+    if scatter_scatter_interp_method not in _valid_scatter:
         raise ValueError(
-            f"scatter_interp_method must be one of {sorted(_valid_scatter)}; "
-            f"got {scatter_interp_method!r}"
+            f"scatter_scatter_interp_method must be one of {sorted(_valid_scatter)}; "
+            f"got {scatter_scatter_interp_method!r}"
         )
 
     cell_velocity = np.asarray(cell_velocity, dtype=np.float64)
@@ -1696,7 +1865,7 @@ def mesh_to_velocity_raster_interp(
 
         xi_flat = np.column_stack([xi_grid.ravel(), yi_grid.ravel()])
         # griddata returns (n_pixels, 2); NaN outside convex hull.
-        vel_flat = griddata(pts, vel, xi_flat, method=scatter_interp_method,
+        vel_flat = griddata(pts, vel, xi_flat, method=scatter_scatter_interp_method,
                             fill_value=np.nan, rescale=True)
         vx = vel_flat[:, 0].reshape(n_tight_rows, n_tight_cols)
         vy = vel_flat[:, 1].reshape(n_tight_rows, n_tight_cols)
