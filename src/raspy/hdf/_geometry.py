@@ -161,6 +161,152 @@ class FlowArea:
             self._load("Cells Face and Orientation Values"),
         )
 
+    @property
+    def cell_facepoint_indexes(self) -> np.ndarray:
+        """Corner facepoint indices per cell in polygon order.
+
+        Shape ``(n_cells, 8)``.  Each row contains up to 8 facepoint
+        indices (into :attr:`facepoint_coordinates`) in polygon-traversal
+        order; unused slots are padded with ``-1``.
+
+        Example
+        -------
+        A triangular cell and a quadrilateral cell::
+
+            cell_facepoint_indexes = np.array([
+                [ 5, 12, 18, -1, -1, -1, -1, -1],  # triangle
+                [ 0,  3,  7, 11, -1, -1, -1, -1],  # quad
+            ])
+        """
+        return self._load("Cells FacePoint Indexes")[: self._n_cells]
+
+    @property
+    def cell_polygons(self) -> list[np.ndarray]:
+        """Polygon vertices for every cell in counter-clockwise order.
+
+        Returns a list of length ``n_cells``.  Each element is an
+        ``ndarray`` of shape ``(n_vertices, 2)`` containing the ``(x, y)``
+        coordinates of the cell polygon in **counter-clockwise** winding
+        (GeoJSON / OGC / Shapely exterior-ring convention).
+
+        For cells that border curved faces the interior perimeter points
+        from :attr:`face_perimeter` are inserted between the corner
+        facepoints, giving an accurate boundary representation.  Cells
+        whose face adjacency graph cannot be traversed as a closed cycle
+        emit an empty ``(0, 2)`` array.
+
+        Computed once and cached.
+
+        Examples
+        --------
+        Create Shapely geometries::
+
+            from shapely.geometry import Polygon
+            polys = [Polygon(pts) for pts in fa.cell_polygons]
+
+        Create a GeoDataFrame (requires geopandas)::
+
+            import geopandas as gpd
+            from shapely.geometry import Polygon
+            gdf = gpd.GeoDataFrame(
+                geometry=[Polygon(pts) for pts in fa.cell_polygons],
+                crs="EPSG:…",
+            )
+        """
+        cache_key = "_cell_polygons"
+        if cache_key in self._cache:
+            return self._cache[cache_key]
+
+        from collections import defaultdict
+
+        fp_idx = self.face_facepoint_indexes     # (n_faces, 2)
+        fp_coords = self.facepoint_coordinates   # (n_facepoints, 2)
+        peri_info, peri_vals = self.face_perimeter
+        cell_fp_idx = self.cell_facepoint_indexes  # (n_cells, 8)
+        cfi, cfv = self.cell_face_info
+
+        n = self._n_cells
+
+        # Cells that border at least one curved face need the slow path so
+        # that interior perimeter points are inserted correctly.
+        curved_face_idxs = np.where(peri_info[:, 1] > 0)[0]
+        if len(curved_face_idxs) > 0:
+            face_cell_idx = self.face_cell_indexes
+            curved_cells: set[int] = set(
+                face_cell_idx[curved_face_idxs].flatten().tolist()
+            )
+            curved_cells.discard(-1)
+        else:
+            curved_cells = set()
+
+        polygons: list[np.ndarray] = [np.empty((0, 2), dtype=np.float64) for x in range(n)]
+
+        for c in range(n):
+            if c not in curved_cells:
+                # Fast path: polygon-order corners are already in HDF.
+                corners = cell_fp_idx[c]
+                valid = corners[corners >= 0]
+                poly: np.ndarray = fp_coords[valid].copy()
+            else:
+                # Slow path: adjacency graph walk, inserting interior points.
+                start = int(cfi[c, 0])
+                count = int(cfi[c, 1])
+                face_idxs = cfv[start : start + count, 0]
+
+                adj: dict[int, list[int]] = defaultdict(list)
+                edge_to_face: dict[tuple[int, int], int] = {}
+                for f in face_idxs:
+                    f = int(f)
+                    fp0 = int(fp_idx[f, 0])
+                    fp1 = int(fp_idx[f, 1])
+                    adj[fp0].append(fp1)
+                    adj[fp1].append(fp0)
+                    edge_to_face[(fp0, fp1)] = f
+                    edge_to_face[(fp1, fp0)] = f
+
+                all_pts: list[np.ndarray] = []
+                fps_list = list(adj.keys())
+                current = fps_list[0]
+                prev_fp = None
+                for _ in range(count):
+                    all_pts.append(fp_coords[current])
+                    nb = adj[current]
+                    nxt = nb[1] if nb[0] == prev_fp else nb[0]
+
+                    face_i = edge_to_face.get((current, nxt))
+                    if face_i is not None:
+                        pstart = int(peri_info[face_i, 0])
+                        n_int = int(peri_info[face_i, 1])
+                        if n_int > 0:
+                            pts = peri_vals[pstart : pstart + n_int]
+                            if current != int(fp_idx[face_i, 0]):
+                                pts = pts[::-1]
+                            all_pts.extend(pts)
+
+                    prev_fp = current
+                    current = nxt
+
+                if current != fps_list[0]:  # cycle did not close — malformed
+                    continue
+
+                poly = np.array(all_pts)
+
+            if len(poly) < 3:
+                continue
+
+            # Enforce CCW winding (shoelace signed area: positive → CCW).
+            x, y = poly[:, 0], poly[:, 1]
+            signed_area = float(
+                np.dot(x, np.roll(y, -1)) - np.dot(np.roll(x, -1), y)
+            )
+            if signed_area < 0:
+                poly = poly[::-1]
+
+            polygons[c] = poly
+
+        self._cache[cache_key] = polygons
+        return polygons
+
     # ------------------------------------------------------------------
     # Face geometry
     # ------------------------------------------------------------------
@@ -288,6 +434,7 @@ class FlowArea:
         centroids = 0.5 * (fp0 + fp1)
 
         # Override for curved faces (interior perimeter points present).
+        # returns face index where interior point count > 0
         curved = np.where(peri_info[:, 1] > 0)[0]
         for fi in curved:
             start = int(peri_info[fi, 0])
@@ -377,12 +524,15 @@ class FlowArea:
         from raspy.geo.mesh_validation import check_mesh_cells
 
         cfi, cfv = self.cell_face_info
+        peri_info, peri_vals = self.face_perimeter
         return check_mesh_cells(
             cell_centers=self.cell_centers,
             facepoint_coordinates=self.facepoint_coordinates,
             face_facepoint_indexes=self.face_facepoint_indexes,
             cell_face_info=cfi,
             cell_face_values=cfv,
+            face_perimeter_info=peri_info,
+            face_perimeter_values=peri_vals,
             boundary_polygon=self.perimeter if check_boundary else None,
             tol=tol,
         )
