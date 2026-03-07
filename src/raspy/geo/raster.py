@@ -1088,28 +1088,6 @@ def _compute_facepoint_velocities(
     return fp_vel_sum / safe_count
 
 
-@timed(logging.DEBUG)
-def _compute_face_midpoints(
-    facepoint_coordinates: np.ndarray,
-    face_facepoint_indexes: np.ndarray,
-) -> np.ndarray:
-    """Return the midpoint coordinate of each face.
-
-    Parameters
-    ----------
-    facepoint_coordinates : ndarray, shape ``(n_fp, 2)``
-        X, Y coordinates of all facepoints.
-    face_facepoint_indexes : ndarray, shape ``(n_faces, 2)``
-        Start and end facepoint index for each face.
-
-    Returns
-    -------
-    ndarray, shape ``(n_faces, 2)``
-        Midpoint ``[x, y]`` for each face.
-    """
-    fp0 = face_facepoint_indexes[:, 0]
-    fp1 = face_facepoint_indexes[:, 1]
-    return 0.5 * (facepoint_coordinates[fp0] + facepoint_coordinates[fp1])
 
 
 @timed(logging.DEBUG)
@@ -1120,7 +1098,7 @@ def _interp_face_idw(
     n_cells: int,
     cell_face_info: np.ndarray,
     cell_face_values: np.ndarray,
-    face_midpoints: np.ndarray,
+    face_centroids: np.ndarray,
     face_vel_2d: np.ndarray,
     dry_mask: np.ndarray,
     power: float = 2.0,
@@ -1153,8 +1131,8 @@ def _interp_face_idw(
         ``[start_index, count]`` into *cell_face_values* for each cell.
     cell_face_values : ndarray, shape ``(total, 2)``
         ``[face_index, orientation]`` per cell-face association.
-    face_midpoints : ndarray, shape ``(n_faces, 2)``
-        X, Y midpoint coordinate of each face.
+    face_centroids : ndarray, shape ``(n_faces, 2)``
+        Centroid coordinate of each face.
     face_vel_2d : ndarray, shape ``(n_faces, 2)``
         Full 2D ``[Vx, Vy]`` velocity at each face midpoint.
     dry_mask : ndarray, shape ``(n_cells,)``, bool
@@ -1195,7 +1173,7 @@ def _interp_face_idw(
         count = int(cell_face_info_arr[c, 1])
         fi = cell_face_values_arr[start : start + count, 0].astype(int)
 
-        mp = face_midpoints[fi]   # (N, 2)
+        mp = face_centroids[fi]   # (N, 2)
         fv = face_vel_2d[fi]      # (N, 2)
 
         # Distance from each pixel to each face midpoint: (n_pix, N)
@@ -1218,7 +1196,7 @@ def _interp_face_gradient(
     cell_centers: np.ndarray,
     cell_face_info: np.ndarray,
     cell_face_values: np.ndarray,
-    face_midpoints: np.ndarray,
+    face_centroids: np.ndarray,
     face_vel_2d: np.ndarray,
     dry_mask: np.ndarray,
     cell_velocity: np.ndarray,
@@ -1256,8 +1234,8 @@ def _interp_face_gradient(
         ``[start_index, count]`` into *cell_face_values* per cell.
     cell_face_values : ndarray, shape ``(total, 2)``
         ``[face_index, orientation]`` per cell-face association.
-    face_midpoints : ndarray, shape ``(n_faces, 2)``
-        X, Y midpoint of each face.
+    face_centroids : ndarray, shape ``(n_faces, 2)``
+        Centroid coordinate of each face.
     face_vel_2d : ndarray, shape ``(n_faces, 2)``
         Full 2D ``[Vx, Vy]`` velocity at each face midpoint.
     dry_mask : ndarray, shape ``(n_cells,)``, bool
@@ -1296,7 +1274,7 @@ def _interp_face_gradient(
         count = int(cell_face_info_arr[c, 1])
         fi = cell_face_values_arr[start : start + count, 0].astype(int)
 
-        mp = face_midpoints[fi]   # (N, 2)
+        mp = face_centroids[fi]   # (N, 2)
         fv = face_vel_2d[fi]      # (N, 2)
         N = len(fi)
 
@@ -1335,6 +1313,7 @@ def mesh_to_velocity_raster_interp(
     cell_face_values: np.ndarray,
     face_normals: np.ndarray,
     face_vel: np.ndarray,
+    face_centroids: np.ndarray,
     cell_wse: np.ndarray,
     cell_velocity: np.ndarray,
     output_path: str | Path | None = None,
@@ -1696,8 +1675,6 @@ def mesh_to_velocity_raster_interp(
                 "Install it with: pip install raspy[geo]"
             ) from exc
 
-        face_midpoints = _compute_face_midpoints(facepoint_coords_arr, face_fp_idx)
-
         # Wet-face mask: at least one wet neighbour.
         left  = face_ci_arr[:, 0]
         right = face_ci_arr[:, 1]
@@ -1709,12 +1686,12 @@ def mesh_to_velocity_raster_interp(
         )
 
         if method == "scatter_interp":
-            # Include wet cell centres in addition to face midpoints.
-            pts = np.vstack([cell_centers_arr[~dry_mask], face_midpoints[wet_face]])
+            # Include wet cell centres in addition to face centroids.
+            pts = np.vstack([cell_centers_arr[~dry_mask], face_centroids[wet_face]])
             vel = np.vstack([cell_velocity[~dry_mask],    face_vel_2d[wet_face]])
         else:
-            # Face midpoints only  avoids discontinuities at cell centres.
-            pts = face_midpoints[wet_face]
+            # Face centroids only — avoids discontinuities at cell centres.
+            pts = face_centroids[wet_face]
             vel = face_vel_2d[wet_face]
 
         xi_flat = np.column_stack([xi_grid.ravel(), yi_grid.ravel()])
@@ -1807,20 +1784,17 @@ def mesh_to_velocity_raster_interp(
                 )
 
             else:
-                face_midpoints = _compute_face_midpoints(
-                    facepoint_coords_arr, face_fp_idx
-                )
                 if method == "face_idw":
                     v_pixel = _interp_face_idw(
                         px, py, cell_idx_hit, n_cells,
                         cell_face_info_arr, cell_face_values_arr,
-                        face_midpoints, face_vel_2d, dry_mask,
+                        face_centroids, face_vel_2d, dry_mask,
                     )
                 else:  # face_gradient
                     v_pixel = _interp_face_gradient(
                         px, py, cell_idx_hit, n_cells,
                         cell_centers_arr, cell_face_info_arr, cell_face_values_arr,
-                        face_midpoints, face_vel_2d, dry_mask, cell_velocity,
+                        face_centroids, face_vel_2d, dry_mask, cell_velocity,
                     )
 
             vel_flat = np.full((n_tight_rows * n_tight_cols, 2), np.nan)

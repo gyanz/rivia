@@ -238,6 +238,67 @@ class FlowArea:
         return self._load("Faces FacePoint Indexes")
 
     @property
+    def face_perimeter(self) -> tuple[np.ndarray, np.ndarray]:
+        """Interior perimeter points along curved faces.
+
+        Most faces are straight lines between their two endpoint facepoints.
+        For curved faces, one or more intermediate ``(x, y)`` coordinate
+        points are stored here.  These points are **not** indexed facepoints;
+        they do not appear in :attr:`facepoint_coordinates`.
+
+        Returns
+        -------
+        info : ndarray, shape ``(n_faces, 2)``
+            ``[start_index, count]`` into *values*.  ``count == 0`` for
+            straight faces.
+        values : ndarray, shape ``(total_interior_pts, 2)``
+            ``(x, y)`` coordinates of interior perimeter points in order
+            along the face polyline.
+        """
+        return (
+            self._load("Faces Perimeter Info"),
+            self._load("Faces Perimeter Values"),
+        )
+
+    @property
+    def face_centroids(self) -> np.ndarray:
+        """Centroid coordinate of each face.  Shape ``(n_faces, 2)``.
+
+        For straight faces (no interior perimeter points) this equals the
+        midpoint of the chord between the two endpoint facepoints.  For
+        curved faces the centroid is the unweighted mean of all points
+        defining the face polyline: the two endpoint facepoints plus all
+        interior perimeter points from :attr:`face_perimeter`.
+
+        Computed once and cached; subsequent accesses return the same array.
+        """
+        cache_key = "_face_centroids"
+        if cache_key in self._cache:
+            return self._cache[cache_key]
+
+        fp_idx = self._load("Faces FacePoint Indexes")    # (n_faces, 2)
+        fp_coords = self._load("FacePoints Coordinate")   # (n_facepoints, 2)
+        peri_info = self._load("Faces Perimeter Info")    # (n_faces, 2)
+        peri_vals = self._load("Faces Perimeter Values")  # (total, 2)
+
+        fp0 = fp_coords[fp_idx[:, 0]]   # (n_faces, 2)
+        fp1 = fp_coords[fp_idx[:, 1]]   # (n_faces, 2)
+
+        # Default: straight-face midpoint for all faces.
+        centroids = 0.5 * (fp0 + fp1)
+
+        # Override for curved faces (interior perimeter points present).
+        curved = np.where(peri_info[:, 1] > 0)[0]
+        for fi in curved:
+            start = int(peri_info[fi, 0])
+            count = int(peri_info[fi, 1])
+            pts = np.vstack([fp0[fi], peri_vals[start : start + count], fp1[fi]])
+            centroids[fi] = pts.mean(axis=0)
+
+        self._cache[cache_key] = centroids
+        return centroids
+
+    @property
     def facepoint_coordinates(self) -> np.ndarray:
         """x, y coordinates of all face endpoints.  Shape ``(n_facepoints, 2)``."""
         return self._load("FacePoints Coordinate")
