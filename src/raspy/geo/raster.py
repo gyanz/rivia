@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 
 
 # ---------------------------------------------------------------------------
-# KDTree rendering helpers â€” called from mesh_to_raster and mesh_to_velocity_raster
+# KDTree rendering helpers  called from mesh_to_raster and mesh_to_velocity_raster
 # ---------------------------------------------------------------------------
 
 
@@ -32,7 +32,7 @@ def _tight_pixel_bounds(
 
     Converts geographic coordinates to pixel indices aligned to *transform*.
     When *max_cols* and *max_rows* are given the result is clamped to
-    ``[0, max_cols] Ã— [0, max_rows]`` (pass ``None`` to skip clamping).
+    ``[0, max_cols] x [0, max_rows]`` (pass ``None`` to skip clamping).
 
     Returns
     -------
@@ -200,7 +200,7 @@ def _kdtree_idw(
     if in_mesh.any():
         d = dist[in_mesh]
         i = idx[in_mesh]
-        # Exact hit: pixel coincides with a cell centre â€” use that value directly.
+        # Exact hit: pixel coincides with a cell centre  use that value directly.
         exact = d[:, 0] == 0.0
         weights = 1.0 / np.maximum(d, 1e-14) ** 2
         weights[exact, 0] = 1.0
@@ -280,7 +280,7 @@ def mesh_to_raster(
     """Interpolate HEC-RAS mesh results to a raster using mesh-conforming triangulation.
 
     This function builds a triangulation that exactly conforms to the
-    cell polygons â€” mirroring how HEC-RAS RASMapper creates its result maps.
+    cell polygons  mirroring how HEC-RAS RASMapper creates its result maps.
 
     **Algorithm**
 
@@ -348,15 +348,15 @@ def mesh_to_raster(
     render_mode : str
         Water-surface rendering mode, matching HEC-RAS RASMapper options:
 
-        ``"sloping"`` *(default)* â€” interpolates WSE between cell centres
+        ``"sloping"`` *(default)*  interpolates WSE between cell centres
         using distance-weighted face values and linear triangular
         interpolation, producing a smooth, continuous inundation surface.
 
-        ``"horizontal"`` â€” assigns each output pixel the flat cell-centre
+        ``"horizontal"``  assigns each output pixel the flat cell-centre
         WSE of the cell it falls inside.  Produces a stepped "patchwork"
         appearance at cell boundaries; useful for checking raw model output.
 
-        ``"hybrid"`` â€” uses sloping rendering where adjacent wet cells are
+        ``"hybrid"``  uses sloping rendering where adjacent wet cells are
         hydraulically connected (active face between them) and horizontal
         rendering where they are separated by a dry face.  Requires
         *face_active*.
@@ -401,7 +401,7 @@ def mesh_to_raster(
     Always writes a single band named ``"value"``.  For velocity rasters use
     :func:`mesh_to_velocity_raster` instead.
     """
-    # â”€â”€ Deferred imports â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    #  Deferred imports 
     try:
         import rasterio
         from rasterio.crs import CRS
@@ -421,7 +421,7 @@ def mesh_to_raster(
             "Install it with: pip install raspy[geo]"
         ) from exc
 
-    # â”€â”€ Validate â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    #  Validate 
     if reference_raster is not None and reference_transform is not None:
         raise ValueError(
             "Specify either reference_raster or reference_transform, not both."
@@ -448,11 +448,11 @@ def mesh_to_raster(
     # cell_values already converted and validated above the validate block.
 
     n_cells = len(cell_centers)
-    # Slice to real cells only â€” HDF may append ghost/padding rows beyond n_cells.
+    # Slice to real cells only  HDF may append ghost/padding rows beyond n_cells.
     cell_face_info = np.asarray(cell_face_info, dtype=np.int64)[:n_cells]
     n_facepoints = len(facepoint_coordinates)
 
-    # â”€â”€ Dry-cell masking â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    #  Dry-cell masking 
     dry_mask = (
         cell_values < min_value
         if min_value is not None
@@ -461,10 +461,10 @@ def mesh_to_raster(
     cv = cell_values.copy()
     cv[dry_mask] = np.nan
 
-    # â”€â”€ Build unified point set for extent calculation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    #  Build unified point set for extent calculation 
     all_pts = np.vstack([cell_centers, facepoint_coordinates])
 
-    # â”€â”€ Resolve transform and CRS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    #  Resolve transform and CRS 
     ref_width: int | None = None
     ref_height: int | None = None
     transform = reference_transform
@@ -479,7 +479,7 @@ def mesh_to_raster(
     if crs is not None and not isinstance(crs, CRS):
         crs = CRS.from_user_input(crs)
 
-    # â”€â”€ Build output pixel grid â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    #  Build output pixel grid 
     # When extent_bbox is supplied (e.g. from the perimeter polygon) use it
     # directly; otherwise derive the extent from the full point cloud so the
     # grid covers the mesh boundary rather than just the cell-centre cloud.
@@ -534,12 +534,12 @@ def mesh_to_raster(
 
     xi_grid, yi_grid = np.meshgrid(xi, yi)
 
-    # â”€â”€ Build KDTree on wet cell centres â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    #  Build KDTree on wet cell centres 
     tree, wet_indices, max_radius = _build_wet_kdtree(
         cell_centers, dry_mask, facepoint_coordinates
     )
 
-    # â”€â”€ Render â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    #  Render 
     if render_mode == "horizontal":
         scalar = _kdtree_nearest(tree, wet_indices, cv, max_radius, xi_grid, yi_grid)
 
@@ -567,7 +567,7 @@ def mesh_to_raster(
         )
         scalar = np.where(pixel_is_horiz, scalar_horiz, scalar_slop)
 
-    # â”€â”€ Embed tight result into full output array â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    #  Embed tight result into full output array 
     # When snap_to_reference_extent=True the KDTree ran on a tight sub-grid;
     # paste that result into a full-size NaN array now.
     if embed_tight:
@@ -575,7 +575,7 @@ def mesh_to_raster(
         full[row_min:row_max, col_min:col_max] = scalar
         scalar = full
 
-    # â”€â”€ Post-interpolation masking and band assembly â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    #  Post-interpolation masking and band assembly 
     if min_value is not None:
         scalar[scalar < min_value] = np.nan
     if reference_raster is not None:
@@ -597,7 +597,7 @@ def mesh_to_raster(
     band_arrays = [scalar]
     band_names = ["value"]
 
-    # â”€â”€ Write GeoTIFF â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    #  Write GeoTIFF 
     profile: dict = {
         "driver": "GTiff",
         "dtype": "float32",
@@ -663,9 +663,9 @@ def mesh_to_velocity_raster(
     those wet pixels.  This function replicates that two-step process:
 
     1. **Render WSE** in-memory using :func:`mesh_to_raster` with the
-       requested *render_mode* â€” this determines which raster pixels are
+       requested *render_mode*  this determines which raster pixels are
        wet and, for sloping/hybrid modes, the pixel-level WSE.
-    2. **Assign velocity horizontally** â€” each wet pixel is mapped to
+    2. **Assign velocity horizontally**  each wet pixel is mapped to
        its parent mesh cell via a trifinder, then receives that cell's
        pre-computed WLS velocity vector ``[Vx, Vy]``.  Velocity is *not*
        spatially interpolated across cell boundaries, which would be
@@ -719,7 +719,7 @@ def mesh_to_velocity_raster(
         When *reference_raster* is given, extend the output to its full
         extent (default ``True``).
     render_mode : str
-        Water-surface rendering mode â€” ``"sloping"`` (default),
+        Water-surface rendering mode  ``"sloping"`` (default),
         ``"horizontal"``, or ``"hybrid"``.  Controls which pixels are
         considered wet and therefore receive a velocity value.
     face_active : ndarray, shape ``(n_faces,)``, bool, optional
@@ -760,7 +760,7 @@ def mesh_to_velocity_raster(
             speed_pre = np.linalg.norm(cell_velocity, axis=1)
         cell_wse_for_render[speed_pre < vel_min] = np.nan
 
-    # â”€â”€ Step 1: Render WSE in-memory to determine wet extent and grid. â”€â”€â”€â”€â”€â”€
+    #  Step 1: Render WSE in-memory to determine wet extent and grid. 
     wse_ds = mesh_to_raster(
         cell_centers=cell_centers,
         facepoint_coordinates=facepoint_coordinates,
@@ -792,13 +792,13 @@ def mesh_to_velocity_raster(
     wse_pixel = wse_ds.read(1).astype(np.float64)
     wse_ds.close()
 
-    # Pixels where WSE raster is valid â†’ wet; velocity is nodata everywhere else.
+    # Pixels where WSE raster is valid  wet; velocity is nodata everywhere else.
     if wse_nodata_val is not None:
         wet_mask = wse_pixel != wse_nodata_val
     else:
         wet_mask = np.isfinite(wse_pixel)
 
-    # â”€â”€ Step 2: Build KDTree for cell-ownership lookup; assign velocity. â”€â”€â”€â”€
+    #  Step 2: Build KDTree for cell-ownership lookup; assign velocity. 
     cell_centers_arr = np.asarray(cell_centers, dtype=np.float64)
     facepoint_coords_arr = np.asarray(facepoint_coordinates, dtype=np.float64)
     dry_mask = np.isnan(cell_wse_for_render)
@@ -806,7 +806,7 @@ def mesh_to_velocity_raster(
     cell_vel = cell_velocity.copy()
     cell_vel[dry_mask] = np.nan  # propagate dry-cell exclusion
 
-    # â”€â”€ Step 3: Map each pixel to its parent cell; assign velocity. â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    #  Step 3: Map each pixel to its parent cell; assign velocity. 
     dx = abs(out_transform.a)
     dy = abs(out_transform.e)
 
@@ -838,7 +838,7 @@ def mesh_to_velocity_raster(
     vx[~wet_mask] = np.nan
     vy[~wet_mask] = np.nan
 
-    # â”€â”€ Step 4: Speed, direction, min_value post-mask. â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    #  Step 4: Speed, direction, min_value post-mask. 
     with np.errstate(invalid="ignore"):
         speed = np.sqrt(vx ** 2 + vy ** 2)
     direction = (90.0 - np.degrees(np.arctan2(vy, vx))) % 360.0
@@ -851,7 +851,7 @@ def mesh_to_velocity_raster(
     band_arrays = [vx, vy, speed, direction]
     band_names = ["Vx", "Vy", "Speed", "Direction_deg_from_N"]
 
-    # â”€â”€ Step 5: Write output raster. â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    #  Step 5: Write output raster. 
     profile: dict = {
         "driver": "GTiff",
         "dtype": "float32",
@@ -904,8 +904,8 @@ def _compute_face_velocity_2d(
 
     .. code-block:: text
 
-        vt_L = cell_velocity[L] Â· t_hat
-        vt_R = cell_velocity[R] Â· t_hat
+        vt_L = cell_velocity[L] * t_hat
+        vt_R = cell_velocity[R] * t_hat
         vt   = (vt_L + vt_R) / 2          (both cells hydraulically connected)
         V_face = vn * n_hat + vt * t_hat
 
@@ -935,7 +935,7 @@ def _compute_face_velocity_2d(
     """
     n_faces = len(face_normals)
     nx_ny = face_normals[:, :2]                         # (n_faces, 2)
-    t_hat = np.column_stack([-nx_ny[:, 1], nx_ny[:, 0]])  # (n_faces, 2) â€” 90Â° CCW
+    t_hat = np.column_stack([-nx_ny[:, 1], nx_ny[:, 0]])  # (n_faces, 2)  90 CCW
 
     left  = face_cell_indexes[:, 0]
     right = face_cell_indexes[:, 1]
@@ -961,7 +961,7 @@ def _compute_face_velocity_2d(
     vt[both]       = 0.5 * (vt_L[both] + vt_R[both])
     vt[left_only]  = vt_L[left_only]
     vt[right_only] = vt_R[right_only]
-    # Faces with no valid neighbour: vt stays 0 â€” normal component still correct.
+    # Faces with no valid neighbour: vt stays 0  normal component still correct.
 
     # Compose: preserve measured vn on the normal axis; add estimated vt.
     return face_vel[:, np.newaxis] * nx_ny + vt[:, np.newaxis] * t_hat
@@ -983,7 +983,7 @@ def _cell_center_barycentric_weight(
 
     The weight is 1 at the cell center, 0 on the opposite face edge (BC),
     and varies linearly in between.  Numerically degenerate triangles
-    (area â‰ˆ 0) return weight 1 so they fall back to the cell-centre WLS
+    (area  0) return weight 1 so they fall back to the cell-centre WLS
     value.
     """
     denom = (by - cy) * (ax - cx) + (cx - bx) * (ay - cy)
@@ -1011,7 +1011,7 @@ def _barycentric_weights(
 
     ``w0`` is the weight of vertex A, ``w1`` of B, ``w2`` of C.
     The weights sum to 1; all are in ``[0, 1]`` for points strictly inside
-    the triangle.  Degenerate triangles (area â‰ˆ 0) return ``(1, 0, 0)`` so
+    the triangle.  Degenerate triangles (area  0) return ``(1, 0, 0)`` so
     the result falls back to the A-vertex value.
     """
     denom = (by - cy) * (ax - cx) + (cx - bx) * (ay - cy)
@@ -1135,7 +1135,7 @@ def _interp_face_idw(
     .. code-block:: text
 
         w_i  = 1 / max(d(P, m_i), min_dist) ^ power
-        V(P) = Î£ w_i V_face_i / Î£ w_i
+        V(P) = sum(w_i * V_face_i) / sum(w_i)
 
     This eliminates the triangulation-edge discontinuities of the
     ``"triangle_blend"`` method while preserving the exact face-normal
@@ -1310,7 +1310,7 @@ def _interp_face_gradient(
         yi = mp[:, 1] - y0   # (N,)
         A = np.column_stack([np.ones(N), xi, yi])   # (N, 3)
 
-        # Solve A @ coeff = fv  â†’  coeff shape (3, 2)
+        # Solve A @ coeff = fv    coeff shape (3, 2)
         coeff, _, _, _ = np.linalg.lstsq(A, fv, rcond=None)
 
         dxp = ppx - x0   # (n_pix,)
@@ -1368,13 +1368,13 @@ def mesh_to_velocity_raster_interp(
 
         V(P) = w0 * V_cell_WLS  +  (1 - w0) * V_face
 
-    where ``w0`` is the barycentric weight of the cell-center vertex â€”
-    equal to 1 at the centre and 0 on the face edge â€” and ``V_face`` is
+    where ``w0`` is the barycentric weight of the cell-center vertex,
+    equal to 1 at the centre and 0 on the face edge, and ``V_face`` is
     the full 2D face velocity reconstructed via the **double-C stencil**:
 
     .. code-block:: text
 
-        vt   = (V_cell[L] Â· t_hat + V_cell[R] Â· t_hat) / 2
+        vt   = (V_cell[L] * t_hat + V_cell[R] * t_hat) / 2
         V_face = vn * n_hat  +  vt * t_hat
 
     ``vn`` is preserved exactly from the HDF; only the tangential component
@@ -1430,7 +1430,7 @@ def mesh_to_velocity_raster_interp(
     snap_to_reference_extent : bool
         Extend output to the full reference raster extent (default ``True``).
     render_mode : str
-        WSE rendering mode â€” ``"sloping"`` (default), ``"horizontal"``,
+        WSE rendering mode  ``"sloping"`` (default), ``"horizontal"``,
         or ``"hybrid"``.
     face_active : ndarray, shape ``(n_faces,)``, bool, optional
         Per-face hydraulic activity flag required by ``render_mode="hybrid"``.
@@ -1478,7 +1478,7 @@ def mesh_to_velocity_raster_interp(
 
         ``"scatter_interp2"``
             Same as ``"scatter_interp"`` but the point cloud consists of
-            **wet face midpoints only** â€” cell-centre WLS velocities are
+            **wet face midpoints only**  cell-centre WLS velocities are
             excluded.  This removes discontinuities that can originate at
             cell centres when the WLS velocity differs from the surrounding
             face-midpoint field.
@@ -1510,7 +1510,7 @@ def mesh_to_velocity_raster_interp(
     Notes
     -----
     All three methods use the double-C stencil to reconstruct the full 2D
-    face velocity (``vnÂ·nÌ‚ + vtÂ·tÌ‚``), keeping ``vn`` exact as stored in
+    face velocity (``vn * n_hat + vt * t_hat``), keeping ``vn`` exact as stored in
     the HDF and estimating ``vt`` from adjacent-cell WLS projections.
     """
     try:
@@ -1548,7 +1548,7 @@ def mesh_to_velocity_raster_interp(
             speed_pre = np.linalg.norm(cell_velocity, axis=1)
         cell_wse_for_render[speed_pre < vel_min] = np.nan
 
-    # â”€â”€ Step 1: Render WSE in-memory to determine wet extent and grid. â”€â”€â”€â”€â”€â”€
+    #  Step 1: Render WSE in-memory to determine wet extent and grid. 
     wse_ds = mesh_to_raster(
         cell_centers=cell_centers,
         facepoint_coordinates=facepoint_coordinates,
@@ -1584,7 +1584,7 @@ def mesh_to_velocity_raster_interp(
     else:
         wet_mask = np.isfinite(wse_pixel)
 
-    # â”€â”€ Step 2: Array conversions (shared by all methods). â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    #  Step 2: Array conversions (shared by all methods). 
     cell_centers_arr = np.asarray(cell_centers, dtype=np.float64)
     facepoint_coords_arr = np.asarray(facepoint_coordinates, dtype=np.float64)
     face_fp_idx = np.asarray(face_facepoint_indexes, dtype=np.int64)
@@ -1595,7 +1595,7 @@ def mesh_to_velocity_raster_interp(
 
     dry_mask = np.isnan(cell_wse_for_render)
 
-    # â”€â”€ Step 2a: Fan-triangulation (cell-local methods only). â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    #  Step 2a: Fan-triangulation (cell-local methods only). 
     if method not in {"scatter_interp", "scatter_interp2"}:
         all_pts = np.vstack([cell_centers_arr, facepoint_coords_arr])
         counts = cell_face_info_arr[:, 1]
@@ -1625,7 +1625,7 @@ def mesh_to_velocity_raster_interp(
         tri_to_face = face_idx_arr[valid_tris]
 
         if fix_triangulation:
-            # Remove degenerate and zero-area triangles â€” both can invalidate
+            # Remove degenerate and zero-area triangles  both can invalidate
             # TrapezoidMapTriFinder.  Note: full point deduplication is not
             # applied here because facepoint_blend indexes into v_fp_all via
             # `vertex_idx - n_cells`, which relies on the original index layout.
@@ -1653,7 +1653,7 @@ def mesh_to_velocity_raster_interp(
         triang = mtri.Triangulation(all_pts[:, 0], all_pts[:, 1], triangles)
         triang.set_mask(tri_mask_arr)
 
-    # â”€â”€ Step 2b: Full 2D face velocity â€” double-C stencil (shared). â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    #  Step 2b: Full 2D face velocity  double-C stencil (shared). 
     face_ci_arr = np.asarray(face_cell_indexes, dtype=np.int64)
     face_vel_2d = _compute_face_velocity_2d(
         face_normals=face_normals_arr,
@@ -1664,7 +1664,7 @@ def mesh_to_velocity_raster_interp(
         n_cells=n_cells,
     )
 
-    # â”€â”€ Step 3: Tight raster grid (mesh bounding box only). â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    #  Step 3: Tight raster grid (mesh bounding box only). 
     # KDTree and trifinder queries run only on this sub-grid; the result is
     # embedded into the full output array at the end.
     dx = abs(out_transform.a)
@@ -1683,7 +1683,7 @@ def mesh_to_velocity_raster_interp(
         out_transform.f - (np.arange(row_min, row_max) + 0.5) * dy,
     )
 
-    # â”€â”€ Step 4: Interpolate velocities. â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    #  Step 4: Interpolate velocities. 
     if method in {"scatter_interp", "scatter_interp2"}:
         # Global scattered interpolation.  scipy LinearNDInterpolator builds
         # one Delaunay triangulation over the whole mesh and interpolates
@@ -1713,7 +1713,7 @@ def mesh_to_velocity_raster_interp(
             pts = np.vstack([cell_centers_arr[~dry_mask], face_midpoints[wet_face]])
             vel = np.vstack([cell_velocity[~dry_mask],    face_vel_2d[wet_face]])
         else:
-            # Face midpoints only â€” avoids discontinuities at cell centres.
+            # Face midpoints only  avoids discontinuities at cell centres.
             pts = face_midpoints[wet_face]
             vel = face_vel_2d[wet_face]
 
@@ -1725,7 +1725,7 @@ def mesh_to_velocity_raster_interp(
         vy = vel_flat[:, 1].reshape(n_tight_rows, n_tight_cols)
 
     else:
-        # â”€â”€ Cell-local methods: map each pixel to its fan-triangle. â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        #  Cell-local methods: map each pixel to its fan-triangle. 
         # If TrapezoidMapTriFinder fails (e.g. overlapping fan-triangles from
         # non-convex cells), fall back to KDTree flat cell-centre assignment.
         try:
@@ -1744,7 +1744,7 @@ def mesh_to_velocity_raster_interp(
                 _tree, _wet_idx, cell_vel_nd, _max_r, xi_grid, yi_grid
             ).reshape(-1, 2)
         else:
-            # â”€â”€ trifinder succeeded â€” run cell-local interpolation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            #  trifinder succeeded  run cell-local interpolation 
             tri_idx_flat = trifinder_fn(xi_grid.ravel(), yi_grid.ravel())
 
             inside = (tri_idx_flat >= 0) & wet_mask_tight.ravel()
@@ -1840,7 +1840,7 @@ def mesh_to_velocity_raster_interp(
     vx[~wet_mask] = np.nan
     vy[~wet_mask] = np.nan
 
-    # â”€â”€ Step 4: Speed, direction, vel_min post-mask. â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    #  Step 4: Speed, direction, vel_min post-mask. 
     with np.errstate(invalid="ignore"):
         speed = np.sqrt(vx ** 2 + vy ** 2)
     direction = (90.0 - np.degrees(np.arctan2(vy, vx))) % 360.0
@@ -1853,7 +1853,7 @@ def mesh_to_velocity_raster_interp(
     band_arrays = [vx, vy, speed, direction]
     band_names = ["Vx", "Vy", "Speed", "Direction_deg_from_N"]
 
-    # â”€â”€ Step 5: Write output raster. â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    #  Step 5: Write output raster. 
     profile: dict = {
         "driver": "GTiff",
         "dtype": "float32",
@@ -1980,7 +1980,7 @@ def _depth_from_wse_and_dem(
     """Subtract a DEM from an interpolated WSE raster to produce a depth raster.
 
     The WSE dataset must be pixel-aligned with *reference_raster* (same pixel
-    grid, possibly a sub-extent â€” as guaranteed when *reference_raster* was
+    grid, possibly a sub-extent  as guaranteed when *reference_raster* was
     used to create the WSE raster).  The DEM window that exactly
     overlaps *wse_ds* is read using a pixel-aligned ``rasterio.Window``; no
     resampling is performed.
@@ -2107,7 +2107,7 @@ def _mask_outside_polygon(
         [geom],
         transform=ds.transform,
         out_shape=(ds.height, ds.width),
-        invert=False,  # False â†’ True where OUTSIDE the polygon
+        invert=False,  # False -> True where OUTSIDE the polygon
     )
 
     data = ds.read()  # shape: (n_bands, height, width)
@@ -2127,6 +2127,3 @@ def _mask_outside_polygon(
     with rasterio.open(out_path, "w", **profile) as dst:
         dst.write(data)
     return out_path
-
-
-
