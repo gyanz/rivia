@@ -918,8 +918,12 @@ class FlowAreaResults(FlowArea):
         elif variable == "water_surface":
             if timestep is None:
                 values = self.max_water_surface["value"].to_numpy()
+                depth_at_cells = self.max_depth()["value"].to_numpy()
             else:
                 values = np.array(self.water_surface[timestep, : self.n_cells])
+                depth_at_cells = self.depth(timestep)
+            if depth_min is not None:
+                values[depth_at_cells < depth_min] = np.nan
         elif variable in ("cell_speed", "cell_velocity"):
             # Compute WLS velocity vectors and cell WSE for the velocity raster.
             # mesh_to_velocity_raster renders WSE to determine wet extent, then
@@ -993,7 +997,7 @@ class FlowAreaResults(FlowArea):
                 return result
             return depth_ds
 
-        if variable == "cell_velocity":
+        elif variable == "cell_velocity":
             if vel_interp_method == "flat_cell_center":
                 vel_ds = _raster.mesh_to_velocity_raster(
                     **mesh_kw,
@@ -1025,7 +1029,7 @@ class FlowAreaResults(FlowArea):
                 return result
             return vel_ds
 
-        if variable == "cell_speed":
+        elif variable == "cell_speed":
             if vel_interp_method == "flat_cell_center":
                 vel_ds = _raster.mesh_to_velocity_raster(
                     **mesh_kw,
@@ -1060,22 +1064,23 @@ class FlowAreaResults(FlowArea):
                 return result
             return speed_ds
 
-        # water_surface: min_above_ref controls the wet/dry threshold relative
-        # to the DEM (when reference_raster is given); no scalar min_value needed.
-        wse_ds = _raster.mesh_to_raster(
-            **mesh_kw,
-            cell_values=values,
-            output_path=None if clip_to_perimeter else output_path,
-            min_value=None,
-            min_above_ref=depth_min,
-        )
-        if clip_to_perimeter:
-            result = _raster._mask_outside_polygon(
-                wse_ds, self.perimeter, nodata, output_path
+        else:
+            # water_surface: min_above_ref controls the wet/dry threshold relative
+            # to the DEM (when reference_raster is given); no scalar min_value needed.
+            wse_ds = _raster.mesh_to_raster(
+                **mesh_kw,
+                cell_values=values,
+                output_path=None if clip_to_perimeter else output_path,
+                min_value=None,
+                min_above_ref=depth_min,
             )
-            wse_ds.close()
-            return result
-        return wse_ds
+            if clip_to_perimeter:
+                result = _raster._mask_outside_polygon(
+                    wse_ds, self.perimeter, nodata, output_path
+                )
+                wse_ds.close()
+                return result
+            return wse_ds
 
     @timed(logging.INFO)
     def export_hydraulic_rasters(
