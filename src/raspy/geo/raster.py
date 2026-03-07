@@ -621,6 +621,7 @@ def mesh_to_raster(
     render_mode: str = "sloping",
     face_active: np.ndarray | None = None,
     fix_triangulation: bool = True,
+    extent_bbox: tuple[float, float, float, float] | None = None,
 ) -> Path | rasterio.io.DatasetReader:
     """Interpolate HEC-RAS mesh results to a raster using mesh-conforming triangulation.
 
@@ -716,6 +717,15 @@ def mesh_to_raster(
         ``RuntimeError: Triangulation is invalid``.  Disable to skip the
         extra work on meshes known to be clean (saves a few milliseconds on
         very large models).
+    extent_bbox : tuple[float, float, float, float], optional
+        ``(x_min, y_min, x_max, y_max)`` geographic bounding box that
+        overrides the automatic extent derived from the cell-centre and
+        facepoint clouds.  When provided alongside a reference raster the
+        bbox is snapped outward to the nearest reference pixel boundaries
+        via :func:`_tight_pixel_bounds`, preserving pixel-grid alignment.
+        Intended for use with ``clip_to_perimeter`` in the plan layer so
+        the raster extent is driven by the mesh perimeter polygon rather
+        than the full facepoint cloud.
 
     Returns
     -------
@@ -816,10 +826,14 @@ def mesh_to_raster(
         crs = CRS.from_user_input(crs)
 
     # ── Build output pixel grid ────────────────────────────────────────────
-    # Use the full point set (cell centres + facepoints) for extent so the
+    # When extent_bbox is supplied (e.g. from the perimeter polygon) use it
+    # directly; otherwise derive the extent from the full point cloud so the
     # grid covers the mesh boundary rather than just the cell-centre cloud.
-    x_min, y_min = all_pts.min(axis=0)
-    x_max, y_max = all_pts.max(axis=0)
+    if extent_bbox is not None:
+        x_min, y_min, x_max, y_max = extent_bbox
+    else:
+        x_min, y_min = all_pts.min(axis=0)
+        x_max, y_max = all_pts.max(axis=0)
 
     if transform is not None:
         dx = abs(transform.a)
@@ -986,6 +1000,7 @@ def mesh_to_velocity_raster(
     render_mode: str = "sloping",
     face_active: np.ndarray | None = None,
     fix_triangulation: bool = True,
+    extent_bbox: tuple[float, float, float, float] | None = None,
 ) -> Path | rasterio.io.DatasetReader:
     """Render a HEC-RAS velocity raster with WSE-based wet extent.
 
@@ -1055,6 +1070,10 @@ def mesh_to_velocity_raster(
         considered wet and therefore receive a velocity value.
     face_active : ndarray, shape ``(n_faces,)``, bool, optional
         Per-face hydraulic activity flag required by ``render_mode="hybrid"``.
+    extent_bbox : tuple[float, float, float, float], optional
+        Override bounding box ``(x_min, y_min, x_max, y_max)`` passed
+        through to the internal :func:`mesh_to_raster` call.  See that
+        function for full description.
 
     Returns
     -------
@@ -1108,6 +1127,7 @@ def mesh_to_velocity_raster(
         render_mode=render_mode,
         face_active=face_active,
         fix_triangulation=fix_triangulation,
+        extent_bbox=extent_bbox,
     )
 
     out_transform = wse_ds.transform
@@ -1678,6 +1698,7 @@ def mesh_to_velocity_raster_interp(
     method: str = "triangle_blend",
     scatter_interp_method: str = "linear",
     fix_triangulation: bool = True,
+    extent_bbox: tuple[float, float, float, float] | None = None,
 ) -> Path | rasterio.io.DatasetReader:
     """Render a spatially varying velocity raster constrained within each mesh cell.
 
@@ -1812,6 +1833,10 @@ def mesh_to_velocity_raster_interp(
         ``"scatter_interp"`` and ``"scatter_interp2"``.  Accepted values:
         ``"nearest"``, ``"linear"`` *(default)*, ``"cubic"``.  Ignored for
         all other interpolation methods.
+    extent_bbox : tuple[float, float, float, float], optional
+        Override bounding box ``(x_min, y_min, x_max, y_max)`` passed
+        through to the internal :func:`mesh_to_raster` call.  See that
+        function for full description.
 
     Returns
     -------
@@ -1889,6 +1914,7 @@ def mesh_to_velocity_raster_interp(
         snap_to_reference_extent=snap_to_reference_extent,
         render_mode=render_mode,
         face_active=face_active,
+        extent_bbox=extent_bbox,
     )
 
     out_transform = wse_ds.transform

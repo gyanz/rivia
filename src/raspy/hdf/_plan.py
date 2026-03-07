@@ -713,7 +713,7 @@ class FlowAreaResults(FlowArea):
         cell_size: float | None = None,
         reference_transform: Any | None = None,
         reference_raster: str | Path | None = None,
-        snap_to_reference_extent: bool = True,
+        snap_to_reference_extent: bool = False,
         crs: Any | None = None,
         nodata: float = -9999.0,
         render_mode: Literal["sloping", "horizontal", "hybrid"] = "sloping",
@@ -730,7 +730,7 @@ class FlowAreaResults(FlowArea):
         ] = "scatter_interp2",
         scatter_interp_method: Literal["nearest", "linear", "cubic"] = "linear",
         fix_triangulation: bool = True,
-        clip_to_perimeter: bool = False,
+        clip_to_perimeter: bool = True,
     ) -> Path | rasterio.io.DatasetReader:
         """Interpolate a field to a GeoTIFF using mesh-conforming triangulation.
 
@@ -836,12 +836,14 @@ class FlowAreaResults(FlowArea):
             Prevents ``RuntimeError: Triangulation is invalid`` on meshes with
             unusual cell geometry.  Set ``False`` to skip on large, clean meshes.
         clip_to_perimeter:
-            When ``True``, pixels outside the 2-D flow area boundary polygon
-            (``FlowArea.perimeter``) are set to *nodata* after interpolation.
-            Also disables ``snap_to_reference_extent`` so the output covers
-            only the mesh footprint rather than the full reference raster
-            extent.  Useful when malformed boundary cells cause KDTree noise
-            outside the model domain.  Default ``False``.
+            When ``True``, the output extent is restricted to the bounding
+            box of the 2-D flow area boundary polygon (``FlowArea.perimeter``)
+            snapped outward to the nearest reference pixel boundaries, and
+            pixels outside the polygon are set to *nodata*.  Useful when
+            malformed boundary cells cause KDTree noise outside the model
+            domain.  **Mutually exclusive with** ``snap_to_reference_extent``
+            — a ``ValueError`` is raised if both are ``True``.
+            Default ``False``.
 
         Returns
         -------
@@ -871,6 +873,14 @@ class FlowAreaResults(FlowArea):
             raise ValueError(
                 "timestep=None is not supported for cell_speed / cell_velocity. "
                 "Provide an explicit timestep index."
+            )
+        if clip_to_perimeter and snap_to_reference_extent:
+            raise ValueError(
+                "clip_to_perimeter and snap_to_reference_extent are mutually "
+                "exclusive: clip_to_perimeter restricts the output to the "
+                "perimeter bounding box, while snap_to_reference_extent expands "
+                "it to the full reference raster extent.  Set "
+                "snap_to_reference_extent=False when using clip_to_perimeter=True."
             )
 
         # ── 0b. Hybrid face-active mask ────────────────────────────────
@@ -929,10 +939,18 @@ class FlowAreaResults(FlowArea):
 
         # ── 3. Common mesh topology keyword arguments ──────────────────
         _cfi, _cfv = self.cell_face_info  # property returns (info, values) tuple
-        # When clipping to the perimeter, disable snap_to_reference_extent so
-        # the output covers only the mesh footprint (facepoint bounding box),
-        # not the full reference raster.  The polygon mask is applied after.
-        _snap = snap_to_reference_extent and not clip_to_perimeter
+        # When clipping to the perimeter, use the perimeter polygon bounding
+        # box as the output extent.  _tight_pixel_bounds (inside mesh_to_raster)
+        # snaps this bbox outward to reference pixel boundaries, preserving
+        # grid alignment while keeping the extent compact and consistent with
+        # the polygon mask applied after.
+        _perimeter_bbox: tuple[float, float, float, float] | None = None
+        if clip_to_perimeter:
+            _perim = self.perimeter  # (n_pts, 2)
+            _perimeter_bbox = (
+                float(_perim[:, 0].min()), float(_perim[:, 1].min()),
+                float(_perim[:, 0].max()), float(_perim[:, 1].max()),
+            )
         mesh_kw: dict[str, Any] = dict(
             cell_centers=self.cell_centers,
             facepoint_coordinates=self.facepoint_coordinates,
@@ -945,10 +963,11 @@ class FlowAreaResults(FlowArea):
             reference_raster=reference_raster,
             crs=crs,
             nodata=nodata,
-            snap_to_reference_extent=_snap,
+            snap_to_reference_extent=snap_to_reference_extent,
             render_mode=_render_mode,
             face_active=face_active,
             fix_triangulation=fix_triangulation,
+            extent_bbox=_perimeter_bbox,
         )
 
         # ── 4. Delegate to mesh_to_raster / mesh_to_velocity_raster ──────
@@ -1067,7 +1086,7 @@ class FlowAreaResults(FlowArea):
         wse_path: str | Path | None = None,
         depth_path: str | Path | None = None,
         speed_path: str | Path | None = None,
-        snap_to_reference_extent: bool = True,
+        snap_to_reference_extent: bool = False,
         nodata: float = -9999.0,
         render_mode: Literal["sloping", "horizontal", "hybrid"] = "horizontal",
         depth_min: float | None = 0.001,
@@ -1083,7 +1102,7 @@ class FlowAreaResults(FlowArea):
         ] = "scatter_interp2",
         scatter_interp_method: Literal["nearest", "linear", "cubic"] = "linear",
         fix_triangulation: bool = True,
-        clip_to_perimeter: bool = False,
+        clip_to_perimeter: bool = True,
     ) -> dict[str, Path | rasterio.io.DatasetReader]:
         """Export water-surface elevation, depth, and speed rasters in one pass.
 
@@ -1144,10 +1163,12 @@ class FlowAreaResults(FlowArea):
             Prevents ``RuntimeError: Triangulation is invalid`` on meshes with
             unusual cell geometry.  Set ``False`` to skip on large, clean meshes.
         clip_to_perimeter:
-            When ``True``, pixels outside the 2-D flow area boundary polygon
-            are set to *nodata* in all three output rasters.  Also disables
-            ``snap_to_reference_extent`` so outputs cover only the mesh
-            footprint.  Default ``False``.
+            When ``True``, the output extent for all three rasters is
+            restricted to the bounding box of the 2-D flow area boundary
+            polygon snapped outward to the nearest reference pixel boundaries,
+            and pixels outside the polygon are set to *nodata*.  **Mutually
+            exclusive with** ``snap_to_reference_extent`` — a ``ValueError``
+            is raised if both are ``True``.  Default ``False``.
 
         Returns
         -------
@@ -1161,10 +1182,23 @@ class FlowAreaResults(FlowArea):
         ------
         ImportError
             If ``rasterio`` or ``matplotlib`` are not installed.
+        ValueError
+            If both *clip_to_perimeter* and *snap_to_reference_extent* are
+            ``True``.
         """
         from raspy.geo import raster as _raster  # deferred — geo not required
 
-        # ── 0. Hybrid face-active mask ─────────────────────────────────
+        # ── 0. Guards ──────────────────────────────────────────────────
+        if clip_to_perimeter and snap_to_reference_extent:
+            raise ValueError(
+                "clip_to_perimeter and snap_to_reference_extent are mutually "
+                "exclusive: clip_to_perimeter restricts the output to the "
+                "perimeter bounding box, while snap_to_reference_extent expands "
+                "it to the full reference raster extent.  Set "
+                "snap_to_reference_extent=False when using clip_to_perimeter=True."
+            )
+
+        # ── 1. Hybrid face-active mask ─────────────────────────────────
         _render_mode = render_mode
         face_active: np.ndarray | None = None
         if _render_mode == "hybrid":
@@ -1173,21 +1207,25 @@ class FlowAreaResults(FlowArea):
                 > (vel_min if vel_min is not None else 0.0)
             )
 
-        # ── 1. Read HDF data once ──────────────────────────────────────
+        # ── 2. Read HDF data once ──────────────────────────────────────
         wse_values = np.array(self.water_surface[timestep, : self.n_cells])
         depth_at_cells = self.depth(timestep)
         face_vel_arr = np.array(self.face_velocity[timestep, :])
 
-        # ── 2. WLS velocity vectors once ──────────────────────────────
+        # ── 3. WLS velocity vectors once ──────────────────────────────
         cell_vel_vecs = self.cell_velocity_vectors(
             timestep, method=vel_weight_method, wse_interp=vel_wse_method
         )
 
         # ── 3. Shared mesh topology kwargs ────────────────────────────
         _cfi, _cfv = self.cell_face_info
-        # When clipping to the perimeter, disable snap_to_reference_extent so
-        # outputs cover only the mesh footprint, not the full reference raster.
-        _snap = snap_to_reference_extent and not clip_to_perimeter
+        _perimeter_bbox: tuple[float, float, float, float] | None = None
+        if clip_to_perimeter:
+            _perim = self.perimeter  # (n_pts, 2)
+            _perimeter_bbox = (
+                float(_perim[:, 0].min()), float(_perim[:, 1].min()),
+                float(_perim[:, 0].max()), float(_perim[:, 1].max()),
+            )
         mesh_kw: dict[str, Any] = dict(
             cell_centers=self.cell_centers,
             facepoint_coordinates=self.facepoint_coordinates,
@@ -1197,10 +1235,11 @@ class FlowAreaResults(FlowArea):
             cell_face_values=_cfv,
             reference_raster=reference_raster,
             nodata=nodata,
-            snap_to_reference_extent=_snap,
+            snap_to_reference_extent=snap_to_reference_extent,
             render_mode=_render_mode,
             face_active=face_active,
             fix_triangulation=fix_triangulation,
+            extent_bbox=_perimeter_bbox,
         )
 
         # ── 5. WSE raster in-memory (shared for WSE output + depth) ───
