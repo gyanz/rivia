@@ -927,47 +927,35 @@ class FlowArea:
     def wse_at_facepoints(self, cell_wse: np.ndarray) -> np.ndarray:
         """Interpolate water-surface elevation to facepoints.
 
-        Two-step face-midpoint average:
-
-        1. **Face WSE** — NaN-aware mean of the WSEs of the two bordering
-           cells.  For boundary faces the single adjacent cell WSE is used.
-        2. **Facepoint WSE** — mean of the face WSEs of all faces sharing
-           that facepoint.
+        For each facepoint the WSE is the mean of the WSEs of all wet
+        (non-``NaN``) cells that share that facepoint, using
+        :attr:`cell_facepoint_indexes` so each adjacent cell is counted
+        exactly once.  A facepoint with no adjacent wet cells returns
+        ``NaN``.
 
         Parameters
         ----------
         cell_wse : ndarray, shape ``(n_cells,)``
-            Water-surface elevation per cell.  Use ``nan`` for dry cells.
+            Water-surface elevation per cell.  Pass ``NaN`` for dry cells.
 
         Returns
         -------
         ndarray, shape ``(n_facepoints,)``
-            Interpolated WSE at each facepoint.  ``nan`` where all adjacent
-            faces are dry.
+            WSE at each facepoint.  ``NaN`` where all adjacent cells are dry.
         """
         cell_wse = np.asarray(cell_wse, dtype=np.float64)
-        fci = self.face_cell_indexes          # (n_faces, 2)
-        fp_idx = self.face_facepoint_indexes  # (n_faces, 2)
-        n_fp = len(self.facepoint_coordinates)
         n_cells = len(cell_wse)
+        cfi = self.cell_facepoint_indexes[:n_cells]  # (n_cells, 8), -1 padded
+        n_fp = len(self.facepoint_coordinates)
 
-        # Step 1: face WSE = NaN-aware mean of bordering cell WSEs.
-        c0 = fci[:, 0]
-        c1 = fci[:, 1]
-        wse0 = np.where(c0 >= 0, cell_wse[np.clip(c0, 0, n_cells - 1)], np.nan)
-        wse1 = np.where(c1 >= 0, cell_wse[np.clip(c1, 0, n_cells - 1)], np.nan)
-        wse0 = np.where(c0 < 0, np.nan, wse0)
-        wse1 = np.where(c1 < 0, np.nan, wse1)
-        face_wse = np.nanmean(np.stack([wse0, wse1], axis=1), axis=1)
-
-        # Step 2: facepoint WSE = mean of adjacent face WSEs (vectorised).
-        valid = ~np.isnan(face_wse)
+        wet = ~np.isnan(cell_wse)
         fp_sum = np.zeros(n_fp)
         fp_count = np.zeros(n_fp, dtype=np.int64)
-        for col in (0, 1):
-            fp = fp_idx[:, col]
-            np.add.at(fp_sum, fp[valid], face_wse[valid])
-            np.add.at(fp_count, fp[valid], 1)
+        for j in range(cfi.shape[1]):
+            fp_col = cfi[:, j]
+            valid = (fp_col >= 0) & wet
+            np.add.at(fp_sum, fp_col[valid], cell_wse[valid])
+            np.add.at(fp_count, fp_col[valid], 1)
 
         return np.where(fp_count > 0, fp_sum / fp_count, np.nan)
 
