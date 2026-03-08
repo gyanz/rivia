@@ -716,7 +716,12 @@ class FlowAreaResults(FlowArea):
         snap_to_reference_extent: bool = False,
         crs: Any | None = None,
         nodata: float = -9999.0,
-        render_mode: Literal["sloping", "horizontal"] = "sloping",
+        render_mode: Literal[
+            "horizontal",
+            "sloping_corners",
+            "sloping_corners_faces",
+            "sloping_corners_faces_shallow",
+        ] = "sloping_corners",
         depth_min: float | None = 0.001,
         vel_min: float | None = 0.0001,
         vel_weight_method: Literal[
@@ -731,7 +736,6 @@ class FlowAreaResults(FlowArea):
         scatter_interp_method: Literal["nearest", "linear", "cubic"] = "linear",
         fix_triangulation: bool = True,
         clip_to_perimeter: bool = True,
-        sloping_method: Literal["corners", "corners_faces"] = "corners",
     ) -> Path | rasterio.io.DatasetReader:
         """Interpolate a field to a GeoTIFF using mesh-conforming triangulation.
 
@@ -794,8 +798,9 @@ class FlowAreaResults(FlowArea):
             Face WSE interpolation method passed to
             :meth:`cell_velocity_vectors`.
         render_mode:
-            Water-surface rendering mode — ``"sloping"`` (default) or
-            ``"horizontal"``.  See
+            Water-surface rendering mode — ``"sloping_corners"`` (default),
+            ``"horizontal"``, ``"sloping_corners_faces"``, or
+            ``"sloping_corners_faces_shallow"``.  See
             :func:`~raspy.geo.raster.mesh_to_wse_raster` for full description.
         vel_interp_method:
             Intra-cell velocity interpolation method for ``"cell_velocity"``
@@ -843,15 +848,6 @@ class FlowAreaResults(FlowArea):
             domain.  **Mutually exclusive with** ``snap_to_reference_extent``
             — a ``ValueError`` is raised if both are ``True``.
             Default ``False``.
-        sloping_method:
-            Controls which scatter points are used when
-            ``render_mode='sloping'``.  ``"corners"`` *(default)* uses only
-            polygon-corner facepoints.  ``"corners_faces"`` also adds face
-            centroid points (``FlowArea.face_centroids`` and
-            ``FlowArea.wse_at_facecentroids``), giving a denser scatter set
-            that better captures the mesh topology inside large cells.
-            Ignored for other render modes.
-
         Returns
         -------
         Path
@@ -935,16 +931,19 @@ class FlowAreaResults(FlowArea):
         # For velocity variables the vel_min mask is applied first.
         _fp_wse: np.ndarray | None = None
         _fp_wse_vel: np.ndarray | None = None
-        _fc_wse: np.ndarray | None = None       # face-centroid WSE (corners_faces)
+        _fc_wse: np.ndarray | None = None
         _fc_wse_vel: np.ndarray | None = None
-        if render_mode == "sloping":
+        _use_facecenters = render_mode in (
+            "sloping_corners_faces", "sloping_corners_faces_shallow"
+        )
+        if render_mode != "horizontal":
             if variable == "water_surface":
                 _fp_wse = self.wse_at_facepoints(values)
-                if sloping_method == "corners_faces":
+                if _use_facecenters:
                     _fc_wse = self.wse_at_facecentroids(values)
             elif variable == "depth":
                 _fp_wse = self.wse_at_facepoints(cell_wse)
-                if sloping_method == "corners_faces":
+                if _use_facecenters:
                     _fc_wse = self.wse_at_facecentroids(cell_wse)
             elif variable in ("cell_velocity", "cell_speed"):
                 _vel_wse_masked = cell_vel_wse.copy()
@@ -953,7 +952,7 @@ class FlowAreaResults(FlowArea):
                         _speed = np.linalg.norm(cell_vel_vecs, axis=1)
                     _vel_wse_masked[_speed < vel_min] = np.nan
                 _fp_wse_vel = self.wse_at_facepoints(_vel_wse_masked)
-                if sloping_method == "corners_faces":
+                if _use_facecenters:
                     _fc_wse_vel = self.wse_at_facecentroids(_vel_wse_masked)
 
         # ── 3. Common mesh topology keyword arguments ──────────────────
@@ -989,9 +988,8 @@ class FlowAreaResults(FlowArea):
             facepoint_values=_fp_wse,
             scatter_interp_method=scatter_interp_method,
             cell_polygons=self.cell_polygons,
-            sloping_method=sloping_method,
             facecenter_coordinates=(
-                self.face_centroids if sloping_method == "corners_faces" else None
+                self.face_centroids if _use_facecenters else None
             ),
             facecenter_values=_fc_wse,
         )
@@ -1108,7 +1106,12 @@ class FlowAreaResults(FlowArea):
         speed_path: str | Path | None = None,
         snap_to_reference_extent: bool = False,
         nodata: float = -9999.0,
-        render_mode: Literal["sloping", "horizontal"] = "horizontal",
+        render_mode: Literal[
+            "horizontal",
+            "sloping_corners",
+            "sloping_corners_faces",
+            "sloping_corners_faces_shallow",
+        ] = "horizontal",
         depth_min: float | None = 0.001,
         vel_min: float | None = 0.0001,
         vel_weight_method: Literal[
@@ -1123,7 +1126,6 @@ class FlowAreaResults(FlowArea):
         scatter_interp_method: Literal["nearest", "linear", "cubic"] = "linear",
         fix_triangulation: bool = True,
         clip_to_perimeter: bool = True,
-        sloping_method: Literal["corners", "corners_faces"] = "corners",
     ) -> dict[str, Path | rasterio.io.DatasetReader]:
         """Export water-surface elevation, depth, and speed rasters in one pass.
 
@@ -1157,8 +1159,9 @@ class FlowAreaResults(FlowArea):
         nodata:
             Fill value for pixels outside the wet mesh.
         render_mode:
-            Water-surface rendering mode — ``"sloping"`` or
-            ``"horizontal"`` (default).
+            Water-surface rendering mode — ``"horizontal"`` (default),
+            ``"sloping_corners"``, ``"sloping_corners_faces"``, or
+            ``"sloping_corners_faces_shallow"``.
         depth_min:
             Minimum water depth.  Cells shallower than this are excluded from
             WSE interpolation; output depth pixels below this are set to
@@ -1190,14 +1193,6 @@ class FlowAreaResults(FlowArea):
             and pixels outside the polygon are set to *nodata*.  **Mutually
             exclusive with** ``snap_to_reference_extent`` — a ``ValueError``
             is raised if both are ``True``.  Default ``False``.
-        sloping_method:
-            Controls which scatter points are used when
-            ``render_mode='sloping'``.  ``"corners"`` *(default)* uses only
-            polygon-corner facepoints.  ``"corners_faces"`` also adds face
-            centroid points, giving a denser scatter set that better captures
-            the mesh topology inside large cells.  Ignored for other render
-            modes.
-
         Returns
         -------
         dict with keys ``"water_surface"``, ``"depth"``, ``"speed"``.
@@ -1274,11 +1269,14 @@ class FlowAreaResults(FlowArea):
         # velocity uses a separate vel_min-masked array.
         _fp_wse: np.ndarray | None = None
         _fp_wse_vel: np.ndarray | None = None
-        _fc_wse: np.ndarray | None = None       # face-centroid WSE (corners_faces)
+        _fc_wse: np.ndarray | None = None
         _fc_wse_vel: np.ndarray | None = None
-        if render_mode == "sloping":
+        _use_facecenters = render_mode in (
+            "sloping_corners_faces", "sloping_corners_faces_shallow"
+        )
+        if render_mode != "horizontal":
             _fp_wse = self.wse_at_facepoints(cell_wse_masked)
-            if sloping_method == "corners_faces":
+            if _use_facecenters:
                 _fc_wse = self.wse_at_facecentroids(cell_wse_masked)
             _vel_wse_masked = wse_values.copy()
             if vel_min is not None:
@@ -1286,15 +1284,14 @@ class FlowAreaResults(FlowArea):
                     _speed = np.linalg.norm(cell_vel_vecs, axis=1)
                 _vel_wse_masked[_speed < vel_min] = np.nan
             _fp_wse_vel = self.wse_at_facepoints(_vel_wse_masked)
-            if sloping_method == "corners_faces":
+            if _use_facecenters:
                 _fc_wse_vel = self.wse_at_facecentroids(_vel_wse_masked)
 
         mesh_kw["facepoint_values"] = _fp_wse
         mesh_kw["scatter_interp_method"] = scatter_interp_method
         mesh_kw["cell_polygons"] = self.cell_polygons
-        mesh_kw["sloping_method"] = sloping_method
         mesh_kw["facecenter_coordinates"] = (
-            self.face_centroids if sloping_method == "corners_faces" else None
+            self.face_centroids if _use_facecenters else None
         )
         mesh_kw["facecenter_values"] = _fc_wse
         _cell_facepoint_indexes = self.cell_facepoint_indexes
@@ -1383,7 +1380,12 @@ class FlowAreaResults(FlowArea):
         self,
         timestep: int | None = None,
         *,
-        render_mode: Literal["sloping", "horizontal"] = "horizontal",
+        render_mode: Literal[
+            "horizontal",
+            "sloping_corners",
+            "sloping_corners_faces",
+            "sloping_corners_faces_shallow",
+        ] = "horizontal",
         depth_min: float | None = 0.001,
         check_boundary: bool = True,
         verbose: bool = True,
