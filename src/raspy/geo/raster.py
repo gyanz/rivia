@@ -214,7 +214,7 @@ def _kdtree_idw(
 def _griddata_facepoint_sloping(
     facepoint_coordinates: np.ndarray,
     facepoint_values: np.ndarray,
-    cell_facepoint_indexes: np.ndarray | None,
+    cell_polygons: list[np.ndarray] | None,
     dry_mask: np.ndarray,
     tree: Any,
     max_radius: float,
@@ -232,10 +232,12 @@ def _griddata_facepoint_sloping(
         Pre-computed WSE at each facepoint (e.g. from
         ``FlowArea.wse_at_facepoints``).  ``NaN`` where all adjacent cells
         are dry.
-    cell_facepoint_indexes : ndarray, shape ``(n_cells, k)``, -1 padded
-        Corner facepoint indices per cell in polygon order
-        (``FlowArea.cell_facepoint_indexes``).  Used to rasterize wet cell
-        polygons so that pixels outside every wet cell are set to NaN.
+    cell_polygons : list of ndarray, shape ``(n_vertices, 2)``, or None
+        Exact cell boundary vertices per cell in polygon order
+        (``FlowArea.cell_polygons``).  Cells with curved faces already have
+        the interior perimeter points included, giving accurate boundaries.
+        Used to rasterize wet cell polygons so that pixels outside every wet
+        cell are set to NaN.
     dry_mask : ndarray, shape ``(n_cells,)``, bool
         ``True`` where a cell is dry.
     tree : cKDTree or None
@@ -276,7 +278,7 @@ def _griddata_facepoint_sloping(
     # This is more robust than masking dry cells one-by-one because it handles
     # gaps between cells and avoids the polygon-ordering issues of the
     # ConvexHull approach.  Skipped when cell_facepoint_indexes is not provided.
-    if cell_facepoint_indexes is not None:
+    if cell_polygons is not None:
         from rasterio.features import rasterize as _rasterize
         from rasterio.transform import Affine as _Affine
 
@@ -292,13 +294,12 @@ def _griddata_facepoint_sloping(
         wet_cell_idxs = np.where(~dry_mask)[0]
         shapes = []
         for ci in wet_cell_idxs:
-            fp_idx = cell_facepoint_indexes[ci]
-            fp_idx = fp_idx[fp_idx >= 0]  # strip -1 padding
-            if len(fp_idx) < 3:
+            verts = cell_polygons[ci]
+            if len(verts) < 3:
                 continue
-            verts = facepoint_coordinates[fp_idx].tolist()
-            verts.append(verts[0])  # close the ring
-            shapes.append(({"type": "Polygon", "coordinates": [verts]}, 1))
+            ring = verts.tolist()
+            ring.append(ring[0])  # close the ring
+            shapes.append(({"type": "Polygon", "coordinates": [ring]}, 1))
 
         n_rows, n_cols = xi_grid.shape
         if shapes:
@@ -388,7 +389,7 @@ def mesh_to_raster(
     extent_bbox: tuple[float, float, float, float] | None = None,
     facepoint_values: np.ndarray | None = None,
     scatter_interp_method: str = "linear",
-    cell_facepoint_indexes: np.ndarray | None = None,
+    cell_polygons: list[np.ndarray] | None = None,
 ) -> Path | rasterio.io.DatasetReader:
     """Interpolate HEC-RAS mesh results to a raster using mesh-conforming triangulation.
 
@@ -507,10 +508,11 @@ def mesh_to_raster(
         when *facepoint_values* is provided.  One of ``'nearest'``,
         ``'linear'``, or ``'cubic'``.  Ignored when *facepoint_values* is
         ``None``.
-    cell_facepoint_indexes : ndarray, shape ``(n_cells, k)``, -1 padded, optional
-        Corner facepoint indices per cell (``FlowArea.cell_facepoint_indexes``).
-        When provided, dry-cell masking in the sloping path uses exact polygon
-        containment (``matplotlib.path.Path``) instead of a nearest-centre
+    cell_polygons : list of ndarray, shape ``(n_vertices, 2)``, optional
+        Exact cell boundary vertices per cell (``FlowArea.cell_polygons``).
+        Cells with curved faces include interior perimeter points for accurate
+        boundaries.  When provided, dry-cell masking in the sloping path
+        rasterizes the true cell polygons instead of using a nearest-centre
         Voronoi approximation.
 
     Returns
@@ -687,15 +689,10 @@ def mesh_to_raster(
         scalar = _kdtree_nearest(tree, wet_indices, cv, max_radius, xi_grid, yi_grid)
 
     elif render_mode == "sloping":
-        _cfi = (
-            np.asarray(cell_facepoint_indexes, dtype=np.int64)
-            if cell_facepoint_indexes is not None
-            else None
-        )
         scalar = _griddata_facepoint_sloping(
             facepoint_coordinates,
             np.asarray(facepoint_values, dtype=np.float64),
-            _cfi,
+            cell_polygons,
             dry_mask,
             tree,
             max_radius,
