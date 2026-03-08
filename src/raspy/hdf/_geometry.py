@@ -990,9 +990,12 @@ class FlowArea:
         n_cells = len(cell_wse)
         fci = self.face_cell_indexes  # (n_faces, 2), -1 = boundary side
 
-        # Append a NaN sentinel so that boundary indices (-1) map to NaN
-        padded = np.append(cell_wse, np.nan)        # index n_cells → NaN
-        safe = np.where(fci < 0, n_cells, fci)      # replace -1 with sentinel
+        # Append a NaN sentinel so that boundary/ghost-cell indices map to NaN.
+        # face_cell_indexes can contain positive ghost-cell indices >= n_cells
+        # in addition to -1 boundary markers; both must be remapped to the sentinel.
+        padded = np.append(cell_wse, np.nan)                       # index n_cells → NaN
+        # sentinel both cases: boundary (-1) and ghost cells (>= n_cells)
+        safe = np.where((fci < 0) | (fci >= n_cells), n_cells, fci)
 
         vals = padded[safe]                          # (n_faces, 2)
         with np.errstate(all="ignore"):              # suppress all-NaN warning
