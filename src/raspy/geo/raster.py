@@ -27,23 +27,26 @@ def mesh_to_wse_raster(
     output_path: str | Path | None = None,
     *,
     cell_size: float | None = None,
-    reference_transform: Any | None = None,
-    reference_raster: str | Path | None = None,
-    crs: Any | None = None,
     nodata: float = -9999.0,
+    crs: Any | None = None,
     min_value: float | None = None,
     min_above_ref: float | None = None,
+    reference_transform: Any | None = None,
+    reference_raster: str | Path | None = None,
     snap_to_reference_extent: bool = True,
-    render_mode: str = "sloping",
-    face_active: np.ndarray | None = None,
-    fix_triangulation: bool = True,
     extent_bbox: tuple[float, float, float, float] | None = None,
-    facepoint_values: np.ndarray | None = None,
+    render_mode: str = "horizontal",
+    sloping_method: Literal[
+        "corners", "corners_faces", "corners_faces_shallow"
+    ] = "corners",
     scatter_interp_method: str = "linear",
+    fix_triangulation: bool = True,
+    face_active: np.ndarray | None = None,
     cell_polygons: list[np.ndarray] | None = None,
-    sloping_method: Literal["corners", "corners_faces"] = "corners",
-    facecenter_coordinates: np.ndarray | None = None,
+    facepoint_values: np.ndarray | None = None,
     facecenter_values: np.ndarray | None = None,
+    facecenter_coordinates: np.ndarray | None = None,
+    face_min_elevation: np.ndarray | None = None,
 ) -> Path | rasterio.io.DatasetReader:
     """Interpolate HEC-RAS mesh results to a raster using mesh-conforming triangulation.
 
@@ -168,7 +171,8 @@ def mesh_to_wse_raster(
         boundaries.  When provided, dry-cell masking in the sloping path
         rasterizes the true cell polygons instead of using a nearest-centre
         Voronoi approximation.
-    sloping_method : {"corners", "corners_faces"}, default ``"corners"``
+    sloping_method : {"corners", "corners_faces", "corners_faces_shallow"}, \
+default ``"corners"``
         Controls which scatter points are used when ``render_mode='sloping'``:
 
         ``"corners"`` *(default)*  uses only the polygon-corner facepoints
@@ -178,12 +182,25 @@ def mesh_to_wse_raster(
         points (values from *facecenter_values*, coordinates from
         *facecenter_coordinates*), giving a denser scatter set that better
         captures the mesh topology inside large cells.
+
+        ``"corners_faces_shallow"``  same as ``"corners_faces"`` but adds a
+        per-cell shallow check: any cell whose face centroids all have depth
+        ``<= 0`` (``facecenter_values - face_min_elevation``) or ``NaN`` is
+        rendered with the horizontal (flat cell-centre) WSE instead of the
+        sloping surface.  Requires *face_min_elevation* in addition to
+        *facecenter_coordinates* and *facecenter_values*.
     facecenter_coordinates : ndarray, shape ``(n_faces, 2)``, optional
         Centroid coordinate of each face (``FlowArea.face_centroids``).
-        Required when *sloping_method* is ``"corners_faces"``.
+        Required when *sloping_method* is ``"corners_faces"`` or
+        ``"corners_faces_shallow"``.
     facecenter_values : ndarray, shape ``(n_faces,)``, optional
         WSE at each face centroid (``FlowArea.wse_at_facecentroids``).
-        Required when *sloping_method* is ``"corners_faces"``.
+        Required when *sloping_method* is ``"corners_faces"`` or
+        ``"corners_faces_shallow"``.
+    face_min_elevation : ndarray, shape ``(n_faces,)``, optional
+        Minimum bed elevation (invert) at each face centroid
+        (``FlowArea.face_min_elevation``).  Required when *sloping_method*
+        is ``"corners_faces_shallow"``.
 
     Returns
     -------
@@ -235,17 +252,23 @@ def mesh_to_wse_raster(
             f"render_mode must be 'sloping', 'horizontal', or 'hybrid';"
             f" got {render_mode!r}."
         )
-    if sloping_method not in ("corners", "corners_faces"):
+    if sloping_method not in ("corners", "corners_faces", "corners_faces_shallow"):
         raise ValueError(
-            f"sloping_method must be 'corners' or 'corners_faces';"
-            f" got {sloping_method!r}."
+            f"sloping_method must be 'corners', 'corners_faces', or "
+            f"'corners_faces_shallow'; got {sloping_method!r}."
         )
-    if sloping_method == "corners_faces" and (
+    if sloping_method in ("corners_faces", "corners_faces_shallow") and (
         facecenter_coordinates is None or facecenter_values is None
     ):
         raise ValueError(
             "facecenter_coordinates and facecenter_values are required "
-            "when sloping_method='corners_faces'."
+            f"when sloping_method={sloping_method!r}."
+        )
+    if sloping_method == "corners_faces_shallow" and face_min_elevation is None:
+        raise ValueError(
+            "face_min_elevation is required when "
+            "sloping_method='corners_faces_shallow'. "
+            "Obtain it from FlowArea.face_min_elevation."
         )
     if render_mode == "sloping" and facepoint_values is None:
         raise ValueError(
@@ -378,6 +401,7 @@ def mesh_to_wse_raster(
             )
 
     elif render_mode == "sloping":
+        use_facecenters = sloping_method in ("corners_faces", "corners_faces_shallow")
         scalar = _griddata_facepoint_sloping(
             facepoint_coordinates,
             np.asarray(facepoint_values, dtype=np.float64),
@@ -390,17 +414,40 @@ def mesh_to_wse_raster(
             scatter_interp_method,
             facecenter_coordinates=(
                 np.asarray(facecenter_coordinates, dtype=np.float64)
-                if sloping_method == "corners_faces"
-                and facecenter_coordinates is not None
+                if use_facecenters and facecenter_coordinates is not None
                 else None
             ),
             facecenter_values=(
                 np.asarray(facecenter_values, dtype=np.float64)
-                if sloping_method == "corners_faces"
-                and facecenter_values is not None
+                if use_facecenters and facecenter_values is not None
                 else None
             ),
         )
+        if sloping_method == "corners_faces_shallow":
+            fc_vals = np.asarray(facecenter_values, dtype=np.float64)
+            fm_elev = np.asarray(face_min_elevation, dtype=np.float64)
+            cell_is_shallow = _shallow_cell_mask(
+                cell_face_info, cell_face_values_arr, fc_vals, fm_elev
+            )
+            if cell_polygons is not None:
+                scalar_horiz = _rasterize_cell_values(
+                    cell_polygons, cv, dry_mask, xi_grid, yi_grid
+                )
+            else:
+                scalar_horiz = _kdtree_nearest(
+                    tree, wet_indices, cv, max_radius, xi_grid, yi_grid
+                )
+            if tree is not None:
+                pts_flat = np.column_stack([xi_grid.ravel(), yi_grid.ravel()])
+                dist_flat, idx_flat = tree.query(pts_flat)
+                in_mesh = dist_flat <= max_radius
+                pixel_is_shallow = np.zeros(xi_grid.size, dtype=bool)
+                pixel_is_shallow[in_mesh] = cell_is_shallow[
+                    wet_indices[idx_flat[in_mesh]]
+                ]
+                pixel_is_shallow = pixel_is_shallow.reshape(xi_grid.shape)
+                scalar = np.where(pixel_is_shallow, scalar_horiz, scalar)
+            # tree is None → no wet cells → scalar already all-NaN, nothing to blend
 
     else:  # "hybrid"
         is_horiz_cell = _classify_horizontal_cells(
@@ -1512,6 +1559,49 @@ def _classify_horizontal_cells(
     np.logical_or.at(use_horizontal, rc[disconnected], True)
     use_horizontal[dry_mask] = False
     return use_horizontal
+
+
+def _shallow_cell_mask(
+    cell_face_info: np.ndarray,
+    cell_face_values: np.ndarray,
+    facecenter_values: np.ndarray,
+    face_min_elevation: np.ndarray,
+) -> np.ndarray:
+    """Return a bool mask: True where all face centroids of a cell are dry.
+
+    A cell is "shallow" when every face centroid depth
+    (``facecenter_values - face_min_elevation``) is ``<= 0`` or ``NaN``.
+    Such cells fall back to horizontal (flat cell-centre) WSE in
+    ``sloping_method='corners_faces_shallow'``.
+
+    Parameters
+    ----------
+    cell_face_info : ndarray, shape ``(n_cells, 2)``
+        ``[start_idx, count]`` into *cell_face_values* for each cell.
+    cell_face_values : ndarray, shape ``(total_entries, 2)``
+        ``[face_idx, orientation]`` per cell-face association.
+    facecenter_values : ndarray, shape ``(n_faces,)``
+        WSE at each face centroid.  ``NaN`` where the face is dry.
+    face_min_elevation : ndarray, shape ``(n_faces,)``
+        Minimum bed elevation (invert) at each face centroid.
+
+    Returns
+    -------
+    ndarray, shape ``(n_cells,)``, bool
+    """
+    depth = facecenter_values - face_min_elevation  # NaN propagates from fc_vals
+    n_cells = len(cell_face_info)
+    cell_is_shallow = np.ones(n_cells, dtype=bool)
+    for i in range(n_cells):
+        start, count = cell_face_info[i]
+        if count == 0:
+            continue
+        face_idxs = cell_face_values[start : start + count, 0]
+        d = depth[face_idxs]
+        # shallow only if every face depth is <= 0 or NaN
+        with np.errstate(invalid="ignore"):
+            cell_is_shallow[i] = np.all((d <= 0) | np.isnan(d))
+    return cell_is_shallow
 
 
 @timed(logging.DEBUG)
