@@ -949,10 +949,15 @@ class FlowArea:
         n_fp = len(self.facepoint_coordinates)
 
         wet = ~np.isnan(cell_wse)
+        # accumulators for each fp
         fp_sum = np.zeros(n_fp)
         fp_count = np.zeros(n_fp, dtype=np.int64)
+        # loop over the 8 facepoint slots of every cell
         for j in range(cfi.shape[1]):
+            # gives jth facepoint index for each cell
             fp_col = cfi[:, j]
+            # For each wet cell with a real facepoint in that slot, add that cell’s 
+            # WSE into the bucket for that facepoint index
             valid = (fp_col >= 0) & wet
             np.add.at(fp_sum, fp_col[valid], cell_wse[valid])
             np.add.at(fp_count, fp_col[valid], 1)
