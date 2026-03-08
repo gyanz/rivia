@@ -211,6 +211,81 @@ def _kdtree_idw(
 
 
 @timed(logging.DEBUG)
+def _rasterize_cell_values(
+    cell_polygons: list[np.ndarray],
+    cell_values: np.ndarray,
+    dry_mask: np.ndarray,
+    xi_grid: np.ndarray,
+    yi_grid: np.ndarray,
+) -> np.ndarray:
+    """Assign each output pixel the value of the cell polygon it falls inside.
+
+    Uses rasterio's C-accelerated scan-line rasterization to build a
+    ``uint32`` cell-index map, then looks up *cell_values*.  This gives
+    exact polygon-boundary accuracy for horizontal rendering, eliminating the
+    Voronoi mis-assignment that occurs with KDTree nearest-centre when mesh
+    cells are irregular (a pixel may be geometrically inside cell A but closer
+    in Euclidean distance to the centre of an adjacent larger cell B).
+
+    Parameters
+    ----------
+    cell_polygons : list of ndarray, shape ``(n_vertices, 2)``
+        Exact boundary vertices per cell in polygon order.  Curved faces
+        should already include interior perimeter points for accurate boundaries.
+    cell_values : ndarray, shape ``(n_cells,)``
+        Scalar value per cell; ``NaN`` for dry cells.
+    dry_mask : ndarray, shape ``(n_cells,)``, bool
+        ``True`` where a cell is dry (excluded from output).
+    xi_grid, yi_grid : ndarray, shape ``(n_rows, n_cols)``
+        Pixel-centre coordinate grids.
+
+    Returns
+    -------
+    ndarray, shape ``(n_rows, n_cols)``
+        Per-pixel cell values; ``NaN`` where no wet cell polygon covers the pixel.
+    """
+    from rasterio.features import rasterize as _rasterize
+    from rasterio.transform import Affine as _Affine
+
+    xi = xi_grid[0, :]
+    yi = yi_grid[:, 0]
+    dx = float(xi[1] - xi[0]) if len(xi) > 1 else 1.0
+    dy = float(yi[0] - yi[1]) if len(yi) > 1 else 1.0  # positive (top > bottom)
+    burn_transform = _Affine(dx, 0.0, float(xi[0]) - dx / 2.0,
+                             0.0, -dy, float(yi[0]) + dy / 2.0)
+
+    n_rows, n_cols = xi_grid.shape
+    wet_idxs = np.where(~dry_mask)[0]
+    shapes = []
+    for ci in wet_idxs:
+        verts = cell_polygons[ci]
+        if len(verts) < 3:
+            continue
+        ring = verts.tolist()
+        ring.append(ring[0])  # close the ring
+        # Burn cell_index + 1 so that fill value 0 means "no cell".
+        shapes.append(({"type": "Polygon", "coordinates": [ring]}, int(ci) + 1))
+
+    if not shapes:
+        return np.full((n_rows, n_cols), np.nan)
+
+    # uint32 supports up to ~4 billion cells; sufficient for any HEC-RAS model.
+    idx_raster = _rasterize(
+        shapes,
+        out_shape=(n_rows, n_cols),
+        transform=burn_transform,
+        fill=0,
+        dtype=np.uint32,
+    )
+
+    out = np.full((n_rows, n_cols), np.nan)
+    valid = idx_raster > 0
+    # - 1 to retrive zero-based cell index
+    out[valid] = cell_values[idx_raster[valid].astype(np.int64) - 1]
+    return out
+
+
+@timed(logging.DEBUG)
 def _griddata_facepoint_sloping(
     facepoint_coordinates: np.ndarray,
     facepoint_values: np.ndarray,
@@ -684,9 +759,16 @@ def mesh_to_raster(
         cell_centers, dry_mask, facepoint_coordinates
     )
 
-    #  Render 
+    #  Render
     if render_mode == "horizontal":
-        scalar = _kdtree_nearest(tree, wet_indices, cv, max_radius, xi_grid, yi_grid)
+        if cell_polygons is not None:
+            scalar = _rasterize_cell_values(
+                cell_polygons, cv, dry_mask, xi_grid, yi_grid
+            )
+        else:
+            scalar = _kdtree_nearest(
+                tree, wet_indices, cv, max_radius, xi_grid, yi_grid
+            )
 
     elif render_mode == "sloping":
         scalar = _griddata_facepoint_sloping(
@@ -714,9 +796,14 @@ def mesh_to_raster(
         else:
             pixel_is_horiz = np.zeros(xi_grid.size, dtype=bool)
         pixel_is_horiz = pixel_is_horiz.reshape(xi_grid.shape)
-        scalar_horiz = _kdtree_nearest(
-            tree, wet_indices, cv, max_radius, xi_grid, yi_grid
-        )
+        if cell_polygons is not None:
+            scalar_horiz = _rasterize_cell_values(
+                cell_polygons, cv, dry_mask, xi_grid, yi_grid
+            )
+        else:
+            scalar_horiz = _kdtree_nearest(
+                tree, wet_indices, cv, max_radius, xi_grid, yi_grid
+            )
         scalar_slop = _kdtree_idw(
             tree, wet_indices, cv, max_radius, xi_grid, yi_grid
         )

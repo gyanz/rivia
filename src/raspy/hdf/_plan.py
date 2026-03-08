@@ -993,8 +993,9 @@ class FlowAreaResults(FlowArea):
             extent_bbox=_perimeter_bbox,
             facepoint_values=_fp_wse,
             scatter_interp_method=scatter_interp_method,
-            cell_facepoint_indexes=self.cell_facepoint_indexes,
+            cell_polygons=self.cell_polygons,
         )
+        _cell_facepoint_indexes = self.cell_facepoint_indexes
 
         # ── 4. Delegate to mesh_to_raster / mesh_to_velocity_raster ──────
         if variable == "depth":
@@ -1029,6 +1030,7 @@ class FlowAreaResults(FlowArea):
                     vel_min=vel_min,
                     depth_min=depth_min,
                     facepoint_values=_fp_wse_vel,
+                    cell_facepoint_indexes=_cell_facepoint_indexes,
                 )
             else:
                 face_vel_arr = np.array(self.face_velocity[timestep, :])
@@ -1063,6 +1065,7 @@ class FlowAreaResults(FlowArea):
                     vel_min=vel_min,
                     depth_min=depth_min,
                     facepoint_values=_fp_wse_vel,
+                    cell_facepoint_indexes=_cell_facepoint_indexes,
                 )
             else:
                 face_vel_arr = np.array(self.face_velocity[timestep, :])
@@ -1295,7 +1298,8 @@ class FlowAreaResults(FlowArea):
 
         mesh_kw["facepoint_values"] = _fp_wse
         mesh_kw["scatter_interp_method"] = scatter_interp_method
-        mesh_kw["cell_facepoint_indexes"] = self.cell_facepoint_indexes
+        mesh_kw["cell_polygons"] = self.cell_polygons
+        _cell_facepoint_indexes = self.cell_facepoint_indexes
 
         wse_ds = _raster.mesh_to_raster(
             **mesh_kw,
@@ -1352,6 +1356,7 @@ class FlowAreaResults(FlowArea):
                 vel_min=vel_min,
                 depth_min=depth_min,
                 facepoint_values=_fp_wse_vel,
+                cell_facepoint_indexes=_cell_facepoint_indexes,
             )
         else:
             vel_ds = _raster.mesh_to_velocity_raster_interp(
