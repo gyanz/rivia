@@ -1043,32 +1043,25 @@ class FlowAreaResults(FlowArea):
             return depth_ds
 
         elif variable == "cell_velocity":
-            if vel_interp_method == "flat_cell_center":
-                vel_ds = _raster.mesh_to_velocity_raster(
-                    **mesh_kw,
-                    cell_wse=cell_vel_wse,
-                    cell_velocity=cell_vel_vecs,
-                    output_path=None if clip_to_perimeter else output_path,
-                    vel_min=vel_min,
-                    depth_min=depth_min,
-                    facepoint_values=_fp_wse_vel,
-                    cell_facepoint_indexes=_cell_facepoint_indexes,
-                )
-            else:
-                face_vel_arr = np.array(self.face_velocity[timestep, :])
-                vel_ds = _raster.mesh_to_velocity_raster_interp(
-                    **mesh_kw,
-                    face_normals=self.face_normals,
-                    face_vel=face_vel_arr,
-                    face_centroids=self.face_centroids,
-                    cell_wse=cell_vel_wse,
-                    cell_velocity=cell_vel_vecs,
-                    output_path=None if clip_to_perimeter else output_path,
-                    vel_min=vel_min,
-                    depth_min=depth_min,
-                    method=vel_interp_method,
-                    scatter_interp_method=scatter_interp_method,
-                )
+            _face_vel_arr = (
+                None if vel_interp_method == "flat_cell_center"
+                else np.array(self.face_velocity[timestep, :])
+            )
+            vel_ds = _raster.mesh_to_velocity_raster(
+                **mesh_kw,
+                cell_wse=cell_vel_wse,
+                cell_velocity=cell_vel_vecs,
+                output_path=None if clip_to_perimeter else output_path,
+                vel_min=vel_min,
+                depth_min=depth_min,
+                facepoint_values=_fp_wse_vel,
+                cell_facepoint_indexes=_cell_facepoint_indexes,
+                method=vel_interp_method,
+                face_normals=self.face_normals,
+                face_vel=_face_vel_arr,
+                face_centroids=self.face_centroids,
+                scatter_interp_method=scatter_interp_method,
+            )
             if clip_to_perimeter:
                 result = _raster._mask_outside_polygon(
                     vel_ds, self.perimeter, nodata, output_path
@@ -1078,32 +1071,25 @@ class FlowAreaResults(FlowArea):
             return vel_ds
 
         elif variable == "cell_speed":
-            if vel_interp_method == "flat_cell_center":
-                vel_ds = _raster.mesh_to_velocity_raster(
-                    **mesh_kw,
-                    cell_wse=cell_vel_wse,
-                    cell_velocity=cell_vel_vecs,
-                    output_path=None,
-                    vel_min=vel_min,
-                    depth_min=depth_min,
-                    facepoint_values=_fp_wse_vel,
-                    cell_facepoint_indexes=_cell_facepoint_indexes,
-                )
-            else:
-                face_vel_arr = np.array(self.face_velocity[timestep, :])
-                vel_ds = _raster.mesh_to_velocity_raster_interp(
-                    **mesh_kw,
-                    face_normals=self.face_normals,
-                    face_vel=face_vel_arr,
-                    face_centroids=self.face_centroids,
-                    cell_wse=cell_vel_wse,
-                    cell_velocity=cell_vel_vecs,
-                    output_path=None,
-                    vel_min=vel_min,
-                    depth_min=depth_min,
-                    method=vel_interp_method,
-                    scatter_interp_method=scatter_interp_method,
-                )
+            _face_vel_arr = (
+                None if vel_interp_method == "flat_cell_center"
+                else np.array(self.face_velocity[timestep, :])
+            )
+            vel_ds = _raster.mesh_to_velocity_raster(
+                **mesh_kw,
+                cell_wse=cell_vel_wse,
+                cell_velocity=cell_vel_vecs,
+                output_path=None,
+                vel_min=vel_min,
+                depth_min=depth_min,
+                facepoint_values=_fp_wse_vel,
+                cell_facepoint_indexes=_cell_facepoint_indexes,
+                method=vel_interp_method,
+                face_normals=self.face_normals,
+                face_vel=_face_vel_arr,
+                face_centroids=self.face_centroids,
+                scatter_interp_method=scatter_interp_method,
+            )
             speed_ds = _raster._velocity_raster_to_speed(
                 vel_ds, None if clip_to_perimeter else output_path, nodata
             )
@@ -1274,7 +1260,10 @@ class FlowAreaResults(FlowArea):
         # ── 2. Read HDF data once ──────────────────────────────────────
         wse_values = np.array(self.water_surface[timestep, : self.n_cells])
         depth_at_cells = self.depth(timestep)
-        face_vel_arr = np.array(self.face_velocity[timestep, :])
+        face_vel_arr = (
+            None if vel_interp_method == "flat_cell_center"
+            else np.array(self.face_velocity[timestep, :])
+        )
 
         # ── 3. WLS velocity vectors once ──────────────────────────────
         cell_vel_vecs = self.cell_velocity_vectors(
@@ -1388,31 +1377,21 @@ class FlowAreaResults(FlowArea):
         # ── 8. Speed output ────────────────────────────────────────────
         logging.info("Building velocity raster for speed output...")
 
-        if vel_interp_method == "flat_cell_center":
-            vel_ds = _raster.mesh_to_velocity_raster(
-                **mesh_kw,
-                cell_wse=wse_values,
-                cell_velocity=cell_vel_vecs,
-                output_path=None,
-                vel_min=vel_min,
-                depth_min=depth_min,
-                facepoint_values=_fp_wse_vel,
-                cell_facepoint_indexes=_cell_facepoint_indexes,
-            )
-        else:
-            vel_ds = _raster.mesh_to_velocity_raster_interp(
-                **mesh_kw,
-                face_normals=self.face_normals,
-                face_vel=face_vel_arr,
-                face_centroids=self.face_centroids,
-                cell_wse=wse_values,
-                cell_velocity=cell_vel_vecs,
-                output_path=None,
-                vel_min=vel_min,
-                depth_min=depth_min,
-                method=vel_interp_method,
-                scatter_interp_method=scatter_interp_method,
-            )
+        vel_ds = _raster.mesh_to_velocity_raster(
+            **mesh_kw,
+            cell_wse=wse_values,
+            cell_velocity=cell_vel_vecs,
+            output_path=None,
+            vel_min=vel_min,
+            depth_min=depth_min,
+            facepoint_values=_fp_wse_vel,
+            cell_facepoint_indexes=_cell_facepoint_indexes,
+            method=vel_interp_method,
+            face_normals=self.face_normals,
+            face_vel=face_vel_arr,
+            face_centroids=self.face_centroids,
+            scatter_interp_method=scatter_interp_method,
+        )
         speed_ds = _raster._velocity_raster_to_speed(
             vel_ds, None if clip_to_perimeter else speed_path, nodata
         )

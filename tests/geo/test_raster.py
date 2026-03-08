@@ -481,7 +481,12 @@ def _minimal_vel_mesh() -> dict:
     face_vel = np.array([0.0, 1.0, 0.0, -1.0, 0.0, 1.0, 0.0])
     cell_wse = np.array([5.0, 5.0])
     cell_velocity = np.array([[1.0, 0.0], [1.0, 0.0]])
+    # Face centroids: midpoint of each face's two facepoints.
+    fp = mesh["facepoint_coordinates"]
+    fi = mesh["face_facepoint_indexes"]
+    face_centroids = (fp[fi[:, 0]] + fp[fi[:, 1]]) / 2.0
     return dict(**mesh, face_normals=face_normals, face_vel=face_vel,
+                face_centroids=face_centroids,
                 cell_wse=cell_wse, cell_velocity=cell_velocity)
 
 
@@ -765,7 +770,7 @@ class TestComputeFacepointVelocities:
 
 
 # ---------------------------------------------------------------------------
-# mesh_to_velocity_raster_interp — method parameter
+# mesh_to_velocity_raster — method parameter (intra-cell interpolation)
 # ---------------------------------------------------------------------------
 
 
@@ -774,11 +779,11 @@ matplotlib = pytest.importorskip("matplotlib", reason="matplotlib not installed"
 
 class TestMeshToVelocityRasterInterpMethod:
     def test_invalid_method_raises(self):
-        from raspy.geo.raster import mesh_to_velocity_raster_interp
+        from raspy.geo.raster import mesh_to_velocity_raster
 
         vm = _minimal_vel_mesh()
         with pytest.raises(ValueError, match="method must be"):
-            mesh_to_velocity_raster_interp(
+            mesh_to_velocity_raster(
                 **vm,
                 output_path=None,
                 cell_size=2.0,
@@ -790,10 +795,10 @@ class TestMeshToVelocityRasterInterpMethod:
         ["triangle_blend", "face_idw", "face_gradient", "facepoint_blend", "scatter_interp", "scatter_interp2"],
     )
     def test_returns_four_bands(self, method):
-        from raspy.geo.raster import mesh_to_velocity_raster_interp
+        from raspy.geo.raster import mesh_to_velocity_raster
 
         vm = _minimal_vel_mesh()
-        ds = mesh_to_velocity_raster_interp(
+        ds = mesh_to_velocity_raster(
             **vm,
             output_path=None,
             cell_size=2.0,
@@ -807,10 +812,10 @@ class TestMeshToVelocityRasterInterpMethod:
         ["triangle_blend", "face_idw", "face_gradient", "facepoint_blend", "scatter_interp", "scatter_interp2"],
     )
     def test_has_wet_pixels(self, method):
-        from raspy.geo.raster import mesh_to_velocity_raster_interp
+        from raspy.geo.raster import mesh_to_velocity_raster
 
         vm = _minimal_vel_mesh()
-        ds = mesh_to_velocity_raster_interp(
+        ds = mesh_to_velocity_raster(
             **vm,
             output_path=None,
             cell_size=2.0,
@@ -827,10 +832,10 @@ class TestMeshToVelocityRasterInterpMethod:
     )
     def test_uniform_flow_speed_approx_one(self, method):
         """Uniform u=(1,0) flow should give speed ≈ 1 at all wet pixels."""
-        from raspy.geo.raster import mesh_to_velocity_raster_interp
+        from raspy.geo.raster import mesh_to_velocity_raster
 
         vm = _minimal_vel_mesh()
-        ds = mesh_to_velocity_raster_interp(
+        ds = mesh_to_velocity_raster(
             **vm,
             output_path=None,
             cell_size=2.0,
@@ -843,10 +848,10 @@ class TestMeshToVelocityRasterInterpMethod:
 
     def test_scatter_interp_vx_vy_direction(self):
         """scatter_interp: uniform u=(1,0) → Vx≈1, Vy≈0 at wet pixels."""
-        from raspy.geo.raster import mesh_to_velocity_raster_interp
+        from raspy.geo.raster import mesh_to_velocity_raster
 
         vm = _minimal_vel_mesh()
-        ds = mesh_to_velocity_raster_interp(
+        ds = mesh_to_velocity_raster(
             **vm,
             output_path=None,
             cell_size=2.0,
@@ -863,10 +868,10 @@ class TestMeshToVelocityRasterInterpMethod:
 
     def test_scatter_interp2_vx_vy_direction(self):
         """scatter_interp2 (face midpoints only): uniform u=(1,0) → Vx≈1, Vy≈0."""
-        from raspy.geo.raster import mesh_to_velocity_raster_interp
+        from raspy.geo.raster import mesh_to_velocity_raster
 
         vm = _minimal_vel_mesh()
-        ds = mesh_to_velocity_raster_interp(
+        ds = mesh_to_velocity_raster(
             **vm,
             output_path=None,
             cell_size=2.0,
@@ -882,11 +887,11 @@ class TestMeshToVelocityRasterInterpMethod:
         np.testing.assert_allclose(vy[wet], 0.0, atol=1e-6)
 
     def test_invalid_scatter_interp_method_raises(self):
-        from raspy.geo.raster import mesh_to_velocity_raster_interp
+        from raspy.geo.raster import mesh_to_velocity_raster
 
         vm = _minimal_vel_mesh()
         with pytest.raises(ValueError, match="scatter_interp_method"):
-            mesh_to_velocity_raster_interp(
+            mesh_to_velocity_raster(
                 **vm,
                 output_path=None,
                 cell_size=2.0,
@@ -897,10 +902,10 @@ class TestMeshToVelocityRasterInterpMethod:
     @pytest.mark.parametrize("sci_method", ["nearest", "linear", "cubic"])
     def test_scatter_interp_scipy_methods(self, sci_method):
         """All scipy griddata methods produce wet pixels with uniform flow."""
-        from raspy.geo.raster import mesh_to_velocity_raster_interp
+        from raspy.geo.raster import mesh_to_velocity_raster
 
         vm = _minimal_vel_mesh()
-        ds = mesh_to_velocity_raster_interp(
+        ds = mesh_to_velocity_raster(
             **vm,
             output_path=None,
             cell_size=2.0,
