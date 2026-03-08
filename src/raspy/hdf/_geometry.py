@@ -957,7 +957,10 @@ class FlowArea:
             np.add.at(fp_sum, fp_col[valid], cell_wse[valid])
             np.add.at(fp_count, fp_col[valid], 1)
 
-        return np.where(fp_count > 0, fp_sum / fp_count, np.nan)
+        result = np.full(n_fp, np.nan)
+        mask = fp_count > 0
+        np.divide(fp_sum, fp_count, out=result, where=mask)
+        return result
 
 
 # ---------------------------------------------------------------------------

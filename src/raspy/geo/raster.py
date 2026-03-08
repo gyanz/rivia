@@ -280,6 +280,7 @@ def _griddata_facepoint_sloping(
         from rasterio.features import rasterize as _rasterize
         from rasterio.transform import Affine as _Affine
 
+        # raster transform
         xi = xi_grid[0, :]
         yi = yi_grid[:, 0]
         dx = float(xi[1] - xi[0]) if len(xi) > 1 else 1.0
