@@ -41,7 +41,6 @@ def mesh_to_wse_raster(
     ] = "corners",
     scatter_interp_method: str = "linear",
     fix_triangulation: bool = True,
-    face_active: np.ndarray | None = None,
     cell_polygons: list[np.ndarray] | None = None,
     facepoint_values: np.ndarray | None = None,
     facecenter_values: np.ndarray | None = None,
@@ -127,14 +126,6 @@ def mesh_to_wse_raster(
         WSE of the cell it falls inside.  Produces a stepped "patchwork"
         appearance at cell boundaries; useful for checking raw model output.
 
-        ``"hybrid"``  uses sloping rendering where adjacent wet cells are
-        hydraulically connected (active face between them) and horizontal
-        rendering where they are separated by a dry face.  Requires
-        *face_active*.
-    face_active : ndarray, shape ``(n_faces,)``, bool, optional
-        Per-face hydraulic activity flag: ``True`` = face is wet/active.
-        Required when *render_mode* is ``"hybrid"``; ignored otherwise.
-        Typically derived from face velocity: ``abs(face_vel) > threshold``.
     fix_triangulation : bool
         When ``True`` (default), deduplicate coincident mesh vertices and
         remove zero-area triangles before building the triangulation.  These
@@ -158,8 +149,7 @@ def mesh_to_wse_raster(
         ``render_mode='sloping'``, the sloping path uses
         :func:`_griddata_facepoint_sloping` instead of IDW: only facepoint
         coordinates and values are used as scatter points — cell centres
-        are *not* included.  Ignored for ``'horizontal'`` and ``'hybrid'``
-        modes.
+        are *not* included.  Ignored for ``'horizontal'`` mode.
     scatter_interp_method : str, default ``"linear"``
         Interpolation method forwarded to ``scipy.interpolate.griddata``
         when *facepoint_values* is provided.  One of ``'nearest'``,
@@ -247,9 +237,9 @@ default ``"corners"``
         raise ValueError(
             "Specify either reference_raster or reference_transform, not both."
         )
-    if render_mode not in ("sloping", "horizontal", "hybrid"):
+    if render_mode not in ("sloping", "horizontal"):
         raise ValueError(
-            f"render_mode must be 'sloping', 'horizontal', or 'hybrid';"
+            f"render_mode must be 'sloping' or 'horizontal';"
             f" got {render_mode!r}."
         )
     if sloping_method not in ("corners", "corners_faces", "corners_faces_shallow"):
@@ -286,9 +276,6 @@ default ``"corners"``
             "mesh_to_wse_raster only accepts scalar cell_values (shape (n_cells,)). "
             "For velocity rasters use mesh_to_velocity_raster instead."
         )
-    if render_mode == "hybrid" and face_active is None:
-        raise ValueError("face_active is required when render_mode='hybrid'.")
-
     cell_centers = np.asarray(cell_centers, dtype=np.float64)
     facepoint_coordinates = np.asarray(facepoint_coordinates, dtype=np.float64)
     face_facepoint_indexes = np.asarray(face_facepoint_indexes, dtype=np.int64)
@@ -448,32 +435,6 @@ default ``"corners"``
                 pixel_is_shallow = pixel_is_shallow.reshape(xi_grid.shape)
                 scalar = np.where(pixel_is_shallow, scalar_horiz, scalar)
             # tree is None → no wet cells → scalar already all-NaN, nothing to blend
-
-    else:  # "hybrid"
-        is_horiz_cell = _classify_horizontal_cells(
-            face_cell_indexes, dry_mask, np.asarray(face_active, dtype=bool)
-        )
-        if tree is not None:
-            pts_flat = np.column_stack([xi_grid.ravel(), yi_grid.ravel()])
-            dist_flat, idx_flat = tree.query(pts_flat)
-            in_mesh = dist_flat <= max_radius
-            pixel_is_horiz = np.zeros(xi_grid.size, dtype=bool)
-            pixel_is_horiz[in_mesh] = is_horiz_cell[wet_indices[idx_flat[in_mesh]]]
-        else:
-            pixel_is_horiz = np.zeros(xi_grid.size, dtype=bool)
-        pixel_is_horiz = pixel_is_horiz.reshape(xi_grid.shape)
-        if cell_polygons is not None:
-            scalar_horiz = _rasterize_cell_values(
-                cell_polygons, cv, dry_mask, xi_grid, yi_grid
-            )
-        else:
-            scalar_horiz = _kdtree_nearest(
-                tree, wet_indices, cv, max_radius, xi_grid, yi_grid
-            )
-        scalar_slop = _kdtree_idw(
-            tree, wet_indices, cv, max_radius, xi_grid, yi_grid
-        )
-        scalar = np.where(pixel_is_horiz, scalar_horiz, scalar_slop)
 
     #  Embed tight result into full output array 
     # When snap_to_reference_extent=True the KDTree ran on a tight sub-grid;
@@ -1516,49 +1477,6 @@ def _griddata_facepoint_sloping(
         scalar_flat[dist > max_radius] = np.nan
 
     return scalar_flat.reshape(xi_grid.shape)
-
-
-def _classify_horizontal_cells(
-    face_cell_indexes: np.ndarray,
-    dry_mask: np.ndarray,
-    face_active: np.ndarray,
-) -> np.ndarray:
-    """Return a bool mask: True where a cell should use horizontal rendering.
-
-    A wet cell is flagged when it has at least one wet neighbour that is
-    separated from it by a *dry* (inactive) face.  Both cells in such a
-    pair are flagged.  This matches HEC-RAS RASMapper's hybrid mode: sloping
-    is used where the water surface is hydraulically connected; horizontal is
-    used across dry-face boundaries between otherwise-wet cells.
-
-    Parameters
-    ----------
-    face_cell_indexes : ndarray, shape ``(n_faces, 2)``
-        Left/right cell index per face; -1 = boundary.
-    dry_mask : ndarray, shape ``(n_cells,)``, bool
-        True where a cell is dry (excluded from interpolation).
-    face_active : ndarray, shape ``(n_faces,)``, bool
-        True where the face is hydraulically active (wet).
-
-    Returns
-    -------
-    ndarray, shape ``(n_cells,)``, bool
-    """
-    n_cells = len(dry_mask)
-    use_horizontal = np.zeros(n_cells, dtype=bool)
-
-    left = face_cell_indexes[:, 0]
-    right = face_cell_indexes[:, 1]
-    interior = (left >= 0) & (left < n_cells) & (right >= 0) & (right < n_cells)
-    lc, rc = left[interior], right[interior]
-    active = face_active[interior]
-
-    both_wet = ~dry_mask[lc] & ~dry_mask[rc]
-    disconnected = both_wet & ~active
-    np.logical_or.at(use_horizontal, lc[disconnected], True)
-    np.logical_or.at(use_horizontal, rc[disconnected], True)
-    use_horizontal[dry_mask] = False
-    return use_horizontal
 
 
 def _shallow_cell_mask(

@@ -716,7 +716,7 @@ class FlowAreaResults(FlowArea):
         snap_to_reference_extent: bool = False,
         crs: Any | None = None,
         nodata: float = -9999.0,
-        render_mode: Literal["sloping", "horizontal", "hybrid"] = "sloping",
+        render_mode: Literal["sloping", "horizontal"] = "sloping",
         depth_min: float | None = 0.001,
         vel_min: float | None = 0.0001,
         vel_weight_method: Literal[
@@ -786,9 +786,7 @@ class FlowAreaResults(FlowArea):
         vel_min:
             Minimum speed (m/s).  Cells whose WLS speed is below this
             threshold are excluded from the WSE wet-extent render and from
-            the final velocity output.  For ``render_mode="hybrid"``, also
-            used as the face-normal speed threshold to classify faces as
-            active (wet).  Default ``0.001``.
+            the final velocity output.  Default ``0.001``.
         vel_weight_method:
             Velocity reconstruction scheme passed to
             :meth:`cell_velocity_vectors`.
@@ -796,8 +794,8 @@ class FlowAreaResults(FlowArea):
             Face WSE interpolation method passed to
             :meth:`cell_velocity_vectors`.
         render_mode:
-            Water-surface rendering mode — ``"sloping"`` (default),
-            ``"horizontal"``, or ``"hybrid"``.  See
+            Water-surface rendering mode — ``"sloping"`` (default) or
+            ``"horizontal"``.  See
             :func:`~raspy.geo.raster.mesh_to_wse_raster` for full description.
         vel_interp_method:
             Intra-cell velocity interpolation method for ``"cell_velocity"``
@@ -892,25 +890,6 @@ class FlowAreaResults(FlowArea):
                 "snap_to_reference_extent=False when using clip_to_perimeter=True."
             )
 
-        # ── 0b. Hybrid face-active mask ────────────────────────────────
-        # Hybrid mode requires per-timestep face velocities.  When timestep
-        # is None (max-value maps) no such data exists; fall back to sloping.
-        _render_mode = render_mode
-        face_active: np.ndarray | None = None
-        if _render_mode == "hybrid":
-            if timestep is None:
-                logging.warning(
-                    "render_mode='hybrid' is not supported when timestep=None "
-                    "(no per-timestep face data for max-value maps). "
-                    "Falling back to render_mode='sloping'."
-                )
-                _render_mode = "sloping"
-            else:
-                face_active = (
-                    np.abs(np.array(self.face_velocity[timestep, :]))
-                    > (vel_min if vel_min is not None else 0.0)
-                )
-
         # ── 1. Resolve values array ────────────────────────────────────
         if variable == "depth":
             if timestep is None:
@@ -958,7 +937,7 @@ class FlowAreaResults(FlowArea):
         _fp_wse_vel: np.ndarray | None = None
         _fc_wse: np.ndarray | None = None       # face-centroid WSE (corners_faces)
         _fc_wse_vel: np.ndarray | None = None
-        if _render_mode == "sloping":
+        if render_mode == "sloping":
             if variable == "water_surface":
                 _fp_wse = self.wse_at_facepoints(values)
                 if sloping_method == "corners_faces":
@@ -1004,8 +983,7 @@ class FlowAreaResults(FlowArea):
             crs=crs,
             nodata=nodata,
             snap_to_reference_extent=snap_to_reference_extent,
-            render_mode=_render_mode,
-            face_active=face_active,
+            render_mode=render_mode,
             fix_triangulation=fix_triangulation,
             extent_bbox=_perimeter_bbox,
             facepoint_values=_fp_wse,
@@ -1130,7 +1108,7 @@ class FlowAreaResults(FlowArea):
         speed_path: str | Path | None = None,
         snap_to_reference_extent: bool = False,
         nodata: float = -9999.0,
-        render_mode: Literal["sloping", "horizontal", "hybrid"] = "horizontal",
+        render_mode: Literal["sloping", "horizontal"] = "horizontal",
         depth_min: float | None = 0.001,
         vel_min: float | None = 0.0001,
         vel_weight_method: Literal[
@@ -1179,15 +1157,15 @@ class FlowAreaResults(FlowArea):
         nodata:
             Fill value for pixels outside the wet mesh.
         render_mode:
-            Water-surface rendering mode — ``"sloping"``,
-            ``"horizontal"`` (default), or ``"hybrid"``.
+            Water-surface rendering mode — ``"sloping"`` or
+            ``"horizontal"`` (default).
         depth_min:
             Minimum water depth.  Cells shallower than this are excluded from
             WSE interpolation; output depth pixels below this are set to
             *nodata*.
         vel_min:
             Minimum speed threshold for velocity reconstruction and wet-extent
-            classification in ``render_mode="hybrid"``.
+            classification.
         vel_weight_method:
             Velocity reconstruction scheme passed to
             :meth:`cell_velocity_vectors`.
@@ -1248,15 +1226,6 @@ class FlowAreaResults(FlowArea):
                 "snap_to_reference_extent=False when using clip_to_perimeter=True."
             )
 
-        # ── 1. Hybrid face-active mask ─────────────────────────────────
-        _render_mode = render_mode
-        face_active: np.ndarray | None = None
-        if _render_mode == "hybrid":
-            face_active = (
-                np.abs(np.array(self.face_velocity[timestep, :]))
-                > (vel_min if vel_min is not None else 0.0)
-            )
-
         # ── 2. Read HDF data once ──────────────────────────────────────
         wse_values = np.array(self.water_surface[timestep, : self.n_cells])
         depth_at_cells = self.depth(timestep)
@@ -1289,8 +1258,7 @@ class FlowAreaResults(FlowArea):
             reference_raster=reference_raster,
             nodata=nodata,
             snap_to_reference_extent=snap_to_reference_extent,
-            render_mode=_render_mode,
-            face_active=face_active,
+            render_mode=render_mode,
             fix_triangulation=fix_triangulation,
             extent_bbox=_perimeter_bbox,
         )
@@ -1308,7 +1276,7 @@ class FlowAreaResults(FlowArea):
         _fp_wse_vel: np.ndarray | None = None
         _fc_wse: np.ndarray | None = None       # face-centroid WSE (corners_faces)
         _fc_wse_vel: np.ndarray | None = None
-        if _render_mode == "sloping":
+        if render_mode == "sloping":
             _fp_wse = self.wse_at_facepoints(cell_wse_masked)
             if sloping_method == "corners_faces":
                 _fc_wse = self.wse_at_facecentroids(cell_wse_masked)
@@ -1415,9 +1383,8 @@ class FlowAreaResults(FlowArea):
         self,
         timestep: int | None = None,
         *,
-        render_mode: Literal["sloping", "horizontal", "hybrid"] = "horizontal",
+        render_mode: Literal["sloping", "horizontal"] = "horizontal",
         depth_min: float | None = 0.001,
-        vel_min: float | None = 0.0001,
         check_boundary: bool = True,
         verbose: bool = True,
     ) -> dict:
@@ -1448,9 +1415,6 @@ class FlowAreaResults(FlowArea):
         depth_min :
             Depth threshold for the dry-cell mask (same default as
             :meth:`export_raster`).
-        vel_min :
-            Speed threshold used to build the ``face_active`` mask when
-            ``render_mode='hybrid'``.
         check_boundary :
             Pass ``True`` (default) to include the flow-area perimeter check
             (rule 5) in the mesh validation step.
