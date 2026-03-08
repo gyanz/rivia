@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 
@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 
 
 # ---------------------------------------------------------------------------
-# KDTree rendering helpers  called from mesh_to_raster and mesh_to_velocity_raster
+# KDTree rendering helpers  called from mesh_to_wse_raster and mesh_to_velocity_raster
 # ---------------------------------------------------------------------------
 
 
@@ -296,6 +296,8 @@ def _griddata_facepoint_sloping(
     xi_grid: np.ndarray,
     yi_grid: np.ndarray,
     method: str = "linear",
+    facecenter_coordinates: np.ndarray | None = None,
+    facecenter_values: np.ndarray | None = None,
 ) -> np.ndarray:
     """Interpolate facepoint WSE to raster pixels using ``scipy.interpolate.griddata``.
 
@@ -307,6 +309,15 @@ def _griddata_facepoint_sloping(
         Pre-computed WSE at each facepoint (e.g. from
         ``FlowArea.wse_at_facepoints``).  ``NaN`` where all adjacent cells
         are dry.
+    facecenter_coordinates : ndarray, shape ``(n_faces, 2)``, optional
+        Centroid coordinate of each face (``FlowArea.face_centroids``).
+        When provided together with *facecenter_values*, these points are
+        appended to the facepoint scatter set before interpolation, giving
+        a denser point cloud that better captures the mesh topology.
+    facecenter_values : ndarray, shape ``(n_faces,)``, optional
+        WSE at each face centroid (e.g. from
+        ``FlowArea.wse_at_facecentroids``).  ``NaN`` where all adjacent
+        cells are dry.
     cell_polygons : list of ndarray, shape ``(n_vertices, 2)``, or None
         Exact cell boundary vertices per cell in polygon order
         (``FlowArea.cell_polygons``).  Cells with curved faces already have
@@ -338,6 +349,11 @@ def _griddata_facepoint_sloping(
     valid = ~np.isnan(facepoint_values)
     pts_valid = facepoint_coordinates[valid]
     vals_valid = facepoint_values[valid]
+
+    if facecenter_coordinates is not None and facecenter_values is not None:
+        fc_valid = ~np.isnan(facecenter_values)
+        pts_valid = np.vstack([pts_valid, facecenter_coordinates[fc_valid]])
+        vals_valid = np.concatenate([vals_valid, facecenter_values[fc_valid]])
 
     pts_query = np.column_stack([xi_grid.ravel(), yi_grid.ravel()])
 
@@ -440,7 +456,7 @@ def _classify_horizontal_cells(
 
 
 @timed(logging.INFO)
-def mesh_to_raster(
+def mesh_to_wse_raster(
     cell_centers: np.ndarray,
     facepoint_coordinates: np.ndarray,
     face_facepoint_indexes: np.ndarray,
@@ -465,6 +481,9 @@ def mesh_to_raster(
     facepoint_values: np.ndarray | None = None,
     scatter_interp_method: str = "linear",
     cell_polygons: list[np.ndarray] | None = None,
+    sloping_method: Literal["corners", "corners_faces"] = "corners",
+    facecenter_coordinates: np.ndarray | None = None,
+    facecenter_values: np.ndarray | None = None,
 ) -> Path | rasterio.io.DatasetReader:
     """Interpolate HEC-RAS mesh results to a raster using mesh-conforming triangulation.
 
@@ -589,6 +608,22 @@ def mesh_to_raster(
         boundaries.  When provided, dry-cell masking in the sloping path
         rasterizes the true cell polygons instead of using a nearest-centre
         Voronoi approximation.
+    sloping_method : {"corners", "corners_faces"}, default ``"corners"``
+        Controls which scatter points are used when ``render_mode='sloping'``:
+
+        ``"corners"`` *(default)*  uses only the polygon-corner facepoints
+        (values from *facepoint_values*).
+
+        ``"corners_faces"``  augments the corner facepoints with face-centroid
+        points (values from *facecenter_values*, coordinates from
+        *facecenter_coordinates*), giving a denser scatter set that better
+        captures the mesh topology inside large cells.
+    facecenter_coordinates : ndarray, shape ``(n_faces, 2)``, optional
+        Centroid coordinate of each face (``FlowArea.face_centroids``).
+        Required when *sloping_method* is ``"corners_faces"``.
+    facecenter_values : ndarray, shape ``(n_faces,)``, optional
+        WSE at each face centroid (``FlowArea.wse_at_facecentroids``).
+        Required when *sloping_method* is ``"corners_faces"``.
 
     Returns
     -------
@@ -618,7 +653,7 @@ def mesh_to_raster(
         from rasterio.windows import Window
     except ImportError as exc:
         raise ImportError(
-            "mesh_to_raster requires rasterio. "
+            "mesh_to_wse_raster requires rasterio. "
             "Install it with: pip install raspy[geo]"
         ) from exc
 
@@ -626,7 +661,7 @@ def mesh_to_raster(
         from scipy.spatial import cKDTree as _cKDTree  # noqa: F401
     except ImportError as exc:
         raise ImportError(
-            "mesh_to_raster requires scipy. "
+            "mesh_to_wse_raster requires scipy. "
             "Install it with: pip install raspy[geo]"
         ) from exc
 
@@ -639,6 +674,18 @@ def mesh_to_raster(
         raise ValueError(
             f"render_mode must be 'sloping', 'horizontal', or 'hybrid';"
             f" got {render_mode!r}."
+        )
+    if sloping_method not in ("corners", "corners_faces"):
+        raise ValueError(
+            f"sloping_method must be 'corners' or 'corners_faces';"
+            f" got {sloping_method!r}."
+        )
+    if sloping_method == "corners_faces" and (
+        facecenter_coordinates is None or facecenter_values is None
+    ):
+        raise ValueError(
+            "facecenter_coordinates and facecenter_values are required "
+            "when sloping_method='corners_faces'."
         )
     if render_mode == "sloping" and facepoint_values is None:
         raise ValueError(
@@ -653,7 +700,7 @@ def mesh_to_raster(
     cell_values = np.asarray(cell_values, dtype=np.float64)
     if cell_values.ndim != 1:
         raise ValueError(
-            "mesh_to_raster only accepts scalar cell_values (shape (n_cells,)). "
+            "mesh_to_wse_raster only accepts scalar cell_values (shape (n_cells,)). "
             "For velocity rasters use mesh_to_velocity_raster instead."
         )
     if render_mode == "hybrid" and face_active is None:
@@ -781,6 +828,18 @@ def mesh_to_raster(
             xi_grid,
             yi_grid,
             scatter_interp_method,
+            facecenter_coordinates=(
+                np.asarray(facecenter_coordinates, dtype=np.float64)
+                if sloping_method == "corners_faces"
+                and facecenter_coordinates is not None
+                else None
+            ),
+            facecenter_values=(
+                np.asarray(facecenter_values, dtype=np.float64)
+                if sloping_method == "corners_faces"
+                and facecenter_values is not None
+                else None
+            ),
         )
 
     else:  # "hybrid"
@@ -907,7 +966,7 @@ def mesh_to_velocity_raster(
     (interpolated) water-surface elevation, then assigns velocity within
     those wet pixels.  This function replicates that two-step process:
 
-    1. **Render WSE** in-memory using :func:`mesh_to_raster` with the
+    1. **Render WSE** in-memory using :func:`mesh_to_wse_raster` with the
        requested *render_mode*  this determines which raster pixels are
        wet and, for sloping/hybrid modes, the pixel-level WSE.
     2. **Assign velocity horizontally**  each wet pixel is mapped to
@@ -971,14 +1030,14 @@ def mesh_to_velocity_raster(
         Per-face hydraulic activity flag required by ``render_mode="hybrid"``.
     extent_bbox : tuple[float, float, float, float], optional
         Override bounding box ``(x_min, y_min, x_max, y_max)`` passed
-        through to the internal :func:`mesh_to_raster` call.  See that
+        through to the internal :func:`mesh_to_wse_raster` call.  See that
         function for full description.
     facepoint_values : ndarray, shape ``(n_facepoints,)``, optional
         Pre-computed WSE at every facepoint passed through to the internal
-        :func:`mesh_to_raster` call.  See that function for full description.
+        :func:`mesh_to_wse_raster` call.  See that function for full description.
     scatter_interp_method : str, default ``"linear"``
         Griddata interpolation method passed through to
-        :func:`mesh_to_raster` when *facepoint_values* is provided.
+        :func:`mesh_to_wse_raster` when *facepoint_values* is provided.
 
     Returns
     -------
@@ -1012,7 +1071,7 @@ def mesh_to_velocity_raster(
         cell_wse_for_render[speed_pre < vel_min] = np.nan
 
     #  Step 1: Render WSE in-memory to determine wet extent and grid. 
-    wse_ds = mesh_to_raster(
+    wse_ds = mesh_to_wse_raster(
         cell_centers=cell_centers,
         facepoint_coordinates=facepoint_coordinates,
         face_facepoint_indexes=face_facepoint_indexes,
@@ -1722,7 +1781,7 @@ def mesh_to_velocity_raster_interp(
         all other interpolation methods.
     extent_bbox : tuple[float, float, float, float], optional
         Override bounding box ``(x_min, y_min, x_max, y_max)`` passed
-        through to the internal :func:`mesh_to_raster` call.  See that
+        through to the internal :func:`mesh_to_wse_raster` call.  See that
         function for full description.
 
     Returns
@@ -1782,7 +1841,7 @@ def mesh_to_velocity_raster_interp(
         cell_wse_for_render[speed_pre < vel_min] = np.nan
 
     #  Step 1: Render WSE in-memory to determine wet extent and grid. 
-    wse_ds = mesh_to_raster(
+    wse_ds = mesh_to_wse_raster(
         cell_centers=cell_centers,
         facepoint_coordinates=facepoint_coordinates,
         face_facepoint_indexes=face_facepoint_indexes,

@@ -734,7 +734,7 @@ class FlowAreaResults(FlowArea):
     ) -> Path | rasterio.io.DatasetReader:
         """Interpolate a field to a GeoTIFF using mesh-conforming triangulation.
 
-        Uses :func:`~raspy.geo.raster.mesh_to_raster` which sub-divides each
+        Uses :func:`~raspy.geo.raster.mesh_to_wse_raster` which sub-divides each
         mesh cell into triangles from the cell centre to each bounding face,
         then performs linear (barycentric) interpolation within those triangles.
         This prevents spurious fill across dry gaps or disconnected wet islands,
@@ -797,7 +797,7 @@ class FlowAreaResults(FlowArea):
         render_mode:
             Water-surface rendering mode — ``"sloping"`` (default),
             ``"horizontal"``, or ``"hybrid"``.  See
-            :func:`~raspy.geo.raster.mesh_to_raster` for full description.
+            :func:`~raspy.geo.raster.mesh_to_wse_raster` for full description.
         vel_interp_method:
             Intra-cell velocity interpolation method for ``"cell_velocity"``
             and ``"cell_speed"``:
@@ -910,7 +910,7 @@ class FlowAreaResults(FlowArea):
             else:
                 wse_values = np.array(self.water_surface[timestep, : self.n_cells])
                 depth_at_cells = self.depth(timestep)
-            # Pre-mask dry cells by depth so mesh_to_raster sees NaN at those
+            # Pre-mask dry cells by depth so mesh_to_wse_raster sees NaN at those
             # cell centres and excludes the corresponding triangles.
             cell_wse = wse_values.copy()
             if depth_min is not None:
@@ -943,7 +943,7 @@ class FlowAreaResults(FlowArea):
 
         # ── 2b. Facepoint WSE for sloping render ───────────────────────
         # Compute facepoint values from the dry-masked cell WSE so
-        # mesh_to_raster receives them for the griddata sloping path.
+        # mesh_to_wse_raster receives them for the griddata sloping path.
         # For velocity variables the vel_min mask is applied first.
         _fp_wse: np.ndarray | None = None
         _fp_wse_vel: np.ndarray | None = None
@@ -963,7 +963,7 @@ class FlowAreaResults(FlowArea):
         # ── 3. Common mesh topology keyword arguments ──────────────────
         _cfi, _cfv = self.cell_face_info  # property returns (info, values) tuple
         # When clipping to the perimeter, use the perimeter polygon bounding
-        # box as the output extent.  _tight_pixel_bounds (inside mesh_to_raster)
+        # box as the output extent.  _tight_pixel_bounds (inside mesh_to_wse_raster)
         # snaps this bbox outward to reference pixel boundaries, preserving
         # grid alignment while keeping the extent compact and consistent with
         # the polygon mask applied after.
@@ -997,9 +997,9 @@ class FlowAreaResults(FlowArea):
         )
         _cell_facepoint_indexes = self.cell_facepoint_indexes
 
-        # ── 4. Delegate to mesh_to_raster / mesh_to_velocity_raster ──────
+        # ── 4. Delegate to mesh_to_wse_raster / mesh_to_velocity_raster ──────
         if variable == "depth":
-            wse_ds = _raster.mesh_to_raster(
+            wse_ds = _raster.mesh_to_wse_raster(
                 **mesh_kw,
                 cell_values=cell_wse,
                 output_path=None,   # in-memory; depth written after DEM subtraction
@@ -1096,7 +1096,7 @@ class FlowAreaResults(FlowArea):
         else:
             # water_surface: min_above_ref controls the wet/dry threshold relative
             # to the DEM (when reference_raster is given); no scalar min_value needed.
-            wse_ds = _raster.mesh_to_raster(
+            wse_ds = _raster.mesh_to_wse_raster(
                 **mesh_kw,
                 cell_values=values,
                 output_path=None if clip_to_perimeter else output_path,
@@ -1301,7 +1301,7 @@ class FlowAreaResults(FlowArea):
         mesh_kw["cell_polygons"] = self.cell_polygons
         _cell_facepoint_indexes = self.cell_facepoint_indexes
 
-        wse_ds = _raster.mesh_to_raster(
+        wse_ds = _raster.mesh_to_wse_raster(
             **mesh_kw,
             cell_values=cell_wse_masked,
             output_path=None,
@@ -1409,7 +1409,7 @@ class FlowAreaResults(FlowArea):
            — validates every cell against the HEC-RAS rules (convexity, face
            count, duplicate points, cell centre location).
         2. **Triangulation probe** — actually builds the fan-triangulation used
-           by :func:`~raspy.geo.raster.mesh_to_raster` and attempts to
+           by :func:`~raspy.geo.raster.mesh_to_wse_raster` and attempts to
            initialise ``matplotlib``'s ``TrapezoidMapTriFinder``, both with and
            without the ``fix_triangulation`` pre-processing step, so you can see
            whether the fix resolves the problem or whether the KDTree fallback

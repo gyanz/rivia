@@ -286,11 +286,11 @@ class TestErrors:
 
 
 # ---------------------------------------------------------------------------
-# mesh_to_raster
+# mesh_to_wse_raster
 # ---------------------------------------------------------------------------
 
 def _minimal_mesh():
-    """Return a tiny 2-cell mesh suitable for mesh_to_raster tests.
+    """Return a tiny 2-cell mesh suitable for mesh_to_wse_raster tests.
 
     Layout (not to scale):
         cell 0 centred at (5, 5),  cell 1 centred at (15, 5)
@@ -348,13 +348,13 @@ def _minimal_mesh():
 
 class TestMeshToRaster:
     def test_rejects_vector_cell_values(self, tmp_path):
-        """mesh_to_raster must raise when given a (n, 2) vector array."""
-        from raspy.geo.raster import mesh_to_raster
+        """mesh_to_wse_raster must raise when given a (n, 2) vector array."""
+        from raspy.geo.raster import mesh_to_wse_raster
 
         mesh = _minimal_mesh()
         vector_values = np.ones((2, 2))  # (n_cells, 2) — invalid
         with pytest.raises((ValueError, IndexError)):
-            mesh_to_raster(
+            mesh_to_wse_raster(
                 **mesh,
                 cell_values=vector_values,
                 output_path=tmp_path / "out.tif",
@@ -363,11 +363,11 @@ class TestMeshToRaster:
 
     def test_scalar_output_one_band(self, tmp_path):
         """Scalar cell_values produce a single-band raster."""
-        from raspy.geo.raster import mesh_to_raster
+        from raspy.geo.raster import mesh_to_wse_raster
 
         mesh = _minimal_mesh()
         cell_values = np.array([10.0, 12.0])
-        out = mesh_to_raster(
+        out = mesh_to_wse_raster(
             **mesh,
             cell_values=cell_values,
             output_path=tmp_path / "wse.tif",
@@ -379,7 +379,7 @@ class TestMeshToRaster:
     def test_min_above_ref_masks_shallow_pixels(self, tmp_path):
         """min_above_ref with a reference DEM masks pixels shallower than the threshold."""
         from rasterio.transform import from_origin
-        from raspy.geo.raster import mesh_to_raster
+        from raspy.geo.raster import mesh_to_wse_raster
 
         mesh = _minimal_mesh()
         # DEM elevation = 8.0 everywhere; WSE = 9.0 → depth = 1.0
@@ -397,7 +397,7 @@ class TestMeshToRaster:
         cell_wse = np.array([9.0, 9.0])  # depth = 1.0 everywhere
 
         # min_above_ref=0.5: depth 1.0 >= 0.5 → pixels should remain
-        ds_keep = mesh_to_raster(
+        ds_keep = mesh_to_wse_raster(
             **mesh,
             cell_values=cell_wse,
             output_path=None,
@@ -411,7 +411,7 @@ class TestMeshToRaster:
         assert wet_keep.any(), "Expected wet pixels when depth > min_above_ref"
 
         # min_above_ref=2.0: depth 1.0 < 2.0 → all pixels should be masked
-        ds_mask = mesh_to_raster(
+        ds_mask = mesh_to_wse_raster(
             **mesh,
             cell_values=cell_wse,
             output_path=None,
@@ -427,7 +427,7 @@ class TestMeshToRaster:
     def test_below_ground_masked_by_default(self, tmp_path):
         """Without min_above_ref, pixels where WSE <= DEM are masked."""
         from rasterio.transform import from_origin
-        from raspy.geo.raster import mesh_to_raster
+        from raspy.geo.raster import mesh_to_wse_raster
 
         mesh = _minimal_mesh()
         dem_path = tmp_path / "dem.tif"
@@ -443,7 +443,7 @@ class TestMeshToRaster:
             dst.write(dem_data, 1)
 
         cell_wse = np.array([9.0, 9.0])
-        ds = mesh_to_raster(
+        ds = mesh_to_wse_raster(
             **mesh,
             cell_values=cell_wse,
             output_path=None,

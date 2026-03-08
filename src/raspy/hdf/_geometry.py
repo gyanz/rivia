@@ -967,6 +967,37 @@ class FlowArea:
         np.divide(fp_sum, fp_count, out=result, where=mask)
         return result
 
+    def wse_at_facecentroids(self, cell_wse: np.ndarray) -> np.ndarray:
+        """Average water-surface elevation at the centroid of each face.
+
+        For each face the WSE is the mean of the WSEs of its adjacent cells
+        (left and right as defined by :attr:`face_cell_indexes`), ignoring
+        dry (``NaN``) cells.  Boundary faces have only one adjacent cell, so
+        that cell's WSE is returned directly.  A face whose adjacent cells are
+        all dry returns ``NaN``.
+
+        Parameters
+        ----------
+        cell_wse : ndarray, shape ``(n_cells,)``
+            Water-surface elevation per cell.  Pass ``NaN`` for dry cells.
+
+        Returns
+        -------
+        ndarray, shape ``(n_faces,)``
+            WSE at each face centroid.  ``NaN`` where all adjacent cells are dry.
+        """
+        cell_wse = np.asarray(cell_wse, dtype=np.float64)
+        n_cells = len(cell_wse)
+        fci = self.face_cell_indexes  # (n_faces, 2), -1 = boundary side
+
+        # Append a NaN sentinel so that boundary indices (-1) map to NaN
+        padded = np.append(cell_wse, np.nan)        # index n_cells → NaN
+        safe = np.where(fci < 0, n_cells, fci)      # replace -1 with sentinel
+
+        vals = padded[safe]                          # (n_faces, 2)
+        with np.errstate(all="ignore"):              # suppress all-NaN warning
+            return np.nanmean(vals, axis=1)
+
 
 # ---------------------------------------------------------------------------
 # FlowAreaCollection — dict-like access to all flow areas in the HDF file
