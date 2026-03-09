@@ -998,13 +998,13 @@ class FlowAreaResults(FlowArea):
             ),
         )
         _cell_facepoint_indexes = self.cell_facepoint_indexes
-        # mesh_to_velocity_raster does not accept cell_polygons / facecenter_values /
-        # facecenter_coordinates, and needs the vel_min-masked facepoint WSE rather
-        # than the depth_min-masked one used for WSE/depth rendering.
+        # Exclude facecenter_coordinates: not a parameter of mesh_to_velocity_raster
+        # (face_centroids serves that role there).  Override facepoint_values and
+        # facecenter_values with the vel_min-masked versions for the velocity render.
         _vel_mesh_kw = {k: v for k, v in mesh_kw.items()
-                        if k not in ("cell_polygons", "facecenter_values",
-                                     "facecenter_coordinates")}
+                        if k != "facecenter_coordinates"}
         _vel_mesh_kw["facepoint_values"] = _fp_wse_vel
+        _vel_mesh_kw["facecenter_values"] = _fc_wse_vel
 
         # ── 4. Delegate to mesh_to_wse_raster / mesh_to_velocity_raster ──────
         if variable == "depth":
