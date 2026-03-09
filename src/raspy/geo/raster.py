@@ -282,6 +282,46 @@ def mesh_to_wse_raster(
     cell_face_info = np.asarray(cell_face_info, dtype=np.int64)[:n_cells]
     n_facepoints = len(facepoint_coordinates)
 
+    #  Log methodology path
+    logging.debug(
+        "mesh_to_wse_raster: render_mode=%r, n_cells=%d, n_facepoints=%d",
+        render_mode, n_cells, n_facepoints,
+    )
+    _grid_src = (
+        "reference_raster" if reference_raster is not None
+        else "reference_transform" if reference_transform is not None
+        else f"cell_size={cell_size}"
+    )
+    _snap = (
+        f", snap_to_reference_extent={snap_to_reference_extent}"
+        if reference_raster is not None else ""
+    )
+    logging.debug("mesh_to_wse_raster: grid source=%s%s", _grid_src, _snap)
+    _extent = (
+        "extent_bbox (caller-supplied)" if extent_bbox is not None
+        else "auto (point cloud)"
+    )
+    _dry = f"min_value={min_value}" if min_value is not None else "NaN-only"
+    logging.debug(
+        "mesh_to_wse_raster: extent=%s, dry_cell_masking=%s", _extent, _dry,
+    )
+    _poly = (
+        "cell_polygons (exact)" if cell_polygons is not None
+        else "KDTree nearest (Voronoi)"
+    )
+    _sim = scatter_interp_method if render_mode != "horizontal" else "n/a"
+    logging.debug(
+        "mesh_to_wse_raster: polygon_masking=%s, fix_triangulation=%s,"
+        " scatter_interp_method=%r",
+        _poly, fix_triangulation, _sim,
+    )
+    if min_above_ref is not None:
+        logging.debug(
+            "mesh_to_wse_raster: depth filter active —"
+            " pixels where scalar - DEM < %.4g masked",
+            min_above_ref,
+        )
+
     #  Dry-cell masking
     # NaN cell values always indicate dry cells (set by caller before passing in).
     # min_value provides an additional scalar threshold.
@@ -291,6 +331,12 @@ def mesh_to_wse_raster(
             dry_mask = dry_mask | (cell_values < min_value)
     cv = cell_values.copy()
     cv[dry_mask] = np.nan
+
+    n_wet = int((~dry_mask).sum())
+    logging.debug(
+        "mesh_to_wse_raster: %d / %d cells wet (%.1f%%)",
+        n_wet, n_cells, 100.0 * n_wet / n_cells if n_cells else 0.0,
+    )
 
     #  Build unified point set for extent calculation 
     all_pts = np.vstack([cell_centers, facepoint_coordinates])
@@ -756,6 +802,29 @@ def mesh_to_velocity_raster(
                 "mesh_to_velocity_raster: cell_facepoint_indexes has no effect "
                 "when method=%r; ignored.", method
             )
+
+    #  Log methodology path
+    logging.debug(
+        "mesh_to_velocity_raster: method=%r, render_mode=%r",
+        method, render_mode,
+    )
+    if wse_raster is not None:
+        logging.debug(
+            "mesh_to_velocity_raster: WSE source=caller-supplied wse_raster"
+            " (skipping internal render; render_mode and grid params ignored)",
+        )
+    else:
+        logging.debug(
+            "mesh_to_velocity_raster: WSE source=internal mesh_to_wse_raster"
+            " (render_mode=%r)",
+            render_mode,
+        )
+    _vel_filter = f"vel_min={vel_min}" if vel_min is not None else "none"
+    _dep_filter = f"depth_min={depth_min}" if depth_min is not None else "none"
+    logging.debug(
+        "mesh_to_velocity_raster: vel_min=%s, depth_min=%s",
+        _vel_filter, _dep_filter,
+    )
 
     try:
         import rasterio
