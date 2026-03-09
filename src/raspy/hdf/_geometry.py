@@ -997,6 +997,7 @@ class FlowArea:
         # sentinel both cases: boundary (-1) and ghost cells (>= n_cells)
         safe = np.where((fci < 0) | (fci >= n_cells), n_cells, fci)
 
+        # maps invalid cells to NaN which at index n_cells in cell_wse
         vals = padded[safe]                          # (n_faces, 2)
         with np.errstate(all="ignore"):              # suppress all-NaN warning
             return np.nanmean(vals, axis=1)
