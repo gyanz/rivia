@@ -8,13 +8,14 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 
-from raspy.utils import timed
+from raspy.utils import log_call, timed
 
 if TYPE_CHECKING:
     import rasterio.io
 
 
 
+@log_call(logging.INFO)
 @timed(logging.INFO)
 def mesh_to_wse_raster(
     cell_centers: np.ndarray,
@@ -542,6 +543,7 @@ def mesh_to_wse_raster(
     return out_path
 
 
+@log_call(logging.INFO)
 @timed(logging.INFO)
 def mesh_to_velocity_raster(
     cell_centers: np.ndarray,

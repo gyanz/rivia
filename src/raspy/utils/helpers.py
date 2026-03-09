@@ -44,6 +44,36 @@ def timed(level: int = logging.DEBUG):
     return decorator
 
 
+def log_call(level: int = logging.INFO):
+    """Decorator that logs when a function is called.
+
+    Parameters
+    ----------
+    level : int
+        ``logging`` level constant (e.g. ``logging.INFO``, ``logging.DEBUG``).
+        Defaults to ``logging.INFO``.
+
+    Examples
+    --------
+    >>> from raspy.utils import log_call
+    >>> import logging
+    >>> @log_call(logging.INFO)
+    ... def my_func(): ...
+    """
+
+    def decorator(fn: callable) -> callable:
+        _log = logging.getLogger(fn.__module__)
+
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            _log.log(level, "%s called", fn.__qualname__)
+            return fn(*args, **kwargs)
+
+        return wrapper
+
+    return decorator
+
+
 def fix_ras_dates(dates: list) -> list[dt.datetime]:
     """Convert HEC-RAS date serial numbers to datetime objects.
 
