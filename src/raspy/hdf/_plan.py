@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any, Literal
 import numpy as np
 import pandas as pd
 
-from raspy.utils import timed
+from raspy.utils import log_call, timed
 
 from ._base import _HdfFile
 from ._geometry import (
@@ -39,6 +39,7 @@ if TYPE_CHECKING:
     import h5py
     import rasterio.io
 
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # HDF path constants
@@ -703,6 +704,7 @@ class FlowAreaResults(FlowArea):
 
         return max_speed, max_vecs
 
+    @log_call(logging.INFO)
     @timed(logging.INFO)
     def export_raster(
         self,
@@ -866,6 +868,7 @@ class FlowAreaResults(FlowArea):
         """
         from raspy.geo import raster as _raster  # deferred — geo not required
 
+        logger.info("Exporting hydraulic raster %s at timestep %d", variable, timestep)
         # ── 0. Guards ──────────────────────────────────────────────────
         if variable == "depth" and reference_raster is None:
             raise ValueError(
@@ -1106,6 +1109,7 @@ class FlowAreaResults(FlowArea):
                 return result
             return wse_ds
 
+    @log_call(logging.INFO)
     @timed(logging.INFO)
     def export_hydraulic_rasters(
         self,
@@ -1222,6 +1226,9 @@ class FlowAreaResults(FlowArea):
         """
         from raspy.geo import raster as _raster  # deferred — geo not required
 
+        logger.info(
+            "Exporting hydraulic rasters: Water Surface Elevation, Depth and Velocity"
+        )
         # ── 0. Guards ──────────────────────────────────────────────────
         if clip_to_perimeter and snap_to_reference_extent:
             raise ValueError(
@@ -1274,7 +1281,7 @@ class FlowAreaResults(FlowArea):
         )
 
         # ── 4. WSE raster in-memory (shared for WSE output + depth) ───
-        logging.info("Building water-surface raster (shared for depth output)...")
+        logger.info("Building water-surface raster (shared for depth output)...")
 
         cell_wse_masked = (
             np.where(depth_at_cells < depth_min, np.nan, wse_values)
@@ -1335,7 +1342,7 @@ class FlowAreaResults(FlowArea):
             wse_result = wse_ds
 
         # ── 6. Depth output ────────────────────────────────────────────
-        logging.info("Building depth raster from WSE raster and DEM...")
+        logger.info("Building depth raster from WSE raster and DEM...")
 
         depth_ds = _raster._depth_from_wse_and_dem(
             wse_ds, reference_raster, nodata,
@@ -1355,7 +1362,7 @@ class FlowAreaResults(FlowArea):
         # ── 7. Speed output ────────────────────────────────────────────
         # Pass wse_ds directly so mesh_to_velocity_raster reuses the
         # already-rendered wet extent instead of re-running the WSE render.
-        logging.info("Building velocity raster for speed output...")
+        logger.info("Building velocity raster for speed output...")
 
         vel_ds = _raster.mesh_to_velocity_raster(
             **_vel_mesh_kw,
