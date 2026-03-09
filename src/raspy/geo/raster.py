@@ -535,6 +535,9 @@ def mesh_to_velocity_raster(
     face_normals: np.ndarray | None = None,
     face_vel: np.ndarray | None = None,
     face_centroids: np.ndarray | None = None,
+    cell_polygons: list[np.ndarray] | None = None,
+    facecenter_values: np.ndarray | None = None,
+    face_min_elevation: np.ndarray | None = None,
 ) -> Path | rasterio.io.DatasetReader:
     """Render a HEC-RAS velocity raster with WSE-based wet extent.
 
@@ -663,6 +666,21 @@ def mesh_to_velocity_raster(
     face_centroids : ndarray, shape ``(n_faces, 2)``, optional
         X, Y coordinates of each face centroid.
         Required for all methods except ``"flat_cell_center"``.
+        Also forwarded to the internal WSE render as *facecenter_coordinates*
+        for ``"sloping_corners_faces"`` and ``"sloping_corners_faces_shallow"``
+        render modes.
+    cell_polygons : list of ndarray, shape ``(n_vertices, 2)``, optional
+        Exact cell boundary vertices per cell (``FlowArea.cell_polygons``).
+        Forwarded to :func:`mesh_to_wse_raster`; used in sloping modes for
+        accurate dry-cell polygon masking instead of a Voronoi approximation.
+    facecenter_values : ndarray, shape ``(n_faces,)``, optional
+        WSE at each face centroid (``FlowArea.wse_at_facecentroids``).
+        Required by the internal WSE render for ``"sloping_corners_faces"``
+        and ``"sloping_corners_faces_shallow"`` render modes.
+    face_min_elevation : ndarray, shape ``(n_faces,)``, optional
+        Minimum bed elevation at each face centroid
+        (``FlowArea.face_min_elevation``).  Required by the internal WSE
+        render for the ``"sloping_corners_faces_shallow"`` render mode.
 
     Returns
     -------
@@ -754,11 +772,15 @@ def mesh_to_velocity_raster(
         render_mode=render_mode,
         fix_triangulation=fix_triangulation,
         extent_bbox=extent_bbox,
+        scatter_interp_method=scatter_interp_method,
+        facepoint_values=facepoint_values,
+        cell_polygons=cell_polygons,
+        facecenter_coordinates=face_centroids,
+        facecenter_values=facecenter_values,
+        face_min_elevation=face_min_elevation,
     )
     if method == "flat_cell_center":
         _wse_kw.update(
-            facepoint_values=facepoint_values,
-            scatter_interp_method=scatter_interp_method,
             cell_facepoint_indexes=cell_facepoint_indexes,
         )
     wse_ds = mesh_to_wse_raster(**_wse_kw)
