@@ -221,8 +221,14 @@ class Model:
             self._compute_blocking = 0
 
     def __del__(self):
-        logging.debug("Executing Model destructor.")
-        self._rc.close()
+        try:
+            logging.debug("Executing Model destructor.")
+        except Exception:
+            pass
+        try:
+            self._rc.close()
+        except Exception:
+            pass
 
     @staticmethod
     def _get_ras_version_from_project_file(project_file: str | Path):

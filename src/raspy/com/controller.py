@@ -130,8 +130,14 @@ class _ControllerBase:
             self._runtime.close()
 
     def __del__(self):
-        logging.debug("HEC-RAS Controller destructor called.")
-        self.close()
+        try:
+            logging.debug("HEC-RAS Controller destructor called.")
+        except Exception:
+            pass
+        try:
+            self.close()
+        except Exception:
+            pass
 
 
 class _Controller400(_ControllerBase, C400, _GeometryBase):
