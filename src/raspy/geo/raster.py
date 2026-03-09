@@ -538,6 +538,7 @@ def mesh_to_velocity_raster(
     cell_polygons: list[np.ndarray] | None = None,
     facecenter_values: np.ndarray | None = None,
     face_min_elevation: np.ndarray | None = None,
+    wse_raster: str | Path | rasterio.io.DatasetReader | None = None,
 ) -> Path | rasterio.io.DatasetReader:
     """Render a HEC-RAS velocity raster with WSE-based wet extent.
 
@@ -681,6 +682,25 @@ def mesh_to_velocity_raster(
         Minimum bed elevation at each face centroid
         (``FlowArea.face_min_elevation``).  Required by the internal WSE
         render for the ``"sloping_corners_faces_shallow"`` render mode.
+    wse_raster : str, Path, or rasterio.DatasetReader, optional
+        Pre-computed water-surface raster that defines the wet extent and
+        output grid.  When provided, the internal :func:`mesh_to_wse_raster`
+        call is **skipped entirely** — the wet/dry mask and grid alignment
+        are read directly from this dataset, avoiding redundant computation.
+
+        - Pass a file path (``str`` or ``Path``) to have the function open
+          and close it automatically.
+        - Pass an already-open ``rasterio.DatasetReader`` to reuse it; the
+          caller retains ownership and must close it.
+
+        When *wse_raster* is given, all WSE-rendering parameters
+        (*render_mode*, *facepoint_values*, *cell_polygons*,
+        *facecenter_values*, *face_min_elevation*, *scatter_interp_method*,
+        *fix_triangulation*, *extent_bbox*, *reference_raster*,
+        *reference_transform*, *cell_size*, *snap_to_reference_extent*,
+        *depth_min*) are ignored.  *vel_min* still applies: cells whose
+        speed is below the threshold are excluded from velocity interpolation
+        regardless of what the WSE raster reports.
 
     Returns
     -------
@@ -751,47 +771,56 @@ def mesh_to_velocity_raster(
             speed_pre = np.linalg.norm(cell_velocity, axis=1)
         cell_wse_for_render[speed_pre < vel_min] = np.nan
 
-    #  Step 1: Render WSE in-memory to determine wet extent and grid.
-    _wse_kw: dict = dict(
-        cell_centers=cell_centers,
-        facepoint_coordinates=facepoint_coordinates,
-        face_facepoint_indexes=face_facepoint_indexes,
-        face_cell_indexes=face_cell_indexes,
-        cell_face_info=cell_face_info,
-        cell_face_values=cell_face_values,
-        cell_values=cell_wse_for_render,
-        output_path=None,
-        cell_size=cell_size,
-        reference_transform=reference_transform,
-        reference_raster=reference_raster,
-        crs=crs,
-        nodata=nodata,
-        min_value=None,  # dry cells already NaN-masked above
-        min_above_ref=depth_min,
-        snap_to_reference_extent=snap_to_reference_extent,
-        render_mode=render_mode,
-        fix_triangulation=fix_triangulation,
-        extent_bbox=extent_bbox,
-        scatter_interp_method=scatter_interp_method,
-        facepoint_values=facepoint_values,
-        cell_polygons=cell_polygons,
-        facecenter_coordinates=face_centroids,
-        facecenter_values=facecenter_values,
-        face_min_elevation=face_min_elevation,
-    )
-    if method == "flat_cell_center":
-        _wse_kw.update(
-            cell_facepoint_indexes=cell_facepoint_indexes,
+    #  Step 1: Obtain WSE raster to determine wet extent and output grid.
+    if wse_raster is None:
+        _wse_kw: dict = dict(
+            cell_centers=cell_centers,
+            facepoint_coordinates=facepoint_coordinates,
+            face_facepoint_indexes=face_facepoint_indexes,
+            face_cell_indexes=face_cell_indexes,
+            cell_face_info=cell_face_info,
+            cell_face_values=cell_face_values,
+            cell_values=cell_wse_for_render,
+            output_path=None,
+            cell_size=cell_size,
+            reference_transform=reference_transform,
+            reference_raster=reference_raster,
+            crs=crs,
+            nodata=nodata,
+            min_value=None,  # dry cells already NaN-masked above
+            min_above_ref=depth_min,
+            snap_to_reference_extent=snap_to_reference_extent,
+            render_mode=render_mode,
+            fix_triangulation=fix_triangulation,
+            extent_bbox=extent_bbox,
+            scatter_interp_method=scatter_interp_method,
+            facepoint_values=facepoint_values,
+            cell_polygons=cell_polygons,
+            facecenter_coordinates=face_centroids,
+            facecenter_values=facecenter_values,
+            face_min_elevation=face_min_elevation,
         )
-    wse_ds = mesh_to_wse_raster(**_wse_kw)
+        if method == "flat_cell_center":
+            _wse_kw.update(
+                cell_facepoint_indexes=cell_facepoint_indexes,
+            )
+        _wse_ds = mesh_to_wse_raster(**_wse_kw)
+        _owns_wse_ds = True
+    elif isinstance(wse_raster, (str, Path)):
+        _wse_ds = rasterio.open(wse_raster)
+        _owns_wse_ds = True
+    else:
+        _wse_ds = wse_raster
+        _owns_wse_ds = False
 
-    out_transform = wse_ds.transform
-    n_rows = wse_ds.height
-    n_cols = wse_ds.width
-    out_crs = wse_ds.crs
-    wse_nodata_val = wse_ds.nodata
-    wse_pixel = wse_ds.read(1).astype(np.float64)
-    wse_ds.close()
+    out_transform = _wse_ds.transform
+    n_rows = _wse_ds.height
+    n_cols = _wse_ds.width
+    out_crs = _wse_ds.crs
+    wse_nodata_val = _wse_ds.nodata
+    wse_pixel = _wse_ds.read(1).astype(np.float64)
+    if _owns_wse_ds:
+        _wse_ds.close()
 
     # Pixels where WSE raster is valid = wet; velocity is nodata everywhere else.
     if wse_nodata_val is not None:

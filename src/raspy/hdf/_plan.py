@@ -1306,12 +1306,10 @@ class FlowAreaResults(FlowArea):
         )
         mesh_kw["facecenter_values"] = _fc_wse
         _cell_facepoint_indexes = self.cell_facepoint_indexes
-        # mesh_to_velocity_raster does not accept cell_polygons / facecenter_values /
-        # facecenter_coordinates, and needs the vel_min-masked facepoint WSE.
+        # Exclude facecenter_coordinates: not a parameter of mesh_to_velocity_raster
+        # (face_centroids serves that role there).
         _vel_mesh_kw = {k: v for k, v in mesh_kw.items()
-                        if k not in ("cell_polygons", "facecenter_values",
-                                     "facecenter_coordinates")}
-        _vel_mesh_kw["facepoint_values"] = _fp_wse_vel
+                        if k != "facecenter_coordinates"}
 
         wse_ds = _raster.mesh_to_wse_raster(
             **mesh_kw,
@@ -1349,18 +1347,14 @@ class FlowAreaResults(FlowArea):
         else:
             depth_result = depth_ds
 
-        # Close shared in-memory WSE dataset once both consumers are done.
-        # When clip_to_perimeter=True, wse_result is a new dataset so wse_ds
-        # is always safe to close here.  Without clipping, only close it when
-        # it was written to a file (otherwise wse_result IS wse_ds).
-        if clip_to_perimeter or wse_path is not None:
-            wse_ds.close()
-
         # ── 8. Speed output ────────────────────────────────────────────
+        # Pass wse_ds directly so mesh_to_velocity_raster reuses the
+        # already-rendered wet extent instead of re-running the WSE render.
         logging.info("Building velocity raster for speed output...")
 
         vel_ds = _raster.mesh_to_velocity_raster(
             **_vel_mesh_kw,
+            wse_raster=wse_ds,
             cell_wse=wse_values,
             cell_velocity=cell_vel_vecs,
             output_path=None,
@@ -1372,6 +1366,13 @@ class FlowAreaResults(FlowArea):
             face_vel=face_vel_arr,
             face_centroids=self.face_centroids,
         )
+
+        # Close shared in-memory WSE dataset now that all consumers are done.
+        # When clip_to_perimeter=True or wse_path is set, wse_result is a
+        # separate object so wse_ds can always be closed.  Otherwise
+        # wse_result IS wse_ds and must stay open for the caller.
+        if clip_to_perimeter or wse_path is not None:
+            wse_ds.close()
         speed_ds = _raster._velocity_raster_to_speed(
             vel_ds, None if clip_to_perimeter else speed_path, nodata
         )
