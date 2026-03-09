@@ -608,25 +608,25 @@ def mesh_to_velocity_raster(
         through to the internal :func:`mesh_to_wse_raster` call.  See that
         function for full description.
     facepoint_values : ndarray, shape ``(n_facepoints,)``, optional
-        Pre-computed WSE at every facepoint passed through to the internal
-        :func:`mesh_to_wse_raster` call.  Only used when
-        ``method="flat_cell_center"``; ignored (with a warning) otherwise.
+        Pre-computed WSE at every facepoint forwarded to the internal
+        :func:`mesh_to_wse_raster` call.  Required for sloping *render_mode*
+        values; ignored for ``"horizontal"``.  Ignored (with a warning) for
+        all *method* values in ``_INTERP_METHODS`` since those methods build
+        their own WSE render.
     scatter_interp_method : str, default ``"linear"``
         ``scipy.interpolate.griddata`` *method* used by ``"scatter_interp"``
-        and ``"scatter_interp2"``, and passed through to
-        :func:`mesh_to_wse_raster` when *facepoint_values* is provided for
-        ``"flat_cell_center"``.  Accepted values: ``"nearest"``,
+        and ``"scatter_interp2"``.  Accepted values: ``"nearest"``,
         ``"linear"``, ``"cubic"``.
     cell_facepoint_indexes : ndarray, shape ``(n_cells, 8)``, optional
-        Per-cell facepoint index array used internally by the WSE render for
-        ``method="flat_cell_center"``; ignored (with a warning) otherwise.
+        Not used.  Accepted for backwards compatibility; ignored.
     method : str, default ``"scatter_interp2"``
         Velocity assignment/interpolation method:
 
         ``"flat_cell_center"``
             Paint the flat WLS cell-centre velocity uniformly over all
-            pixels inside each cell.  No intra-cell spatial variation.
-            Does not require *face_normals*, *face_vel*, or *face_centroids*.
+            pixels inside each cell polygon.  No intra-cell spatial variation.
+            Does not require *face_normals*, *face_vel*, or *face_centroids*,
+            but **requires** *cell_polygons*.
 
         ``"triangle_blend"``
             Fan-triangulate each cell and blend the WLS cell-centre velocity
@@ -733,6 +733,11 @@ def mesh_to_velocity_raster(
         raise ValueError(
             f"method={method!r} requires face_normals, face_vel, and face_centroids."
         )
+    if method == "flat_cell_center" and cell_polygons is None:
+        raise ValueError(
+            "method='flat_cell_center' requires cell_polygons. "
+            "Obtain it from FlowArea.cell_polygons."
+        )
     _valid_scatter = {"nearest", "linear", "cubic"}
     if scatter_interp_method not in _valid_scatter:
         raise ValueError(
@@ -800,10 +805,6 @@ def mesh_to_velocity_raster(
             facecenter_values=facecenter_values,
             face_min_elevation=face_min_elevation,
         )
-        if method == "flat_cell_center":
-            _wse_kw.update(
-                cell_facepoint_indexes=cell_facepoint_indexes,
-            )
         _wse_ds = mesh_to_wse_raster(**_wse_kw)
         _owns_wse_ds = True
     elif isinstance(wse_raster, (str, Path)):
@@ -846,18 +847,19 @@ def mesh_to_velocity_raster(
     )
 
     if method == "flat_cell_center":
-        #  Flat assignment: nearest wet cell centre → KDTree lookup.
+        #  Flat assignment: rasterize cell polygons, paint uniform velocity.
         cell_vel = cell_velocity.copy()
         cell_vel[dry_mask] = np.nan
 
-        tree, wet_indices, max_radius = _build_wet_kdtree(
-            cell_centers_arr, dry_mask, facepoint_coords_arr
+        vx_tight = _rasterize_cell_values(
+            cell_polygons, cell_vel[:, 0], dry_mask, xi_grid, yi_grid
         )
-        vel_tight = _kdtree_nearest(
-            tree, wet_indices, cell_vel, max_radius, xi_grid, yi_grid
+        vy_tight = _rasterize_cell_values(
+            cell_polygons, cell_vel[:, 1], dry_mask, xi_grid, yi_grid
         )
         vel_full = np.full((n_rows, n_cols, 2), np.nan)
-        vel_full[row_min:row_max, col_min:col_max] = vel_tight
+        vel_full[row_min:row_max, col_min:col_max, 0] = vx_tight
+        vel_full[row_min:row_max, col_min:col_max, 1] = vy_tight
         vx = vel_full[:, :, 0]
         vy = vel_full[:, :, 1]
 

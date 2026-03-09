@@ -890,24 +890,30 @@ class FlowAreaResults(FlowArea):
         if variable == "depth":
             if timestep is None:
                 wse_values = self.max_water_surface["value"].to_numpy()
-                depth_at_cells = self.max_depth()["value"].to_numpy()
+                depth_at_cells = (
+                    self.max_depth()["value"].to_numpy()
+                    if depth_min is not None else None
+                )
             else:
                 wse_values = np.array(self.water_surface[timestep, : self.n_cells])
-                depth_at_cells = self.depth(timestep)
-            # Pre-mask dry cells by depth so mesh_to_wse_raster sees NaN at those
-            # cell centres and excludes the corresponding triangles.
-            cell_wse = wse_values.copy()
-            if depth_min is not None:
-                cell_wse[depth_at_cells < depth_min] = np.nan
+                depth_at_cells = self.depth(timestep) if depth_min is not None else None
+            # Pre-mask dry cells so mesh_to_wse_raster excludes those triangles.
+            cell_wse = (
+                np.where(depth_at_cells < depth_min, np.nan, wse_values)
+                if depth_min is not None else wse_values
+            )
         elif variable == "water_surface":
             if timestep is None:
                 values = self.max_water_surface["value"].to_numpy()
-                depth_at_cells = self.max_depth()["value"].to_numpy()
+                depth_at_cells = (
+                    self.max_depth()["value"].to_numpy()
+                    if depth_min is not None else None
+                )
             else:
                 values = np.array(self.water_surface[timestep, : self.n_cells])
-                depth_at_cells = self.depth(timestep)
+                depth_at_cells = self.depth(timestep) if depth_min is not None else None
             if depth_min is not None:
-                values[depth_at_cells < depth_min] = np.nan
+                values = np.where(depth_at_cells < depth_min, np.nan, values)
         elif variable in ("cell_speed", "cell_velocity"):
             # Compute WLS velocity vectors and cell WSE for the velocity raster.
             # mesh_to_velocity_raster renders WSE to determine wet extent, then
@@ -946,11 +952,12 @@ class FlowAreaResults(FlowArea):
                 if _use_facecenters:
                     _fc_wse = self.wse_at_facecentroids(cell_wse)
             elif variable in ("cell_velocity", "cell_speed"):
-                _vel_wse_masked = cell_vel_wse.copy()
                 if vel_min is not None:
                     with np.errstate(invalid="ignore"):
                         _speed = np.linalg.norm(cell_vel_vecs, axis=1)
-                    _vel_wse_masked[_speed < vel_min] = np.nan
+                    _vel_wse_masked = np.where(_speed < vel_min, np.nan, cell_vel_wse)
+                else:
+                    _vel_wse_masked = cell_vel_wse
                 _fp_wse_vel = self.wse_at_facepoints(_vel_wse_masked)
                 if _use_facecenters:
                     _fc_wse_vel = self.wse_at_facecentroids(_vel_wse_masked)
@@ -997,7 +1004,6 @@ class FlowAreaResults(FlowArea):
                 if render_mode == "sloping_corners_faces_shallow" else None
             ),
         )
-        _cell_facepoint_indexes = self.cell_facepoint_indexes
         # Exclude facecenter_coordinates: not a parameter of mesh_to_velocity_raster
         # (face_centroids serves that role there).  Override facepoint_values and
         # facecenter_values with the vel_min-masked versions for the velocity render.
@@ -1023,7 +1029,7 @@ class FlowAreaResults(FlowArea):
             wse_ds.close()
             if clip_to_perimeter:
                 result = _raster._mask_outside_polygon(
-                    depth_ds, self.perimeter, nodata, output_path
+                    depth_ds, _perim, nodata, output_path
                 )
                 depth_ds.close()
                 return result
@@ -1041,7 +1047,6 @@ class FlowAreaResults(FlowArea):
                 output_path=None if clip_to_perimeter else output_path,
                 vel_min=vel_min,
                 depth_min=depth_min,
-                cell_facepoint_indexes=_cell_facepoint_indexes,
                 method=vel_interp_method,
                 face_normals=self.face_normals,
                 face_vel=_face_vel_arr,
@@ -1049,7 +1054,7 @@ class FlowAreaResults(FlowArea):
             )
             if clip_to_perimeter:
                 result = _raster._mask_outside_polygon(
-                    vel_ds, self.perimeter, nodata, output_path
+                    vel_ds, _perim, nodata, output_path
                 )
                 vel_ds.close()
                 return result
@@ -1067,7 +1072,6 @@ class FlowAreaResults(FlowArea):
                 output_path=None,
                 vel_min=vel_min,
                 depth_min=depth_min,
-                cell_facepoint_indexes=_cell_facepoint_indexes,
                 method=vel_interp_method,
                 face_normals=self.face_normals,
                 face_vel=_face_vel_arr,
@@ -1078,7 +1082,7 @@ class FlowAreaResults(FlowArea):
             )
             if clip_to_perimeter:
                 result = _raster._mask_outside_polygon(
-                    speed_ds, self.perimeter, nodata, output_path
+                    speed_ds, _perim, nodata, output_path
                 )
                 speed_ds.close()
                 return result
@@ -1096,7 +1100,7 @@ class FlowAreaResults(FlowArea):
             )
             if clip_to_perimeter:
                 result = _raster._mask_outside_polygon(
-                    wse_ds, self.perimeter, nodata, output_path
+                    wse_ds, _perim, nodata, output_path
                 )
                 wse_ds.close()
                 return result
@@ -1228,20 +1232,20 @@ class FlowAreaResults(FlowArea):
                 "snap_to_reference_extent=False when using clip_to_perimeter=True."
             )
 
-        # ── 2. Read HDF data once ──────────────────────────────────────
+        # ── 1. Read HDF data once ──────────────────────────────────────
         wse_values = np.array(self.water_surface[timestep, : self.n_cells])
-        depth_at_cells = self.depth(timestep)
+        depth_at_cells = self.depth(timestep) if depth_min is not None else None
         face_vel_arr = (
             None if vel_interp_method == "flat_cell_center"
             else np.array(self.face_velocity[timestep, :])
         )
 
-        # ── 3. WLS velocity vectors once ──────────────────────────────
+        # ── 2. WLS velocity vectors once ──────────────────────────────
         cell_vel_vecs = self.cell_velocity_vectors(
             timestep, method=vel_weight_method, wse_interp=vel_wse_method
         )
 
-        # ── 3. Shared mesh topology kwargs ────────────────────────────
+        # ── 3. Mesh topology kwargs ────────────────────────────────────
         _cfi, _cfv = self.cell_face_info
         _perimeter_bbox: tuple[float, float, float, float] | None = None
         if clip_to_perimeter:
@@ -1269,12 +1273,13 @@ class FlowAreaResults(FlowArea):
             ),
         )
 
-        # ── 5. WSE raster in-memory (shared for WSE output + depth) ───
+        # ── 4. WSE raster in-memory (shared for WSE output + depth) ───
         logging.info("Building water-surface raster (shared for depth output)...")
 
-        cell_wse_masked = wse_values.copy()
-        if depth_min is not None:
-            cell_wse_masked[depth_at_cells < depth_min] = np.nan
+        cell_wse_masked = (
+            np.where(depth_at_cells < depth_min, np.nan, wse_values)
+            if depth_min is not None else wse_values
+        )
 
         # Facepoint WSE for sloping render — computed once for WSE/depth;
         # velocity uses a separate vel_min-masked array.
@@ -1289,11 +1294,12 @@ class FlowAreaResults(FlowArea):
             _fp_wse = self.wse_at_facepoints(cell_wse_masked)
             if _use_facecenters:
                 _fc_wse = self.wse_at_facecentroids(cell_wse_masked)
-            _vel_wse_masked = wse_values.copy()
             if vel_min is not None:
                 with np.errstate(invalid="ignore"):
                     _speed = np.linalg.norm(cell_vel_vecs, axis=1)
-                _vel_wse_masked[_speed < vel_min] = np.nan
+                _vel_wse_masked = np.where(_speed < vel_min, np.nan, wse_values)
+            else:
+                _vel_wse_masked = wse_values
             _fp_wse_vel = self.wse_at_facepoints(_vel_wse_masked)
             if _use_facecenters:
                 _fc_wse_vel = self.wse_at_facecentroids(_vel_wse_masked)
@@ -1305,7 +1311,6 @@ class FlowAreaResults(FlowArea):
             self.face_centroids if _use_facecenters else None
         )
         mesh_kw["facecenter_values"] = _fc_wse
-        _cell_facepoint_indexes = self.cell_facepoint_indexes
         # Exclude facecenter_coordinates: not a parameter of mesh_to_velocity_raster
         # (face_centroids serves that role there).
         _vel_mesh_kw = {k: v for k, v in mesh_kw.items()
@@ -1319,17 +1324,17 @@ class FlowAreaResults(FlowArea):
             min_above_ref=depth_min,
         )
 
-        # ── 6. WSE output ──────────────────────────────────────────────
+        # ── 5. WSE output ──────────────────────────────────────────────
         if clip_to_perimeter:
             wse_result: Path | rasterio.io.DatasetReader = (
-                _raster._mask_outside_polygon(wse_ds, self.perimeter, nodata, wse_path)
+                _raster._mask_outside_polygon(wse_ds, _perim, nodata, wse_path)
             )
         elif wse_path is not None:
             wse_result = _raster._write_dataset(wse_ds, wse_path)
         else:
             wse_result = wse_ds
 
-        # ── 7. Depth output ────────────────────────────────────────────
+        # ── 6. Depth output ────────────────────────────────────────────
         logging.info("Building depth raster from WSE raster and DEM...")
 
         depth_ds = _raster._depth_from_wse_and_dem(
@@ -1340,14 +1345,14 @@ class FlowAreaResults(FlowArea):
         if clip_to_perimeter:
             depth_result: Path | rasterio.io.DatasetReader = (
                 _raster._mask_outside_polygon(
-                    depth_ds, self.perimeter, nodata, depth_path
+                    depth_ds, _perim, nodata, depth_path
                 )
             )
             depth_ds.close()
         else:
             depth_result = depth_ds
 
-        # ── 8. Speed output ────────────────────────────────────────────
+        # ── 7. Speed output ────────────────────────────────────────────
         # Pass wse_ds directly so mesh_to_velocity_raster reuses the
         # already-rendered wet extent instead of re-running the WSE render.
         logging.info("Building velocity raster for speed output...")
@@ -1360,7 +1365,6 @@ class FlowAreaResults(FlowArea):
             output_path=None,
             vel_min=vel_min,
             depth_min=depth_min,
-            cell_facepoint_indexes=_cell_facepoint_indexes,
             method=vel_interp_method,
             face_normals=self.face_normals,
             face_vel=face_vel_arr,
@@ -1379,7 +1383,7 @@ class FlowAreaResults(FlowArea):
         if clip_to_perimeter:
             speed_result: Path | rasterio.io.DatasetReader = (
                 _raster._mask_outside_polygon(
-                    speed_ds, self.perimeter, nodata, speed_path
+                    speed_ds, _perim, nodata, speed_path
                 )
             )
             speed_ds.close()
