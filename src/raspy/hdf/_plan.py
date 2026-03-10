@@ -781,7 +781,7 @@ class FlowAreaResults(FlowArea):
             "flat_cell_center",
             "triangle_blend", "face_idw", "face_gradient",
             "facepoint_blend", "scatter_cell_face", "scatter_face",
-            "scatter_corners",
+            "scatter_corners", "scatter_corners_face",
         ] = "scatter_face",
         scatter_interp_method: Literal["nearest", "linear", "cubic"] = "linear",
         fix_triangulation: bool = True,
@@ -883,10 +883,15 @@ class FlowAreaResults(FlowArea):
             ``"scatter_corners"`` — global ``scipy.griddata`` over wet mesh
             corners; velocity at each corner is the mean of the double-C
             stencil face velocities from all adjacent wet faces.
+
+            ``"scatter_corners_face"`` — combined scatter from wet mesh
+            corners (double-C stencil mean) and wet face midpoints (2D face
+            velocity); the densest scatter set combining boundary-conforming
+            corners with interior face coverage.
         scatter_interp_method:
             ``scipy.interpolate.griddata`` *method* used by
-            ``"scatter_cell_face"``, ``"scatter_face"``, and
-            ``"scatter_corners"``.  One of ``"nearest"``, ``"linear"``
+            ``"scatter_cell_face"``, ``"scatter_face"``, ``"scatter_corners"``,
+            and ``"scatter_corners_face"``.  One of ``"nearest"``, ``"linear"``
             *(default)*, ``"cubic"``.  Ignored for all other
             *vel_interp_method* values.
         fix_triangulation:
@@ -1191,7 +1196,7 @@ class FlowAreaResults(FlowArea):
             "flat_cell_center",
             "triangle_blend", "face_idw", "face_gradient",
             "facepoint_blend", "scatter_cell_face", "scatter_face",
-            "scatter_corners",
+            "scatter_corners", "scatter_corners_face",
         ] = "scatter_face",
         scatter_interp_method: Literal["nearest", "linear", "cubic"] = "linear",
         fix_triangulation: bool = True,
@@ -1250,8 +1255,8 @@ class FlowAreaResults(FlowArea):
             :meth:`export_raster` for full description of each option.
         scatter_interp_method:
             ``scipy.interpolate.griddata`` *method* used by
-            ``"scatter_cell_face"``, ``"scatter_face"``, and
-            ``"scatter_corners"``.  One of ``"nearest"``, ``"linear"``
+            ``"scatter_cell_face"``, ``"scatter_face"``, ``"scatter_corners"``,
+            and ``"scatter_corners_face"``.  One of ``"nearest"``, ``"linear"``
             *(default)*, ``"cubic"``.  Ignored for all other
             *vel_interp_method* values.
         fix_triangulation:
