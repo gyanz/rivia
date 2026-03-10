@@ -1008,12 +1008,13 @@ class FlowAreaResults(FlowArea):
             ),
         )
         # Exclude facecenter_coordinates: not a parameter of mesh_to_velocity_raster
-        # (face_centroids serves that role there).  Override facepoint_values and
-        # facecenter_values with the vel_min-masked versions for the velocity render.
+        # (face_centers serves that role there).  Remap facepoint_wse and
+        # face_center_wse with the vel_min-masked versions for the velocity render.
         _vel_mesh_kw = {k: v for k, v in mesh_kw.items()
-                        if k != "facecenter_coordinates"}
-        _vel_mesh_kw["facepoint_values"] = _fp_wse_vel
-        _vel_mesh_kw["facecenter_values"] = _fc_wse_vel
+                        if k not in ("facecenter_coordinates",
+                                     "facepoint_values", "facecenter_values")}
+        _vel_mesh_kw["facepoint_wse"] = _fp_wse_vel
+        _vel_mesh_kw["face_center_wse"] = _fc_wse_vel
 
         # ── 4. Delegate to mesh_to_wse_raster / mesh_to_velocity_raster ──────
         if variable == "depth":
@@ -1052,8 +1053,8 @@ class FlowAreaResults(FlowArea):
                 depth_min=depth_min,
                 method=vel_interp_method,
                 face_normals=self.face_normals,
-                face_vel=_face_vel_arr,
-                face_centroids=self.face_centroids,
+                face_normal_velocity=_face_vel_arr,
+                face_centers=self.face_centroids,
             )
             if clip_to_perimeter:
                 result = _raster._mask_outside_polygon(
@@ -1077,8 +1078,8 @@ class FlowAreaResults(FlowArea):
                 depth_min=depth_min,
                 method=vel_interp_method,
                 face_normals=self.face_normals,
-                face_vel=_face_vel_arr,
-                face_centroids=self.face_centroids,
+                face_normal_velocity=_face_vel_arr,
+                face_centers=self.face_centroids,
             )
             speed_ds = _raster._velocity_raster_to_speed(
                 vel_ds, None if clip_to_perimeter else output_path, nodata
@@ -1319,9 +1320,13 @@ class FlowAreaResults(FlowArea):
         )
         mesh_kw["facecenter_values"] = _fc_wse
         # Exclude facecenter_coordinates: not a parameter of mesh_to_velocity_raster
-        # (face_centroids serves that role there).
+        # (face_centers serves that role there).  Remap WSE arrays to
+        # velocity param names.
         _vel_mesh_kw = {k: v for k, v in mesh_kw.items()
-                        if k != "facecenter_coordinates"}
+                        if k not in ("facecenter_coordinates",
+                                     "facepoint_values", "facecenter_values")}
+        _vel_mesh_kw["facepoint_wse"] = _fp_wse_vel
+        _vel_mesh_kw["face_center_wse"] = _fc_wse_vel
 
         wse_ds = _raster.mesh_to_wse_raster(
             **mesh_kw,
@@ -1374,8 +1379,8 @@ class FlowAreaResults(FlowArea):
             depth_min=depth_min,
             method=vel_interp_method,
             face_normals=self.face_normals,
-            face_vel=face_vel_arr,
-            face_centroids=self.face_centroids,
+            face_normal_velocity=face_vel_arr,
+            face_centers=self.face_centroids,
         )
 
         # Close shared in-memory WSE dataset now that all consumers are done.

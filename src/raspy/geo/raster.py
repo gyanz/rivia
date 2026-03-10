@@ -574,7 +574,7 @@ def mesh_to_velocity_raster(
     ] = "sloping_corners",
     fix_triangulation: bool = True,
     extent_bbox: tuple[float, float, float, float] | None = None,
-    facepoint_values: np.ndarray | None = None,
+    facepoint_wse: np.ndarray | None = None,
     scatter_interp_method: str = "linear",
     cell_facepoint_indexes: np.ndarray | None = None,
     method: Literal[
@@ -583,10 +583,10 @@ def mesh_to_velocity_raster(
         "facepoint_blend", "scatter_cell_corners", "scatter_face_centroid",
     ] = "scatter_face_centroid",
     face_normals: np.ndarray | None = None,
-    face_vel: np.ndarray | None = None,
-    face_centroids: np.ndarray | None = None,
+    face_normal_velocity: np.ndarray | None = None,
+    face_centers: np.ndarray | None = None,
     cell_polygons: list[np.ndarray] | None = None,
-    facecenter_values: np.ndarray | None = None,
+    face_center_wse: np.ndarray | None = None,
     face_min_elevation: np.ndarray | None = None,
     wse_raster: str | Path | rasterio.io.DatasetReader | None = None,
 ) -> Path | rasterio.io.DatasetReader:
@@ -656,7 +656,7 @@ def mesh_to_velocity_raster(
         Override bounding box ``(x_min, y_min, x_max, y_max)`` passed
         through to the internal :func:`mesh_to_wse_raster` call.  See that
         function for full description.
-    facepoint_values : ndarray, shape ``(n_facepoints,)``, optional
+    facepoint_wse : ndarray, shape ``(n_facepoints,)``, optional
         Pre-computed WSE at every facepoint forwarded to the internal
         :func:`mesh_to_wse_raster` call.  Required for sloping *render_mode*
         values; ignored for ``"horizontal"``.  Ignored (with a warning) for
@@ -674,7 +674,7 @@ def mesh_to_velocity_raster(
         ``"flat_cell_center"``
             Paint the flat WLS cell-centre velocity uniformly over all
             pixels inside each cell polygon.  No intra-cell spatial variation.
-            Does not require *face_normals*, *face_vel*, or *face_centroids*,
+            Does not require *face_normals*, *face_normal_velocity*, or *face_centers*,
             but **requires** *cell_polygons*.
 
         ``"triangle_blend"``
@@ -706,14 +706,14 @@ def mesh_to_velocity_raster(
             eliminating discontinuities that can originate at cell centres.
 
         All methods except ``"flat_cell_center"`` require *face_normals*,
-        *face_vel*, and *face_centroids*.
+        *face_normal_velocity*, and *face_centers*.
     face_normals : ndarray, shape ``(n_faces, 3)``, optional
         ``[nx, ny, face_length]`` unit-normal vector and face length.
         Required for all methods except ``"flat_cell_center"``.
-    face_vel : ndarray, shape ``(n_faces,)``, optional
-        Signed face-normal velocity for this timestep.
+    face_normal_velocity : ndarray, shape ``(n_faces,)``, optional
+        Signed face-normal velocity scalar for this timestep.
         Required for all methods except ``"flat_cell_center"``.
-    face_centroids : ndarray, shape ``(n_faces, 2)``, optional
+    face_centers : ndarray, shape ``(n_faces, 2)``, optional
         X, Y coordinates of each face centroid.
         Required for all methods except ``"flat_cell_center"``.
         Also forwarded to the internal WSE render as *facecenter_coordinates*
@@ -723,7 +723,7 @@ def mesh_to_velocity_raster(
         Exact cell boundary vertices per cell (``FlowArea.cell_polygons``).
         Forwarded to :func:`mesh_to_wse_raster`; used in sloping modes for
         accurate dry-cell polygon masking instead of a Voronoi approximation.
-    facecenter_values : ndarray, shape ``(n_faces,)``, optional
+    face_center_wse : ndarray, shape ``(n_faces,)``, optional
         WSE at each face centroid (``FlowArea.wse_at_facecentroids``).
         Required by the internal WSE render for ``"sloping_corners_faces"``
         and ``"sloping_corners_faces_shallow"`` render modes.
@@ -743,8 +743,8 @@ def mesh_to_velocity_raster(
           caller retains ownership and must close it.
 
         When *wse_raster* is given, all WSE-rendering parameters
-        (*render_mode*, *facepoint_values*, *cell_polygons*,
-        *facecenter_values*, *face_min_elevation*, *scatter_interp_method*,
+        (*render_mode*, *facepoint_wse*, *cell_polygons*,
+        *face_center_wse*, *face_min_elevation*, *scatter_interp_method*,
         *fix_triangulation*, *extent_bbox*, *reference_raster*,
         *reference_transform*, *cell_size*, *snap_to_reference_extent*,
         *depth_min*) are ignored.  *vel_min* still applies: cells whose
@@ -765,7 +765,8 @@ def mesh_to_velocity_raster(
         If ``rasterio`` or ``matplotlib`` are not installed.
     ValueError
         If *method* is not a recognised string, or if *face_normals*,
-        *face_vel*, or *face_centroids* are missing for an interpolation method.
+        *face_normal_velocity*, or *face_centers* are missing for an
+        interpolation method.
     """
     _INTERP_METHODS = {
         "triangle_blend", "face_idw", "face_gradient",
@@ -777,10 +778,11 @@ def mesh_to_velocity_raster(
             f"method must be one of {sorted(_ALL_METHODS)}; got {method!r}"
         )
     if method in _INTERP_METHODS and (
-        face_normals is None or face_vel is None or face_centroids is None
+        face_normals is None or face_normal_velocity is None or face_centers is None
     ):
         raise ValueError(
-            f"method={method!r} requires face_normals, face_vel, and face_centroids."
+            f"method={method!r} requires face_normals, face_normal_velocity,"
+            " and face_centers."
         )
     if method == "flat_cell_center" and cell_polygons is None:
         raise ValueError(
@@ -795,9 +797,9 @@ def mesh_to_velocity_raster(
         )
 
     if method in _INTERP_METHODS:
-        if facepoint_values is not None:
+        if facepoint_wse is not None:
             logger.warning(
-                "mesh_to_velocity_raster: facepoint_values has no effect "
+                "mesh_to_velocity_raster: facepoint_wse has no effect "
                 "when method=%r; ignored.", method
             )
         if cell_facepoint_indexes is not None:
@@ -863,10 +865,10 @@ def mesh_to_velocity_raster(
             fix_triangulation=fix_triangulation,
             extent_bbox=extent_bbox,
             scatter_interp_method=scatter_interp_method,
-            facepoint_values=facepoint_values,
+            facepoint_values=facepoint_wse,
             cell_polygons=cell_polygons,
-            facecenter_coordinates=face_centroids,
-            facecenter_values=facecenter_values,
+            facecenter_coordinates=face_centers,
+            facecenter_values=face_center_wse,
             face_min_elevation=face_min_elevation,
         )
         _wse_ds = mesh_to_wse_raster(**_wse_kw)
@@ -929,7 +931,7 @@ def mesh_to_velocity_raster(
 
     else:
         #  Intra-cell interpolation using face data.
-        face_vel_arr = np.asarray(face_vel, dtype=np.float64)
+        face_vel_arr = np.asarray(face_normal_velocity, dtype=np.float64)
         face_normals_arr = np.asarray(face_normals, dtype=np.float64)
         face_fp_idx = np.asarray(face_facepoint_indexes, dtype=np.int64)
         cell_face_values_arr = np.asarray(cell_face_values, dtype=np.int64)
@@ -969,7 +971,7 @@ def mesh_to_velocity_raster(
                 | ((right >= 0) & (right < n_cells) & ~dry_mask[right_safe])
             )
 
-            face_centroids_arr = np.asarray(face_centroids, dtype=np.float64)
+            face_centroids_arr = np.asarray(face_centers, dtype=np.float64)
             if method == "scatter_cell_corners":
                 pts = np.vstack([
                     cell_centers_arr[~dry_mask], face_centroids_arr[wet_face]
@@ -1119,7 +1121,7 @@ def mesh_to_velocity_raster(
                     )
 
                 else:
-                    face_centroids_arr = np.asarray(face_centroids, dtype=np.float64)
+                    face_centroids_arr = np.asarray(face_centers, dtype=np.float64)
                     if method == "face_idw":
                         v_pixel = _interp_face_idw(
                             px, py, cell_idx_hit, n_cells,
