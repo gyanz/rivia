@@ -371,6 +371,53 @@ class FlowAreaResults(FlowArea):
         angle[speed < 1e-10] = np.nan
         return angle
 
+    def face_velocity_vectors(
+        self,
+        timestep: int,
+        method: Literal[
+            "area_weighted", "length_weighted", "flow_ratio"
+        ] = "area_weighted",
+        wse_interp: Literal["average", "sloped"] = "average",
+    ) -> np.ndarray:
+        """Full 2D velocity ``[Vx, Vy]`` at each face midpoint via the double-C stencil.
+
+        HEC-RAS stores only the face-normal component.  The tangential
+        component is estimated by projecting the WLS cell-centre velocity
+        vectors of the two adjacent cells onto the face tangential direction
+        and averaging (double-C stencil, HEC-RAS 2D Technical Reference
+        Manual).
+
+        Parameters
+        ----------
+        timestep:
+            0-based index into the time dimension.
+        method:
+            WLS weight scheme passed to :meth:`cell_velocity_vectors`.
+        wse_interp:
+            Face WSE interpolation method passed to :meth:`cell_velocity_vectors`.
+
+        Returns
+        -------
+        ndarray, shape ``(n_faces, 2)``
+            ``[Vx, Vy]`` velocity at each face midpoint.
+            Faces where both adjacent cells are dry receive ``[0, 0]``.
+        """
+        from ._velocity import compute_all_face_velocities
+
+        cell_vel = self.cell_velocity_vectors(
+            timestep, method=method, wse_interp=wse_interp
+        )
+        cell_wse = np.array(self.water_surface[timestep, : self.n_cells])
+        dry_mask = np.isnan(cell_wse)
+        return compute_all_face_velocities(
+            face_normals=self.face_normals,
+            face_normal_velocity=np.array(self.face_velocity[timestep, :]),
+            face_cell_indexes=self.face_cell_indexes,
+            cell_velocity=cell_vel,
+            dry_mask=dry_mask,
+            n_cells=self.n_cells,
+        )
+
     def debug_cell_velocity(
         self,
         cell_idx: int,

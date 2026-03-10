@@ -375,3 +375,89 @@ def compute_all_cell_velocities(
         velocities[c] = _wls_velocity(vn, weights, normals)
 
     return velocities
+
+
+# ---------------------------------------------------------------------------
+# Face velocity reconstruction (double-C stencil)
+# ---------------------------------------------------------------------------
+
+
+def compute_all_face_velocities(
+    face_normals: np.ndarray,
+    face_normal_velocity: np.ndarray,
+    face_cell_indexes: np.ndarray,
+    cell_velocity: np.ndarray,
+    dry_mask: np.ndarray,
+    n_cells: int,
+) -> np.ndarray:
+    """Reconstruct full 2D face velocity using the HEC-RAS double-C stencil.
+
+    HEC-RAS stores only the face-normal velocity ``vn``.  The tangential
+    component is recovered by projecting each adjacent cell's WLS velocity
+    vector onto the face tangential direction, then arithmetically averaging
+    the two sides (left and right).  This mirrors the double-C stencil
+    described in the HEC-RAS 2D Technical Reference Manual:
+
+    .. code-block:: text
+
+        vt_L = cell_velocity[L] · t_hat
+        vt_R = cell_velocity[R] · t_hat
+        vt   = (vt_L + vt_R) / 2          (both cells hydraulically connected)
+        V_face = vn * n_hat + vt * t_hat
+
+    The normal component ``vn`` is kept exactly as stored in the HDF; only
+    the tangential component is estimated from the WLS reconstruction.
+
+    Parameters
+    ----------
+    face_normals : ndarray, shape ``(n_faces, 3)``
+        ``[nx, ny, face_length]``; ``(nx, ny)`` must be a unit normal vector.
+    face_normal_velocity : ndarray, shape ``(n_faces,)``
+        Signed face-normal velocities for this timestep.
+    face_cell_indexes : ndarray, shape ``(n_faces, 2)``
+        Left and right cell indices; ``-1`` = boundary.
+    cell_velocity : ndarray, shape ``(n_cells, 2)``
+        WLS velocity vectors ``[Vx, Vy]`` at each cell centre.
+    dry_mask : ndarray, shape ``(n_cells,)``, bool
+        ``True`` where a cell is dry; its WLS velocity is excluded.
+    n_cells : int
+        Number of real computational cells.
+
+    Returns
+    -------
+    ndarray, shape ``(n_faces, 2)``
+        Full ``[Vx, Vy]`` velocity at each face midpoint.
+        Faces where *both* adjacent cells are dry receive ``[0, 0]``.
+    """
+    n_faces = len(face_normals)
+    nx_ny = face_normals[:, :2]                            # (n_faces, 2)
+    t_hat = np.column_stack([-nx_ny[:, 1], nx_ny[:, 0]])  # (n_faces, 2) 90° CCW
+
+    left  = face_cell_indexes[:, 0]
+    right = face_cell_indexes[:, 1]
+
+    # Clamp indices for safe array lookup (out-of-range cases handled by masks).
+    left_safe  = np.where((left  >= 0) & (left  < n_cells), left,  0)
+    right_safe = np.where((right >= 0) & (right < n_cells), right, 0)
+
+    valid_left  = (left  >= 0) & (left  < n_cells) & ~dry_mask[left_safe]
+    valid_right = (right >= 0) & (right < n_cells) & ~dry_mask[right_safe]
+
+    # Tangential projection: dot(V_cell, t_hat) for each side.
+    vt_L = np.sum(cell_velocity[left_safe]  * t_hat, axis=1)  # (n_faces,)
+    vt_R = np.sum(cell_velocity[right_safe] * t_hat, axis=1)
+
+    # Arithmetic average following the manual; fall back to single side at
+    # boundary or dry-neighbour faces.
+    vt = np.zeros(n_faces, dtype=np.float64)
+    both       = valid_left & valid_right
+    left_only  = valid_left & ~valid_right
+    right_only = ~valid_left & valid_right
+
+    vt[both]       = 0.5 * (vt_L[both] + vt_R[both])
+    vt[left_only]  = vt_L[left_only]
+    vt[right_only] = vt_R[right_only]
+    # Faces with no valid neighbour: vt stays 0 — normal component still correct.
+
+    # Compose: preserve measured vn on the normal axis; add estimated vt.
+    return face_normal_velocity[:, np.newaxis] * nx_ny + vt[:, np.newaxis] * t_hat
