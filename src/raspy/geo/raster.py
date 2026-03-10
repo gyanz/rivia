@@ -581,7 +581,7 @@ def mesh_to_velocity_raster(
         "flat_cell_center",
         "triangle_blend", "face_idw", "face_gradient",
         "facepoint_blend", "scatter_cell_face", "scatter_face",
-        "scatter_corners", "scatter_corners_face",
+        "scatter_corners", "scatter_corners_face", "scatter_cell_corners_face",
     ] = "scatter_face",
     face_normals: np.ndarray | None = None,
     face_normal_velocity: np.ndarray | None = None,
@@ -665,7 +665,8 @@ def mesh_to_velocity_raster(
         their own WSE render.
     scatter_interp_method : str, default ``"linear"``
         ``scipy.interpolate.griddata`` *method* used by ``"scatter_cell_face"``,
-        ``"scatter_face"``, ``"scatter_corners"``, and ``"scatter_corners_face"``.
+        ``"scatter_face"``, ``"scatter_corners"``, ``"scatter_corners_face"``,
+        and ``"scatter_cell_corners_face"``.
         Accepted values: ``"nearest"``, ``"linear"``, ``"cubic"``.
     cell_facepoint_indexes : ndarray, shape ``(n_cells, 8)``, optional
         Not used.  Accepted for backwards compatibility; ignored.
@@ -717,9 +718,14 @@ def mesh_to_velocity_raster(
             Combined scatter from wet mesh corners and wet face midpoints.
             Corner velocities use the same double-C stencil mean as
             ``"scatter_corners"``; face-midpoint velocities are the same 2D
-            face vectors used by ``"scatter_face"``.  This gives the densest
-            scatter point set: boundary-conforming corners plus well-sampled
-            interior face midpoints.  Requires *face_centers*.
+            face vectors used by ``"scatter_face"``.  Requires *face_centers*.
+
+        ``"scatter_cell_corners_face"``
+            Maximum-density scatter combining all three point sources: wet
+            cell centres (WLS vectors), wet mesh corners (double-C averaged),
+            and wet face midpoints (double-C vectors).  Union of
+            ``"scatter_cell_face"`` and ``"scatter_corners_face"``.
+            Requires *face_centers*.
 
         All methods except ``"flat_cell_center"`` require *face_normals* and
         *face_normal_velocity*.  All except ``"flat_cell_center"`` and
@@ -787,7 +793,7 @@ def mesh_to_velocity_raster(
     _INTERP_METHODS = {
         "triangle_blend", "face_idw", "face_gradient",
         "facepoint_blend", "scatter_cell_face", "scatter_face",
-        "scatter_corners", "scatter_corners_face",
+        "scatter_corners", "scatter_corners_face", "scatter_cell_corners_face",
     }
     _ALL_METHODS = {"flat_cell_center"} | _INTERP_METHODS
     if method not in _ALL_METHODS:
@@ -1063,6 +1069,67 @@ def mesh_to_velocity_raster(
                 face_centroids_arr[wet_face],
             ])
             vel = np.vstack([fp_vel[wet_fp], face_vel_2d[wet_face]])
+
+            xi_flat = np.column_stack([xi_grid.ravel(), yi_grid.ravel()])
+            vel_flat = griddata(pts, vel, xi_flat, method=scatter_interp_method,
+                                fill_value=np.nan, rescale=True)
+            vx = vel_flat[:, 0].reshape(n_tight_rows, n_tight_cols)
+            vy = vel_flat[:, 1].reshape(n_tight_rows, n_tight_cols)
+
+        elif method == "scatter_cell_corners_face":
+            try:
+                from scipy.interpolate import griddata
+            except ImportError as exc:
+                raise ImportError(
+                    "scatter_cell_corners_face requires scipy. "
+                    "Install it with: pip install raspy[geo]"
+                ) from exc
+
+            from raspy.hdf._velocity import (
+                average_face_velocities_at_facepoints,
+                compute_all_face_velocities,
+            )
+
+            left       = face_ci_arr[:, 0]
+            right      = face_ci_arr[:, 1]
+            left_safe  = np.where((left  >= 0) & (left  < n_cells), left,  0)
+            right_safe = np.where((right >= 0) & (right < n_cells), right, 0)
+            wet_face   = (
+                ((left  >= 0) & (left  < n_cells) & ~dry_mask[left_safe])
+                | ((right >= 0) & (right < n_cells) & ~dry_mask[right_safe])
+            )
+
+            face_vel_2d = compute_all_face_velocities(
+                face_normals=face_normals_arr,
+                face_normal_velocity=face_vel_arr,
+                face_cell_indexes=face_ci_arr,
+                cell_velocity=cell_velocity,
+                dry_mask=dry_mask,
+                n_cells=n_cells,
+            )
+
+            fp_vel = average_face_velocities_at_facepoints(
+                face_facepoint_indexes=face_fp_idx,
+                face_vel_2d=face_vel_2d,
+                wet_face=wet_face,
+            )
+
+            n_fp   = len(facepoint_coords_arr)
+            wet_fp = np.zeros(n_fp, dtype=bool)
+            wet_fp[face_fp_idx[wet_face, 0]] = True
+            wet_fp[face_fp_idx[wet_face, 1]] = True
+
+            face_centroids_arr = np.asarray(face_centers, dtype=np.float64)
+            pts = np.vstack([
+                cell_centers_arr[~dry_mask],
+                facepoint_coords_arr[wet_fp],
+                face_centroids_arr[wet_face],
+            ])
+            vel = np.vstack([
+                cell_velocity[~dry_mask],
+                fp_vel[wet_fp],
+                face_vel_2d[wet_face],
+            ])
 
             xi_flat = np.column_stack([xi_grid.ravel(), yi_grid.ravel()])
             vel_flat = griddata(pts, vel, xi_flat, method=scatter_interp_method,
