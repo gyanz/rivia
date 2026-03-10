@@ -637,9 +637,8 @@ def mesh_to_velocity_raster(
     nodata : float
         Fill value for pixels outside the wet mesh.
     vel_min : float, optional
-        Speed threshold (m/s).  Cells whose WLS speed is below this are
-        excluded from the WSE rendering (treated as dry) and from the
-        final velocity output.
+        Speed threshold (m/s).  Output pixels whose interpolated speed is
+        below this value are set to nodata in the final velocity bands.
     depth_min : float, optional
         Minimum depth threshold (m) passed to the internal WSE render.
         Pixels where WSE minus DEM is less than this value are treated as
@@ -841,14 +840,6 @@ def mesh_to_velocity_raster(
     cell_velocity = np.asarray(cell_velocity, dtype=np.float64)  # (n_cells, 2)
     cell_wse_arr = np.asarray(cell_wse, dtype=np.float64)
 
-    # Pre-filter: mask cells whose speed is below vel_min so that the WSE
-    # rendering treats them as dry and excludes them from the wet extent.
-    cell_wse_for_render = cell_wse_arr.copy()
-    if vel_min is not None:
-        with np.errstate(invalid="ignore"):
-            speed_pre = np.linalg.norm(cell_velocity, axis=1)
-        cell_wse_for_render[speed_pre < vel_min] = np.nan
-
     #  Step 1: Obtain WSE raster to determine wet extent and output grid.
     if wse_raster is None:
         _wse_kw: dict = dict(
@@ -858,7 +849,7 @@ def mesh_to_velocity_raster(
             face_cell_indexes=face_cell_indexes,
             cell_face_info=cell_face_info,
             cell_face_values=cell_face_values,
-            cell_values=cell_wse_for_render,
+            cell_values=cell_wse_arr,
             output_path=None,
             cell_size=cell_size,
             reference_transform=reference_transform,
@@ -904,7 +895,7 @@ def mesh_to_velocity_raster(
 
     cell_centers_arr = np.asarray(cell_centers, dtype=np.float64)
     facepoint_coords_arr = np.asarray(facepoint_coordinates, dtype=np.float64)
-    dry_mask = np.isnan(cell_wse_for_render)
+    dry_mask = np.isnan(cell_wse_arr)
 
     dx = abs(out_transform.a)
     dy = abs(out_transform.e)
