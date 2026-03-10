@@ -825,7 +825,7 @@ class FlowAreaResults(FlowArea):
             **Required** when ``variable="depth"``.
         snap_to_reference_extent:
             When *reference_raster* is given, extend the output to its full
-            extent (default ``True``).
+            extent (default ``False``).
         crs:
             Output CRS.  When *reference_raster* is given and *crs* is
             ``None``, the reference raster CRS is inherited.
@@ -840,7 +840,7 @@ class FlowAreaResults(FlowArea):
         vel_min:
             Minimum speed (m/s).  Cells whose WLS speed is below this
             threshold are excluded from the WSE wet-extent render and from
-            the final velocity output.  Default ``0.001``.
+            the final velocity output.  Default ``0.0001``.
         vel_weight_method:
             Velocity reconstruction scheme passed to
             :meth:`cell_velocity_vectors`.
@@ -859,7 +859,7 @@ class FlowAreaResults(FlowArea):
             ``"flat_cell_center"`` — paint the flat WLS cell-centre velocity
             over all pixels inside the cell (fastest; no spatial interpolation).
 
-            ``"triangle_blend"`` *(default)* — barycentric blend of WLS
+            ``"triangle_blend"`` — barycentric blend of WLS
             cell-centre velocity and reconstructed face velocity within each
             fan-triangle.
 
@@ -877,8 +877,8 @@ class FlowAreaResults(FlowArea):
             ``"scatter_cell_face"`` — global ``scipy.griddata`` over wet cell
             centres and wet face midpoints.
 
-            ``"scatter_face"`` — same but face midpoints only; avoids
-            discontinuities originating at cell centres.
+            ``"scatter_face"`` *(default)* — same but face midpoints only;
+            avoids discontinuities originating at cell centres.
 
             ``"scatter_corners"`` — global ``scipy.griddata`` over wet mesh
             corners; velocity at each corner is the mean of the double-C
@@ -902,7 +902,7 @@ class FlowAreaResults(FlowArea):
             malformed boundary cells cause KDTree noise outside the model
             domain.  **Mutually exclusive with** ``snap_to_reference_extent``
             — a ``ValueError`` is raised if both are ``True``.
-            Default ``False``.
+            Default ``True``.
         Returns
         -------
         Path
@@ -1225,7 +1225,7 @@ class FlowAreaResults(FlowArea):
             ``None`` returns an open in-memory ``rasterio.DatasetReader``.
         snap_to_reference_extent:
             Extend the output to the full extent of *reference_raster*
-            (default ``True``).
+            (default ``False``).
         nodata:
             Fill value for pixels outside the wet mesh.
         render_mode:
@@ -1251,7 +1251,9 @@ class FlowAreaResults(FlowArea):
         scatter_interp_method:
             ``scipy.interpolate.griddata`` *method* used by
             ``"scatter_cell_face"``, ``"scatter_face"``, and
-            ``"scatter_corners"``.
+            ``"scatter_corners"``.  One of ``"nearest"``, ``"linear"``
+            *(default)*, ``"cubic"``.  Ignored for all other
+            *vel_interp_method* values.
         fix_triangulation:
             When ``True`` (default), deduplicate coincident mesh vertices and
             remove zero-area triangles before building the triangulation.
@@ -1263,7 +1265,7 @@ class FlowAreaResults(FlowArea):
             polygon snapped outward to the nearest reference pixel boundaries,
             and pixels outside the polygon are set to *nodata*.  **Mutually
             exclusive with** ``snap_to_reference_extent`` — a ``ValueError``
-            is raised if both are ``True``.  Default ``False``.
+            is raised if both are ``True``.  Default ``True``.
         Returns
         -------
         dict with keys ``"water_surface"``, ``"depth"``, ``"speed"``.
