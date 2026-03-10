@@ -26,7 +26,7 @@ def mesh_to_wse_raster(
     face_cell_indexes: np.ndarray,
     cell_face_info: np.ndarray,
     cell_face_values: np.ndarray,
-    cell_values: np.ndarray,
+    cell_wse: np.ndarray,
     output_path: str | Path | None = None,
     *,
     cell_size: float | None = None,
@@ -47,9 +47,9 @@ def mesh_to_wse_raster(
     scatter_interp_method: str = "linear",
     fix_triangulation: bool = True,
     cell_polygons: list[np.ndarray] | None = None,
-    facepoint_values: np.ndarray | None = None,
-    facecenter_values: np.ndarray | None = None,
-    facecenter_coordinates: np.ndarray | None = None,
+    facepoint_wse: np.ndarray | None = None,
+    face_center_wse: np.ndarray | None = None,
+    face_centers: np.ndarray | None = None,
     face_min_elevation: np.ndarray | None = None,
 ) -> Path | rasterio.io.DatasetReader:
     """Interpolate HEC-RAS mesh results to a raster using mesh-conforming triangulation.
@@ -89,8 +89,8 @@ def mesh_to_wse_raster(
     cell_face_values : ndarray, shape ``(total_entries, 2)``
         ``[face_idx, orientation]`` for each cell-face association
         (``FlowArea.cell_face_values``).
-    cell_values : ndarray, shape ``(n_cells,)``
-        Scalar field (e.g. WSE) at cell centres.
+    cell_wse : ndarray, shape ``(n_cells,)``
+        Water-surface elevation at cell centres.
     output_path : str, Path, or None
         Destination GeoTIFF.  ``None`` returns an open in-memory
         ``rasterio.DatasetReader``; the caller must close it.
@@ -130,21 +130,21 @@ def mesh_to_wse_raster(
         model output.
 
         ``"sloping_corners"``  interpolates WSE using polygon-corner
-        facepoints as scatter points (values from *facepoint_values*),
+        facepoints as scatter points (values from *facepoint_wse*),
         producing a smooth, continuous inundation surface.
 
         ``"sloping_corners_faces"``  augments the corner facepoints with
-        face-centroid points (values from *facecenter_values*, coordinates
-        from *facecenter_coordinates*), giving a denser scatter set that
+        face-centroid points (values from *face_center_wse*, coordinates
+        from *face_centers*), giving a denser scatter set that
         better captures the mesh topology inside large cells.  Requires
-        *facecenter_coordinates* and *facecenter_values*.
+        *face_centers* and *face_center_wse*.
 
         ``"sloping_corners_faces_shallow"``  same as
         ``"sloping_corners_faces"`` but adds a per-cell shallow check: any
         cell whose face centroids all have depth ``<= 0``
-        (``facecenter_values - face_min_elevation``) or ``NaN`` falls back
-        to horizontal rendering.  Requires *facecenter_coordinates*,
-        *facecenter_values*, and *face_min_elevation*.
+        (``face_center_wse - face_min_elevation``) or ``NaN`` falls back
+        to horizontal rendering.  Requires *face_centers*,
+        *face_center_wse*, and *face_min_elevation*.
 
     fix_triangulation : bool
         When ``True`` (default), deduplicate coincident mesh vertices and
@@ -162,13 +162,13 @@ def mesh_to_wse_raster(
         Intended for use with ``clip_to_perimeter`` in the plan layer so
         the raster extent is driven by the mesh perimeter polygon rather
         than the full facepoint cloud.
-    facepoint_values : ndarray, shape ``(n_facepoints,)``, optional
+    facepoint_wse : ndarray, shape ``(n_facepoints,)``, optional
         Pre-computed WSE at every facepoint, typically obtained by calling
         ``FlowArea.wse_at_facepoints(cell_wse)``.  ``NaN`` where all
         adjacent cells are dry.  Required for all sloping render modes.
     scatter_interp_method : str, default ``"linear"``
         Interpolation method forwarded to ``scipy.interpolate.griddata``
-        when *facepoint_values* is provided.  One of ``'nearest'``,
+        when *facepoint_wse* is provided.  One of ``'nearest'``,
         ``'linear'``, or ``'cubic'``.
     cell_polygons : list of ndarray, shape ``(n_vertices, 2)``, optional
         Exact cell boundary vertices per cell (``FlowArea.cell_polygons``).
@@ -176,11 +176,11 @@ def mesh_to_wse_raster(
         boundaries.  When provided, dry-cell masking in sloping modes
         rasterizes the true cell polygons instead of using a nearest-centre
         Voronoi approximation.
-    facecenter_coordinates : ndarray, shape ``(n_faces, 2)``, optional
-        Centroid coordinate of each face (``FlowArea.face_centroids``).
+    face_centers : ndarray, shape ``(n_faces, 2)``, optional
+        X, Y coordinates of each face centroid (``FlowArea.face_centroids``).
         Required for ``"sloping_corners_faces"`` and
         ``"sloping_corners_faces_shallow"``.
-    facecenter_values : ndarray, shape ``(n_faces,)``, optional
+    face_center_wse : ndarray, shape ``(n_faces,)``, optional
         WSE at each face centroid (``FlowArea.wse_at_facecentroids``).
         Required for ``"sloping_corners_faces"`` and
         ``"sloping_corners_faces_shallow"``.
@@ -244,16 +244,16 @@ def mesh_to_wse_raster(
         raise ValueError(
             f"render_mode must be one of {_valid_modes}; got {render_mode!r}."
         )
-    if render_mode != "horizontal" and facepoint_values is None:
+    if render_mode != "horizontal" and facepoint_wse is None:
         raise ValueError(
-            f"facepoint_values is required when render_mode={render_mode!r}. "
+            f"facepoint_wse is required when render_mode={render_mode!r}. "
             "Compute it with FlowArea.wse_at_facepoints(cell_wse)."
         )
     if render_mode in ("sloping_corners_faces", "sloping_corners_faces_shallow") and (
-        facecenter_coordinates is None or facecenter_values is None
+        face_centers is None or face_center_wse is None
     ):
         raise ValueError(
-            "facecenter_coordinates and facecenter_values are required "
+            "face_centers and face_center_wse are required "
             f"when render_mode={render_mode!r}."
         )
     if render_mode == "sloping_corners_faces_shallow" and face_min_elevation is None:
@@ -267,10 +267,10 @@ def mesh_to_wse_raster(
             f"scatter_interp_method must be 'nearest', 'linear', or 'cubic';"
             f" got {scatter_interp_method!r}."
         )
-    cell_values = np.asarray(cell_values, dtype=np.float64)
-    if cell_values.ndim != 1:
+    cell_wse = np.asarray(cell_wse, dtype=np.float64)
+    if cell_wse.ndim != 1:
         raise ValueError(
-            "mesh_to_wse_raster only accepts scalar cell_values (shape (n_cells,)). "
+            "mesh_to_wse_raster only accepts scalar cell_wse (shape (n_cells,)). "
             "For velocity rasters use mesh_to_velocity_raster instead."
         )
     cell_centers = np.asarray(cell_centers, dtype=np.float64)
@@ -278,7 +278,7 @@ def mesh_to_wse_raster(
     face_facepoint_indexes = np.asarray(face_facepoint_indexes, dtype=np.int64)
     face_cell_indexes = np.asarray(face_cell_indexes, dtype=np.int64)
     cell_face_values_arr = np.asarray(cell_face_values, dtype=np.int64)
-    # cell_values already converted and validated above the validate block.
+    # cell_wse already converted and validated above the validate block.
 
     n_cells = len(cell_centers)
     # Slice to real cells only  HDF may append ghost/padding rows beyond n_cells.
@@ -328,11 +328,11 @@ def mesh_to_wse_raster(
     #  Dry-cell masking
     # NaN cell values always indicate dry cells (set by caller before passing in).
     # min_value provides an additional scalar threshold.
-    dry_mask = np.isnan(cell_values)
+    dry_mask = np.isnan(cell_wse)
     if min_value is not None:
         with np.errstate(invalid="ignore"):
-            dry_mask = dry_mask | (cell_values < min_value)
-    cv = cell_values.copy()
+            dry_mask = dry_mask | (cell_wse < min_value)
+    cv = cell_wse.copy()
     cv[dry_mask] = np.nan
 
     n_wet = int((~dry_mask).sum())
@@ -436,7 +436,7 @@ def mesh_to_wse_raster(
         )
         scalar = _griddata_facepoint_sloping(
             facepoint_coordinates,
-            np.asarray(facepoint_values, dtype=np.float64),
+            np.asarray(facepoint_wse, dtype=np.float64),
             cell_polygons,
             dry_mask,
             tree,
@@ -445,18 +445,18 @@ def mesh_to_wse_raster(
             yi_grid,
             scatter_interp_method,
             facecenter_coordinates=(
-                np.asarray(facecenter_coordinates, dtype=np.float64)
-                if use_facecenters and facecenter_coordinates is not None
+                np.asarray(face_centers, dtype=np.float64)
+                if use_facecenters and face_centers is not None
                 else None
             ),
             facecenter_values=(
-                np.asarray(facecenter_values, dtype=np.float64)
-                if use_facecenters and facecenter_values is not None
+                np.asarray(face_center_wse, dtype=np.float64)
+                if use_facecenters and face_center_wse is not None
                 else None
             ),
         )
         if render_mode == "sloping_corners_faces_shallow":
-            fc_vals = np.asarray(facecenter_values, dtype=np.float64)
+            fc_vals = np.asarray(face_center_wse, dtype=np.float64)
             fm_elev = np.asarray(face_min_elevation, dtype=np.float64)
             cell_is_shallow = _shallow_cell_mask(
                 cell_face_info, cell_face_values_arr, fc_vals, fm_elev
@@ -716,7 +716,7 @@ def mesh_to_velocity_raster(
     face_centers : ndarray, shape ``(n_faces, 2)``, optional
         X, Y coordinates of each face centroid.
         Required for all methods except ``"flat_cell_center"``.
-        Also forwarded to the internal WSE render as *facecenter_coordinates*
+        Also forwarded to the internal WSE render as *face_centers*
         for ``"sloping_corners_faces"`` and ``"sloping_corners_faces_shallow"``
         render modes.
     cell_polygons : list of ndarray, shape ``(n_vertices, 2)``, optional
@@ -851,7 +851,7 @@ def mesh_to_velocity_raster(
             face_cell_indexes=face_cell_indexes,
             cell_face_info=cell_face_info,
             cell_face_values=cell_face_values,
-            cell_values=cell_wse_arr,
+            cell_wse=cell_wse_arr,
             output_path=None,
             cell_size=cell_size,
             reference_transform=reference_transform,
@@ -865,10 +865,10 @@ def mesh_to_velocity_raster(
             fix_triangulation=fix_triangulation,
             extent_bbox=extent_bbox,
             scatter_interp_method=scatter_interp_method,
-            facepoint_values=facepoint_wse,
+            facepoint_wse=facepoint_wse,
             cell_polygons=cell_polygons,
-            facecenter_coordinates=face_centers,
-            facecenter_values=face_center_wse,
+            face_centers=face_centers,
+            face_center_wse=face_center_wse,
             face_min_elevation=face_min_elevation,
         )
         _wse_ds = mesh_to_wse_raster(**_wse_kw)

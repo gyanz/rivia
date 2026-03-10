@@ -995,24 +995,24 @@ class FlowAreaResults(FlowArea):
             render_mode=render_mode,
             fix_triangulation=fix_triangulation,
             extent_bbox=_perimeter_bbox,
-            facepoint_values=_fp_wse,
+            facepoint_wse=_fp_wse,
             scatter_interp_method=scatter_interp_method,
             cell_polygons=self.cell_polygons,
-            facecenter_coordinates=(
+            face_centers=(
                 self.face_centroids if _use_facecenters else None
             ),
-            facecenter_values=_fc_wse,
+            face_center_wse=_fc_wse,
             face_min_elevation=(
                 self.face_min_elevation
                 if render_mode == "sloping_corners_faces_shallow" else None
             ),
         )
-        # Exclude facecenter_coordinates: not a parameter of mesh_to_velocity_raster
-        # (face_centers serves that role there).  Remap facepoint_wse and
-        # face_center_wse with the vel_min-masked versions for the velocity render.
+        # Exclude face_centers: not shared with mesh_to_velocity_raster via mesh_kw
+        # (face_centers is passed explicitly in the velocity call).  Override
+        # facepoint_wse and face_center_wse with vel_min-masked versions.
         _vel_mesh_kw = {k: v for k, v in mesh_kw.items()
-                        if k not in ("facecenter_coordinates",
-                                     "facepoint_values", "facecenter_values")}
+                        if k not in ("face_centers",
+                                     "facepoint_wse", "face_center_wse")}
         _vel_mesh_kw["facepoint_wse"] = _fp_wse_vel
         _vel_mesh_kw["face_center_wse"] = _fc_wse_vel
 
@@ -1020,7 +1020,7 @@ class FlowAreaResults(FlowArea):
         if variable == "depth":
             wse_ds = _raster.mesh_to_wse_raster(
                 **mesh_kw,
-                cell_values=cell_wse,
+                cell_wse=cell_wse,
                 output_path=None,   # in-memory; depth written after DEM subtraction
                 min_value=None,     # dry cells already NaN-masked above
                 min_above_ref=depth_min,
@@ -1097,7 +1097,7 @@ class FlowAreaResults(FlowArea):
             # to the DEM (when reference_raster is given); no scalar min_value needed.
             wse_ds = _raster.mesh_to_wse_raster(
                 **mesh_kw,
-                cell_values=values,
+                cell_wse=values,
                 output_path=None if clip_to_perimeter else output_path,
                 min_value=None,
                 min_above_ref=depth_min,
@@ -1312,25 +1312,25 @@ class FlowAreaResults(FlowArea):
             if _use_facecenters:
                 _fc_wse_vel = self.wse_at_facecentroids(_vel_wse_masked)
 
-        mesh_kw["facepoint_values"] = _fp_wse
+        mesh_kw["facepoint_wse"] = _fp_wse
         mesh_kw["scatter_interp_method"] = scatter_interp_method
         mesh_kw["cell_polygons"] = self.cell_polygons
-        mesh_kw["facecenter_coordinates"] = (
+        mesh_kw["face_centers"] = (
             self.face_centroids if _use_facecenters else None
         )
-        mesh_kw["facecenter_values"] = _fc_wse
-        # Exclude facecenter_coordinates: not a parameter of mesh_to_velocity_raster
-        # (face_centers serves that role there).  Remap WSE arrays to
-        # velocity param names.
+        mesh_kw["face_center_wse"] = _fc_wse
+        # Exclude face_centers: not shared with mesh_to_velocity_raster via mesh_kw
+        # (face_centers is passed explicitly in the velocity call).  Override
+        # facepoint_wse and face_center_wse with vel_min-masked versions.
         _vel_mesh_kw = {k: v for k, v in mesh_kw.items()
-                        if k not in ("facecenter_coordinates",
-                                     "facepoint_values", "facecenter_values")}
+                        if k not in ("face_centers",
+                                     "facepoint_wse", "face_center_wse")}
         _vel_mesh_kw["facepoint_wse"] = _fp_wse_vel
         _vel_mesh_kw["face_center_wse"] = _fc_wse_vel
 
         wse_ds = _raster.mesh_to_wse_raster(
             **mesh_kw,
-            cell_values=cell_wse_masked,
+            cell_wse=cell_wse_masked,
             output_path=None,
             min_value=None,
             min_above_ref=depth_min,
