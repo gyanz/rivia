@@ -580,8 +580,8 @@ def mesh_to_velocity_raster(
     method: Literal[
         "flat_cell_center",
         "triangle_blend", "face_idw", "face_gradient",
-        "facepoint_blend", "scatter_interp", "scatter_interp2",
-    ] = "scatter_interp2",
+        "facepoint_blend", "scatter_cell_corners", "scatter_face_centroid",
+    ] = "scatter_face_centroid",
     face_normals: np.ndarray | None = None,
     face_vel: np.ndarray | None = None,
     face_centroids: np.ndarray | None = None,
@@ -664,8 +664,8 @@ def mesh_to_velocity_raster(
         all *method* values in ``_INTERP_METHODS`` since those methods build
         their own WSE render.
     scatter_interp_method : str, default ``"linear"``
-        ``scipy.interpolate.griddata`` *method* used by ``"scatter_interp"``
-        and ``"scatter_interp2"``.  Accepted values: ``"nearest"``,
+        ``scipy.interpolate.griddata`` *method* used by ``"scatter_cell_corners"``
+        and ``"scatter_face_centroid"``.  Accepted values: ``"nearest"``,
         ``"linear"``, ``"cubic"``.
     cell_facepoint_indexes : ndarray, shape ``(n_cells, 8)``, optional
         Not used.  Accepted for backwards compatibility; ignored.
@@ -698,12 +698,12 @@ def mesh_to_velocity_raster(
             interpolation within each fan-triangle.  C0-continuous across
             cell boundaries.
 
-        ``"scatter_interp"``
+        ``"scatter_cell_corners"``
             Global scattered interpolation from wet cell centres and wet
             face midpoints using ``scipy.interpolate.griddata``.
 
-        ``"scatter_interp2"`` *(default)*
-            Same as ``"scatter_interp"`` but using wet face midpoints only,
+        ``"scatter_face_centroid"`` *(default)*
+            Same as ``"scatter_cell_corners"`` but using wet face midpoints only,
             eliminating discontinuities that can originate at cell centres.
 
         All methods except ``"flat_cell_center"`` require *face_normals*,
@@ -770,7 +770,7 @@ def mesh_to_velocity_raster(
     """
     _INTERP_METHODS = {
         "triangle_blend", "face_idw", "face_gradient",
-        "facepoint_blend", "scatter_interp", "scatter_interp2",
+        "facepoint_blend", "scatter_cell_corners", "scatter_face_centroid",
     }
     _ALL_METHODS = {"flat_cell_center"} | _INTERP_METHODS
     if method not in _ALL_METHODS:
@@ -960,12 +960,12 @@ def mesh_to_velocity_raster(
             n_cells=n_cells,
         )
 
-        if method in {"scatter_interp", "scatter_interp2"}:
+        if method in {"scatter_cell_corners", "scatter_face_centroid"}:
             try:
                 from scipy.interpolate import griddata
             except ImportError as exc:
                 raise ImportError(
-                    "scatter_interp requires scipy. "
+                    "scatter_cell_corners/scatter_face_centroid requires scipy. "
                     "Install it with: pip install raspy[geo]"
                 ) from exc
 
@@ -979,7 +979,7 @@ def mesh_to_velocity_raster(
             )
 
             face_centroids_arr = np.asarray(face_centroids, dtype=np.float64)
-            if method == "scatter_interp":
+            if method == "scatter_cell_corners":
                 pts = np.vstack([
                     cell_centers_arr[~dry_mask], face_centroids_arr[wet_face]
                 ])
@@ -2148,6 +2148,7 @@ def _write_dataset(
     return out_path
 
 
+@timed(logging.DEBUG)
 def _depth_from_wse_and_dem(
     wse_ds: rasterio.io.DatasetReader,
     reference_raster: str | Path,
