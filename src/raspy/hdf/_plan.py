@@ -280,9 +280,7 @@ class FlowAreaResults(FlowArea):
 
         if wse_interp == "sloped":
             cell_coords = self.cell_centers
-            fp_idx = self.face_facepoint_indexes  # (n_faces, 2)
-            fp_xy = self.facepoint_coordinates  # (n_facepoints, 2)
-            face_coords = 0.5 * (fp_xy[fp_idx[:, 0]] + fp_xy[fp_idx[:, 1]])
+            face_coords = self.face_centroids
         else:
             cell_coords = None
             face_coords = None
@@ -484,9 +482,7 @@ class FlowAreaResults(FlowArea):
 
         face_ci = self.face_cell_indexes
         if wse_interp == "sloped":
-            fp_idx = self.face_facepoint_indexes
-            fp_xy = self.facepoint_coordinates
-            face_coords = 0.5 * (fp_xy[fp_idx[:, 0]] + fp_xy[fp_idx[:, 1]])
+            face_coords = self.face_centroids
             face_wse_all = _estimate_face_wse_sloped(
                 face_ci, cell_wse, self.n_cells, self.cell_centers, face_coords
             )
