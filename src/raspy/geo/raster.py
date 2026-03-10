@@ -1683,9 +1683,9 @@ def _griddata_facepoint_sloping(
     if len(pts_valid) < 3:
         return np.full(xi_grid.shape, np.nan)
 
-    scalar_flat = griddata(pts_valid, vals_valid, pts_query, method=method).astype(
-        np.float64
-    )
+    scalar_flat = griddata(
+        pts_valid, vals_valid, pts_query, method=method, rescale=True
+    ).astype(np.float64)
 
     # Wet-cell mask: rasterize the exact wet cell polygons onto the output grid,
     # then NaN any pixel that does not fall inside at least one wet cell.
