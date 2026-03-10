@@ -378,6 +378,68 @@ def compute_all_cell_velocities(
 
 
 # ---------------------------------------------------------------------------
+# Corner (facepoint) velocity — average adjacent double-C face velocities
+# ---------------------------------------------------------------------------
+
+
+def average_face_velocities_at_facepoints(
+    face_facepoint_indexes: np.ndarray,
+    face_vel_2d: np.ndarray,
+    wet_face: np.ndarray,
+) -> np.ndarray:
+    """Average full 2D face velocities at each mesh corner (facepoint).
+
+    For each facepoint *p*, collects the full 2D velocity vectors of all
+    adjacent *wet* faces (computed via the double-C stencil by
+    :func:`compute_all_face_velocities`) and returns their unweighted mean:
+
+    .. code-block:: text
+
+        V_p = mean( face_vel_2d[k]  for each wet face k incident to p )
+
+    This is physically grounded because the double-C stencil already
+    preserves the exact measured face-normal velocity and estimates the
+    tangential component from the two adjacent cell WLS velocities.
+    Averaging those full vectors at the shared corner is a simple, consistent
+    linear interpolation from the nearest data locations (face midpoints).
+
+    Parameters
+    ----------
+    face_facepoint_indexes : ndarray, shape ``(n_faces, 2)``
+        Start and end facepoint index for each face.
+    face_vel_2d : ndarray, shape ``(n_faces, 2)``
+        Full ``[Vx, Vy]`` velocity at each face midpoint, as returned by
+        :func:`compute_all_face_velocities`.
+    wet_face : ndarray, shape ``(n_faces,)``, bool
+        ``True`` for faces adjacent to at least one wet cell.
+
+    Returns
+    -------
+    ndarray, shape ``(n_facepoints, 2)``
+        Mean ``[Vx, Vy]`` at each facepoint.
+        Dry facepoints (no adjacent wet face) receive ``[0, 0]``.
+    """
+    n_facepoints = int(face_facepoint_indexes.max()) + 1
+
+    fp0 = face_facepoint_indexes[:, 0]
+    fp1 = face_facepoint_indexes[:, 1]
+    wet_idx = np.where(wet_face)[0]
+
+    result = np.zeros((n_facepoints, 2), dtype=np.float64)
+    count  = np.zeros(n_facepoints,     dtype=np.int64)
+
+    np.add.at(result, fp0[wet_idx], face_vel_2d[wet_idx])
+    np.add.at(result, fp1[wet_idx], face_vel_2d[wet_idx])
+    np.add.at(count,  fp0[wet_idx], 1)
+    np.add.at(count,  fp1[wet_idx], 1)
+
+    nonzero = count > 0
+    result[nonzero] /= count[nonzero, np.newaxis]
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Face velocity reconstruction (double-C stencil)
 # ---------------------------------------------------------------------------
 

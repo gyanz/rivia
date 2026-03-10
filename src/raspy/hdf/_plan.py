@@ -780,8 +780,9 @@ class FlowAreaResults(FlowArea):
         vel_interp_method: Literal[
             "flat_cell_center",
             "triangle_blend", "face_idw", "face_gradient",
-            "facepoint_blend", "scatter_cell_corners", "scatter_face_centroid",
-        ] = "scatter_face_centroid",
+            "facepoint_blend", "scatter_cell_face", "scatter_face",
+            "scatter_corners",
+        ] = "scatter_face",
         scatter_interp_method: Literal["nearest", "linear", "cubic"] = "linear",
         fix_triangulation: bool = True,
         clip_to_perimeter: bool = True,
@@ -873,16 +874,21 @@ class FlowAreaResults(FlowArea):
             within each fan-triangle.  C0-continuous across all cell faces;
             best choice for smooth flow-arrow rendering.
 
-            ``"scatter_cell_corners"`` — global ``scipy.griddata`` over wet cell
+            ``"scatter_cell_face"`` — global ``scipy.griddata`` over wet cell
             centres and wet face midpoints.
 
-            ``"scatter_face_centroid"`` — same but face midpoints only; avoids
+            ``"scatter_face"`` — same but face midpoints only; avoids
             discontinuities originating at cell centres.
+
+            ``"scatter_corners"`` — global ``scipy.griddata`` over wet mesh
+            corners; velocity at each corner is the mean of the double-C
+            stencil face velocities from all adjacent wet faces.
         scatter_interp_method:
             ``scipy.interpolate.griddata`` *method* used by
-            ``"scatter_cell_corners"`` and ``"scatter_face_centroid"``.  One of
-            ``"nearest"``, ``"linear"`` *(default)*, ``"cubic"``.  Ignored
-            for all other *vel_interp_method* values.
+            ``"scatter_cell_face"``, ``"scatter_face"``, and
+            ``"scatter_corners"``.  One of ``"nearest"``, ``"linear"``
+            *(default)*, ``"cubic"``.  Ignored for all other
+            *vel_interp_method* values.
         fix_triangulation:
             When ``True`` (default), deduplicate coincident mesh vertices and
             remove zero-area triangles before building the triangulation.
@@ -1184,8 +1190,9 @@ class FlowAreaResults(FlowArea):
         vel_interp_method: Literal[
             "flat_cell_center",
             "triangle_blend", "face_idw", "face_gradient",
-            "facepoint_blend", "scatter_cell_corners", "scatter_face_centroid",
-        ] = "scatter_face_centroid",
+            "facepoint_blend", "scatter_cell_face", "scatter_face",
+            "scatter_corners",
+        ] = "scatter_face",
         scatter_interp_method: Literal["nearest", "linear", "cubic"] = "linear",
         fix_triangulation: bool = True,
         clip_to_perimeter: bool = True,
@@ -1243,7 +1250,8 @@ class FlowAreaResults(FlowArea):
             :meth:`export_raster` for full description of each option.
         scatter_interp_method:
             ``scipy.interpolate.griddata`` *method* used by
-            ``"scatter_cell_corners"`` / ``"scatter_face_centroid"``.
+            ``"scatter_cell_face"``, ``"scatter_face"``, and
+            ``"scatter_corners"``.
         fix_triangulation:
             When ``True`` (default), deduplicate coincident mesh vertices and
             remove zero-area triangles before building the triangulation.
