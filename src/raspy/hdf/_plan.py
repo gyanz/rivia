@@ -461,13 +461,17 @@ class FlowAreaResults(FlowArea):
             _estimate_face_wse_sloped,
             _interpolate_face_flow_area,
             _wls_velocity,
+            average_face_velocities_at_facepoints,
+            compute_all_face_velocities,
         )
 
         if cell_idx < 0 or cell_idx >= self.n_cells:
             raise IndexError(f"cell_idx {cell_idx} is out of range [0, {self.n_cells})")
 
+        n_cells = self.n_cells
         face_vel = np.array(self.face_velocity[timestep, :])
-        cell_wse = np.array(self.water_surface[timestep, : self.n_cells])
+        cell_wse = np.array(self.water_surface[timestep, :n_cells])
+        dry_mask = np.isnan(cell_wse)
 
         cell_face_info, cell_face_values = self.cell_face_info
         start = int(cell_face_info[cell_idx, 0])
@@ -477,17 +481,22 @@ class FlowAreaResults(FlowArea):
         orientations = vals[:, 1].astype(int)
 
         normals = self.face_normals[face_idxs, :2]  # (k, 2)
-        lengths = self.face_normals[face_idxs, 2]  # (k,)
-        vn = face_vel[face_idxs]  # (k,)
+        lengths = self.face_normals[face_idxs, 2]   # (k,)
+        vn      = face_vel[face_idxs]               # (k,)
 
-        face_ci = self.face_cell_indexes
+        face_ci          = self.face_cell_indexes    # (n_faces, 2)
+        face_centroids_a = self.face_centroids       # (n_faces, 2)
+        fp_idx_all       = self.face_facepoint_indexes  # (n_faces, 2)
+        fp_coords        = self.facepoint_coordinates   # (n_fp, 2)
+        cell_centres     = self.cell_centers            # (n_cells, 2)
+
+        # ── Face WSE and flow-area weights ─────────────────────────────
         if wse_interp == "sloped":
-            face_coords = self.face_centroids
             face_wse_all = _estimate_face_wse_sloped(
-                face_ci, cell_wse, self.n_cells, self.cell_centers, face_coords
+                face_ci, cell_wse, n_cells, cell_centres, face_centroids_a
             )
         else:
-            face_wse_all = _estimate_face_wse_average(face_ci, cell_wse, self.n_cells)
+            face_wse_all = _estimate_face_wse_average(face_ci, cell_wse, n_cells)
 
         ae_info, ae_values = self.face_area_elevation
         areas = np.array(
@@ -497,219 +506,209 @@ class FlowAreaResults(FlowArea):
             ]
         )
 
-        # --- header ---
-        print(
-            f"\n=== debug_cell_velocity  area={self.name}  "
-            f"cell={cell_idx}  timestep={timestep} ==="
-        )
-        print(f"Cell WSE   : {cell_wse[cell_idx]:.4f}")
-        print(f"wse_interp : {wse_interp}")
-        print()
+        # ── Cell-centre WLS vectors (all three methods) ─────────────────
+        vel_aw = _wls_velocity(vn, areas,   normals)
+        vel_lw = _wls_velocity(vn, lengths, normals)
 
-        hdr = (
-            f"{'Face':>7}  {'Orient':>6}  {'nx':>8}  {'ny':>8}  "
-            f"{'Length':>9}  {'V_n':>9}  {'face_WSE':>9}  {'A_face':>9}"
+        # ── Full cell velocity array for the chosen weight method ────────
+        # (used by the double-C stencil as V_L / V_R)
+        all_cell_vecs = self.cell_velocity_vectors(
+            timestep, method=vel_weight_method, wse_interp=wse_interp
         )
-        print(hdr)
-        print("-" * len(hdr))
-        for fi, ori, (nx, ny), L, v, fwse, a in zip(
-            face_idxs,
-            orientations,
-            normals,
-            lengths,
-            vn,
-            face_wse_all[face_idxs],
-            areas,
-            strict=False,
-        ):
-            print(
-                f"{fi:>7}  {ori:>6}  {nx:>8.4f}  {ny:>8.4f}  "
-                f"{L:>9.2f}  {v:>9.4f}  {fwse:>9.4f}  {a:>9.4f}"
-            )
 
+        # ── Face 2D velocities (double-C stencil, vectorised) ───────────
+        face_vel_2d_all = compute_all_face_velocities(
+            face_normals=self.face_normals,
+            face_normal_velocity=face_vel,
+            face_cell_indexes=face_ci,
+            cell_velocity=all_cell_vecs,
+            dry_mask=dry_mask,
+            n_cells=n_cells,
+        )
+
+        # ── Wet-face mask ────────────────────────────────────────────────
+        l_idx  = face_ci[:, 0]
+        r_idx  = face_ci[:, 1]
+        l_safe = np.where((l_idx >= 0) & (l_idx < n_cells), l_idx, 0)
+        r_safe = np.where((r_idx >= 0) & (r_idx < n_cells), r_idx, 0)
+        wet_face = (
+            ((l_idx >= 0) & (l_idx < n_cells) & ~dry_mask[l_safe])
+            | ((r_idx >= 0) & (r_idx < n_cells) & ~dry_mask[r_safe])
+        )
+
+        # ── Facepoint velocities (averaged over all adjacent wet faces) ──
+        fp_vel_all = average_face_velocities_at_facepoints(
+            face_facepoint_indexes=fp_idx_all,
+            face_vel_2d=face_vel_2d_all,
+            wet_face=wet_face,
+        )
+
+        # ── Unique facepoints for this cell, ordered by face ─────────────
+        seen_fp: set[int] = set()
+        cell_fp_ordered: list[int] = []
+        for fi in face_idxs:
+            for fp in (int(fp_idx_all[fi, 0]), int(fp_idx_all[fi, 1])):
+                if fp not in seen_fp:
+                    seen_fp.add(fp)
+                    cell_fp_ordered.append(fp)
+
+        # ── Helpers ──────────────────────────────────────────────────────
         def _angle(v: np.ndarray) -> str:
             spd = np.linalg.norm(v)
             if spd < 1e-10:
                 return "     n/a"
             return f"{(90.0 - np.degrees(np.arctan2(v[1], v[0]))) % 360.0:>8.2f}"
 
-        # --- velocity results for each method ---
-        print()
-        vel_aw = _wls_velocity(vn, areas, normals)
-        vel_lw = _wls_velocity(vn, lengths, normals)
+        def _vel_line(label: str, v: np.ndarray) -> str:
+            spd = np.linalg.norm(v)
+            return (
+                f"  {label:<18}  Vx={v[0]:+.4f}  Vy={v[1]:+.4f}"
+                f"  speed={spd:.4f}  dir={_angle(v)}°"
+            )
+
+        SEP = "─" * 72
+
+        # ════════════════════════════════════════════════════════════════
+        # 1. HEADER
+        # ════════════════════════════════════════════════════════════════
+        dry_label = "DRY" if dry_mask[cell_idx] else "WET"
+        cx, cy   = cell_centres[cell_idx]
+        print(f"\n{'═'*72}")
         print(
-            f"area_weighted  : Vx={vel_aw[0]:+.4f}  Vy={vel_aw[1]:+.4f}"
-            f"  speed={np.linalg.norm(vel_aw):.4f}  dir={_angle(vel_aw)}°"
+            f"  debug_cell_velocity  |  area={self.name}"
+            f"  cell={cell_idx}  ts={timestep}"
         )
-        print(
-            f"length_weighted: Vx={vel_lw[0]:+.4f}  Vy={vel_lw[1]:+.4f}"
-            f"  speed={np.linalg.norm(vel_lw):.4f}  dir={_angle(vel_lw)}°"
+        print(f"{'═'*72}")
+        print(f"  Cell centre : ({cx:.3f}, {cy:.3f})")
+        print(f"  Cell WSE    : {cell_wse[cell_idx]:.4f}  [{dry_label}]")
+        print(f"  wse_interp  : {wse_interp}")
+        print(f"  n_faces     : {count}")
+
+        # ════════════════════════════════════════════════════════════════
+        # 2. WLS INPUTS PER FACE
+        # ════════════════════════════════════════════════════════════════
+        print(f"\n{SEP}")
+        print("  WLS INPUTS PER FACE")
+        print(SEP)
+        hdr1 = (
+            f"  {'Face':>6}  {'Ori':>3}  {'nx':>7}  {'ny':>7}  {'Length':>8}"
+            f"  {'V_n':>8}  {'L_cell':>7}  {'L_WSE':>8}  {'R_cell':>7}  {'R_WSE':>8}"
+            f"  {'face_WSE':>9}  {'A_face':>9}  {'fc_x':>11}  {'fc_y':>11}"
         )
+        print(hdr1)
+        print(f"  {'-'*68}")
+        for fi, ori, (nx, ny), L, v, fwse, a in zip(
+            face_idxs, orientations, normals, lengths, vn,
+            face_wse_all[face_idxs], areas, strict=False,
+        ):
+            lc = int(face_ci[fi, 0])
+            rc = int(face_ci[fi, 1])
+            lc_valid = 0 <= lc < n_cells
+            rc_valid = 0 <= rc < n_cells
+            lc_str   = (f"{lc:>6}" + ("*" if lc_valid and dry_mask[lc] else " ")) \
+                       if lc_valid else "  ghost "
+            rc_str   = (f"{rc:>6}" + ("*" if rc_valid and dry_mask[rc] else " ")) \
+                       if rc_valid else "  ghost "
+            lw_str   = f"{cell_wse[lc]:>8.4f}" if lc_valid else "     n/a"
+            rw_str   = f"{cell_wse[rc]:>8.4f}" if rc_valid else "     n/a"
+            fcx, fcy = face_centroids_a[fi]
+            print(
+                f"  {fi:>6}  {ori:>3}  {nx:>7.4f}  {ny:>7.4f}  {L:>8.2f}"
+                f"  {v:>8.4f}  {lc_str}  {lw_str}  {rc_str}  {rw_str}"
+                f"  {fwse:>9.4f}  {a:>9.4f}  {fcx:>11.3f}  {fcy:>11.3f}"
+            )
+        print("  (* = dry cell)")
+
+        # ════════════════════════════════════════════════════════════════
+        # 3. CELL-CENTRE VELOCITY (WLS)
+        # ════════════════════════════════════════════════════════════════
+        print(f"\n{SEP}")
+        print("  CELL-CENTRE VELOCITY (WLS)")
+        print(SEP)
+        print(_vel_line("area_weighted", vel_aw))
+        print(_vel_line("length_weighted", vel_lw))
 
         if self.face_flow is not None:
             face_flow = np.array(self.face_flow[timestep, :])
-            qf = face_flow[face_idxs]
+            qf         = face_flow[face_idxs]
             weights_fr = np.where(np.abs(vn) > 1e-10, np.abs(qf / vn), 0.0)
-            vel_fr = _wls_velocity(vn, weights_fr, normals)
-            print(
-                f"flow_ratio     : Vx={vel_fr[0]:+.4f}  Vy={vel_fr[1]:+.4f}"
-                f"  speed={np.linalg.norm(vel_fr):.4f}  dir={_angle(vel_fr)}°"
-            )
-            print(f"  Face Flows at cell faces : {face_flow[face_idxs]}")
+            vel_fr     = _wls_velocity(vn, weights_fr, normals)
+            print(_vel_line("flow_ratio", vel_fr))
+            print(f"    face Q : {face_flow[face_idxs]}")
         else:
-            print("  (Face Flow not in HDF - flow_ratio unavailable)")
+            print("  flow_ratio         : (Face Flow not in HDF)")
 
         if self.cell_velocity is not None:
-            ras_speed = float(self.cell_velocity[timestep, cell_idx])
-            print(f"\nHEC-RAS stored Cell Velocity : {ras_speed:.4f}")
+            ras_spd = float(self.cell_velocity[timestep, cell_idx])
+            print(f"  HEC-RAS stored     : speed={ras_spd:.4f}  (scalar only)")
         else:
-            print("\n  (Cell Velocity scalar not stored in HDF)")
+            print("  HEC-RAS stored     : (Cell Velocity scalar not in HDF)")
 
-        # --- double-C stencil: per-face tangential velocity reconstruction ---
-        print()
-        print(
-            f"--- Double-C stencil face velocity reconstruction"
-            f" (vel_weight_method={vel_weight_method!r}) ---"
-        )
-        all_cell_vecs = self.cell_velocity_vectors(
-            timestep, method=vel_weight_method, wse_interp=wse_interp
-        )
-        n_cells = self.n_cells
-        face_ci = self.face_cell_indexes  # (n_faces, 2)
-
+        # ════════════════════════════════════════════════════════════════
+        # 4. RECONSTRUCTED FACE VELOCITY (double-C stencil)
+        # ════════════════════════════════════════════════════════════════
+        print(f"\n{SEP}")
+        print(f"  RECONSTRUCTED FACE VELOCITY  (double-C, wt={vel_weight_method!r})")
+        print(SEP)
         hdr2 = (
-            f"{'Face':>7}  {'tx':>8}  {'ty':>8}  "
-            f"{'vt_L':>9}  {'vt_R':>9}  {'vt_avg':>9}  "
-            f"{'Vfx':>9}  {'Vfy':>9}  {'|Vf|':>9}  {'side':>6}"
+            f"  {'Face':>6}  {'tx':>7}  {'ty':>7}  {'vt_L':>8}  {'vt_R':>8}"
+            f"  {'vt':>8}  {'Vfx':>8}  {'Vfy':>8}  {'|Vf|':>8}  {'dir':>8}  {'side':>6}"
         )
         print(hdr2)
-        print("-" * len(hdr2))
-
-        # Collect full 2D face velocity for each of this cell's faces so we
-        # can reuse it for the facepoint section below.
-        face_vel_2d: dict[int, np.ndarray] = {}
-
-        for fi, (nx, ny), v in zip(face_idxs, normals, vn, strict=False):
+        print(f"  {'-'*68}")
+        for fi, (nx, ny), _ in zip(face_idxs, normals, vn, strict=False):
             t_hat = np.array([-ny, nx])
-            left  = int(face_ci[fi, 0])
-            right = int(face_ci[fi, 1])
-
-            valid_left  = 0 <= left  < n_cells
-            valid_right = 0 <= right < n_cells
-
-            _nan = float("nan")
-            vt_L = float(np.dot(all_cell_vecs[left],  t_hat)) if valid_left  else _nan
-            vt_R = float(np.dot(all_cell_vecs[right], t_hat)) if valid_right else _nan
-
-            if valid_left and valid_right:
-                vt_avg = 0.5 * (vt_L + vt_R)
-                side_label = "both"
-            elif valid_left:
-                vt_avg = vt_L
-                side_label = "L only"
-            elif valid_right:
-                vt_avg = vt_R
-                side_label = "R only"
+            lc    = int(face_ci[fi, 0])
+            rc    = int(face_ci[fi, 1])
+            l_ok  = 0 <= lc < n_cells and not dry_mask[lc]
+            r_ok  = 0 <= rc < n_cells and not dry_mask[rc]
+            vt_L  = float(np.dot(all_cell_vecs[lc], t_hat)) if l_ok else float("nan")
+            vt_R  = float(np.dot(all_cell_vecs[rc], t_hat)) if r_ok else float("nan")
+            if l_ok and r_ok:
+                vt, side = 0.5 * (vt_L + vt_R), "both"
+            elif l_ok:
+                vt, side = vt_L, "L"
+            elif r_ok:
+                vt, side = vt_R, "R"
             else:
-                vt_avg = 0.0
-                side_label = "none"
-
-            vf = v * np.array([nx, ny]) + vt_avg * t_hat
-            face_vel_2d[fi] = vf
-
-            vt_L_str = f"{vt_L:>9.4f}" if valid_left  else f"{'n/a':>9}"
-            vt_R_str = f"{vt_R:>9.4f}" if valid_right else f"{'n/a':>9}"
+                vt, side = 0.0, "none"
+            vf       = face_vel_2d_all[fi]
+            vtL_s    = f"{vt_L:>8.4f}" if l_ok else f"{'dry/g':>8}"
+            vtR_s    = f"{vt_R:>8.4f}" if r_ok else f"{'dry/g':>8}"
             print(
-                f"{fi:>7}  {t_hat[0]:>8.4f}  {t_hat[1]:>8.4f}  "
-                f"{vt_L_str}  {vt_R_str}  {vt_avg:>9.4f}  "
-                f"{vf[0]:>9.4f}  {vf[1]:>9.4f}  {np.linalg.norm(vf):>9.4f}  "
-                f"{side_label:>6}"
+                f"  {fi:>6}  {t_hat[0]:>7.4f}  {t_hat[1]:>7.4f}"
+                f"  {vtL_s}  {vtR_s}  {vt:>8.4f}"
+                f"  {vf[0]:>8.4f}  {vf[1]:>8.4f}  {np.linalg.norm(vf):>8.4f}"
+                f"  {_angle(vf)}  {side:>6}"
             )
 
-        # --- facepoint velocities (facepoint_blend method) ---
-        # For each unique facepoint of this cell, find all faces in the ENTIRE
-        # mesh that share it, average their full 2D face velocities (wet faces
-        # only), and display the result.  This is exactly the value that
-        # facepoint_blend would assign at each polygon vertex.
-        print()
-        print("--- Facepoint velocities (facepoint_blend) ---")
-
-        fp_idx_all = self.face_facepoint_indexes   # (n_faces, 2)
-        fp_coords  = self.facepoint_coordinates    # (n_fp, 2)
-
-        # Collect all wet-face 2D velocities for the full mesh so we can
-        # average over them per facepoint.  We reuse all_cell_vecs for the
-        # double-C stencil rather than re-computing per-face here.
-        dry_mask_full = np.isnan(cell_wse)
-
-        # Build full face_vel_2d for all faces via the double-C stencil.
-        face_vel_full = face_vel   # signed normal velocities for all faces
-        n_faces_all   = len(face_vel_full)
-        face_vel_2d_all = np.zeros((n_faces_all, 2), dtype=np.float64)
-        for gfi in range(n_faces_all):
-            gnx = float(self.face_normals[gfi, 0])
-            gny = float(self.face_normals[gfi, 1])
-            gt = np.array([-gny, gnx])
-            gl = int(face_ci[gfi, 0])
-            gr = int(face_ci[gfi, 1])
-            gl_ok = 0 <= gl < n_cells and not dry_mask_full[gl]
-            gr_ok = 0 <= gr < n_cells and not dry_mask_full[gr]
-            if gl_ok and gr_ok:
-                gvt = 0.5 * (
-                    float(np.dot(all_cell_vecs[gl], gt))
-                    + float(np.dot(all_cell_vecs[gr], gt))
-                )
-            elif gl_ok:
-                gvt = float(np.dot(all_cell_vecs[gl], gt))
-            elif gr_ok:
-                gvt = float(np.dot(all_cell_vecs[gr], gt))
-            else:
-                gvt = 0.0
-            face_vel_2d_all[gfi] = (
-                face_vel_full[gfi] * np.array([gnx, gny]) + gvt * gt
-            )
-
-        # Wet-face mask: at least one wet neighbour.
-        l_idx = face_ci[:, 0]
-        r_idx = face_ci[:, 1]
-        l_safe = np.where((l_idx >= 0) & (l_idx < n_cells), l_idx, 0)
-        r_safe = np.where((r_idx >= 0) & (r_idx < n_cells), r_idx, 0)
-        wet_face_mask = (
-            ((l_idx >= 0) & (l_idx < n_cells) & ~dry_mask_full[l_safe])
-            | ((r_idx >= 0) & (r_idx < n_cells) & ~dry_mask_full[r_safe])
-        )
-
-        # Unique facepoints for this cell, ordered by face.
-        seen: set[int] = set()
-        cell_fp_ordered: list[int] = []
-        for fi in face_idxs:
-            for fp in (int(fp_idx_all[fi, 0]), int(fp_idx_all[fi, 1])):
-                if fp not in seen:
-                    seen.add(fp)
-                    cell_fp_ordered.append(fp)
-
+        # ════════════════════════════════════════════════════════════════
+        # 5. FACEPOINT (CORNER) VELOCITIES
+        # ════════════════════════════════════════════════════════════════
+        print(f"\n{SEP}")
+        print("  FACEPOINT (CORNER) VELOCITIES")
+        print(SEP)
         hdr3 = (
-            f"{'FP':>7}  {'x':>11}  {'y':>11}  "
-            f"{'Vfp_x':>9}  {'Vfp_y':>9}  {'|Vfp|':>9}  {'n_faces':>7}"
+            f"  {'FP':>7}  {'x':>11}  {'y':>11}"
+            f"  {'Vfp_x':>8}  {'Vfp_y':>8}  {'|Vfp|':>8}  {'dir':>8}"
+            f"  {'n_wet':>5}  wet faces"
         )
         print(hdr3)
-        print("-" * len(hdr3))
+        print(f"  {'-'*68}")
         for fp in cell_fp_ordered:
-            # All mesh faces that have this facepoint as an endpoint.
-            touching = np.where(
+            touching     = np.where(
                 (fp_idx_all[:, 0] == fp) | (fp_idx_all[:, 1] == fp)
             )[0]
-            wet_touching = touching[wet_face_mask[touching]]
-            if len(wet_touching) == 0:
-                vfp = np.zeros(2)
-            else:
-                vfp = face_vel_2d_all[wet_touching].mean(axis=0)
-            x, y = fp_coords[fp]
+            wet_touching = touching[wet_face[touching]]
+            vfp          = fp_vel_all[fp]
+            x, y         = fp_coords[fp]
+            faces_str    = " ".join(str(f) for f in wet_touching)
             print(
-                f"{fp:>7}  {x:>11.3f}  {y:>11.3f}  "
-                f"{vfp[0]:>9.4f}  {vfp[1]:>9.4f}  "
-                f"{np.linalg.norm(vfp):>9.4f}  {len(wet_touching):>7}"
+                f"  {fp:>7}  {x:>11.3f}  {y:>11.3f}"
+                f"  {vfp[0]:>8.4f}  {vfp[1]:>8.4f}  {np.linalg.norm(vfp):>8.4f}"
+                f"  {_angle(vfp)}  {len(wet_touching):>5}  [{faces_str}]"
             )
+        print()
 
     # ------------------------------------------------------------------
     # Raster export — delegates to raspy.geo (deferred import)
