@@ -1926,6 +1926,7 @@ class FlowAreaResults(FlowArea):
         wse_path_compare: str | Path | None = None,
         depth_path_compare: str | Path | None = None,
         vel_path_compare: str | Path | None = None,
+        threshold_pct_compare: float = 5.0,
     ) -> dict[str, Path | rasterio.io.DatasetReader]:
         """Export water-surface elevation, depth, and speed rasters in one pass.
 
@@ -2004,6 +2005,11 @@ class FlowAreaResults(FlowArea):
             Optional path to a RasMapper depth raster for debug comparison.
         vel_path_compare:
             Optional path to a RasMapper speed raster for debug comparison.
+        threshold_pct_compare:
+            Percentage-difference threshold used to classify outlier pixels in
+            the debug comparison shapefiles (default ``5.0``).  Pixels where
+            ``|raspy − reference| / |reference| * 100`` exceeds this value are
+            written to a point shapefile in the system temp directory.
         Returns
         -------
         dict with keys ``"water_surface"``, ``"depth"``, ``"speed"``.
@@ -2199,14 +2205,16 @@ class FlowAreaResults(FlowArea):
 
         # ── 8. Debug comparison vs RasMapper (optional) ────────────────
         if wse_path_compare is not None:
-            _raster._compare_rasters_debug("WSE", wse_result, wse_path_compare, nodata)
+            _raster._compare_rasters_debug(
+                "WSE", wse_result, wse_path_compare, nodata, threshold_pct_compare
+            )
         if depth_path_compare is not None:
             _raster._compare_rasters_debug(
-                "Depth", depth_result, depth_path_compare, nodata
+                "Depth", depth_result, depth_path_compare, nodata, threshold_pct_compare
             )
         if vel_path_compare is not None:
             _raster._compare_rasters_debug(
-                "Speed", speed_result, vel_path_compare, nodata
+                "Speed", speed_result, vel_path_compare, nodata, threshold_pct_compare
             )
 
         return {

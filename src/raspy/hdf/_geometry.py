@@ -405,6 +405,19 @@ class FlowArea:
         return self._load("Faces Minimum Elevation")
 
     @property
+    def face_low_elevation_coords(self) -> np.ndarray:
+        """Coordinate of the lowest-elevation point on each face.
+
+        HEC-RAS stores the ``(x, y)`` location of the minimum-elevation point
+        along the face cross-section for each face.  This differs from
+        :attr:`face_centroids` (the geometric arc midpoint) when the face
+        terrain profile is not symmetric.
+
+        Shape ``(n_faces, 2)``.
+        """
+        return self._load("Faces Low Elevation Centroid")
+
+    @property
     def face_facepoint_indexes(self) -> np.ndarray:
         """Start and end face-point indices for each face.
 

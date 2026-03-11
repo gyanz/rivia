@@ -2433,6 +2433,7 @@ def _compare_rasters_debug(
     output: Path | rasterio.io.DatasetReader,
     compare_path: str | Path,
     nodata: float,
+    threshold_pct: float = 5.0,
 ) -> None:
     """Log pixel-level difference statistics between *output* and *compare_path*.
 
@@ -2541,7 +2542,7 @@ def _compare_rasters_debug(
                 ref_vals != 0, diff / ref_vals * 100.0, np.nan
             )
 
-        outliers = np.abs(pct_diff) >= 10.0
+        outliers = np.abs(pct_diff) >= threshold_pct
         if outliers.any():
             gdf = gpd.GeoDataFrame(
                 {
@@ -2554,12 +2555,13 @@ def _compare_rasters_debug(
             shp_path = tmp_dir / f"raspy_debug_{label_safe}_outliers.shp"
             gdf.to_file(shp_path)
             logger.info(
-                "[DEBUG %s compare] outliers |pct_diff| >= 10%%: %d pts: %s",
-                label, int(outliers.sum()), shp_path,
+                "[DEBUG %s compare] outliers |pct_diff| >= %.4g%%: %d pts: %s",
+                label, threshold_pct, int(outliers.sum()), shp_path,
             )
         else:
             logger.info(
-                "[DEBUG %s compare] No outlier pixels (all |pct_diff| < 10%%).", label
+                "[DEBUG %s compare] No outlier pixels (all |pct_diff| < %.4g%%).",
+                label, threshold_pct,
             )
 
     finally:
