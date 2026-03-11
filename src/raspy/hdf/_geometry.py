@@ -127,6 +127,21 @@ class FlowArea:
         return self._load("Cells Center Coordinate")[: self._n_cells]
 
     @property
+    def ghost_cell_centers(self) -> np.ndarray:
+        """x, y coordinates of ghost (boundary) cell centres.
+
+        Ghost cells occupy indices ``n_cells .. n_total-1`` in the HDF
+        datasets.  They hold boundary-condition data and are needed when
+        reconstructing WSE or velocity at perimeter faces.
+
+        Returns
+        -------
+        ndarray, shape ``(n_ghost, 2)``
+            May be empty (shape ``(0, 2)``) if the HDF stores no ghost rows.
+        """
+        return self._load("Cells Center Coordinate")[self._n_cells :]
+
+    @property
     def cell_min_elevation(self) -> np.ndarray:
         """Minimum bed elevation per cell.  Shape ``(n_cells,)``."""
         return self._load("Cells Minimum Elevation")[: self._n_cells]
@@ -951,8 +966,11 @@ class FlowArea:
 
         Parameters
         ----------
-        cell_wse : ndarray, shape ``(n_cells,)``
+        cell_wse : ndarray, shape ``(n_cells,)`` or ``(n_cells + n_ghost,)``
             Water-surface elevation per cell.  Pass ``NaN`` for dry cells.
+            When the array is extended to include ghost-cell WSEs (indices
+            ``n_cells_real .. n_total-1``), perimeter facepoints receive
+            contributions from ghost cells, improving boundary accuracy.
 
         Returns
         -------
@@ -961,7 +979,10 @@ class FlowArea:
         """
         cell_wse = np.asarray(cell_wse, dtype=np.float64)
         n_cells = len(cell_wse)
-        cfi = self.cell_facepoint_indexes[:n_cells]  # (n_cells, 8), -1 padded
+        # Load the raw dataset (not the [:n_cells]-clipped property) so that
+        # ghost-cell rows are included when the caller passes an extended
+        # cell_wse array (length = n_cells_real + n_ghost).
+        cfi = self._load("Cells FacePoint Indexes")[:n_cells]  # (n_cells, 8)
         n_fp = len(self.facepoint_coordinates)
 
         wet = ~np.isnan(cell_wse)

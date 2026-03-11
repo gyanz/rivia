@@ -154,8 +154,11 @@ class TestDepth:
 class TestCellVelocity:
     def test_cell_velocity_vectors_shape(self, synthetic_plan_hdf):
         with PlanHdf(synthetic_plan_hdf) as hdf:
-            vecs = hdf.flow_areas[AREA].cell_velocity_vectors(0)
-        assert vecs.shape == (N_CELLS, 2)
+            area = hdf.flow_areas[AREA]
+            vecs = area.cell_velocity_vectors(0)
+        # Returns (n_cells + n_ghost, 2); real cells are the first N_CELLS rows.
+        assert vecs.shape[1] == 2
+        assert vecs.shape[0] >= N_CELLS
 
     def test_cell_speed_shape(self, synthetic_plan_hdf):
         with PlanHdf(synthetic_plan_hdf) as hdf:
@@ -281,7 +284,9 @@ class TestPlanHdfIntegration:
             area = hdf.flow_areas[hdf.flow_areas.names[0]]
             vecs = area.cell_velocity_vectors(0)
             n_cells = area.n_cells
-        assert vecs.shape == (n_cells, 2)
+        # Returns (n_cells + n_ghost, 2); real cells are the first n_cells rows.
+        assert vecs.shape[1] == 2
+        assert vecs.shape[0] >= n_cells
 
     def test_max_water_surface_len(self):
         with PlanHdf(EXAMPLE_PLAN_HDF) as hdf:

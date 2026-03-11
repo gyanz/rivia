@@ -134,34 +134,37 @@ def _interpolate_face_flow_area(
 def _estimate_face_wse_average(
     face_cell_indexes: np.ndarray,
     cell_wse: np.ndarray,
-    n_cells: int,
 ) -> np.ndarray:
     """Estimate face WSE as the simple average of the two adjacent cell WSEs.
 
-    For boundary faces (one neighbour index is -1 or >= n_cells), the single
-    real cell's WSE is used.
+    For boundary faces (one neighbour index is -1 or beyond the length of
+    *cell_wse*), the single available cell's WSE is used.  Passing an
+    extended *cell_wse* that includes ghost-cell rows (indices
+    ``n_cells_real .. n_total-1``) makes boundary faces use the
+    ghost-cell WSE instead of falling back to the inner cell only.
 
     Parameters
     ----------
     face_cell_indexes : ndarray, shape ``(n_faces, 2)``
         Left and right cell index per face; -1 = no neighbour.
-    cell_wse : ndarray, shape ``(n_cells,)``
-        Water-surface elevation at real cell centres.
-    n_cells : int
-        Number of real cells (ghost cells have index >= n_cells).
+    cell_wse : ndarray, shape ``(n_total,)``
+        Water-surface elevation indexed by cell index.  May be real cells
+        only (length ``n_cells``) or extended with ghost cells
+        (length ``n_cells + n_ghost``).
 
     Returns
     -------
     ndarray, shape ``(n_faces,)``
     """
+    n_total = len(cell_wse)
     n_faces = face_cell_indexes.shape[0]
     face_wse = np.zeros(n_faces)
 
     left = face_cell_indexes[:, 0].astype(int)
     right = face_cell_indexes[:, 1].astype(int)
 
-    l_real = (left >= 0) & (left < n_cells)
-    r_real = (right >= 0) & (right < n_cells)
+    l_real = (left >= 0) & (left < n_total)
+    r_real = (right >= 0) & (right < n_total)
 
     both = l_real & r_real
     face_wse[both] = 0.5 * (cell_wse[left[both]] + cell_wse[right[both]])
@@ -178,7 +181,6 @@ def _estimate_face_wse_average(
 def _estimate_face_wse_sloped(
     face_cell_indexes: np.ndarray,
     cell_wse: np.ndarray,
-    n_cells: int,
     cell_coords: np.ndarray,
     face_coords: np.ndarray,
 ) -> np.ndarray:
@@ -195,19 +197,22 @@ def _estimate_face_wse_sloped(
     to nearly zero (degenerate geometry), the simple average is used as a
     fallback.
 
-    For boundary faces (one neighbour index is -1 or >= n_cells), the single
-    real cell's WSE is used unchanged.
+    For boundary faces (one neighbour index is -1 or beyond the length of
+    *cell_wse*), the single available cell's WSE is used unchanged.
+    Passing extended *cell_wse* and *cell_coords* that include ghost cells
+    makes boundary faces use distance-weighted interpolation like interior
+    faces.
 
     Parameters
     ----------
     face_cell_indexes : ndarray, shape ``(n_faces, 2)``
         Left and right cell index per face; -1 = no neighbour.
-    cell_wse : ndarray, shape ``(n_cells,)``
-        Water-surface elevation at real cell centres.
-    n_cells : int
-        Number of real cells (ghost cells have index >= n_cells).
-    cell_coords : ndarray, shape ``(n_cells, 2)``
-        X, Y coordinates of each real cell centre.
+    cell_wse : ndarray, shape ``(n_total,)``
+        Water-surface elevation indexed by cell index.  May include ghost
+        cells (length ``n_cells + n_ghost``).
+    cell_coords : ndarray, shape ``(n_total, 2)``
+        X, Y coordinates indexed by cell index.  Must have the same length
+        as *cell_wse* so ghost-cell coordinates are accessible.
     face_coords : ndarray, shape ``(n_faces, 2)``
         X, Y coordinates of each face centroid.
 
@@ -215,14 +220,15 @@ def _estimate_face_wse_sloped(
     -------
     ndarray, shape ``(n_faces,)``
     """
+    n_total = len(cell_wse)
     n_faces = face_cell_indexes.shape[0]
     face_wse = np.zeros(n_faces)
 
     left = face_cell_indexes[:, 0].astype(int)
     right = face_cell_indexes[:, 1].astype(int)
 
-    l_real = (left >= 0) & (left < n_cells)
-    r_real = (right >= 0) & (right < n_cells)
+    l_real = (left >= 0) & (left < n_total)
+    r_real = (right >= 0) & (right < n_total)
 
     # Interior faces: interpolate at the face's position between cell centres
     both = l_real & r_real
@@ -270,14 +276,15 @@ def compute_all_cell_velocities(
     wse_interp: str = "average",
     cell_coords: np.ndarray | None = None,
     face_coords: np.ndarray | None = None,
+    n_total: int | None = None,
 ) -> np.ndarray:
-    """Compute WLS cell-centre velocity vectors for all real cells.
+    """Compute WLS cell-centre velocity vectors for real and ghost cells.
 
     Parameters
     ----------
     n_cells : int
         Number of real computational cells.
-    cell_face_info : ndarray, shape ``(>= n_cells, 2)``
+    cell_face_info : ndarray, shape ``(>= n_total, 2)``
         ``[start_index, count]`` into *cell_face_values*.
     cell_face_values : ndarray, shape ``(total, 2)``
         ``[face_index, orientation]`` for each cell-face pair.
@@ -291,8 +298,9 @@ def compute_all_cell_velocities(
         Area-elevation table values.
     face_vel : ndarray, shape ``(n_faces,)``
         Signed face normal velocities for this timestep.
-    cell_wse : ndarray, shape ``(n_cells,)``
-        Cell-centre water-surface elevations for this timestep.
+    cell_wse : ndarray, shape ``(n_total,)``
+        Cell-centre water-surface elevations.  When *n_total* > *n_cells*
+        the extra entries are ghost-cell WSEs.
     method : str
         ``"area_weighted"`` (default, matches HEC-RAS),
         ``"length_weighted"`` (simpler, no table lookup), or
@@ -306,17 +314,24 @@ def compute_all_cell_velocities(
         ``"sloped"`` — distance-weighted linear interpolation at the face's
         actual position between the two cell centres (requires *cell_coords*
         and *face_coords*).
-    cell_coords : ndarray, shape ``(n_cells, 2)``, optional
-        X, Y coordinates of cell centres.  Required when
+    cell_coords : ndarray, shape ``(n_total, 2)``, optional
+        X, Y coordinates of cell centres.  When ghost cells are included
+        this array must cover all *n_total* rows.  Required when
         ``wse_interp="sloped"``.
     face_coords : ndarray, shape ``(n_faces, 2)``, optional
         X, Y coordinates of face centroids.  Required when
         ``wse_interp="sloped"``.
+    n_total : int, optional
+        Total number of cells to reconstruct, including ghost cells
+        (``n_total >= n_cells``).  Defaults to *n_cells* (backward
+        compatible — only real cells are reconstructed).
 
     Returns
     -------
-    ndarray, shape ``(n_cells, 2)``
+    ndarray, shape ``(n_total, 2)``
         ``[Vx, Vy]`` depth-averaged velocity at each cell centre.
+        Entries ``0 .. n_cells-1`` are real cells; entries
+        ``n_cells .. n_total-1`` are ghost cells (when *n_total* > *n_cells*).
     """
     if method not in {"area_weighted", "length_weighted", "flow_ratio"}:
         raise ValueError(
@@ -334,20 +349,23 @@ def compute_all_cell_velocities(
             "cell_coords and face_coords are required when wse_interp='sloped'"
         )
 
+    if n_total is None:
+        n_total = n_cells
+
     # Pre-compute face WSE for area_weighted (used once, shared across cells)
     if method == "area_weighted":
         if wse_interp == "sloped":
             face_wse = _estimate_face_wse_sloped(
-                face_cell_indexes, cell_wse, n_cells, cell_coords, face_coords
+                face_cell_indexes, cell_wse, cell_coords, face_coords
             )
         else:
-            face_wse = _estimate_face_wse_average(face_cell_indexes, cell_wse, n_cells)
+            face_wse = _estimate_face_wse_average(face_cell_indexes, cell_wse)
     else:
         face_wse = None
 
-    velocities = np.zeros((n_cells, 2), dtype=np.float64)
+    velocities = np.zeros((n_total, 2), dtype=np.float64)
 
-    for c in range(n_cells):
+    for c in range(n_total):
         start = int(cell_face_info[c, 0])
         count = int(cell_face_info[c, 1])
         vals = cell_face_values[start : start + count]
@@ -450,7 +468,6 @@ def compute_all_face_velocities(
     face_cell_indexes: np.ndarray,
     cell_velocity: np.ndarray,
     dry_mask: np.ndarray,
-    n_cells: int,
 ) -> np.ndarray:
     """Reconstruct full 2D face velocity using the HEC-RAS double-C stencil.
 
@@ -470,6 +487,11 @@ def compute_all_face_velocities(
     The normal component ``vn`` is kept exactly as stored in the HDF; only
     the tangential component is estimated from the WLS reconstruction.
 
+    Ghost-cell support: when *cell_velocity* and *dry_mask* include ghost
+    cells (length ``n_cells + n_ghost``), boundary faces automatically use
+    the ghost-cell WLS velocity for the tangential component, improving
+    accuracy at the domain perimeter.
+
     Parameters
     ----------
     face_normals : ndarray, shape ``(n_faces, 3)``
@@ -477,13 +499,13 @@ def compute_all_face_velocities(
     face_normal_velocity : ndarray, shape ``(n_faces,)``
         Signed face-normal velocities for this timestep.
     face_cell_indexes : ndarray, shape ``(n_faces, 2)``
-        Left and right cell indices; ``-1`` = boundary.
-    cell_velocity : ndarray, shape ``(n_cells, 2)``
-        WLS velocity vectors ``[Vx, Vy]`` at each cell centre.
-    dry_mask : ndarray, shape ``(n_cells,)``, bool
+        Left and right cell indices; ``-1`` = no neighbour.
+    cell_velocity : ndarray, shape ``(n_total, 2)``
+        WLS velocity vectors ``[Vx, Vy]`` at each cell centre.  May include
+        ghost cells (indices ``n_cells_real .. n_total-1``).
+    dry_mask : ndarray, shape ``(n_total,)``, bool
         ``True`` where a cell is dry; its WLS velocity is excluded.
-    n_cells : int
-        Number of real computational cells.
+        Must have the same length as *cell_velocity*.
 
     Returns
     -------
@@ -491,6 +513,7 @@ def compute_all_face_velocities(
         Full ``[Vx, Vy]`` velocity at each face midpoint.
         Faces where *both* adjacent cells are dry receive ``[0, 0]``.
     """
+    n_total = len(cell_velocity)
     n_faces = len(face_normals)
     nx_ny = face_normals[:, :2]                            # (n_faces, 2)
     t_hat = np.column_stack([-nx_ny[:, 1], nx_ny[:, 0]])  # (n_faces, 2) 90° CCW
@@ -499,11 +522,11 @@ def compute_all_face_velocities(
     right = face_cell_indexes[:, 1]
 
     # Clamp indices for safe array lookup (out-of-range cases handled by masks).
-    left_safe  = np.where((left  >= 0) & (left  < n_cells), left,  0)
-    right_safe = np.where((right >= 0) & (right < n_cells), right, 0)
+    left_safe  = np.where((left  >= 0) & (left  < n_total), left,  0)
+    right_safe = np.where((right >= 0) & (right < n_total), right, 0)
 
-    valid_left  = (left  >= 0) & (left  < n_cells) & ~dry_mask[left_safe]
-    valid_right = (right >= 0) & (right < n_cells) & ~dry_mask[right_safe]
+    valid_left  = (left  >= 0) & (left  < n_total) & ~dry_mask[left_safe]
+    valid_right = (right >= 0) & (right < n_total) & ~dry_mask[right_safe]
 
     # Tangential projection: dot(V_cell, t_hat) for each side.
     vt_L = np.sum(cell_velocity[left_safe]  * t_hat, axis=1)  # (n_faces,)

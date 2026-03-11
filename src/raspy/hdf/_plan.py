@@ -258,8 +258,11 @@ class FlowAreaResults(FlowArea):
 
         Returns
         -------
-        ndarray, shape ``(n_cells, 2)``
+        ndarray, shape ``(n_cells + n_ghost, 2)``
             ``[Vx, Vy]`` depth-averaged velocity components.
+            Entries ``0 .. n_cells-1`` are real cells; entries
+            ``n_cells .. n_cells+n_ghost-1`` are ghost (boundary) cells.
+            Use ``[:self.n_cells]`` to get real cells only.
         """
         from ._velocity import compute_all_cell_velocities
 
@@ -271,7 +274,9 @@ class FlowAreaResults(FlowArea):
             )
 
         face_vel = np.array(self.face_velocity[timestep, :])
-        cell_wse = np.array(self.water_surface[timestep, : self.n_cells])
+        # Read all rows (real + ghost) so boundary faces get ghost-cell WSE.
+        cell_wse = np.array(self.water_surface[timestep, :])
+        n_total = len(cell_wse)
         face_flow = (
             np.array(self.face_flow[timestep, :]) if method == "flow_ratio" else None
         )
@@ -280,7 +285,9 @@ class FlowAreaResults(FlowArea):
         face_ae_info, face_ae_values = self.face_area_elevation
 
         if wse_interp == "sloped":
-            cell_coords = self.cell_centers
+            # Stack real + ghost cell coordinates so the sloped interpolator
+            # can distance-weight across the boundary face.
+            cell_coords = np.vstack([self.cell_centers, self.ghost_cell_centers])
             face_coords = self.face_centroids
         else:
             cell_coords = None
@@ -301,6 +308,7 @@ class FlowAreaResults(FlowArea):
             wse_interp=wse_interp,
             cell_coords=cell_coords,
             face_coords=face_coords,
+            n_total=n_total,
         )
 
     def cell_speed(
@@ -328,7 +336,7 @@ class FlowAreaResults(FlowArea):
         """
         vecs = self.cell_velocity_vectors(
             timestep, method=method, wse_interp=wse_interp
-        )
+        )[:self.n_cells]
         return np.sqrt(vecs[:, 0] ** 2 + vecs[:, 1] ** 2)
 
     def cell_velocity_angle(
@@ -362,7 +370,7 @@ class FlowAreaResults(FlowArea):
         """
         vecs = self.cell_velocity_vectors(
             timestep, method=method, wse_interp=wse_interp
-        )
+        )[:self.n_cells]
         vx = vecs[:, 0]
         vy = vecs[:, 1]
         speed = np.sqrt(vx**2 + vy**2)
@@ -403,6 +411,7 @@ class FlowAreaResults(FlowArea):
         """
         from ._velocity import compute_all_face_velocities
 
+        # cell_vel has shape (n_cells + n_ghost, 2); dry_mask matches.
         cell_vel = self.cell_velocity_vectors(
             timestep, method=method, wse_interp=wse_interp
         )
@@ -414,7 +423,6 @@ class FlowAreaResults(FlowArea):
             face_cell_indexes=self.face_cell_indexes,
             cell_velocity=cell_vel,
             dry_mask=dry_mask,
-            n_cells=self.n_cells,
         )
 
     def debug_cell_velocity(
@@ -493,10 +501,10 @@ class FlowAreaResults(FlowArea):
         # ── Face WSE and flow-area weights ─────────────────────────────
         if wse_interp == "sloped":
             face_wse_all = _estimate_face_wse_sloped(
-                face_ci, cell_wse, n_cells, cell_centres, face_centroids_a
+                face_ci, cell_wse, cell_centres, face_centroids_a
             )
         else:
-            face_wse_all = _estimate_face_wse_average(face_ci, cell_wse, n_cells)
+            face_wse_all = _estimate_face_wse_average(face_ci, cell_wse)
 
         ae_info, ae_values = self.face_area_elevation
         areas = np.array(
@@ -512,11 +520,13 @@ class FlowAreaResults(FlowArea):
 
         # ── Full cell velocity array for the chosen weight method ────────
         # (used by the double-C stencil as V_L / V_R)
+        # Returns (n_cells + n_ghost, 2); dry_mask matches.
         all_cell_vecs = self.cell_velocity_vectors(
             timestep, method=vel_weight_method, wse_interp=wse_interp
         )
         _vel_mag = np.linalg.norm(all_cell_vecs, axis=1)
         dry_mask = (_vel_mag == 0.0) | ~np.isfinite(_vel_mag)
+        n_total = len(dry_mask)
 
         # ── Face 2D velocities (double-C stencil, vectorised) ───────────
         face_vel_2d_all = compute_all_face_velocities(
@@ -525,17 +535,16 @@ class FlowAreaResults(FlowArea):
             face_cell_indexes=face_ci,
             cell_velocity=all_cell_vecs,
             dry_mask=dry_mask,
-            n_cells=n_cells,
         )
 
         # ── Wet-face mask ────────────────────────────────────────────────
         l_idx  = face_ci[:, 0]
         r_idx  = face_ci[:, 1]
-        l_safe = np.where((l_idx >= 0) & (l_idx < n_cells), l_idx, 0)
-        r_safe = np.where((r_idx >= 0) & (r_idx < n_cells), r_idx, 0)
+        l_safe = np.where((l_idx >= 0) & (l_idx < n_total), l_idx, 0)
+        r_safe = np.where((r_idx >= 0) & (r_idx < n_total), r_idx, 0)
         wet_face = (
-            ((l_idx >= 0) & (l_idx < n_cells) & ~dry_mask[l_safe])
-            | ((r_idx >= 0) & (r_idx < n_cells) & ~dry_mask[r_safe])
+            ((l_idx >= 0) & (l_idx < n_total) & ~dry_mask[l_safe])
+            | ((r_idx >= 0) & (r_idx < n_total) & ~dry_mask[r_safe])
         )
 
         # ── Facepoint velocities (averaged over all adjacent wet faces) ──
@@ -883,19 +892,21 @@ class FlowAreaResults(FlowArea):
         nbr_fpi = np.array(sorted(nbr_fp_set), dtype=int)
 
         # ── Velocity reconstruction ────────────────────────────────────
+        # cell_vecs has shape (n_cells + n_ghost, 2); dry_mask matches.
         cell_vecs = self.cell_velocity_vectors(
             timestep, method=vel_weight_method, wse_interp=wse_interp
         )
         _vel_mag = np.linalg.norm(cell_vecs, axis=1)
         dry_mask = (_vel_mag == 0.0) | ~np.isfinite(_vel_mag)
+        n_total = len(dry_mask)
 
         L  = face_ci[:, 0]
         R  = face_ci[:, 1]
-        Ls = np.where((L >= 0) & (L < n_cells), L, 0)
-        Rs = np.where((R >= 0) & (R < n_cells), R, 0)
+        Ls = np.where((L >= 0) & (L < n_total), L, 0)
+        Rs = np.where((R >= 0) & (R < n_total), R, 0)
         wet = (
-            ((L >= 0) & (L < n_cells) & ~dry_mask[Ls])
-            | ((R >= 0) & (R < n_cells) & ~dry_mask[Rs])
+            ((L >= 0) & (L < n_total) & ~dry_mask[Ls])
+            | ((R >= 0) & (R < n_total) & ~dry_mask[Rs])
         )
 
         face_2d = compute_all_face_velocities(
@@ -904,7 +915,6 @@ class FlowAreaResults(FlowArea):
             face_cell_indexes=face_ci,
             cell_velocity=cell_vecs,
             dry_mask=dry_mask,
-            n_cells=n_cells,
         )
 
         fp_vel = average_face_velocities_at_facepoints(
@@ -2517,7 +2527,9 @@ class FlowAreaResults(FlowArea):
         ndarray, shape ``(n_facepoints,)``
             Facepoint WSE.  ``nan`` where all adjacent cells are dry.
         """
-        cell_wse = np.array(self.water_surface[timestep, : self.n_cells])
+        # Include ghost-cell WSE so perimeter facepoints receive a value
+        # from the adjacent boundary cell rather than returning NaN.
+        cell_wse = np.array(self.water_surface[timestep, :])
         return self.wse_at_facepoints(cell_wse)
 
     def wet_cells(self, timestep: int, depth_min: float = 0.0) -> np.ndarray:

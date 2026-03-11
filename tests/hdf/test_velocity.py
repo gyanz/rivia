@@ -109,7 +109,7 @@ class TestEstimateFaceWseAverage:
         # face 0: left=0 (wse=2), right=1 (wse=4) → expected 3
         fci = np.array([[0, 1], [1, 2]], dtype="i4")
         cell_wse = np.array([2.0, 4.0, 6.0])
-        result = _estimate_face_wse_average(fci, cell_wse, n_cells=3)
+        result = _estimate_face_wse_average(fci, cell_wse)
         assert result[0] == pytest.approx(3.0)
         assert result[1] == pytest.approx(5.0)
 
@@ -117,20 +117,27 @@ class TestEstimateFaceWseAverage:
         # face 0: left=0 (real), right=-1 (boundary)
         fci = np.array([[0, -1]], dtype="i4")
         cell_wse = np.array([5.0])
-        result = _estimate_face_wse_average(fci, cell_wse, n_cells=1)
+        result = _estimate_face_wse_average(fci, cell_wse)
         assert result[0] == pytest.approx(5.0)
 
-    def test_ghost_cell_treated_as_boundary(self):
-        # n_cells=2; face right index=5 → ghost → use left cell only
+    def test_index_beyond_wse_length_treated_as_boundary(self):
+        # Index 5 is beyond len(cell_wse)=2 → falls back to left cell only.
         fci = np.array([[0, 5]], dtype="i4")
         cell_wse = np.array([3.0, 7.0])
-        result = _estimate_face_wse_average(fci, cell_wse, n_cells=2)
+        result = _estimate_face_wse_average(fci, cell_wse)
         assert result[0] == pytest.approx(3.0)
+
+    def test_ghost_cell_included_when_wse_extended(self):
+        # Extend cell_wse to include ghost at index 5 → both sides used.
+        fci = np.array([[0, 5]], dtype="i4")
+        cell_wse = np.array([3.0, 7.0, 0.0, 0.0, 0.0, 9.0])  # index 5 = ghost
+        result = _estimate_face_wse_average(fci, cell_wse)
+        assert result[0] == pytest.approx(6.0)  # (3+9)/2
 
     def test_both_boundary_returns_zero(self):
         fci = np.array([[-1, -1]], dtype="i4")
         cell_wse = np.array([5.0])
-        result = _estimate_face_wse_average(fci, cell_wse, n_cells=1)
+        result = _estimate_face_wse_average(fci, cell_wse)
         assert result[0] == pytest.approx(0.0)
 
 
@@ -147,7 +154,7 @@ class TestEstimateFaceWseSloped:
         cell_wse = np.array([2.0, 4.0])
         cell_coords = np.array([[0.0, 0.0], [2.0, 0.0]])
         face_coords = np.array([[1.0, 0.0]])
-        result = _estimate_face_wse_sloped(fci, cell_wse, 2, cell_coords, face_coords)
+        result = _estimate_face_wse_sloped(fci, cell_wse, cell_coords, face_coords)
         assert result[0] == pytest.approx(3.0)
 
     def test_asymmetric_interpolation(self):
@@ -159,7 +166,7 @@ class TestEstimateFaceWseSloped:
         cell_wse = np.array([2.0, 8.0])
         cell_coords = np.array([[0.0, 0.0], [6.0, 0.0]])
         face_coords = np.array([[2.0, 0.0]])
-        result = _estimate_face_wse_sloped(fci, cell_wse, 2, cell_coords, face_coords)
+        result = _estimate_face_wse_sloped(fci, cell_wse, cell_coords, face_coords)
         assert result[0] == pytest.approx(4.0)
 
     def test_boundary_face_uses_single_cell(self):
@@ -167,23 +174,37 @@ class TestEstimateFaceWseSloped:
         cell_wse = np.array([5.0])
         cell_coords = np.array([[0.0, 0.0]])
         face_coords = np.array([[1.0, 0.0]])
-        result = _estimate_face_wse_sloped(fci, cell_wse, 1, cell_coords, face_coords)
+        result = _estimate_face_wse_sloped(fci, cell_wse, cell_coords, face_coords)
         assert result[0] == pytest.approx(5.0)
 
-    def test_ghost_cell_treated_as_boundary(self):
+    def test_index_beyond_wse_length_treated_as_boundary(self):
+        # Index 5 is beyond len(cell_wse)=2 → falls back to left cell only.
         fci = np.array([[0, 5]], dtype="i4")
         cell_wse = np.array([3.0, 7.0])
         cell_coords = np.array([[0.0, 0.0], [2.0, 0.0]])
         face_coords = np.array([[1.0, 0.0]])
-        result = _estimate_face_wse_sloped(fci, cell_wse, 2, cell_coords, face_coords)
+        result = _estimate_face_wse_sloped(fci, cell_wse, cell_coords, face_coords)
         assert result[0] == pytest.approx(3.0)
+
+    def test_ghost_cell_included_when_wse_extended(self):
+        # cell0 at (0,0) wse=3, ghost at (4,0) wse=9, face at (1,0)
+        # d_left=1, d_right=3, t=1/4 → wse=(1-0.25)*3 + 0.25*9 = 2.25+2.25 = 4.5
+        fci = np.array([[0, 5]], dtype="i4")
+        cell_wse = np.array([3.0, 0.0, 0.0, 0.0, 0.0, 9.0])  # index 5 = ghost
+        cell_coords = np.array([
+            [0.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0],
+            [4.0, 0.0],  # ghost at index 5
+        ])
+        face_coords = np.array([[1.0, 0.0]])
+        result = _estimate_face_wse_sloped(fci, cell_wse, cell_coords, face_coords)
+        assert result[0] == pytest.approx(4.5)
 
     def test_both_boundary_returns_zero(self):
         fci = np.array([[-1, -1]], dtype="i4")
         cell_wse = np.array([5.0])
         cell_coords = np.array([[0.0, 0.0]])
         face_coords = np.array([[1.0, 0.0]])
-        result = _estimate_face_wse_sloped(fci, cell_wse, 1, cell_coords, face_coords)
+        result = _estimate_face_wse_sloped(fci, cell_wse, cell_coords, face_coords)
         assert result[0] == pytest.approx(0.0)
 
     def test_degenerate_geometry_falls_back_to_average(self):
@@ -192,7 +213,7 @@ class TestEstimateFaceWseSloped:
         cell_wse = np.array([2.0, 6.0])
         cell_coords = np.array([[1.0, 1.0], [1.0, 1.0]])  # same point
         face_coords = np.array([[1.0, 1.0]])
-        result = _estimate_face_wse_sloped(fci, cell_wse, 2, cell_coords, face_coords)
+        result = _estimate_face_wse_sloped(fci, cell_wse, cell_coords, face_coords)
         assert result[0] == pytest.approx(4.0)  # (2+6)/2
 
 
