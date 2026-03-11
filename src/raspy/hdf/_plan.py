@@ -710,6 +710,550 @@ class FlowAreaResults(FlowArea):
             )
         print()
 
+    def plot_cell_velocity(
+        self,
+        cell_idx: int,
+        timestep: int,
+        methods: list[str] | None = None,
+        wse_interp: Literal["average", "sloped"] = "average",
+        vel_weight_method: Literal[
+            "area_weighted", "length_weighted", "flow_ratio"
+        ] = "area_weighted",
+        scatter_interp_method: Literal["nearest", "linear", "cubic"] = "linear",
+        sample_density: int = 20,
+    ) -> tuple:
+        """Plot velocity decomposition and scatter-method comparison for a cell.
+
+        Creates two matplotlib figures:
+
+        **Figure 1 — Velocity Components** shows the focus cell and its
+        immediate neighbours.  For each face of the focus cell the face-normal
+        velocity ``V_n·n̂``, the double-C-stencil tangential component
+        ``V_t·t̂``, and the full 2-D face velocity are drawn as arrows.
+        WLS cell-centre velocity vectors are shown for every cell in the
+        neighbourhood.
+
+        **Figure 2 — Scatter Method Comparison** plots one sub-panel per
+        scatter interpolation method.  Each panel shows the velocity values at
+        the source points used by that method (cell centres, face midpoints,
+        or polygon-corner facepoints) as quiver arrows, overlaid on the
+        neighbourhood cell polygons.  This lets you compare how each method's
+        scatter set differs in spatial density and origin.
+
+        **Figure 3 — Interpolated Velocity Field** shows one sub-panel per
+        scatter method (matching *methods*).  Each panel interpolates Vx and
+        Vy onto a regular sample grid (masked to neighbourhood cell polygons)
+        using ``scipy.interpolate.griddata`` and renders the result as quiver
+        arrows coloured by speed.
+
+        Parameters
+        ----------
+        cell_idx:
+            0-based index of the focus cell.
+        timestep:
+            0-based index into the HDF time dimension.
+        methods:
+            Scatter methods to include in Figures 2 and 3.  Defaults to all
+            five: ``"scatter_face"``, ``"scatter_corners"``,
+            ``"scatter_cell_face"``, ``"scatter_corners_face"``,
+            ``"scatter_cell_corners_face"``.
+        wse_interp:
+            Face WSE interpolation scheme passed to
+            :meth:`cell_velocity_vectors`.
+        vel_weight_method:
+            WLS weight scheme passed to :meth:`cell_velocity_vectors`.
+        scatter_interp_method:
+            ``scipy.interpolate.griddata`` *method* used in Figure 3.
+            One of ``"nearest"``, ``"linear"`` *(default)*, ``"cubic"``.
+        sample_density:
+            Number of sample points along each axis of the neighbourhood
+            bounding box before polygon masking.  Default ``20``.
+
+        Returns
+        -------
+        fig1 : matplotlib.figure.Figure
+            Velocity-components figure.
+        fig2 : matplotlib.figure.Figure
+            Scatter source-points comparison figure.
+        fig3 : matplotlib.figure.Figure
+            Interpolated velocity field figure (one panel per method).
+
+        Raises
+        ------
+        ImportError
+            If ``matplotlib`` or ``scipy`` are not installed.
+        IndexError
+            If *cell_idx* is out of range.
+        ValueError
+            If any entry in *methods* is not a recognised scatter method.
+        """
+        try:
+            import matplotlib.patches as mpatches
+            import matplotlib.pyplot as plt
+            from matplotlib.patches import Polygon as MplPolygon
+        except ImportError as exc:
+            raise ImportError(
+                "plot_cell_velocity requires matplotlib. "
+                "Install it with: pip install matplotlib"
+            ) from exc
+
+        from ._velocity import (
+            average_face_velocities_at_facepoints,
+            compute_all_face_velocities,
+        )
+
+        _SCATTER_METHODS = [
+            "scatter_face",
+            "scatter_corners",
+            "scatter_cell_face",
+            "scatter_corners_face",
+            "scatter_cell_corners_face",
+        ]
+        if methods is None:
+            methods = _SCATTER_METHODS
+        else:
+            bad = [m for m in methods if m not in _SCATTER_METHODS]
+            if bad:
+                raise ValueError(
+                    f"Unknown methods: {bad}. "
+                    f"plot_cell_velocity only supports scatter methods: "
+                    f"{_SCATTER_METHODS}"
+                )
+        if scatter_interp_method not in ("nearest", "linear", "cubic"):
+            raise ValueError(
+                f"scatter_interp_method must be 'nearest', 'linear', or 'cubic'; "
+                f"got {scatter_interp_method!r}."
+            )
+        if sample_density < 2:
+            raise ValueError("sample_density must be >= 2.")
+
+        if cell_idx < 0 or cell_idx >= self.n_cells:
+            raise IndexError(
+                f"cell_idx {cell_idx} is out of range [0, {self.n_cells})"
+            )
+
+        # ── Raw geometry and result data ───────────────────────────────
+        n_cells     = self.n_cells
+        fv_raw      = np.array(self.face_velocity[timestep, :])
+        cell_wse    = np.array(self.water_surface[timestep, :n_cells])
+        dry_mask    = np.isnan(cell_wse)
+        cfi, cfv    = self.cell_face_info
+        face_ci     = self.face_cell_indexes        # (n_faces, 2)
+        fn_all      = self.face_normals             # (n_faces, 3): nx, ny, L
+        fc_all      = self.face_centroids           # (n_faces, 2)
+        fp_idx      = self.face_facepoint_indexes   # (n_faces, 2)
+        fp_xy       = self.facepoint_coordinates    # (n_fp, 2)
+        cc_all      = self.cell_centers             # (n_cells, 2)
+        polys       = self.cell_polygons            # list[(n_v, 2)]
+
+        # ── Focus-cell faces and facepoint-adjacent neighbourhood ─────
+        s0 = int(cfi[cell_idx, 0])
+        k0 = int(cfi[cell_idx, 1])
+        focus_fv = cfv[s0:s0 + k0]
+        focus_fi = focus_fv[:, 0].astype(int)
+
+        # All facepoints belonging to the focus cell
+        focus_fp_set = set(fp_idx[focus_fi].ravel().tolist())
+
+        # Every cell sharing at least one facepoint with the focus cell
+        # (includes face-adjacent and corner/diagonal neighbours)
+        touches = (
+            np.isin(fp_idx[:, 0], list(focus_fp_set))
+            | np.isin(fp_idx[:, 1], list(focus_fp_set))
+        )
+        touched_ci = face_ci[touches].ravel()
+        adj = [
+            int(ci) for ci in np.unique(touched_ci)
+            if 0 <= ci < n_cells and ci != cell_idx
+        ]
+        nbr = [cell_idx] + adj  # neighbourhood (focus first)
+
+        # Collect all faces / facepoints belonging to neighbourhood cells
+        nbr_face_set: set[int] = set()
+        for ci in nbr:
+            s, k = int(cfi[ci, 0]), int(cfi[ci, 1])
+            nbr_face_set.update(map(int, cfv[s:s + k, 0]))
+        nbr_fi = np.array(sorted(nbr_face_set), dtype=int)
+
+        nbr_fp_set: set[int] = set()
+        for fi in nbr_fi:
+            nbr_fp_set.add(int(fp_idx[fi, 0]))
+            nbr_fp_set.add(int(fp_idx[fi, 1]))
+        nbr_fpi = np.array(sorted(nbr_fp_set), dtype=int)
+
+        # ── Velocity reconstruction ────────────────────────────────────
+        cell_vecs = self.cell_velocity_vectors(
+            timestep, method=vel_weight_method, wse_interp=wse_interp
+        )
+
+        L  = face_ci[:, 0]
+        R  = face_ci[:, 1]
+        Ls = np.where((L >= 0) & (L < n_cells), L, 0)
+        Rs = np.where((R >= 0) & (R < n_cells), R, 0)
+        wet = (
+            ((L >= 0) & (L < n_cells) & ~dry_mask[Ls])
+            | ((R >= 0) & (R < n_cells) & ~dry_mask[Rs])
+        )
+
+        face_2d = compute_all_face_velocities(
+            face_normals=fn_all,
+            face_normal_velocity=fv_raw,
+            face_cell_indexes=face_ci,
+            cell_velocity=cell_vecs,
+            dry_mask=dry_mask,
+            n_cells=n_cells,
+        )
+
+        fp_vel = average_face_velocities_at_facepoints(
+            face_facepoint_indexes=fp_idx,
+            face_vel_2d=face_2d,
+            wet_face=wet,
+        )
+
+        # ── Source-point arrays for Figure 2 ──────────────────────────
+        nbr_wet_fi  = nbr_fi[wet[nbr_fi]]
+        wet_fp_mask = np.zeros(len(fp_xy), dtype=bool)
+        wet_fp_mask[fp_idx[wet, 0]] = True
+        wet_fp_mask[fp_idx[wet, 1]] = True
+        nbr_wet_fpi = nbr_fpi[wet_fp_mask[nbr_fpi]]
+
+        pts_cc  = cc_all[nbr]
+        vel_cc  = cell_vecs[nbr]
+        pts_fc  = fc_all[nbr_wet_fi]
+        vel_fc  = face_2d[nbr_wet_fi]
+        pts_fp  = fp_xy[nbr_wet_fpi]
+        vel_fp  = fp_vel[nbr_wet_fpi]
+
+        # Typical cell diameter for arrow scaling
+        poly_f    = np.asarray(polys[cell_idx])
+        cell_diam = float(np.ptp(poly_f, axis=0).mean()) or 1.0
+
+        # ── Shared helpers ─────────────────────────────────────────────
+        def _draw_polys(ax) -> None:
+            for ci in nbr:
+                poly = np.asarray(polys[ci])
+                foc  = ci == cell_idx
+                patch = MplPolygon(
+                    poly, closed=True,
+                    facecolor="steelblue" if foc else "lightgray",
+                    edgecolor="navy"      if foc else "gray",
+                    linewidth=1.8 if foc else 0.7,
+                    alpha=0.28 if foc else 0.12,
+                    zorder=1,
+                )
+                ax.add_patch(patch)
+                cx, cy = cc_all[ci]
+                ax.text(cx, cy, str(ci), ha="center", va="center",
+                        fontsize=7,
+                        color="navy" if foc else "dimgray", zorder=4)
+
+        def _arrow(ax, x, y, dx, dy, color, lw=1.4, zo=7) -> None:
+            if abs(dx) + abs(dy) < 1e-12:
+                return
+            ax.annotate(
+                "",
+                xy=(x + dx, y + dy), xytext=(x, y),
+                arrowprops=dict(arrowstyle="-|>", color=color, lw=lw),
+                zorder=zo,
+            )
+
+        def _quiver(ax, pts, vels, color, label, scale) -> None:
+            """Quiver arrows with pre-scaled length in data coordinates."""
+            if len(pts) == 0:
+                return
+            u = vels[:, 0] * scale
+            v = vels[:, 1] * scale
+            ax.quiver(
+                pts[:, 0], pts[:, 1], u, v,
+                color=color, angles="xy", scale_units="xy", scale=1,
+                width=0.004, headwidth=4, headlength=5,
+                label=label, zorder=5,
+            )
+            ax.scatter(pts[:, 0], pts[:, 1], color=color,
+                       s=14, zorder=6, alpha=0.85)
+
+        # ══════════════════════════════════════════════════════════════
+        # Figure 1: Velocity Components
+        # ══════════════════════════════════════════════════════════════
+        fig1, ax1 = plt.subplots(figsize=(11, 9))
+        _draw_polys(ax1)
+
+        # Common arrow scale (largest vector = 38 % of cell diameter)
+        sp_cells = np.linalg.norm(cell_vecs[nbr], axis=1)
+        sp_faces = np.linalg.norm(face_2d[focus_fi], axis=1)
+        max_sp1  = max(
+            float(np.nanmax(sp_cells)) if len(sp_cells) else 0.0,
+            float(np.nanmax(sp_faces)) if len(sp_faces) else 0.0,
+            1e-9,
+        )
+        sc1 = cell_diam * 0.38 / max_sp1
+
+        # WLS cell-centre velocity arrows
+        for ci in nbr:
+            cx, cy = cc_all[ci]
+            vx, vy = cell_vecs[ci]
+            is_foc = ci == cell_idx
+            _arrow(ax1, cx, cy, vx * sc1, vy * sc1,
+                   color="darkred" if is_foc else "indigo",
+                   lw=2.2 if is_foc else 1.5, zo=8)
+
+        # Face velocity decomposition for the focus cell's faces
+        for fi in focus_fi:
+            fcx, fcy = fc_all[fi]
+            nx, ny = float(fn_all[fi, 0]), float(fn_all[fi, 1])
+            tx, ty = -ny, nx                    # tangential unit vector
+            vn_s = float(fv_raw[fi])
+            v2d  = face_2d[fi]
+            vt_s = float(v2d[0] * tx + v2d[1] * ty)
+
+            eps = cell_diam * 0.018
+            _arrow(ax1, fcx - eps, fcy,
+                   nx * vn_s * sc1, ny * vn_s * sc1,
+                   "green", lw=1.6)
+            _arrow(ax1, fcx, fcy - eps,
+                   tx * vt_s * sc1, ty * vt_s * sc1,
+                   "darkorange", lw=1.6)
+            _arrow(ax1, fcx + eps, fcy + eps,
+                   v2d[0] * sc1, v2d[1] * sc1,
+                   "dodgerblue", lw=1.9, zo=9)
+            ax1.plot(fcx, fcy, "k.", ms=5, zorder=10)
+
+        legend1 = [
+            mpatches.Patch(facecolor="steelblue", alpha=0.4,
+                           edgecolor="navy", label="Focus cell"),
+            mpatches.Patch(facecolor="lightgray", alpha=0.3,
+                           edgecolor="gray", label="Adjacent cell"),
+            mpatches.FancyArrow(0, 0, 1, 0, color="darkred",
+                                label=f"WLS vel – focus ({vel_weight_method})"),
+            mpatches.FancyArrow(0, 0, 1, 0, color="indigo",
+                                label="WLS vel – adjacent"),
+            mpatches.FancyArrow(0, 0, 1, 0, color="green",
+                                label="Face Vn  (V_n · n̂)"),
+            mpatches.FancyArrow(0, 0, 1, 0, color="darkorange",
+                                label="Face Vt  (V_t · t̂, double-C)"),
+            mpatches.FancyArrow(0, 0, 1, 0, color="dodgerblue",
+                                label="Face 2D  (Vn + Vt)"),
+        ]
+        ax1.legend(handles=legend1, loc="best", fontsize=8, framealpha=0.9)
+        ax1.set_aspect("equal")
+        ax1.autoscale_view()
+        ax1.set_title(
+            f"{self.name} — Cell {cell_idx}  |  Velocity Components\n"
+            f"ts={timestep}  wse_interp={wse_interp}  "
+            f"vel_weight={vel_weight_method}",
+            fontsize=10,
+        )
+        ax1.set_xlabel("X (model units)")
+        ax1.set_ylabel("Y (model units)")
+        fig1.tight_layout()
+
+        # ══════════════════════════════════════════════════════════════
+        # Figure 2: Scatter Method Comparison
+        # ══════════════════════════════════════════════════════════════
+
+        # Source-point definitions per scatter method:
+        #   each entry is (points, velocities, colour, legend-label)
+        _SOURCES: dict[str, list[tuple]] = {
+            "scatter_face": [
+                (pts_fc, vel_fc, "dodgerblue", "Face midpoints (2D)"),
+            ],
+            "scatter_corners": [
+                (pts_fp, vel_fp, "green", "Facepoints (double-C avg)"),
+            ],
+            "scatter_cell_face": [
+                (pts_cc, vel_cc, "red",        "Cell centres (WLS)"),
+                (pts_fc, vel_fc, "dodgerblue", "Face midpoints (2D)"),
+            ],
+            "scatter_corners_face": [
+                (pts_fp, vel_fp, "green",      "Facepoints (double-C avg)"),
+                (pts_fc, vel_fc, "dodgerblue", "Face midpoints (2D)"),
+            ],
+            "scatter_cell_corners_face": [
+                (pts_cc, vel_cc, "red",        "Cell centres (WLS)"),
+                (pts_fp, vel_fp, "green",      "Facepoints (double-C avg)"),
+                (pts_fc, vel_fc, "dodgerblue", "Face midpoints (2D)"),
+            ],
+        }
+
+        # Global speed scale so arrows are comparable across all panels
+        all_sp2 = []
+        for v in (vel_cc, vel_fc, vel_fp):
+            if len(v):
+                all_sp2.extend(np.linalg.norm(v, axis=1).tolist())
+        max_sp2 = max(max(all_sp2) if all_sp2 else 0.0, 1e-9)
+        sc2 = cell_diam * 0.35 / max_sp2
+
+        n_m   = len(methods)
+        n_col = min(3, n_m)
+        n_row = (n_m + n_col - 1) // n_col
+        fig2, axes2 = plt.subplots(
+            n_row, n_col,
+            figsize=(6.5 * n_col, 5.5 * n_row),
+            squeeze=False,
+        )
+
+        for idx, method in enumerate(methods):
+            ax = axes2[idx // n_col, idx % n_col]
+            _draw_polys(ax)
+
+            for pts, vels, color, label in _SOURCES.get(method, []):
+                _quiver(ax, pts, vels, color, label, sc2)
+
+            ax.set_aspect("equal")
+            ax.autoscale_view()
+            ax.set_title(method, fontsize=9, fontweight="bold")
+            ax.set_xlabel("X", fontsize=7)
+            ax.set_ylabel("Y", fontsize=7)
+            ax.tick_params(labelsize=6)
+            handles, labels = ax.get_legend_handles_labels()
+            if handles:
+                ax.legend(fontsize=6, loc="upper right")
+
+        for idx in range(n_m, n_row * n_col):
+            axes2[idx // n_col, idx % n_col].set_visible(False)
+
+        fig2.suptitle(
+            f"{self.name} — Cell {cell_idx}  |  Scatter Method Comparison\n"
+            f"ts={timestep}  vel_weight={vel_weight_method}  "
+            f"wse_interp={wse_interp}",
+            fontsize=11, fontweight="bold",
+        )
+        fig2.tight_layout()
+
+        # ══════════════════════════════════════════════════════════════
+        # Figure 3: Interpolated Velocity Field (one panel per method)
+        # ══════════════════════════════════════════════════════════════
+        try:
+            from scipy.interpolate import griddata as _griddata
+        except ImportError as exc:
+            raise ImportError(
+                "plot_cell_velocity Figure 3 requires scipy. "
+                "Install it with: pip install scipy"
+            ) from exc
+
+        from matplotlib.cm import ScalarMappable
+        from matplotlib.colors import Normalize as MplNorm
+        from matplotlib.path import Path as MplPath
+
+        # Source-point lookup (same as Figure 2)
+        _SRC3 = {
+            "scatter_face":             (pts_fc, vel_fc),
+            "scatter_corners":          (pts_fp, vel_fp),
+            "scatter_cell_face":        (
+                np.vstack([pts_cc, pts_fc]),
+                np.vstack([vel_cc, vel_fc]),
+            ),
+            "scatter_corners_face":     (
+                np.vstack([pts_fp, pts_fc]),
+                np.vstack([vel_fp, vel_fc]),
+            ),
+            "scatter_cell_corners_face": (
+                np.vstack([pts_cc, pts_fp, pts_fc]),
+                np.vstack([vel_cc, vel_fp, vel_fc]),
+            ),
+        }
+
+        # Sample grid, masked to neighbourhood cell polygons (computed once)
+        all_poly_pts = np.vstack([np.asarray(polys[ci]) for ci in nbr])
+        x_min3, y_min3 = all_poly_pts.min(axis=0)
+        x_max3, y_max3 = all_poly_pts.max(axis=0)
+        gx = np.linspace(x_min3, x_max3, sample_density)
+        gy = np.linspace(y_min3, y_max3, sample_density)
+        gxx, gyy = np.meshgrid(gx, gy)
+        grid_pts = np.column_stack([gxx.ravel(), gyy.ravel()])
+        inside = np.zeros(len(grid_pts), dtype=bool)
+        for ci in nbr:
+            inside |= MplPath(np.asarray(polys[ci])).contains_points(grid_pts)
+        grid_pts_in = grid_pts[inside]
+
+        # Colour scale shared across all panels (use overall source max speed)
+        sp_max3 = max(max_sp2, 1e-9)
+        norm3   = MplNorm(vmin=0, vmax=sp_max3)
+        cmap3   = plt.get_cmap("plasma")
+        sc3     = cell_diam * 0.38 / sp_max3  # data-units per unit speed
+
+        n_m3   = len(methods)
+        n_col3 = min(3, n_m3)
+        n_row3 = (n_m3 + n_col3 - 1) // n_col3
+        fig3, axes3 = plt.subplots(
+            n_row3, n_col3,
+            figsize=(6.5 * n_col3, 5.5 * n_row3),
+            squeeze=False,
+        )
+
+        for idx, method in enumerate(methods):
+            ax = axes3[idx // n_col3, idx % n_col3]
+            _draw_polys(ax)
+
+            src_pts, src_vel = _SRC3[method]
+
+            if len(src_pts) == 0 or len(grid_pts_in) == 0:
+                vx_i = np.full(len(grid_pts_in), np.nan)
+                vy_i = np.full(len(grid_pts_in), np.nan)
+            else:
+                vx_i = _griddata(
+                    src_pts, src_vel[:, 0], grid_pts_in,
+                    method=scatter_interp_method, fill_value=np.nan, rescale=True,
+                )
+                vy_i = _griddata(
+                    src_pts, src_vel[:, 1], grid_pts_in,
+                    method=scatter_interp_method, fill_value=np.nan, rescale=True,
+                )
+
+            sp_i  = np.sqrt(vx_i**2 + vy_i**2)
+            valid = np.isfinite(sp_i) & (sp_i > 0)
+
+            if valid.any():
+                colors_i = cmap3(norm3(sp_i[valid]))
+                ax.quiver(
+                    grid_pts_in[valid, 0], grid_pts_in[valid, 1],
+                    vx_i[valid] * sc3, vy_i[valid] * sc3,
+                    color=colors_i,
+                    angles="xy", scale_units="xy", scale=1,
+                    width=0.004, headwidth=4, headlength=5,
+                    zorder=5,
+                )
+
+            ax.set_aspect("equal")
+            ax.autoscale_view()
+            ax.set_title(method, fontsize=9, fontweight="bold")
+            ax.set_xlabel("X", fontsize=7)
+            ax.set_ylabel("Y", fontsize=7)
+            ax.tick_params(labelsize=6)
+
+        empty_idxs = list(range(n_m3, n_row3 * n_col3))
+
+        # Shared colourbar
+        sm3 = ScalarMappable(cmap=cmap3, norm=norm3)
+        sm3.set_array([])
+        if empty_idxs:
+            # Turn the first empty slot into a blank host, then place a narrow
+            # inset axes centred inside it for the colourbar.
+            host_ax = axes3[empty_idxs[0] // n_col3, empty_idxs[0] % n_col3]
+            host_ax.set_visible(True)
+            host_ax.axis("off")
+            for idx in empty_idxs[1:]:
+                axes3[idx // n_col3, idx % n_col3].set_visible(False)
+            from mpl_toolkits.axes_grid1.inset_locator import inset_axes
+            cbar_ax = inset_axes(host_ax, width="25%", height="80%",
+                                 loc="center")
+            fig3.colorbar(sm3, cax=cbar_ax, label="Speed (model units/s)")
+            cbar_ax.yaxis.set_label_position("left")
+            cbar_ax.yaxis.tick_left()
+        else:
+            fig3.colorbar(sm3, ax=axes3.ravel().tolist(),
+                          fraction=0.02, pad=0.02,
+                          label="Speed (model units/s)")
+
+        fig3.suptitle(
+            f"{self.name} — Cell {cell_idx}  |  Interpolated Velocity Field\n"
+            f"griddata={scatter_interp_method}  ts={timestep}  "
+            f"vel_weight={vel_weight_method}  wse_interp={wse_interp}",
+            fontsize=11, fontweight="bold",
+        )
+        fig3.tight_layout()
+        return fig1, fig2, fig3
+
     # ------------------------------------------------------------------
     # Raster export — delegates to raspy.geo (deferred import)
     # ------------------------------------------------------------------
