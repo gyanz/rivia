@@ -405,8 +405,8 @@ class FlowArea:
         return self._load("Faces Minimum Elevation")
 
     @property
-    def face_low_elevation_coords(self) -> np.ndarray:
-        """Coordinate of the lowest-elevation point on each face.
+    def face_invert_coords(self) -> np.ndarray:
+        """Coordinate of the invert (lowest-elevation point) of each face.
 
         HEC-RAS stores the ``(x, y)`` location of the minimum-elevation point
         along the face cross-section for each face.  This differs from
