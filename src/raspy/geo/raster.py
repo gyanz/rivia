@@ -924,6 +924,8 @@ def mesh_to_velocity_raster(
     cell_centers_arr = np.asarray(cell_centers, dtype=np.float64)
     facepoint_coords_arr = np.asarray(facepoint_coordinates, dtype=np.float64)
     dry_mask = np.isnan(cell_wse_arr)
+    _vel_mag = np.linalg.norm(cell_velocity, axis=1)
+    stencil_dry = (_vel_mag == 0.0) | ~np.isfinite(_vel_mag)
 
     dx = abs(out_transform.a)
     dy = abs(out_transform.e)
@@ -997,7 +999,7 @@ def mesh_to_velocity_raster(
                 face_normal_velocity=face_vel_arr,
                 face_cell_indexes=face_ci_arr,
                 cell_velocity=cell_velocity,
-                dry_mask=dry_mask,
+                dry_mask=stencil_dry,
                 n_cells=n_cells,
             )
 
@@ -1048,7 +1050,7 @@ def mesh_to_velocity_raster(
                 face_normal_velocity=face_vel_arr,
                 face_cell_indexes=face_ci_arr,
                 cell_velocity=cell_velocity,
-                dry_mask=dry_mask,
+                dry_mask=stencil_dry,
                 n_cells=n_cells,
             )
 
@@ -1104,7 +1106,7 @@ def mesh_to_velocity_raster(
                 face_normal_velocity=face_vel_arr,
                 face_cell_indexes=face_ci_arr,
                 cell_velocity=cell_velocity,
-                dry_mask=dry_mask,
+                dry_mask=stencil_dry,
                 n_cells=n_cells,
             )
 
@@ -1153,7 +1155,7 @@ def mesh_to_velocity_raster(
                 face_normal_velocity=face_vel_arr,
                 face_cell_indexes=face_ci_arr,
                 cell_velocity=cell_velocity,
-                dry_mask=dry_mask,
+                dry_mask=stencil_dry,
                 n_cells=n_cells,
             )
 
@@ -1191,7 +1193,7 @@ def mesh_to_velocity_raster(
                 face_normal_velocity=face_vel_arr,
                 face_cell_indexes=face_ci_arr,
                 cell_velocity=cell_velocity,
-                dry_mask=dry_mask,
+                dry_mask=stencil_dry,
                 n_cells=n_cells,
             )
 
@@ -2538,7 +2540,7 @@ def _compare_rasters_debug(
                 ref_vals != 0, diff / ref_vals * 100.0, np.nan
             )
 
-        outliers = abs_diff > mae
+        outliers = np.abs(pct_diff) >= 10.0
         if outliers.any():
             gdf = gpd.GeoDataFrame(
                 {
@@ -2551,12 +2553,12 @@ def _compare_rasters_debug(
             shp_path = tmp_dir / f"raspy_debug_{label_safe}_outliers.shp"
             gdf.to_file(shp_path)
             logger.info(
-                "[DEBUG %s compare] outliers |diff| > MAE (%.4f): %d pts: %s",
-                label, mae, int(outliers.sum()), shp_path,
+                "[DEBUG %s compare] outliers |pct_diff| >= 10%%: %d pts: %s",
+                label, int(outliers.sum()), shp_path,
             )
         else:
             logger.info(
-                "[DEBUG %s compare] No outlier pixels (all |diff| <= MAE).", label
+                "[DEBUG %s compare] No outlier pixels (all |pct_diff| < 10%%).", label
             )
 
     finally:
