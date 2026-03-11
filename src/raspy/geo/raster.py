@@ -926,6 +926,13 @@ def mesh_to_velocity_raster(
     dry_mask = np.isnan(cell_wse_arr)
     _vel_mag = np.linalg.norm(cell_velocity, axis=1)
     stencil_dry = (_vel_mag == 0.0) | ~np.isfinite(_vel_mag)
+    # n_total >= n_cells when cell_velocity includes ghost rows.
+    # n_cells = real computational cells; n_total includes ghost cells.
+    # cell_velocity_real restricts to real cells for source-point scatter methods.
+    n_cells_real = len(cell_centers_arr)
+    n_cells = n_cells_real  # alias used throughout interpolation branches
+    n_total = len(cell_velocity)
+    cell_velocity_real = cell_velocity[:n_cells_real]
 
     dx = abs(out_transform.a)
     dy = abs(out_transform.e)
@@ -942,7 +949,7 @@ def mesh_to_velocity_raster(
 
     if method == "flat_cell_center":
         #  Flat assignment: rasterize cell polygons, paint uniform velocity.
-        cell_vel = cell_velocity.copy()
+        cell_vel = cell_velocity_real.copy()
         cell_vel[dry_mask] = np.nan
 
         vx_tight = _rasterize_cell_values(
@@ -963,8 +970,7 @@ def mesh_to_velocity_raster(
         face_normals_arr = np.asarray(face_normals, dtype=np.float64)
         face_fp_idx = np.asarray(face_facepoint_indexes, dtype=np.int64)
         cell_face_values_arr = np.asarray(cell_face_values, dtype=np.int64)
-        n_cells = len(cell_centers_arr)
-        cell_face_info_arr = np.asarray(cell_face_info, dtype=np.int64)[:n_cells]
+        cell_face_info_arr = np.asarray(cell_face_info, dtype=np.int64)[:n_cells_real]
         face_ci_arr = np.asarray(face_cell_indexes, dtype=np.int64)
 
         n_tight_rows = row_max - row_min
@@ -987,11 +993,11 @@ def mesh_to_velocity_raster(
 
             left       = face_ci_arr[:, 0]
             right      = face_ci_arr[:, 1]
-            left_safe  = np.where((left  >= 0) & (left  < n_cells), left,  0)
-            right_safe = np.where((right >= 0) & (right < n_cells), right, 0)
+            left_safe  = np.where((left  >= 0) & (left  < n_total), left,  0)
+            right_safe = np.where((right >= 0) & (right < n_total), right, 0)
             wet_face   = (
-                ((left  >= 0) & (left  < n_cells) & ~dry_mask[left_safe])
-                | ((right >= 0) & (right < n_cells) & ~dry_mask[right_safe])
+                ((left  >= 0) & (left  < n_total) & ~stencil_dry[left_safe])
+                | ((right >= 0) & (right < n_total) & ~stencil_dry[right_safe])
             )
 
             face_vel_2d = compute_all_face_velocities(
@@ -1000,7 +1006,6 @@ def mesh_to_velocity_raster(
                 face_cell_indexes=face_ci_arr,
                 cell_velocity=cell_velocity,
                 dry_mask=stencil_dry,
-                n_cells=n_cells,
             )
 
             fp_vel = average_face_velocities_at_facepoints(
@@ -1038,11 +1043,11 @@ def mesh_to_velocity_raster(
 
             left       = face_ci_arr[:, 0]
             right      = face_ci_arr[:, 1]
-            left_safe  = np.where((left  >= 0) & (left  < n_cells), left,  0)
-            right_safe = np.where((right >= 0) & (right < n_cells), right, 0)
+            left_safe  = np.where((left  >= 0) & (left  < n_total), left,  0)
+            right_safe = np.where((right >= 0) & (right < n_total), right, 0)
             wet_face   = (
-                ((left  >= 0) & (left  < n_cells) & ~dry_mask[left_safe])
-                | ((right >= 0) & (right < n_cells) & ~dry_mask[right_safe])
+                ((left  >= 0) & (left  < n_total) & ~stencil_dry[left_safe])
+                | ((right >= 0) & (right < n_total) & ~stencil_dry[right_safe])
             )
 
             face_vel_2d = compute_all_face_velocities(
@@ -1051,7 +1056,6 @@ def mesh_to_velocity_raster(
                 face_cell_indexes=face_ci_arr,
                 cell_velocity=cell_velocity,
                 dry_mask=stencil_dry,
-                n_cells=n_cells,
             )
 
             fp_vel = average_face_velocities_at_facepoints(
@@ -1094,11 +1098,11 @@ def mesh_to_velocity_raster(
 
             left       = face_ci_arr[:, 0]
             right      = face_ci_arr[:, 1]
-            left_safe  = np.where((left  >= 0) & (left  < n_cells), left,  0)
-            right_safe = np.where((right >= 0) & (right < n_cells), right, 0)
+            left_safe  = np.where((left  >= 0) & (left  < n_total), left,  0)
+            right_safe = np.where((right >= 0) & (right < n_total), right, 0)
             wet_face   = (
-                ((left  >= 0) & (left  < n_cells) & ~dry_mask[left_safe])
-                | ((right >= 0) & (right < n_cells) & ~dry_mask[right_safe])
+                ((left  >= 0) & (left  < n_total) & ~stencil_dry[left_safe])
+                | ((right >= 0) & (right < n_total) & ~stencil_dry[right_safe])
             )
 
             face_vel_2d = compute_all_face_velocities(
@@ -1107,7 +1111,6 @@ def mesh_to_velocity_raster(
                 face_cell_indexes=face_ci_arr,
                 cell_velocity=cell_velocity,
                 dry_mask=stencil_dry,
-                n_cells=n_cells,
             )
 
             fp_vel = average_face_velocities_at_facepoints(
@@ -1128,7 +1131,7 @@ def mesh_to_velocity_raster(
                 face_centroids_arr[wet_face],
             ])
             vel = np.vstack([
-                cell_velocity[~dry_mask],
+                cell_velocity_real[~dry_mask],
                 fp_vel[wet_fp],
                 face_vel_2d[wet_face],
             ])
@@ -1156,16 +1159,15 @@ def mesh_to_velocity_raster(
                 face_cell_indexes=face_ci_arr,
                 cell_velocity=cell_velocity,
                 dry_mask=stencil_dry,
-                n_cells=n_cells,
             )
 
             left  = face_ci_arr[:, 0]
             right = face_ci_arr[:, 1]
-            left_safe  = np.where((left  >= 0) & (left  < n_cells), left,  0)
-            right_safe = np.where((right >= 0) & (right < n_cells), right, 0)
+            left_safe  = np.where((left  >= 0) & (left  < n_total), left,  0)
+            right_safe = np.where((right >= 0) & (right < n_total), right, 0)
             wet_face = (
-                ((left  >= 0) & (left  < n_cells) & ~dry_mask[left_safe])
-                | ((right >= 0) & (right < n_cells) & ~dry_mask[right_safe])
+                ((left  >= 0) & (left  < n_total) & ~stencil_dry[left_safe])
+                | ((right >= 0) & (right < n_total) & ~stencil_dry[right_safe])
             )
 
             face_centroids_arr = np.asarray(face_centers, dtype=np.float64)
@@ -1173,7 +1175,7 @@ def mesh_to_velocity_raster(
                 pts = np.vstack([
                     cell_centers_arr[~dry_mask], face_centroids_arr[wet_face]
                 ])
-                vel = np.vstack([cell_velocity[~dry_mask], face_vel_2d[wet_face]])
+                vel = np.vstack([cell_velocity_real[~dry_mask], face_vel_2d[wet_face]])
             else:
                 pts = face_centroids_arr[wet_face]
                 vel = face_vel_2d[wet_face]
@@ -1194,7 +1196,6 @@ def mesh_to_velocity_raster(
                 face_cell_indexes=face_ci_arr,
                 cell_velocity=cell_velocity,
                 dry_mask=stencil_dry,
-                n_cells=n_cells,
             )
 
             try:
@@ -1256,7 +1257,7 @@ def mesh_to_velocity_raster(
                 _trifinder_ok = False
 
             if not _trifinder_ok:
-                cell_vel_nd = cell_velocity.copy()
+                cell_vel_nd = cell_velocity_real.copy()
                 cell_vel_nd[dry_mask] = np.nan
                 _tree, _wet_idx, _max_r = _build_wet_kdtree(
                     cell_centers_arr, dry_mask, facepoint_coords_arr

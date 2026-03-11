@@ -479,7 +479,9 @@ class FlowAreaResults(FlowArea):
 
         n_cells = self.n_cells
         face_vel = np.array(self.face_velocity[timestep, :])
-        cell_wse = np.array(self.water_surface[timestep, :n_cells])
+        # Read full water_surface (real + ghost) so boundary faces get
+        # ghost-cell WSE rather than NaN when estimating face WSE.
+        cell_wse = np.array(self.water_surface[timestep, :])
 
         cell_face_info, cell_face_values = self.cell_face_info
         start = int(cell_face_info[cell_idx, 0])
@@ -496,7 +498,9 @@ class FlowAreaResults(FlowArea):
         face_centroids_a = self.face_centroids       # (n_faces, 2)
         fp_idx_all       = self.face_facepoint_indexes  # (n_faces, 2)
         fp_coords        = self.facepoint_coordinates   # (n_fp, 2)
-        cell_centres     = self.cell_centers            # (n_cells, 2)
+        # Stack ghost cell centres so _estimate_face_wse_sloped can index
+        # up to n_total (len(cell_wse) includes ghost rows).
+        cell_centres = np.vstack([self.cell_centers, self.ghost_cell_centers])
 
         # ── Face WSE and flow-area weights ─────────────────────────────
         if wse_interp == "sloped":
@@ -1737,7 +1741,7 @@ class FlowAreaResults(FlowArea):
             elif variable in ("cell_velocity", "cell_speed"):
                 if vel_min is not None:
                     with np.errstate(invalid="ignore"):
-                        _speed = np.linalg.norm(cell_vel_vecs, axis=1)
+                        _speed = np.linalg.norm(cell_vel_vecs[: self.n_cells], axis=1)
                     _vel_wse_masked = np.where(_speed < vel_min, np.nan, cell_vel_wse)
                 else:
                     _vel_wse_masked = cell_vel_wse
@@ -2099,7 +2103,7 @@ class FlowAreaResults(FlowArea):
                 _fc_wse = self.wse_at_facecentroids(cell_wse_masked)
             if vel_min is not None:
                 with np.errstate(invalid="ignore"):
-                    _speed = np.linalg.norm(cell_vel_vecs, axis=1)
+                    _speed = np.linalg.norm(cell_vel_vecs[: self.n_cells], axis=1)
                 _vel_wse_masked = np.where(_speed < vel_min, np.nan, wse_values)
             else:
                 _vel_wse_masked = wse_values
