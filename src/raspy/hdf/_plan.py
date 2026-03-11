@@ -406,8 +406,8 @@ class FlowAreaResults(FlowArea):
         cell_vel = self.cell_velocity_vectors(
             timestep, method=method, wse_interp=wse_interp
         )
-        cell_wse = np.array(self.water_surface[timestep, : self.n_cells])
-        dry_mask = np.isnan(cell_wse)
+        vel_mag = np.linalg.norm(cell_vel, axis=1)
+        dry_mask = (vel_mag == 0.0) | ~np.isfinite(vel_mag)
         return compute_all_face_velocities(
             face_normals=self.face_normals,
             face_normal_velocity=np.array(self.face_velocity[timestep, :]),
@@ -472,7 +472,6 @@ class FlowAreaResults(FlowArea):
         n_cells = self.n_cells
         face_vel = np.array(self.face_velocity[timestep, :])
         cell_wse = np.array(self.water_surface[timestep, :n_cells])
-        dry_mask = np.isnan(cell_wse)
 
         cell_face_info, cell_face_values = self.cell_face_info
         start = int(cell_face_info[cell_idx, 0])
@@ -516,6 +515,8 @@ class FlowAreaResults(FlowArea):
         all_cell_vecs = self.cell_velocity_vectors(
             timestep, method=vel_weight_method, wse_interp=wse_interp
         )
+        _vel_mag = np.linalg.norm(all_cell_vecs, axis=1)
+        dry_mask = (_vel_mag == 0.0) | ~np.isfinite(_vel_mag)
 
         # ── Face 2D velocities (double-C stencil, vectorised) ───────────
         face_vel_2d_all = compute_all_face_velocities(
@@ -837,8 +838,6 @@ class FlowAreaResults(FlowArea):
         # ── Raw geometry and result data ───────────────────────────────
         n_cells     = self.n_cells
         fv_raw      = np.array(self.face_velocity[timestep, :])
-        cell_wse    = np.array(self.water_surface[timestep, :n_cells])
-        dry_mask    = np.isnan(cell_wse)
         cfi, cfv    = self.cell_face_info
         face_ci     = self.face_cell_indexes        # (n_faces, 2)
         fn_all      = self.face_normals             # (n_faces, 3): nx, ny, L
@@ -887,6 +886,8 @@ class FlowAreaResults(FlowArea):
         cell_vecs = self.cell_velocity_vectors(
             timestep, method=vel_weight_method, wse_interp=wse_interp
         )
+        _vel_mag = np.linalg.norm(cell_vecs, axis=1)
+        dry_mask = (_vel_mag == 0.0) | ~np.isfinite(_vel_mag)
 
         L  = face_ci[:, 0]
         R  = face_ci[:, 1]
@@ -959,7 +960,7 @@ class FlowAreaResults(FlowArea):
                         fontsize=7,
                         color="navy" if foc else "dimgray", zorder=4)
 
-        def _arrow(ax, x, y, dx, dy, color, lw=1.4, zo=7) -> None:
+        def _arrow(ax, x, y, dx, dy, color, lw=1.4, zo=7, num=None) -> None:
             if abs(dx) + abs(dy) < 1e-12:
                 return
             ax.annotate(
@@ -968,6 +969,14 @@ class FlowAreaResults(FlowArea):
                 arrowprops=dict(arrowstyle="-|>", color=color, lw=lw),
                 zorder=zo,
             )
+            if num is not None:
+                ax.text(
+                    x + dx, y + dy, str(num),
+                    fontsize=5.5, color=color, fontweight="bold",
+                    ha="center", va="center", zorder=zo + 2,
+                    bbox=dict(boxstyle="round,pad=0.08", fc="white",
+                              ec="none", alpha=0.75),
+                )
 
         def _quiver(ax, pts, vels, color, label, scale, min_length=0.0) -> None:
             """Quiver arrows with pre-scaled length in data coordinates.
@@ -1014,14 +1023,26 @@ class FlowAreaResults(FlowArea):
         )
         sc1 = cell_diam * 0.38 / max_sp1
 
+        # Numbered-arrow tracking for the speed table (Figure 1 only)
+        _arrow_ctr: int = 0
+        _arrow_tbl: list[tuple[int, str, float]] = []   # (num, label, speed)
+        _wls_nums:  dict[int, int] = {}                 # ci → arrow num
+        _face_nums: dict[tuple[int, str], int] = {}     # (fi, type) → num
+
         # WLS cell-centre velocity arrows
         for ci in nbr:
             cx, cy = cc_all[ci]
             vx, vy = cell_vecs[ci]
+            spd = float(np.hypot(vx, vy))
             is_foc = ci == cell_idx
-            _arrow(ax1, cx, cy, vx * sc1, vy * sc1,
-                   color="darkred" if is_foc else "indigo",
-                   lw=2.2 if is_foc else 1.5, zo=8)
+            color = "darkred" if is_foc else "indigo"
+            lw    = 2.2       if is_foc else 1.5
+            if spd > 1e-12:
+                _arrow_ctr += 1
+                _wls_nums[ci] = _arrow_ctr
+                _arrow_tbl.append((_arrow_ctr, f"WLS cell {ci}", spd))
+            _arrow(ax1, cx, cy, vx * sc1, vy * sc1, color=color, lw=lw,
+                   zo=8, num=_wls_nums.get(ci))
 
         # Face velocity decomposition for the focus cell's faces
         for fi in focus_fi:
@@ -1031,17 +1052,33 @@ class FlowAreaResults(FlowArea):
             vn_s = float(fv_raw[fi])
             v2d  = face_2d[fi]
             vt_s = float(v2d[0] * tx + v2d[1] * ty)
+            v2d_spd = float(np.hypot(v2d[0], v2d[1]))
 
             eps = cell_diam * 0.018
+
+            if abs(vn_s) > 1e-12:
+                _arrow_ctr += 1
+                _face_nums[(fi, "vn")] = _arrow_ctr
+                _arrow_tbl.append((_arrow_ctr, f"Face {fi} Vn", abs(vn_s)))
             _arrow(ax1, fcx - eps, fcy,
                    nx * vn_s * sc1, ny * vn_s * sc1,
-                   "green", lw=1.6)
+                   "green", lw=1.6, num=_face_nums.get((fi, "vn")))
+
+            if abs(vt_s) > 1e-12:
+                _arrow_ctr += 1
+                _face_nums[(fi, "vt")] = _arrow_ctr
+                _arrow_tbl.append((_arrow_ctr, f"Face {fi} Vt", abs(vt_s)))
             _arrow(ax1, fcx, fcy - eps,
                    tx * vt_s * sc1, ty * vt_s * sc1,
-                   "darkorange", lw=1.6)
+                   "darkorange", lw=1.6, num=_face_nums.get((fi, "vt")))
+
+            if v2d_spd > 1e-12:
+                _arrow_ctr += 1
+                _face_nums[(fi, "v2d")] = _arrow_ctr
+                _arrow_tbl.append((_arrow_ctr, f"Face {fi} V2D", v2d_spd))
             _arrow(ax1, fcx + eps, fcy + eps,
                    v2d[0] * sc1, v2d[1] * sc1,
-                   "dodgerblue", lw=1.9, zo=9)
+                   "dodgerblue", lw=1.9, zo=9, num=_face_nums.get((fi, "v2d")))
             ax1.plot(fcx, fcy, "k.", ms=5, zorder=10)
 
         legend1 = [
@@ -1095,13 +1132,13 @@ class FlowAreaResults(FlowArea):
         )
         inset_ax.add_patch(focus_patch)
 
-        # WLS arrow for focus cell
+        # WLS arrow for focus cell (reuse number from main axes)
         cx0, cy0 = cc_all[cell_idx]
         vx0, vy0 = cell_vecs[cell_idx]
         _arrow(inset_ax, cx0, cy0, vx0 * sc_ins, vy0 * sc_ins,
-               "darkred", lw=2.2, zo=8)
+               "darkred", lw=2.2, zo=8, num=_wls_nums.get(cell_idx))
 
-        # Face decomposition arrows for each focus-cell face
+        # Face decomposition arrows for each focus-cell face (reuse numbers)
         eps_ins = cell_diam * 0.018
         for fi in focus_fi:
             fcx, fcy = fc_all[fi]
@@ -1111,11 +1148,14 @@ class FlowAreaResults(FlowArea):
             v2d_f    = face_2d[fi]
             vt_s     = float(v2d_f[0] * tx + v2d_f[1] * ty)
             _arrow(inset_ax, fcx - eps_ins, fcy,
-                   nx * vn_s * sc_ins, ny * vn_s * sc_ins, "green", lw=1.6)
+                   nx * vn_s * sc_ins, ny * vn_s * sc_ins, "green", lw=1.6,
+                   num=_face_nums.get((fi, "vn")))
             _arrow(inset_ax, fcx, fcy - eps_ins,
-                   tx * vt_s * sc_ins, ty * vt_s * sc_ins, "darkorange", lw=1.6)
+                   tx * vt_s * sc_ins, ty * vt_s * sc_ins, "darkorange", lw=1.6,
+                   num=_face_nums.get((fi, "vt")))
             _arrow(inset_ax, fcx + eps_ins, fcy + eps_ins,
-                   v2d_f[0] * sc_ins, v2d_f[1] * sc_ins, "dodgerblue", lw=1.9, zo=9)
+                   v2d_f[0] * sc_ins, v2d_f[1] * sc_ins, "dodgerblue", lw=1.9, zo=9,
+                   num=_face_nums.get((fi, "v2d")))
             inset_ax.plot(fcx, fcy, "k.", ms=5, zorder=10)
 
         fp_xmin, fp_ymin = poly_f.min(axis=0)
@@ -1132,7 +1172,33 @@ class FlowAreaResults(FlowArea):
         )
         ax1.indicate_inset_zoom(inset_ax, edgecolor="gray", alpha=0.6)
 
-        fig1.tight_layout()
+        # Leave bottom margin for the speed table, then draw the table
+        fig1.tight_layout(rect=[0, 0.18, 1, 1])
+
+        if _arrow_tbl:
+            _ncols_tbl = min(3, len(_arrow_tbl))
+            _per_col   = max(1, (len(_arrow_tbl) + _ncols_tbl - 1) // _ncols_tbl)
+            _tbl_rows  = []
+            for _r in range(_per_col):
+                _parts = []
+                for _c in range(_ncols_tbl):
+                    _i = _c * _per_col + _r
+                    if _i < len(_arrow_tbl):
+                        _n, _desc, _spd = _arrow_tbl[_i]
+                        _parts.append(f"{_n:2d}: {_desc:<18s} {_spd:9.4f}")
+                    else:
+                        _parts.append(" " * 33)
+                _tbl_rows.append("   ".join(_parts))
+            _tbl_str = "\n".join(_tbl_rows)
+            fig1.text(
+                0.5, 0.01,
+                f"Arrow speeds (model units/s):\n{_tbl_str}",
+                fontsize=6.5, family="monospace",
+                ha="center", va="bottom",
+                transform=fig1.transFigure,
+                bbox=dict(boxstyle="round,pad=0.4", fc="lightyellow",
+                          ec="gray", lw=0.8, alpha=0.92),
+            )
 
         # ══════════════════════════════════════════════════════════════
         # Figure 2: Scatter Method Comparison
@@ -1242,15 +1308,21 @@ class FlowAreaResults(FlowArea):
             ),
         }
 
-        # Sample grid, masked to neighbourhood cell polygons (computed once)
+        # Sample grid, masked to neighbourhood cell polygons (computed once).
+        # Dry cells (zero WLS speed at the focus timestep) are excluded so
+        # interpolated arrows are not drawn over cells with no flow.
         x_min3, y_min3 = _nbr_xmin, _nbr_ymin
         x_max3, y_max3 = _nbr_xmax, _nbr_ymax
         gx = np.linspace(x_min3, x_max3, sample_density)
         gy = np.linspace(y_min3, y_max3, sample_density)
         gxx, gyy = np.meshgrid(gx, gy)
         grid_pts = np.column_stack([gxx.ravel(), gyy.ravel()])
+        nbr_wet_cells = [
+            ci for ci in nbr
+            if np.linalg.norm(cell_vecs[ci]) > 1e-12
+        ]
         inside = np.zeros(len(grid_pts), dtype=bool)
-        for ci in nbr:
+        for ci in nbr_wet_cells:
             inside |= MplPath(np.asarray(polys[ci])).contains_points(grid_pts)
         grid_pts_in = grid_pts[inside]
 
