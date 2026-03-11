@@ -721,6 +721,7 @@ class FlowAreaResults(FlowArea):
         ] = "area_weighted",
         scatter_interp_method: Literal["nearest", "linear", "cubic"] = "linear",
         sample_density: int = 20,
+        min_arrow_fraction: float = 0.10,
     ) -> tuple:
         """Plot velocity decomposition and scatter-method comparison for a cell.
 
@@ -928,6 +929,16 @@ class FlowAreaResults(FlowArea):
         poly_f    = np.asarray(polys[cell_idx])
         cell_diam = float(np.ptp(poly_f, axis=0).mean()) or 1.0
 
+        # Shared axis limits for all figures — derived from neighbourhood
+        # polygon extents so every panel shows the same spatial window.
+        all_poly_pts = np.vstack([np.asarray(polys[ci]) for ci in nbr])
+        _nbr_xmin, _nbr_ymin = all_poly_pts.min(axis=0)
+        _nbr_xmax, _nbr_ymax = all_poly_pts.max(axis=0)
+        _xpad = (_nbr_xmax - _nbr_xmin) * 0.05 or 1.0
+        _ypad = (_nbr_ymax - _nbr_ymin) * 0.05 or 1.0
+        _nbr_xlim = (_nbr_xmin - _xpad, _nbr_xmax + _xpad)
+        _nbr_ylim = (_nbr_ymin - _ypad, _nbr_ymax + _ypad)
+
         # ── Shared helpers ─────────────────────────────────────────────
         def _draw_polys(ax) -> None:
             for ci in nbr:
@@ -957,18 +968,32 @@ class FlowAreaResults(FlowArea):
                 zorder=zo,
             )
 
-        def _quiver(ax, pts, vels, color, label, scale) -> None:
-            """Quiver arrows with pre-scaled length in data coordinates."""
+        def _quiver(ax, pts, vels, color, label, scale, min_length=0.0) -> None:
+            """Quiver arrows with pre-scaled length in data coordinates.
+
+            Arrows shorter than *min_length* (data units) are boosted to that
+            length and drawn at half opacity so they remain visible while
+            clearly signalling that their length is not to scale.
+            """
             if len(pts) == 0:
                 return
-            u = vels[:, 0] * scale
-            v = vels[:, 1] * scale
-            ax.quiver(
-                pts[:, 0], pts[:, 1], u, v,
-                color=color, angles="xy", scale_units="xy", scale=1,
-                width=0.004, headwidth=4, headlength=5,
-                label=label, zorder=5,
-            )
+            u_raw = vels[:, 0] * scale
+            v_raw = vels[:, 1] * scale
+            lengths = np.hypot(u_raw, v_raw)
+            boosted = (lengths > 1e-12) & (lengths < min_length)
+            boost_f = np.where(boosted, min_length / np.maximum(lengths, 1e-12), 1.0)
+            u = u_raw * boost_f
+            v = v_raw * boost_f
+            normal = ~boosted
+            kw = dict(angles="xy", scale_units="xy", scale=1,
+                      width=0.004, headwidth=4, headlength=5, zorder=5)
+            if normal.any():
+                ax.quiver(pts[normal, 0], pts[normal, 1], u[normal], v[normal],
+                          color=color, label=label, **kw)
+            if boosted.any():
+                ax.quiver(pts[boosted, 0], pts[boosted, 1], u[boosted], v[boosted],
+                          color=color, alpha=0.45,
+                          label=label if not normal.any() else None, **kw)
             ax.scatter(pts[:, 0], pts[:, 1], color=color,
                        s=14, zorder=6, alpha=0.85)
 
@@ -1036,7 +1061,8 @@ class FlowAreaResults(FlowArea):
         ]
         ax1.legend(handles=legend1, loc="best", fontsize=8, framealpha=0.9)
         ax1.set_aspect("equal")
-        ax1.autoscale_view()
+        ax1.set_xlim(_nbr_xlim)
+        ax1.set_ylim(_nbr_ylim)
         ax1.set_title(
             f"{self.name} — Cell {cell_idx}  |  Velocity Components\n"
             f"ts={timestep}  wse_interp={wse_interp}  "
@@ -1045,6 +1071,66 @@ class FlowAreaResults(FlowArea):
         )
         ax1.set_xlabel("X (model units)")
         ax1.set_ylabel("Y (model units)")
+
+        # ── Inset: focus cell at local scale ──────────────────────────
+        # When the focus cell's velocity is much smaller than its neighbours
+        # the global-scale arrows are nearly invisible.  The inset shows the
+        # focus cell alone, scaled to its own peak speed, so face-velocity
+        # decomposition is always legible.
+        sp_focus_faces = np.linalg.norm(face_2d[focus_fi], axis=1)
+        sp_focus_wls   = float(np.linalg.norm(cell_vecs[cell_idx]))
+        max_sp_focus   = max(
+            float(np.nanmax(sp_focus_faces)) if len(sp_focus_faces) else 0.0,
+            sp_focus_wls,
+            1e-9,
+        )
+        sc_ins = cell_diam * 0.38 / max_sp_focus
+
+        inset_ax = ax1.inset_axes([0.67, 0.67, 0.31, 0.31])
+        focus_patch = MplPolygon(
+            poly_f, closed=True,
+            facecolor="steelblue", edgecolor="navy",
+            linewidth=1.5, alpha=0.28, zorder=1,
+        )
+        inset_ax.add_patch(focus_patch)
+
+        # WLS arrow for focus cell
+        cx0, cy0 = cc_all[cell_idx]
+        vx0, vy0 = cell_vecs[cell_idx]
+        _arrow(inset_ax, cx0, cy0, vx0 * sc_ins, vy0 * sc_ins,
+               "darkred", lw=2.2, zo=8)
+
+        # Face decomposition arrows for each focus-cell face
+        eps_ins = cell_diam * 0.018
+        for fi in focus_fi:
+            fcx, fcy = fc_all[fi]
+            nx, ny   = float(fn_all[fi, 0]), float(fn_all[fi, 1])
+            tx, ty   = -ny, nx
+            vn_s     = float(fv_raw[fi])
+            v2d_f    = face_2d[fi]
+            vt_s     = float(v2d_f[0] * tx + v2d_f[1] * ty)
+            _arrow(inset_ax, fcx - eps_ins, fcy,
+                   nx * vn_s * sc_ins, ny * vn_s * sc_ins, "green", lw=1.6)
+            _arrow(inset_ax, fcx, fcy - eps_ins,
+                   tx * vt_s * sc_ins, ty * vt_s * sc_ins, "darkorange", lw=1.6)
+            _arrow(inset_ax, fcx + eps_ins, fcy + eps_ins,
+                   v2d_f[0] * sc_ins, v2d_f[1] * sc_ins, "dodgerblue", lw=1.9, zo=9)
+            inset_ax.plot(fcx, fcy, "k.", ms=5, zorder=10)
+
+        fp_xmin, fp_ymin = poly_f.min(axis=0)
+        fp_xmax, fp_ymax = poly_f.max(axis=0)
+        fp_xpad = (fp_xmax - fp_xmin) * 0.20 or 1.0
+        fp_ypad = (fp_ymax - fp_ymin) * 0.20 or 1.0
+        inset_ax.set_xlim(fp_xmin - fp_xpad, fp_xmax + fp_xpad)
+        inset_ax.set_ylim(fp_ymin - fp_ypad, fp_ymax + fp_ypad)
+        inset_ax.set_aspect("equal")
+        inset_ax.tick_params(labelsize=5)
+        inset_ax.set_title(
+            f"Focus cell (local scale ×{max_sp_focus / max_sp1:.1f})",
+            fontsize=6, pad=2,
+        )
+        ax1.indicate_inset_zoom(inset_ax, edgecolor="gray", alpha=0.6)
+
         fig1.tight_layout()
 
         # ══════════════════════════════════════════════════════════════
@@ -1082,6 +1168,7 @@ class FlowAreaResults(FlowArea):
                 all_sp2.extend(np.linalg.norm(v, axis=1).tolist())
         max_sp2 = max(max(all_sp2) if all_sp2 else 0.0, 1e-9)
         sc2 = cell_diam * 0.35 / max_sp2
+        _min_len2 = cell_diam * 0.35 * min_arrow_fraction
 
         n_m   = len(methods)
         n_col = min(3, n_m)
@@ -1097,10 +1184,11 @@ class FlowAreaResults(FlowArea):
             _draw_polys(ax)
 
             for pts, vels, color, label in _SOURCES.get(method, []):
-                _quiver(ax, pts, vels, color, label, sc2)
+                _quiver(ax, pts, vels, color, label, sc2, min_length=_min_len2)
 
             ax.set_aspect("equal")
-            ax.autoscale_view()
+            ax.set_xlim(_nbr_xlim)
+            ax.set_ylim(_nbr_ylim)
             ax.set_title(method, fontsize=9, fontweight="bold")
             ax.set_xlabel("X", fontsize=7)
             ax.set_ylabel("Y", fontsize=7)
@@ -1154,9 +1242,8 @@ class FlowAreaResults(FlowArea):
         }
 
         # Sample grid, masked to neighbourhood cell polygons (computed once)
-        all_poly_pts = np.vstack([np.asarray(polys[ci]) for ci in nbr])
-        x_min3, y_min3 = all_poly_pts.min(axis=0)
-        x_max3, y_max3 = all_poly_pts.max(axis=0)
+        x_min3, y_min3 = _nbr_xmin, _nbr_ymin
+        x_max3, y_max3 = _nbr_xmax, _nbr_ymax
         gx = np.linspace(x_min3, x_max3, sample_density)
         gy = np.linspace(y_min3, y_max3, sample_density)
         gxx, gyy = np.meshgrid(gx, gy)
@@ -1204,10 +1291,19 @@ class FlowAreaResults(FlowArea):
             valid = np.isfinite(sp_i) & (sp_i > 0)
 
             if valid.any():
+                u3_raw = vx_i[valid] * sc3
+                v3_raw = vy_i[valid] * sc3
+                len3   = np.hypot(u3_raw, v3_raw)
+                min_len3 = cell_diam * 0.38 * min_arrow_fraction
+                boost3 = np.where(
+                    (len3 > 1e-12) & (len3 < min_len3),
+                    min_len3 / np.maximum(len3, 1e-12),
+                    1.0,
+                )
                 colors_i = cmap3(norm3(sp_i[valid]))
                 ax.quiver(
                     grid_pts_in[valid, 0], grid_pts_in[valid, 1],
-                    vx_i[valid] * sc3, vy_i[valid] * sc3,
+                    u3_raw * boost3, v3_raw * boost3,
                     color=colors_i,
                     angles="xy", scale_units="xy", scale=1,
                     width=0.004, headwidth=4, headlength=5,
@@ -1215,7 +1311,8 @@ class FlowAreaResults(FlowArea):
                 )
 
             ax.set_aspect("equal")
-            ax.autoscale_view()
+            ax.set_xlim(_nbr_xlim)
+            ax.set_ylim(_nbr_ylim)
             ax.set_title(method, fontsize=9, fontweight="bold")
             ax.set_xlabel("X", fontsize=7)
             ax.set_ylabel("Y", fontsize=7)

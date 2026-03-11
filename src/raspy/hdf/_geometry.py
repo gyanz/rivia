@@ -439,9 +439,11 @@ class FlowArea:
 
         For straight faces (no interior perimeter points) this equals the
         midpoint of the chord between the two endpoint facepoints.  For
-        curved faces the centroid is the unweighted mean of all points
-        defining the face polyline: the two endpoint facepoints plus all
-        interior perimeter points from :attr:`face_perimeter`.
+        curved faces this is the **arc midpoint** — the point on the face
+        polyline at exactly half the total arc length — which guarantees the
+        result lies on the face itself.  An arc-length-weighted average of
+        segment midpoints is *not* used because it can float off the polyline
+        for non-convex shapes (V-notches, loops).
 
         Computed once and cached; subsequent accesses return the same array.
         """
@@ -458,16 +460,30 @@ class FlowArea:
         fp1 = fp_coords[fp_idx[:, 1]]   # (n_faces, 2)
 
         # Default: straight-face midpoint for all faces.
+        # For a two-point segment the arc midpoint equals the chord midpoint.
         centroids = 0.5 * (fp0 + fp1)
 
         # Override for curved faces (interior perimeter points present).
-        # returns face index where interior point count > 0
+        # Use the arc midpoint — the point on the polyline at exactly half the
+        # total arc length.  This guarantees the centroid lies ON the face
+        # polyline, unlike an arc-length-weighted average which can float off
+        # the curve for non-convex shapes (V-notches, loops, etc.).
         curved = np.where(peri_info[:, 1] > 0)[0]
         for fi in curved:
             start = int(peri_info[fi, 0])
             count = int(peri_info[fi, 1])
             pts = np.vstack([fp0[fi], peri_vals[start : start + count], fp1[fi]])
-            centroids[fi] = pts.mean(axis=0)
+            seg_len = np.linalg.norm(pts[1:] - pts[:-1], axis=1)
+            total = seg_len.sum()
+            if total == 0:
+                centroids[fi] = pts.mean(axis=0)
+                continue
+            cumlen = np.concatenate([[0.0], np.cumsum(seg_len)])
+            half = total / 2.0
+            seg_idx = int(np.searchsorted(cumlen[1:], half, side="right"))
+            seg_idx = min(seg_idx, len(seg_len) - 1)
+            t = (half - cumlen[seg_idx]) / seg_len[seg_idx]
+            centroids[fi] = pts[seg_idx] + t * (pts[seg_idx + 1] - pts[seg_idx])
 
         self._cache[cache_key] = centroids
         return centroids
