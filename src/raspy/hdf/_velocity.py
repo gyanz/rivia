@@ -276,15 +276,20 @@ def compute_all_cell_velocities(
     wse_interp: str = "average",
     cell_coords: np.ndarray | None = None,
     face_coords: np.ndarray | None = None,
-    n_total: int | None = None,
 ) -> np.ndarray:
-    """Compute WLS cell-centre velocity vectors for real and ghost cells.
+    """Compute WLS cell-centre velocity vectors for real cells.
+
+    Ghost cells are not reconstructed: HEC-RAS stores no face normal
+    velocities for ghost-only faces, so the WLS system for a ghost cell
+    would be severely underdetermined (one face, two unknowns).  Ghost-cell
+    WSE values in *cell_wse* are still used by the face-WSE estimators to
+    improve accuracy at boundary faces of real cells.
 
     Parameters
     ----------
     n_cells : int
         Number of real computational cells.
-    cell_face_info : ndarray, shape ``(>= n_total, 2)``
+    cell_face_info : ndarray, shape ``(>= n_cells, 2)``
         ``[start_index, count]`` into *cell_face_values*.
     cell_face_values : ndarray, shape ``(total, 2)``
         ``[face_index, orientation]`` for each cell-face pair.
@@ -298,9 +303,10 @@ def compute_all_cell_velocities(
         Area-elevation table values.
     face_vel : ndarray, shape ``(n_faces,)``
         Signed face normal velocities for this timestep.
-    cell_wse : ndarray, shape ``(n_total,)``
-        Cell-centre water-surface elevations.  When *n_total* > *n_cells*
-        the extra entries are ghost-cell WSEs.
+    cell_wse : ndarray, shape ``(n_cells,)`` or ``(n_cells + n_ghost,)``
+        Cell-centre water-surface elevations.  Ghost-cell WSEs (indices
+        ``>= n_cells``) are used by the face-WSE estimators but are not
+        reconstructed as velocity vectors.
     method : str
         ``"area_weighted"`` (default, matches HEC-RAS),
         ``"length_weighted"`` (simpler, no table lookup), or
@@ -314,24 +320,18 @@ def compute_all_cell_velocities(
         ``"sloped"`` — distance-weighted linear interpolation at the face's
         actual position between the two cell centres (requires *cell_coords*
         and *face_coords*).
-    cell_coords : ndarray, shape ``(n_total, 2)``, optional
-        X, Y coordinates of cell centres.  When ghost cells are included
-        this array must cover all *n_total* rows.  Required when
-        ``wse_interp="sloped"``.
+    cell_coords : ndarray, shape ``(n_cells + n_ghost, 2)``, optional
+        X, Y coordinates of cell centres.  Must cover ghost rows when
+        ``wse_interp="sloped"`` so boundary faces are interpolated
+        correctly.  Required when ``wse_interp="sloped"``.
     face_coords : ndarray, shape ``(n_faces, 2)``, optional
         X, Y coordinates of face centroids.  Required when
         ``wse_interp="sloped"``.
-    n_total : int, optional
-        Total number of cells to reconstruct, including ghost cells
-        (``n_total >= n_cells``).  Defaults to *n_cells* (backward
-        compatible — only real cells are reconstructed).
 
     Returns
     -------
-    ndarray, shape ``(n_total, 2)``
-        ``[Vx, Vy]`` depth-averaged velocity at each cell centre.
-        Entries ``0 .. n_cells-1`` are real cells; entries
-        ``n_cells .. n_total-1`` are ghost cells (when *n_total* > *n_cells*).
+    ndarray, shape ``(n_cells, 2)``
+        ``[Vx, Vy]`` depth-averaged velocity at each real cell centre.
     """
     if method not in {"area_weighted", "length_weighted", "flow_ratio"}:
         raise ValueError(
@@ -349,10 +349,9 @@ def compute_all_cell_velocities(
             "cell_coords and face_coords are required when wse_interp='sloped'"
         )
 
-    if n_total is None:
-        n_total = n_cells
-
-    # Pre-compute face WSE for area_weighted (used once, shared across cells)
+    # Pre-compute face WSE for area_weighted (used once, shared across cells).
+    # cell_wse may include ghost rows; the estimators use len(cell_wse) as the
+    # bound so ghost-cell WSE contributes to boundary face estimates.
     if method == "area_weighted":
         if wse_interp == "sloped":
             face_wse = _estimate_face_wse_sloped(
@@ -363,9 +362,9 @@ def compute_all_cell_velocities(
     else:
         face_wse = None
 
-    velocities = np.zeros((n_total, 2), dtype=np.float64)
+    velocities = np.zeros((n_cells, 2), dtype=np.float64)
 
-    for c in range(n_total):
+    for c in range(n_cells):
         start = int(cell_face_info[c, 0])
         count = int(cell_face_info[c, 1])
         vals = cell_face_values[start : start + count]

@@ -258,11 +258,8 @@ class FlowAreaResults(FlowArea):
 
         Returns
         -------
-        ndarray, shape ``(n_cells + n_ghost, 2)``
-            ``[Vx, Vy]`` depth-averaged velocity components.
-            Entries ``0 .. n_cells-1`` are real cells; entries
-            ``n_cells .. n_cells+n_ghost-1`` are ghost (boundary) cells.
-            Use ``[:self.n_cells]`` to get real cells only.
+        ndarray, shape ``(n_cells, 2)``
+            ``[Vx, Vy]`` depth-averaged velocity components for real cells.
         """
         from ._velocity import compute_all_cell_velocities
 
@@ -274,9 +271,9 @@ class FlowAreaResults(FlowArea):
             )
 
         face_vel = np.array(self.face_velocity[timestep, :])
-        # Read all rows (real + ghost) so boundary faces get ghost-cell WSE.
+        # Read all rows (real + ghost) so boundary face WSE benefits from
+        # ghost-cell WSE (boundary condition stage).
         cell_wse = np.array(self.water_surface[timestep, :])
-        n_total = len(cell_wse)
         face_flow = (
             np.array(self.face_flow[timestep, :]) if method == "flow_ratio" else None
         )
@@ -285,8 +282,8 @@ class FlowAreaResults(FlowArea):
         face_ae_info, face_ae_values = self.face_area_elevation
 
         if wse_interp == "sloped":
-            # Stack real + ghost cell coordinates so the sloped interpolator
-            # can distance-weight across the boundary face.
+            # Stack real + ghost cell coordinates so the sloped face-WSE
+            # estimator can distance-weight boundary faces correctly.
             cell_coords = np.vstack([self.cell_centers, self.ghost_cell_centers])
             face_coords = self.face_centroids
         else:
@@ -308,7 +305,6 @@ class FlowAreaResults(FlowArea):
             wse_interp=wse_interp,
             cell_coords=cell_coords,
             face_coords=face_coords,
-            n_total=n_total,
         )
 
     def cell_speed(
@@ -336,7 +332,7 @@ class FlowAreaResults(FlowArea):
         """
         vecs = self.cell_velocity_vectors(
             timestep, method=method, wse_interp=wse_interp
-        )[:self.n_cells]
+        )
         return np.sqrt(vecs[:, 0] ** 2 + vecs[:, 1] ** 2)
 
     def cell_velocity_angle(
@@ -370,7 +366,7 @@ class FlowAreaResults(FlowArea):
         """
         vecs = self.cell_velocity_vectors(
             timestep, method=method, wse_interp=wse_interp
-        )[:self.n_cells]
+        )
         vx = vecs[:, 0]
         vy = vecs[:, 1]
         speed = np.sqrt(vx**2 + vy**2)
