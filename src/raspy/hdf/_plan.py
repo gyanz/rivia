@@ -41,6 +41,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
 # ---------------------------------------------------------------------------
 # HDF path constants
 # ---------------------------------------------------------------------------
@@ -1840,6 +1841,9 @@ class FlowAreaResults(FlowArea):
         scatter_interp_method: Literal["nearest", "linear", "cubic"] = "linear",
         fix_triangulation: bool = True,
         clip_to_perimeter: bool = True,
+        wse_path_compare: str | Path | None = None,
+        depth_path_compare: str | Path | None = None,
+        vel_path_compare: str | Path | None = None,
     ) -> dict[str, Path | rasterio.io.DatasetReader]:
         """Export water-surface elevation, depth, and speed rasters in one pass.
 
@@ -1910,6 +1914,14 @@ class FlowAreaResults(FlowArea):
             and pixels outside the polygon are set to *nodata*.  **Mutually
             exclusive with** ``snap_to_reference_extent`` — a ``ValueError``
             is raised if both are ``True``.  Default ``True``.
+        wse_path_compare:
+            Optional path to a RasMapper WSE raster for debug comparison.
+            When provided, pixel-level difference statistics between the raspy
+            output and this raster are logged at INFO level after export.
+        depth_path_compare:
+            Optional path to a RasMapper depth raster for debug comparison.
+        vel_path_compare:
+            Optional path to a RasMapper speed raster for debug comparison.
         Returns
         -------
         dict with keys ``"water_surface"``, ``"depth"``, ``"speed"``.
@@ -2102,6 +2114,18 @@ class FlowAreaResults(FlowArea):
             speed_ds.close()
         else:
             speed_result = speed_ds
+
+        # ── 8. Debug comparison vs RasMapper (optional) ────────────────
+        if wse_path_compare is not None:
+            _raster._compare_rasters_debug("WSE", wse_result, wse_path_compare, nodata)
+        if depth_path_compare is not None:
+            _raster._compare_rasters_debug(
+                "Depth", depth_result, depth_path_compare, nodata
+            )
+        if vel_path_compare is not None:
+            _raster._compare_rasters_debug(
+                "Speed", speed_result, vel_path_compare, nodata
+            )
 
         return {
             "water_surface": wse_result,

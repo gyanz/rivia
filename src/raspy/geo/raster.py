@@ -2423,3 +2423,142 @@ def _mask_outside_polygon(
     with rasterio.open(out_path, "w", **profile) as dst:
         dst.write(data)
     return out_path
+
+
+def _compare_rasters_debug(
+    label: str,
+    output: Path | rasterio.io.DatasetReader,
+    compare_path: str | Path,
+    nodata: float,
+) -> None:
+    """Log pixel-level difference statistics between *output* and *compare_path*.
+
+    The *compare_path* raster is warped (bilinear resampling) onto the exact
+    grid of *output* so that extent / pixel-alignment differences between the
+    raspy output and a RasMapper export are handled transparently.  Only pixels
+    where **both** rasters have valid data are included in the statistics.
+
+    Parameters
+    ----------
+    label:
+        Short name used in log messages (e.g. ``"WSE"``).
+    output:
+        The raspy-generated raster — either an open
+        ``rasterio.io.DatasetReader`` or a ``Path`` to a written GeoTIFF.
+    compare_path:
+        Path to the RasMapper reference raster.
+    nodata:
+        No-data sentinel value used in *output*.
+    """
+    import rasterio
+    from rasterio.enums import Resampling
+    from rasterio.warp import reproject
+
+    _close_output = False
+    if isinstance(output, Path):
+        out_ds = rasterio.open(output)
+        _close_output = True
+    else:
+        out_ds = output  # DatasetReader — caller owns lifecycle
+
+    try:
+        out_arr = out_ds.read(1).astype(np.float64)
+        out_nodata = out_ds.nodata if out_ds.nodata is not None else nodata
+
+        with rasterio.open(compare_path) as cmp_ds:
+            cmp_nodata = cmp_ds.nodata
+            warped = np.full(
+                (out_ds.height, out_ds.width), np.nan, dtype=np.float64
+            )
+            reproject(
+                source=cmp_ds.read(1).astype(np.float64),
+                destination=warped,
+                src_transform=cmp_ds.transform,
+                src_crs=cmp_ds.crs,
+                src_nodata=cmp_nodata,
+                dst_transform=out_ds.transform,
+                dst_crs=out_ds.crs,
+                dst_nodata=np.nan,
+                resampling=Resampling.bilinear,
+            )
+
+        out_valid = ~np.isnan(out_arr) & (out_arr != out_nodata)
+        cmp_valid = ~np.isnan(warped)
+        mask = out_valid & cmp_valid
+
+        n_valid = int(mask.sum())
+        if n_valid == 0:
+            logger.info(
+                "[DEBUG %s compare] No overlapping valid pixels — "
+                "check that both rasters cover the same area.",
+                label,
+            )
+            return
+
+        diff = out_arr[mask] - warped[mask]
+        abs_diff = np.abs(diff)
+        mean_err = float(np.mean(diff))
+        mae = float(np.mean(abs_diff))
+        rmse = float(np.sqrt(np.mean(diff**2)))
+
+        logger.info(
+            "[DEBUG %s compare vs %s]\n"
+            "  Valid pixels : %d\n"
+            "  Mean error   : %+.4f  (raspy − RasMapper)\n"
+            "  MAE          : %.4f\n"
+            "  RMSE         : %.4f\n"
+            "  Max |error|  : %.4f\n"
+            "  p95 |error|  : %.4f",
+            label,
+            Path(compare_path).name,
+            n_valid,
+            mean_err,
+            mae,
+            rmse,
+            float(np.max(abs_diff)),
+            float(np.percentile(abs_diff, 95)),
+        )
+
+        # --- write above/below-mean-error point shapefiles ------------------
+        import tempfile
+
+        import geopandas as gpd
+
+        rows, cols = np.where(mask)
+        xs, ys = rasterio.transform.xy(out_ds.transform, rows, cols)
+        xs = np.asarray(xs, dtype=np.float64)
+        ys = np.asarray(ys, dtype=np.float64)
+
+        tmp_dir = Path(tempfile.gettempdir())
+        label_safe = label.replace(" ", "_")
+
+        ref_vals = warped[mask]  # RasMapper values at valid pixels
+        with np.errstate(divide="ignore", invalid="ignore"):
+            pct_diff = np.where(
+                ref_vals != 0, diff / ref_vals * 100.0, np.nan
+            )
+
+        outliers = abs_diff > mae
+        if outliers.any():
+            gdf = gpd.GeoDataFrame(
+                {
+                    "diff": diff[outliers],
+                    "pct_diff": pct_diff[outliers],
+                },
+                geometry=gpd.points_from_xy(xs[outliers], ys[outliers]),
+                crs=out_ds.crs,
+            )
+            shp_path = tmp_dir / f"raspy_debug_{label_safe}_outliers.shp"
+            gdf.to_file(shp_path)
+            logger.info(
+                "[DEBUG %s compare] outliers |diff| > MAE (%.4f): %d pts: %s",
+                label, mae, int(outliers.sum()), shp_path,
+            )
+        else:
+            logger.info(
+                "[DEBUG %s compare] No outlier pixels (all |diff| <= MAE).", label
+            )
+
+    finally:
+        if _close_output:
+            out_ds.close()
