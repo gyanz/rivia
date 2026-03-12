@@ -474,7 +474,7 @@ class FlowAreaResults(FlowArea):
         Optionally compares against the HEC-RAS stored ``Cell Velocity``
         scalar when that dataset is present in the HDF file.
 
-        Prints three tables:
+        Prints four tables:
 
         1. **WLS inputs** — per-face normal, length, V_n, face WSE, flow area.
         2. **Double-C stencil face velocities** — full 2D face velocity
@@ -485,6 +485,9 @@ class FlowAreaResults(FlowArea):
         3. **Facepoint velocities** — velocity assigned to each polygon vertex
            by averaging the full 2D velocities of all adjacent wet faces.
            This is what ``facepoint_blend`` interpolates between.
+        4. **Face normal velocity** — pure normal component ``vn × n̂`` for
+           each face.  This is the scatter value used by
+           ``"scatter_face_normal"`` with no double-C tangential contribution.
 
         Parameters
         ----------
@@ -770,6 +773,24 @@ class FlowAreaResults(FlowArea):
                 f"  {vfp[0]:>8.4f}  {vfp[1]:>8.4f}  {np.linalg.norm(vfp):>8.4f}"
                 f"  {_angle(vfp)}  {len(wet_touching):>5}  [{faces_str}]"
             )
+
+        # ════════════════════════════════════════════════════════════════
+        # 6. FACE NORMAL VELOCITY  (scatter_face_normal: vn × n̂)
+        # ════════════════════════════════════════════════════════════════
+        print(f"\n{SEP}")
+        print("  FACE NORMAL VELOCITY  (scatter_face_normal: vn \u00d7 n\u0302)")
+        print(SEP)
+        hdr4 = (
+            f"  {'Face':>6}  {'Vfn_x':>8}  {'Vfn_y':>8}  {'|Vfn|':>8}  {'dir':>8}"
+        )
+        print(hdr4)
+        print(f"  {'-'*44}")
+        for fi, (nx, ny), v in zip(face_idxs, normals, vn, strict=False):
+            vfn = np.array([v * nx, v * ny])
+            print(
+                f"  {fi:>6}  {vfn[0]:>8.4f}  {vfn[1]:>8.4f}"
+                f"  {abs(v):>8.4f}  {_angle(vfn)}"
+            )
         print()
 
     def plot_cell_velocity(
@@ -820,9 +841,9 @@ class FlowAreaResults(FlowArea):
             0-based index into the HDF time dimension.
         methods:
             Scatter methods to include in Figures 2 and 3.  Defaults to all
-            five: ``"scatter_face"``, ``"scatter_corners"``,
+            six: ``"scatter_face"``, ``"scatter_corners"``,
             ``"scatter_cell_face"``, ``"scatter_corners_face"``,
-            ``"scatter_cell_corners_face"``.
+            ``"scatter_cell_corners_face"``, ``"scatter_face_normal"``.
         wse_interp:
             Face WSE interpolation scheme passed to
             :meth:`cell_velocity_vectors`.
@@ -1686,10 +1707,17 @@ class FlowAreaResults(FlowArea):
             ``"scatter_cell_corners_face"`` — maximum-density scatter combining
             wet cell centres (WLS), wet mesh corners (double-C averaged), and
             wet face midpoints (double-C); union of all other scatter sources.
+
+            ``"scatter_face_normal"`` — global ``scipy.griddata`` over wet
+            face midpoints using only the stored normal component (``vn × n̂``).
+            No double-C tangential estimation; cell WLS velocities do not
+            influence the result.  Avoids tangential contamination near
+            wet/dry boundaries.
         scatter_interp_method:
             ``scipy.interpolate.griddata`` *method* used by
             ``"scatter_cell_face"``, ``"scatter_face"``, ``"scatter_corners"``,
-            ``"scatter_corners_face"``, and ``"scatter_cell_corners_face"``.
+            ``"scatter_corners_face"``, ``"scatter_cell_corners_face"``, and
+            ``"scatter_face_normal"``.
             One of ``"nearest"``, ``"linear"`` *(default)*, ``"cubic"``.
             Ignored for all other *vel_interp_method* values.
         fix_triangulation:
@@ -2080,7 +2108,8 @@ class FlowAreaResults(FlowArea):
         scatter_interp_method:
             ``scipy.interpolate.griddata`` *method* used by
             ``"scatter_cell_face"``, ``"scatter_face"``, ``"scatter_corners"``,
-            ``"scatter_corners_face"``, and ``"scatter_cell_corners_face"``.
+            ``"scatter_corners_face"``, ``"scatter_cell_corners_face"``, and
+            ``"scatter_face_normal"``.
             One of ``"nearest"``, ``"linear"`` *(default)*, ``"cubic"``.
             Ignored for all other *vel_interp_method* values.
         fix_triangulation:
