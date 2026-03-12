@@ -586,6 +586,7 @@ def mesh_to_velocity_raster(
     face_normals: np.ndarray | None = None,
     face_normal_velocity: np.ndarray | None = None,
     face_centers: np.ndarray | None = None,
+    face_velocity_coords: np.ndarray | None = None,
     cell_polygons: list[np.ndarray] | None = None,
     face_center_wse: np.ndarray | None = None,
     face_min_elevation: np.ndarray | None = None,
@@ -742,6 +743,15 @@ def mesh_to_velocity_raster(
         Also forwarded to the internal WSE render as *face_centers*
         for ``"sloping_corners_faces"`` and ``"sloping_corners_faces_shallow"``
         render modes.
+    face_velocity_coords : ndarray, shape ``(n_faces, 2)``, optional
+        X, Y position of the face normal velocity measurement point used as
+        the scatter/IDW/gradient coordinate for each face velocity vector.
+        When ``None`` (default), falls back to *face_centers* (face centroid).
+        Pass ``FlowArea.face_normal_intercept`` to place velocity vectors at
+        the point where the cell-centre connecting line crosses the face
+        polyline — the physically correct location for the HEC-RAS face-normal
+        velocity.  Has no effect for ``"flat_cell_center"`` or
+        ``"scatter_corners"`` (corners use facepoint coordinates).
     cell_polygons : list of ndarray, shape ``(n_vertices, 2)``, optional
         Exact cell boundary vertices per cell (``FlowArea.cell_polygons``).
         Forwarded to :func:`mesh_to_wse_raster`; used in sloping modes for
@@ -972,6 +982,12 @@ def mesh_to_velocity_raster(
         cell_face_values_arr = np.asarray(cell_face_values, dtype=np.int64)
         cell_face_info_arr = np.asarray(cell_face_info, dtype=np.int64)[:n_cells_real]
         face_ci_arr = np.asarray(face_cell_indexes, dtype=np.int64)
+        # face_velocity_coords: position of each face velocity vector for
+        # scatter/IDW/gradient methods.  Falls back to face_centers (centroid).
+        _face_vel_coords = np.asarray(
+            face_velocity_coords if face_velocity_coords is not None else face_centers,
+            dtype=np.float64,
+        )
 
         n_tight_rows = row_max - row_min
         n_tight_cols = col_max - col_min
@@ -1069,7 +1085,7 @@ def mesh_to_velocity_raster(
             wet_fp[face_fp_idx[wet_face, 0]] = True
             wet_fp[face_fp_idx[wet_face, 1]] = True
 
-            face_centroids_arr = np.asarray(face_centers, dtype=np.float64)
+            face_centroids_arr = _face_vel_coords
             pts = np.vstack([
                 facepoint_coords_arr[wet_fp],
                 face_centroids_arr[wet_face],
@@ -1124,7 +1140,7 @@ def mesh_to_velocity_raster(
             wet_fp[face_fp_idx[wet_face, 0]] = True
             wet_fp[face_fp_idx[wet_face, 1]] = True
 
-            face_centroids_arr = np.asarray(face_centers, dtype=np.float64)
+            face_centroids_arr = _face_vel_coords
             pts = np.vstack([
                 cell_centers_arr[~dry_mask],
                 facepoint_coords_arr[wet_fp],
@@ -1170,7 +1186,7 @@ def mesh_to_velocity_raster(
                 | ((right >= 0) & (right < n_total) & ~stencil_dry[right_safe])
             )
 
-            face_centroids_arr = np.asarray(face_centers, dtype=np.float64)
+            face_centroids_arr = _face_vel_coords
             if method == "scatter_cell_face":
                 pts = np.vstack([
                     cell_centers_arr[~dry_mask], face_centroids_arr[wet_face]
@@ -1330,7 +1346,7 @@ def mesh_to_velocity_raster(
                     )
 
                 else:
-                    face_centroids_arr = np.asarray(face_centers, dtype=np.float64)
+                    face_centroids_arr = _face_vel_coords
                     if method == "face_idw":
                         v_pixel = _interp_face_idw(
                             px, py, cell_idx_hit, n_cells,

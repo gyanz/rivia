@@ -223,8 +223,8 @@ def _estimate_face_wse_max(
 def _estimate_face_wse_sloped(
     face_cell_indexes: np.ndarray,
     cell_wse: np.ndarray,
-    cell_coords: np.ndarray,
-    face_coords: np.ndarray,
+    cell_centers: np.ndarray,
+    face_velocity_coords: np.ndarray,
 ) -> np.ndarray:
     """Estimate face WSE via distance-weighted linear interpolation.
 
@@ -235,13 +235,13 @@ def _estimate_face_wse_sloped(
         wse_face = (1 - t) * wse_left + t * wse_right
 
     where *d_left* (*d_right*) is the Euclidean distance from the face
-    centroid to the left (right) cell centre.  When the two distances sum
-    to nearly zero (degenerate geometry), the simple average is used as a
-    fallback.
+    velocity position to the left (right) cell centre.  When the two
+    distances sum to nearly zero (degenerate geometry), the simple average
+    is used as a fallback.
 
     For boundary faces (one neighbour index is -1 or beyond the length of
     *cell_wse*), the single available cell's WSE is used unchanged.
-    Passing extended *cell_wse* and *cell_coords* that include ghost cells
+    Passing extended *cell_wse* and *cell_centers* that include ghost cells
     makes boundary faces use distance-weighted interpolation like interior
     faces.
 
@@ -252,11 +252,13 @@ def _estimate_face_wse_sloped(
     cell_wse : ndarray, shape ``(n_total,)``
         Water-surface elevation indexed by cell index.  May include ghost
         cells (length ``n_cells + n_ghost``).
-    cell_coords : ndarray, shape ``(n_total, 2)``
-        X, Y coordinates indexed by cell index.  Must have the same length
-        as *cell_wse* so ghost-cell coordinates are accessible.
-    face_coords : ndarray, shape ``(n_faces, 2)``
-        X, Y coordinates of each face centroid.
+    cell_centers : ndarray, shape ``(n_total, 2)``
+        X, Y coordinates of cell centres.  Must have the same length as
+        *cell_wse* so ghost-cell coordinates are accessible.
+    face_velocity_coords : ndarray, shape ``(n_faces, 2)``
+        X, Y position of the face normal velocity measurement point.
+        Typically either the face centroid or the face normal intercept
+        (where the cell-centre connecting line crosses the face).
 
     Returns
     -------
@@ -278,8 +280,8 @@ def _estimate_face_wse_sloped(
         fi = np.where(both)[0]
         l_idx = left[fi]
         r_idx = right[fi]
-        d_left = np.linalg.norm(face_coords[fi] - cell_coords[l_idx], axis=1)
-        d_right = np.linalg.norm(face_coords[fi] - cell_coords[r_idx], axis=1)
+        d_left = np.linalg.norm(face_velocity_coords[fi] - cell_centers[l_idx], axis=1)
+        d_right = np.linalg.norm(face_velocity_coords[fi] - cell_centers[r_idx], axis=1)
         total = d_left + d_right
         # fallback to 0.5 for degenerate geometry (cells at same location).
         # Use a safe denominator to avoid division-by-zero in the numpy
@@ -311,13 +313,13 @@ def compute_all_cell_velocities(
     face_cell_indexes: np.ndarray,
     face_ae_info: np.ndarray,
     face_ae_values: np.ndarray,
-    face_vel: np.ndarray,
+    face_normal_velocity: np.ndarray,
     cell_wse: np.ndarray,
     method: str = "area_weighted",
     face_flow: np.ndarray | None = None,
     wse_interp: str = "average",
-    cell_coords: np.ndarray | None = None,
-    face_coords: np.ndarray | None = None,
+    cell_centers: np.ndarray | None = None,
+    face_velocity_coords: np.ndarray | None = None,
 ) -> np.ndarray:
     """Compute WLS cell-centre velocity vectors for real cells.
 
@@ -343,7 +345,7 @@ def compute_all_cell_velocities(
         Area-elevation table index for each face.
     face_ae_values : ndarray, shape ``(total, 4)``
         Area-elevation table values.
-    face_vel : ndarray, shape ``(n_faces,)``
+    face_normal_velocity : ndarray, shape ``(n_faces,)``
         Signed face normal velocities for this timestep.
     cell_wse : ndarray, shape ``(n_cells,)`` or ``(n_cells + n_ghost,)``
         Cell-centre water-surface elevations.  Ghost-cell WSEs (indices
@@ -360,17 +362,18 @@ def compute_all_cell_velocities(
         How to estimate face WSE when ``method="area_weighted"``.
         ``"average"`` (default) — simple mean of the two adjacent cell WSEs.
         ``"sloped"`` — distance-weighted linear interpolation at the face's
-        actual position between the two cell centres (requires *cell_coords*
-        and *face_coords*).
+        actual position between the two cell centres (requires *cell_centers*
+        and *face_velocity_coords*).
         ``"max"`` — maximum of the two adjacent cell WSEs (conservative;
         tends to increase flow area at partially-wet faces).
-    cell_coords : ndarray, shape ``(n_cells + n_ghost, 2)``, optional
+    cell_centers : ndarray, shape ``(n_cells + n_ghost, 2)``, optional
         X, Y coordinates of cell centres.  Must cover ghost rows when
         ``wse_interp="sloped"`` so boundary faces are interpolated
         correctly.  Required when ``wse_interp="sloped"``.
-    face_coords : ndarray, shape ``(n_faces, 2)``, optional
-        X, Y coordinates of face centroids.  Required when
-        ``wse_interp="sloped"``.
+    face_velocity_coords : ndarray, shape ``(n_faces, 2)``, optional
+        X, Y position of the face normal velocity measurement point.
+        Typically the face centroid or the face normal intercept.
+        Required when ``wse_interp="sloped"``.
 
     Returns
     -------
@@ -388,9 +391,12 @@ def compute_all_cell_velocities(
         raise ValueError(
             f"wse_interp must be 'average', 'sloped', or 'max'; got {wse_interp!r}"
         )
-    if wse_interp == "sloped" and (cell_coords is None or face_coords is None):
+    if wse_interp == "sloped" and (
+        cell_centers is None or face_velocity_coords is None
+    ):
         raise ValueError(
-            "cell_coords and face_coords are required when wse_interp='sloped'"
+            "cell_centers and face_velocity_coords are required "
+            "when wse_interp='sloped'"
         )
 
     # Pre-compute face WSE for area_weighted (used once, shared across cells).
@@ -399,7 +405,7 @@ def compute_all_cell_velocities(
     if method == "area_weighted":
         if wse_interp == "sloped":
             face_wse = _estimate_face_wse_sloped(
-                face_cell_indexes, cell_wse, cell_coords, face_coords
+                face_cell_indexes, cell_wse, cell_centers, face_velocity_coords
             )
         elif wse_interp == "max":
             face_wse = _estimate_face_wse_max(face_cell_indexes, cell_wse)
@@ -418,7 +424,7 @@ def compute_all_cell_velocities(
 
         normals = face_normals[face_idxs, :2]  # (k, 2)
         lengths = face_normals[face_idxs, 2]  # (k,)
-        vn = face_vel[face_idxs]  # (k,)
+        vn = face_normal_velocity[face_idxs]  # (k,)
 
         if method == "area_weighted":
             weights = np.array(

@@ -261,7 +261,7 @@ class TestComputeAllCellVelocities:
             fci=fci,
             ae_info=ae_info,
             ae_values=ae_values,
-            face_vel=face_vel,
+            face_normal_velocity=face_vel,
             cell_wse=cell_wse,
         )
 
@@ -275,7 +275,7 @@ class TestComputeAllCellVelocities:
             face_cell_indexes=m["fci"],
             face_ae_info=m["ae_info"],
             face_ae_values=m["ae_values"],
-            face_vel=m["face_vel"],
+            face_normal_velocity=m["face_normal_velocity"],
             cell_wse=m["cell_wse"],
         )
         assert result.shape == (m["n_cells"], 2)
@@ -293,7 +293,7 @@ class TestComputeAllCellVelocities:
             face_cell_indexes=m["fci"],
             face_ae_info=m["ae_info"],
             face_ae_values=m["ae_values"],
-            face_vel=m["face_vel"],
+            face_normal_velocity=m["face_normal_velocity"],
             cell_wse=m["cell_wse"],
         )
         aw = compute_all_cell_velocities(**kw, method="area_weighted")
@@ -312,7 +312,7 @@ class TestComputeAllCellVelocities:
                 face_cell_indexes=m["fci"],
                 face_ae_info=m["ae_info"],
                 face_ae_values=m["ae_values"],
-                face_vel=m["face_vel"],
+                face_normal_velocity=m["face_normal_velocity"],
                 cell_wse=m["cell_wse"],
                 method="bad_method",
             )
@@ -328,7 +328,7 @@ class TestComputeAllCellVelocities:
                 face_cell_indexes=m["fci"],
                 face_ae_info=m["ae_info"],
                 face_ae_values=m["ae_values"],
-                face_vel=m["face_vel"],
+                face_normal_velocity=m["face_normal_velocity"],
                 cell_wse=m["cell_wse"],
                 method="flow_ratio",
             )
@@ -344,14 +344,14 @@ class TestComputeAllCellVelocities:
                 face_cell_indexes=m["fci"],
                 face_ae_info=m["ae_info"],
                 face_ae_values=m["ae_values"],
-                face_vel=m["face_vel"],
+                face_normal_velocity=m["face_normal_velocity"],
                 cell_wse=m["cell_wse"],
                 wse_interp="bad",
             )
 
     def test_sloped_without_coords_raises(self, simple_mesh):
         m = simple_mesh
-        with pytest.raises(ValueError, match="cell_coords"):
+        with pytest.raises(ValueError, match="cell_centers"):
             compute_all_cell_velocities(
                 n_cells=m["n_cells"],
                 cell_face_info=m["cf_info"],
@@ -360,7 +360,7 @@ class TestComputeAllCellVelocities:
                 face_cell_indexes=m["fci"],
                 face_ae_info=m["ae_info"],
                 face_ae_values=m["ae_values"],
-                face_vel=m["face_vel"],
+                face_normal_velocity=m["face_normal_velocity"],
                 cell_wse=m["cell_wse"],
                 wse_interp="sloped",
             )
@@ -369,8 +369,8 @@ class TestComputeAllCellVelocities:
         """On a symmetric mesh, sloped WSE == average WSE → same velocities."""
         m = simple_mesh
         # cell centres at x=0 and x=2; faces at x=0 (shared) and x=2
-        cell_coords = np.array([[0.0, 0.0], [2.0, 0.0]])
-        face_coords = np.array([[0.0, 0.0], [2.0, 0.0]])
+        cell_centers = np.array([[0.0, 0.0], [2.0, 0.0]])
+        face_velocity_coords = np.array([[0.0, 0.0], [2.0, 0.0]])
         kw = dict(
             n_cells=m["n_cells"],
             cell_face_info=m["cf_info"],
@@ -379,14 +379,14 @@ class TestComputeAllCellVelocities:
             face_cell_indexes=m["fci"],
             face_ae_info=m["ae_info"],
             face_ae_values=m["ae_values"],
-            face_vel=m["face_vel"],
+            face_normal_velocity=m["face_normal_velocity"],
             cell_wse=m["cell_wse"],
         )
         avg = compute_all_cell_velocities(**kw, wse_interp="average")
         sloped = compute_all_cell_velocities(
             **kw,
             wse_interp="sloped",
-            cell_coords=cell_coords,
-            face_coords=face_coords,
+            cell_centers=cell_centers,
+            face_velocity_coords=face_velocity_coords,
         )
         np.testing.assert_allclose(avg, sloped, rtol=1e-6)

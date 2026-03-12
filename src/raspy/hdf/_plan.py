@@ -234,6 +234,9 @@ class FlowAreaResults(FlowArea):
             "area_weighted", "length_weighted", "flow_ratio"
         ] = "area_weighted",
         wse_interp: Literal["average", "sloped", "max"] = "average",
+        face_velocity_location: Literal[
+            "centroid", "normal_intercept"
+        ] = "normal_intercept",
     ) -> np.ndarray:
         """Reconstruct cell-centre velocity vectors via weighted least-squares.
 
@@ -254,7 +257,16 @@ class FlowAreaResults(FlowArea):
             How to estimate face WSE when ``method="area_weighted"``.
             ``"average"`` (default): simple mean of the two adjacent cell WSEs.
             ``"sloped"``: distance-weighted interpolation at the face's actual
-            position between the two cell centres.
+            position — see *face_velocity_location*.
+            ``"max"``: maximum of the two adjacent cell WSEs.
+        face_velocity_location:
+            Position used as the face normal velocity measurement point when
+            ``wse_interp="sloped"``.
+            ``"normal_intercept"`` (default): the point where the
+            cell-centre connecting line crosses the face polyline, matching
+            how HEC-RAS locates its finite-difference gradient.
+            ``"centroid"``: the geometric centroid of the face polyline.
+            Has no effect when ``wse_interp`` is ``"average"`` or ``"max"``.
 
         Returns
         -------
@@ -270,7 +282,7 @@ class FlowAreaResults(FlowArea):
                 "before running the simulation, or use a different method."
             )
 
-        face_vel = np.array(self.face_velocity[timestep, :])
+        face_normal_velocity = np.array(self.face_velocity[timestep, :])
         # Read all rows (real + ghost) so boundary face WSE benefits from
         # ghost-cell WSE (boundary condition stage).
         cell_wse = np.array(self.water_surface[timestep, :])
@@ -284,11 +296,15 @@ class FlowAreaResults(FlowArea):
         if wse_interp == "sloped":
             # Stack real + ghost cell coordinates so the sloped face-WSE
             # estimator can distance-weight boundary faces correctly.
-            cell_coords = np.vstack([self.cell_centers, self.ghost_cell_centers])
-            face_coords = self.face_centroids
+            cell_centers = np.vstack([self.cell_centers, self.ghost_cell_centers])
+            face_velocity_coords = (
+                self.face_normal_intercept
+                if face_velocity_location == "normal_intercept"
+                else self.face_centroids
+            )
         else:
-            cell_coords = None
-            face_coords = None
+            cell_centers = None
+            face_velocity_coords = None
 
         return compute_all_cell_velocities(
             n_cells=self.n_cells,
@@ -298,13 +314,13 @@ class FlowAreaResults(FlowArea):
             face_cell_indexes=self.face_cell_indexes,
             face_ae_info=face_ae_info,
             face_ae_values=face_ae_values,
-            face_vel=face_vel,
+            face_normal_velocity=face_normal_velocity,
             cell_wse=cell_wse,
             method=method,
             face_flow=face_flow,
             wse_interp=wse_interp,
-            cell_coords=cell_coords,
-            face_coords=face_coords,
+            cell_centers=cell_centers,
+            face_velocity_coords=face_velocity_coords,
         )
 
     def cell_speed(
@@ -314,6 +330,9 @@ class FlowAreaResults(FlowArea):
             "area_weighted", "length_weighted", "flow_ratio"
         ] = "area_weighted",
         wse_interp: Literal["average", "sloped", "max"] = "average",
+        face_velocity_location: Literal[
+            "centroid", "normal_intercept"
+        ] = "normal_intercept",
     ) -> np.ndarray:
         """Velocity magnitude at each cell centre for one timestep.
 
@@ -325,13 +344,16 @@ class FlowAreaResults(FlowArea):
             Passed to :meth:`cell_velocity_vectors`.
         wse_interp:
             Passed to :meth:`cell_velocity_vectors`.
+        face_velocity_location:
+            Passed to :meth:`cell_velocity_vectors`.
 
         Returns
         -------
         ndarray, shape ``(n_cells,)``
         """
         vecs = self.cell_velocity_vectors(
-            timestep, method=method, wse_interp=wse_interp
+            timestep, method=method, wse_interp=wse_interp,
+            face_velocity_location=face_velocity_location,
         )
         return np.sqrt(vecs[:, 0] ** 2 + vecs[:, 1] ** 2)
 
@@ -342,6 +364,9 @@ class FlowAreaResults(FlowArea):
             "area_weighted", "length_weighted", "flow_ratio"
         ] = "area_weighted",
         wse_interp: Literal["average", "sloped", "max"] = "average",
+        face_velocity_location: Literal[
+            "centroid", "normal_intercept"
+        ] = "normal_intercept",
     ) -> np.ndarray:
         """Flow direction at each cell centre for one timestep.
 
@@ -356,6 +381,8 @@ class FlowAreaResults(FlowArea):
             Passed to :meth:`cell_velocity_vectors`.
         wse_interp:
             Passed to :meth:`cell_velocity_vectors`.
+        face_velocity_location:
+            Passed to :meth:`cell_velocity_vectors`.
 
         Returns
         -------
@@ -365,7 +392,8 @@ class FlowAreaResults(FlowArea):
             Cells whose speed is below 1e-10 return ``nan``.
         """
         vecs = self.cell_velocity_vectors(
-            timestep, method=method, wse_interp=wse_interp
+            timestep, method=method, wse_interp=wse_interp,
+            face_velocity_location=face_velocity_location,
         )
         vx = vecs[:, 0]
         vy = vecs[:, 1]
@@ -381,6 +409,9 @@ class FlowAreaResults(FlowArea):
             "area_weighted", "length_weighted", "flow_ratio"
         ] = "area_weighted",
         wse_interp: Literal["average", "sloped", "max"] = "average",
+        face_velocity_location: Literal[
+            "centroid", "normal_intercept"
+        ] = "normal_intercept",
     ) -> np.ndarray:
         """Full 2D velocity ``[Vx, Vy]`` at each face midpoint via the double-C stencil.
 
@@ -398,6 +429,8 @@ class FlowAreaResults(FlowArea):
             WLS weight scheme passed to :meth:`cell_velocity_vectors`.
         wse_interp:
             Face WSE interpolation method passed to :meth:`cell_velocity_vectors`.
+        face_velocity_location:
+            Passed to :meth:`cell_velocity_vectors`.
 
         Returns
         -------
@@ -409,7 +442,8 @@ class FlowAreaResults(FlowArea):
 
         # cell_vel has shape (n_cells + n_ghost, 2); dry_mask matches.
         cell_vel = self.cell_velocity_vectors(
-            timestep, method=method, wse_interp=wse_interp
+            timestep, method=method, wse_interp=wse_interp,
+            face_velocity_location=face_velocity_location,
         )
         vel_mag = np.linalg.norm(cell_vel, axis=1)
         dry_mask = (vel_mag == 0.0) | ~np.isfinite(vel_mag)
@@ -429,6 +463,9 @@ class FlowAreaResults(FlowArea):
         vel_weight_method: Literal[
             "area_weighted", "length_weighted", "flow_ratio"
         ] = "length_weighted",
+        face_velocity_location: Literal[
+            "centroid", "normal_intercept"
+        ] = "normal_intercept",
     ) -> None:
         """Print a detailed per-face breakdown of velocity reconstruction.
 
@@ -460,6 +497,10 @@ class FlowAreaResults(FlowArea):
         vel_weight_method:
             WLS weight scheme used as V_L / V_R in the double-C stencil
             reconstruction.  Defaults to ``"length_weighted"``.
+        face_velocity_location:
+            Position of the face normal velocity measurement point used in
+            ``wse_interp="sloped"`` and passed to :meth:`cell_velocity_vectors`.
+            ``"normal_intercept"`` (default) or ``"centroid"``.
         """
         from ._velocity import (
             _estimate_face_wse_average,
@@ -492,7 +533,11 @@ class FlowAreaResults(FlowArea):
         vn      = face_vel[face_idxs]               # (k,)
 
         face_ci          = self.face_cell_indexes    # (n_faces, 2)
-        face_centroids_a = self.face_centroids       # (n_faces, 2)
+        face_centroids_a = (
+            self.face_normal_intercept
+            if face_velocity_location == "normal_intercept"
+            else self.face_centroids
+        )
         fp_idx_all       = self.face_facepoint_indexes  # (n_faces, 2)
         fp_coords        = self.facepoint_coordinates   # (n_fp, 2)
         # Stack ghost cell centres so _estimate_face_wse_sloped can index
@@ -525,7 +570,10 @@ class FlowAreaResults(FlowArea):
         # (used by the double-C stencil as V_L / V_R)
         # Returns (n_cells + n_ghost, 2); dry_mask matches.
         all_cell_vecs = self.cell_velocity_vectors(
-            timestep, method=vel_weight_method, wse_interp=wse_interp
+            timestep,
+            method=vel_weight_method,
+            wse_interp=wse_interp,
+            face_velocity_location=face_velocity_location,
         )
         _vel_mag = np.linalg.norm(all_cell_vecs, axis=1)
         dry_mask = (_vel_mag == 0.0) | ~np.isfinite(_vel_mag)
@@ -736,6 +784,9 @@ class FlowAreaResults(FlowArea):
         scatter_interp_method: Literal["nearest", "linear", "cubic"] = "linear",
         sample_density: int = 20,
         min_arrow_fraction: float = 0.10,
+        face_velocity_location: Literal[
+            "centroid", "normal_intercept"
+        ] = "normal_intercept",
     ) -> tuple:
         """Plot velocity decomposition and scatter-method comparison for a cell.
 
@@ -783,6 +834,10 @@ class FlowAreaResults(FlowArea):
         sample_density:
             Number of sample points along each axis of the neighbourhood
             bounding box before polygon masking.  Default ``20``.
+        face_velocity_location:
+            Position of the face normal velocity measurement point used as
+            scatter coordinates and passed to :meth:`cell_velocity_vectors`.
+            ``"normal_intercept"`` (default) or ``"centroid"``.
 
         Returns
         -------
@@ -853,7 +908,11 @@ class FlowAreaResults(FlowArea):
         cfi, cfv    = self.cell_face_info
         face_ci     = self.face_cell_indexes        # (n_faces, 2)
         fn_all      = self.face_normals             # (n_faces, 3): nx, ny, L
-        fc_all      = self.face_centroids           # (n_faces, 2)
+        fc_all      = (                              # (n_faces, 2)
+            self.face_normal_intercept
+            if face_velocity_location == "normal_intercept"
+            else self.face_centroids
+        )
         fp_idx      = self.face_facepoint_indexes   # (n_faces, 2)
         fp_xy       = self.facepoint_coordinates    # (n_fp, 2)
         cc_all      = self.cell_centers             # (n_cells, 2)
@@ -897,7 +956,10 @@ class FlowAreaResults(FlowArea):
         # ── Velocity reconstruction ────────────────────────────────────
         # cell_vecs has shape (n_cells + n_ghost, 2); dry_mask matches.
         cell_vecs = self.cell_velocity_vectors(
-            timestep, method=vel_weight_method, wse_interp=wse_interp
+            timestep,
+            method=vel_weight_method,
+            wse_interp=wse_interp,
+            face_velocity_location=face_velocity_location,
         )
         _vel_mag = np.linalg.norm(cell_vecs, axis=1)
         dry_mask = (_vel_mag == 0.0) | ~np.isfinite(_vel_mag)
@@ -1508,6 +1570,9 @@ class FlowAreaResults(FlowArea):
         scatter_interp_method: Literal["nearest", "linear", "cubic"] = "linear",
         fix_triangulation: bool = True,
         clip_to_perimeter: bool = True,
+        face_velocity_location: Literal[
+            "centroid", "normal_intercept"
+        ] = "normal_intercept",
     ) -> Path | rasterio.io.DatasetReader:
         """Interpolate a field to a GeoTIFF using mesh-conforming triangulation.
 
@@ -1633,6 +1698,13 @@ class FlowAreaResults(FlowArea):
             domain.  **Mutually exclusive with** ``snap_to_reference_extent``
             — a ``ValueError`` is raised if both are ``True``.
             Default ``True``.
+        face_velocity_location:
+            Position used as the face normal velocity measurement point when
+            ``vel_wse_method="sloped"``.
+            ``"normal_intercept"`` (default): where the cell-centre connecting
+            line crosses the face polyline.
+            ``"centroid"``: geometric centroid of the face polyline.
+            Passed to :meth:`cell_velocity_vectors`.
         Returns
         -------
         Path
@@ -1706,7 +1778,8 @@ class FlowAreaResults(FlowArea):
             # assigns velocity per-cell (no spatial interpolation across cells).
             cell_vel_wse = np.array(self.water_surface[timestep, : self.n_cells])
             cell_vel_vecs = self.cell_velocity_vectors(
-                timestep, method=vel_weight_method, wse_interp=vel_wse_method
+                timestep, method=vel_weight_method, wse_interp=vel_wse_method,
+                face_velocity_location=face_velocity_location,
             )
         else:
             raise ValueError(f"Unknown variable: {variable!r}")
@@ -1838,6 +1911,11 @@ class FlowAreaResults(FlowArea):
                 face_normals=self.face_normals,
                 face_normal_velocity=_face_vel_arr,
                 face_centers=self.face_centroids,
+                face_velocity_coords=(
+                    self.face_normal_intercept
+                    if face_velocity_location == "normal_intercept"
+                    else self.face_centroids
+                ),
             )
             if clip_to_perimeter:
                 result = _raster._mask_outside_polygon(
@@ -1863,6 +1941,11 @@ class FlowAreaResults(FlowArea):
                 face_normals=self.face_normals,
                 face_normal_velocity=_face_vel_arr,
                 face_centers=self.face_centroids,
+                face_velocity_coords=(
+                    self.face_normal_intercept
+                    if face_velocity_location == "normal_intercept"
+                    else self.face_centroids
+                ),
             )
             speed_ds = _raster._velocity_raster_to_speed(
                 vel_ds, None if clip_to_perimeter else output_path, nodata
@@ -1926,6 +2009,9 @@ class FlowAreaResults(FlowArea):
         scatter_interp_method: Literal["nearest", "linear", "cubic"] = "linear",
         fix_triangulation: bool = True,
         clip_to_perimeter: bool = True,
+        face_velocity_location: Literal[
+            "centroid", "normal_intercept"
+        ] = "normal_intercept",
         wse_path_compare: str | Path | None = None,
         depth_path_compare: str | Path | None = None,
         vel_path_compare: str | Path | None = None,
@@ -2000,6 +2086,13 @@ class FlowAreaResults(FlowArea):
             and pixels outside the polygon are set to *nodata*.  **Mutually
             exclusive with** ``snap_to_reference_extent`` — a ``ValueError``
             is raised if both are ``True``.  Default ``True``.
+        face_velocity_location:
+            Position used as the face normal velocity measurement point when
+            ``vel_wse_method="sloped"``.
+            ``"normal_intercept"`` (default): where the cell-centre connecting
+            line crosses the face polyline.
+            ``"centroid"``: geometric centroid of the face polyline.
+            Passed to :meth:`cell_velocity_vectors`.
         wse_path_compare:
             Optional path to a RasMapper WSE raster for debug comparison.
             When provided, pixel-level difference statistics between the raspy
@@ -2054,7 +2147,8 @@ class FlowAreaResults(FlowArea):
 
         # ── 2. WLS velocity vectors once ──────────────────────────────
         cell_vel_vecs = self.cell_velocity_vectors(
-            timestep, method=vel_weight_method, wse_interp=vel_wse_method
+            timestep, method=vel_weight_method, wse_interp=vel_wse_method,
+            face_velocity_location=face_velocity_location,
         )
 
         # ── 3. Mesh topology kwargs ────────────────────────────────────
@@ -2185,6 +2279,11 @@ class FlowAreaResults(FlowArea):
             face_normals=self.face_normals,
             face_normal_velocity=face_vel_arr,
             face_centers=self.face_centroids,
+            face_velocity_coords=(
+                self.face_normal_intercept
+                if face_velocity_location == "normal_intercept"
+                else self.face_centroids
+            ),
         )
 
         # Close shared in-memory WSE dataset now that all consumers are done.
