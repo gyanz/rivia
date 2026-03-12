@@ -582,6 +582,7 @@ def mesh_to_velocity_raster(
         "triangle_blend", "face_idw", "face_gradient",
         "facepoint_blend", "scatter_cell_face", "scatter_face",
         "scatter_corners", "scatter_corners_face", "scatter_cell_corners_face",
+        "scatter_face_normal",
     ] = "scatter_face",
     face_normals: np.ndarray | None = None,
     face_normal_velocity: np.ndarray | None = None,
@@ -728,6 +729,14 @@ def mesh_to_velocity_raster(
             ``"scatter_cell_face"`` and ``"scatter_corners_face"``.
             Requires *face_centers*.
 
+        ``"scatter_face_normal"``
+            Global scattered interpolation from wet face midpoints using
+            only the stored face-normal component: velocity vector = ``vn × n̂``
+            at each face centroid.  No double-C tangential estimation is
+            applied, so cell WLS velocities do not influence the result.
+            Avoids tangential contamination from complex or marginal-wet
+            cells near wet/dry boundaries.  Requires *face_centers*.
+
         All methods except ``"flat_cell_center"`` require *face_normals* and
         *face_normal_velocity*.  All except ``"flat_cell_center"`` and
         ``"scatter_corners"`` also require *face_centers*.
@@ -804,6 +813,7 @@ def mesh_to_velocity_raster(
         "triangle_blend", "face_idw", "face_gradient",
         "facepoint_blend", "scatter_cell_face", "scatter_face",
         "scatter_corners", "scatter_corners_face", "scatter_cell_corners_face",
+        "scatter_face_normal",
     }
     _ALL_METHODS = {"flat_cell_center"} | _INTERP_METHODS
     if method not in _ALL_METHODS:
@@ -1152,6 +1162,38 @@ def mesh_to_velocity_raster(
                 face_vel_2d[wet_face],
             ])
 
+            xi_flat = np.column_stack([xi_grid.ravel(), yi_grid.ravel()])
+            vel_flat = griddata(pts, vel, xi_flat, method=scatter_interp_method,
+                                fill_value=np.nan, rescale=True)
+            vx = vel_flat[:, 0].reshape(n_tight_rows, n_tight_cols)
+            vy = vel_flat[:, 1].reshape(n_tight_rows, n_tight_cols)
+
+        elif method == "scatter_face_normal":
+            try:
+                from scipy.interpolate import griddata
+            except ImportError as exc:
+                raise ImportError(
+                    "scatter_face_normal requires scipy. "
+                    "Install it with: pip install raspy[geo]"
+                ) from exc
+
+            left  = face_ci_arr[:, 0]
+            right = face_ci_arr[:, 1]
+            left_safe  = np.where((left  >= 0) & (left  < n_total), left,  0)
+            right_safe = np.where((right >= 0) & (right < n_total), right, 0)
+            wet_face = (
+                ((left  >= 0) & (left  < n_total) & ~stencil_dry[left_safe])
+                | ((right >= 0) & (right < n_total) & ~stencil_dry[right_safe])
+            )
+
+            # Pure normal-component face velocity: vn * n_hat.
+            # No double-C tangential estimation — cell WLS velocities are not
+            # used.  This prevents tangential contamination from ill-conditioned
+            # or marginal-wet cells propagating through the double-C stencil.
+            face_vel_normal = face_vel_arr[:, None] * face_normals_arr[:, :2]
+
+            pts     = _face_vel_coords[wet_face]
+            vel     = face_vel_normal[wet_face]
             xi_flat = np.column_stack([xi_grid.ravel(), yi_grid.ravel()])
             vel_flat = griddata(pts, vel, xi_flat, method=scatter_interp_method,
                                 fill_value=np.nan, rescale=True)

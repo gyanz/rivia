@@ -878,6 +878,7 @@ class FlowAreaResults(FlowArea):
             "scatter_cell_face",
             "scatter_corners_face",
             "scatter_cell_corners_face",
+            "scatter_face_normal",
         ]
         if methods is None:
             methods = _SCATTER_METHODS
@@ -1001,6 +1002,8 @@ class FlowAreaResults(FlowArea):
         vel_fc  = face_2d[nbr_wet_fi]
         pts_fp  = fp_xy[nbr_wet_fpi]
         vel_fp  = fp_vel[nbr_wet_fpi]
+        # scatter_face_normal: vn * n_hat at face midpoints (no double-C tangential)
+        vel_fn  = fv_raw[nbr_wet_fi][:, None] * fn_all[nbr_wet_fi, :2]
 
         # Typical cell diameter for arrow scaling
         poly_f    = np.asarray(polys[cell_idx])
@@ -1301,6 +1304,9 @@ class FlowAreaResults(FlowArea):
                 (pts_fp, vel_fp, "green",      "Facepoints (double-C avg)"),
                 (pts_fc, vel_fc, "dodgerblue", "Face midpoints (2D)"),
             ],
+            "scatter_face_normal": [
+                (pts_fc, vel_fn, "orange", "Face midpoints (vn×n̂)"),
+            ],
         }
 
         # Global speed scale so arrows are comparable across all panels
@@ -1381,6 +1387,7 @@ class FlowAreaResults(FlowArea):
                 np.vstack([pts_cc, pts_fp, pts_fc]),
                 np.vstack([vel_cc, vel_fp, vel_fc]),
             ),
+            "scatter_face_normal": (pts_fc, vel_fn),
         }
 
         # Sample grid, masked to neighbourhood cell polygons (computed once).
@@ -1566,6 +1573,7 @@ class FlowAreaResults(FlowArea):
             "triangle_blend", "face_idw", "face_gradient",
             "facepoint_blend", "scatter_cell_face", "scatter_face",
             "scatter_corners", "scatter_corners_face", "scatter_cell_corners_face",
+            "scatter_face_normal",
         ] = "scatter_face",
         scatter_interp_method: Literal["nearest", "linear", "cubic"] = "linear",
         fix_triangulation: bool = True,
@@ -2005,6 +2013,7 @@ class FlowAreaResults(FlowArea):
             "triangle_blend", "face_idw", "face_gradient",
             "facepoint_blend", "scatter_cell_face", "scatter_face",
             "scatter_corners", "scatter_corners_face", "scatter_cell_corners_face",
+            "scatter_face_normal",
         ] = "scatter_face",
         scatter_interp_method: Literal["nearest", "linear", "cubic"] = "linear",
         fix_triangulation: bool = True,
