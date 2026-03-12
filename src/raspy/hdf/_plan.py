@@ -463,6 +463,7 @@ class FlowAreaResults(FlowArea):
         """
         from ._velocity import (
             _estimate_face_wse_average,
+            _estimate_face_wse_max,
             _estimate_face_wse_sloped,
             _interpolate_face_flow_area,
             _wls_velocity,
@@ -503,6 +504,8 @@ class FlowAreaResults(FlowArea):
             face_wse_all = _estimate_face_wse_sloped(
                 face_ci, cell_wse, cell_centres, face_centroids_a
             )
+        elif wse_interp == "max":
+            face_wse_all = _estimate_face_wse_max(face_ci, cell_wse)
         else:
             face_wse_all = _estimate_face_wse_average(face_ci, cell_wse)
 
