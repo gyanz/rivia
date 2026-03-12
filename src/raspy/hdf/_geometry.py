@@ -405,15 +405,14 @@ class FlowArea:
         return self._load("Faces Minimum Elevation")
 
     @property
-    def face_invert_coords(self) -> np.ndarray:
-        """Coordinate of the invert (lowest-elevation point) of each face.
+    def face_invert_station(self) -> np.ndarray:
+        """Station of the invert centroid of each face.
 
-        HEC-RAS stores the ``(x, y)`` location of the minimum-elevation point
-        along the face cross-section for each face.  This differs from
-        :attr:`face_centroids` (the geometric arc midpoint) when the face
-        terrain profile is not symmetric.
+        HEC-RAS stores the station distance (from one end of the face) to the
+        centroid of the bottom 5% of the face cross-sectional area — the invert
+        region used internally for flow calculations.
 
-        Shape ``(n_faces, 2)``.
+        Shape ``(n_faces,)``, dtype float32.
         """
         return self._load("Faces Low Elevation Centroid")
 
