@@ -817,6 +817,44 @@ class FlowArea:
         return lengths
 
     @property
+    def face_invert_coordinates(self) -> np.ndarray:
+        """(x, y) coordinates of the invert point on each face.
+
+        Interpolates along each face polyline at the station distance stored in
+        :attr:`face_invert_station` to produce a projected ``(x, y)`` position.
+        Handles both straight faces (two endpoints) and curved faces (with
+        interior perimeter points) correctly.
+
+        Shape ``(n_faces, 2)``.
+        """
+        cache_key = "_face_invert_coordinates"
+        if cache_key in self._cache:
+            return self._cache[cache_key]
+
+        stations = self.face_invert_station  # (n_faces,)
+        polylines = self.face_polylines      # list of (n_pts, 2)
+        n_faces = len(polylines)
+        coords = np.empty((n_faces, 2), dtype=float)
+
+        for fi, poly in enumerate(polylines):
+            s = float(stations[fi])
+            seg_vecs = np.diff(poly, axis=0)              # (n_segs, 2)
+            seg_lens = np.linalg.norm(seg_vecs, axis=1)   # (n_segs,)
+            cum = np.concatenate([[0.0], np.cumsum(seg_lens)])
+
+            # Clamp station to [0, total_length] to guard against float32 overshoot
+            s = float(np.clip(s, 0.0, cum[-1]))
+
+            seg = int(np.searchsorted(cum, s, side="right")) - 1
+            seg = min(seg, len(seg_lens) - 1)
+
+            t = (s - cum[seg]) / seg_lens[seg] if seg_lens[seg] > 0 else 0.0
+            coords[fi] = poly[seg] + t * seg_vecs[seg]
+
+        self._cache[cache_key] = coords
+        return coords
+
+    @property
     def cell_bbox(self) -> np.ndarray:
         """Axis-aligned bounding box per cell.  Shape ``(n_cells, 4)``.
 
