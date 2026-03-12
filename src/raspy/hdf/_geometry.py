@@ -455,6 +455,69 @@ class FlowArea:
         return coords
 
     @property
+    def face_normal_intercept(self) -> np.ndarray:
+        """(x, y) coordinate on each face that lies on the cell-centre connecting line.
+
+        For each interior face (both neighbours present), this is the point
+        where the straight line through the two adjacent cell centres crosses
+        the face polyline.  HEC-RAS uses this intersection implicitly when
+        computing face-normal hydraulic gradients and finite-difference slopes.
+
+        For boundary faces (one neighbour absent), the face centroid is
+        returned as a fallback.
+
+        Shape ``(n_faces, 2)``.  Computed once and cached.
+
+        Notes
+        -----
+        Parametric 2D line–segment intersection: given the infinite line
+        ``P = cell_L + t * (cell_R - cell_L)`` and face segment
+        ``Q = A + s * (B - A)`` the system is solved for *s* (segment
+        parameter, must satisfy ``0 ≤ s ≤ 1``) and the hit point is
+        ``A + s * (B - A)``.  For curved faces all segments are tested and
+        the first hit is used.
+        """
+        cache_key = "_face_normal_intercept"
+        if cache_key in self._cache:
+            return self._cache[cache_key]
+
+        cc = self.cell_centers        # (n_cells, 2)
+        fci = self.face_cell_indexes  # (n_faces, 2)
+        polylines = self.face_polylines  # list[(n_pts, 2)]
+        centroids = self.face_centroids  # (n_faces, 2) — boundary fallback
+
+        n_cells = len(cc)
+        result = centroids.copy()
+
+        for fi, poly in enumerate(polylines):
+            left = int(fci[fi, 0])
+            right = int(fci[fi, 1])
+
+            if left < 0 or left >= n_cells or right < 0 or right >= n_cells:
+                continue  # boundary face — centroid already set
+
+            d = cc[right] - cc[left]  # direction of cell-to-cell line
+
+            for k in range(len(poly) - 1):
+                a = poly[k]
+                e = poly[k + 1] - a  # face-segment direction
+
+                # Solve P1 + t*d = A + s*e  →  det, s via Cramer's rule
+                det = e[0] * d[1] - d[0] * e[1]
+                if abs(det) < 1e-12:
+                    continue  # parallel — try next segment
+                r = a - cc[left]
+                s = (d[0] * r[1] - r[0] * d[1]) / det
+                if -1e-9 <= s <= 1.0 + 1e-9:
+                    s = float(np.clip(s, 0.0, 1.0))
+                    result[fi] = a + s * e
+                    break
+            # If no segment intersected (degenerate geometry), centroid stays.
+
+        self._cache[cache_key] = result
+        return result
+
+    @property
     def face_facepoint_indexes(self) -> np.ndarray:
         """Start and end face-point indices for each face.
 
