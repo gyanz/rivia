@@ -178,6 +178,48 @@ def _estimate_face_wse_average(
     return face_wse
 
 
+def _estimate_face_wse_max(
+    face_cell_indexes: np.ndarray,
+    cell_wse: np.ndarray,
+) -> np.ndarray:
+    """Estimate face WSE as the maximum of the two adjacent cell WSEs.
+
+    For boundary faces (one neighbour index is -1 or beyond the length of
+    *cell_wse*), the single available cell's WSE is used.
+
+    Parameters
+    ----------
+    face_cell_indexes : ndarray, shape ``(n_faces, 2)``
+        Left and right cell index per face; -1 = no neighbour.
+    cell_wse : ndarray, shape ``(n_total,)``
+        Water-surface elevation indexed by cell index.  May include ghost cells.
+
+    Returns
+    -------
+    ndarray, shape ``(n_faces,)``
+    """
+    n_total = len(cell_wse)
+    n_faces = face_cell_indexes.shape[0]
+    face_wse = np.zeros(n_faces)
+
+    left = face_cell_indexes[:, 0].astype(int)
+    right = face_cell_indexes[:, 1].astype(int)
+
+    l_real = (left >= 0) & (left < n_total)
+    r_real = (right >= 0) & (right < n_total)
+
+    both = l_real & r_real
+    face_wse[both] = np.maximum(cell_wse[left[both]], cell_wse[right[both]])
+
+    left_only = l_real & ~r_real
+    face_wse[left_only] = cell_wse[left[left_only]]
+
+    right_only = ~l_real & r_real
+    face_wse[right_only] = cell_wse[right[right_only]]
+
+    return face_wse
+
+
 def _estimate_face_wse_sloped(
     face_cell_indexes: np.ndarray,
     cell_wse: np.ndarray,
@@ -320,6 +362,8 @@ def compute_all_cell_velocities(
         ``"sloped"`` — distance-weighted linear interpolation at the face's
         actual position between the two cell centres (requires *cell_coords*
         and *face_coords*).
+        ``"max"`` — maximum of the two adjacent cell WSEs (conservative;
+        tends to increase flow area at partially-wet faces).
     cell_coords : ndarray, shape ``(n_cells + n_ghost, 2)``, optional
         X, Y coordinates of cell centres.  Must cover ghost rows when
         ``wse_interp="sloped"`` so boundary faces are interpolated
@@ -340,9 +384,9 @@ def compute_all_cell_velocities(
         )
     if method == "flow_ratio" and face_flow is None:
         raise ValueError("face_flow is required when method='flow_ratio'")
-    if wse_interp not in {"average", "sloped"}:
+    if wse_interp not in {"average", "sloped", "max"}:
         raise ValueError(
-            f"wse_interp must be 'average' or 'sloped'; got {wse_interp!r}"
+            f"wse_interp must be 'average', 'sloped', or 'max'; got {wse_interp!r}"
         )
     if wse_interp == "sloped" and (cell_coords is None or face_coords is None):
         raise ValueError(
@@ -357,6 +401,8 @@ def compute_all_cell_velocities(
             face_wse = _estimate_face_wse_sloped(
                 face_cell_indexes, cell_wse, cell_coords, face_coords
             )
+        elif wse_interp == "max":
+            face_wse = _estimate_face_wse_max(face_cell_indexes, cell_wse)
         else:
             face_wse = _estimate_face_wse_average(face_cell_indexes, cell_wse)
     else:

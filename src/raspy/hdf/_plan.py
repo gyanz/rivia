@@ -233,7 +233,7 @@ class FlowAreaResults(FlowArea):
         method: Literal[
             "area_weighted", "length_weighted", "flow_ratio"
         ] = "area_weighted",
-        wse_interp: Literal["average", "sloped"] = "average",
+        wse_interp: Literal["average", "sloped", "max"] = "average",
     ) -> np.ndarray:
         """Reconstruct cell-centre velocity vectors via weighted least-squares.
 
@@ -313,7 +313,7 @@ class FlowAreaResults(FlowArea):
         method: Literal[
             "area_weighted", "length_weighted", "flow_ratio"
         ] = "area_weighted",
-        wse_interp: Literal["average", "sloped"] = "average",
+        wse_interp: Literal["average", "sloped", "max"] = "average",
     ) -> np.ndarray:
         """Velocity magnitude at each cell centre for one timestep.
 
@@ -341,7 +341,7 @@ class FlowAreaResults(FlowArea):
         method: Literal[
             "area_weighted", "length_weighted", "flow_ratio"
         ] = "area_weighted",
-        wse_interp: Literal["average", "sloped"] = "average",
+        wse_interp: Literal["average", "sloped", "max"] = "average",
     ) -> np.ndarray:
         """Flow direction at each cell centre for one timestep.
 
@@ -380,7 +380,7 @@ class FlowAreaResults(FlowArea):
         method: Literal[
             "area_weighted", "length_weighted", "flow_ratio"
         ] = "area_weighted",
-        wse_interp: Literal["average", "sloped"] = "average",
+        wse_interp: Literal["average", "sloped", "max"] = "average",
     ) -> np.ndarray:
         """Full 2D velocity ``[Vx, Vy]`` at each face midpoint via the double-C stencil.
 
@@ -425,7 +425,7 @@ class FlowAreaResults(FlowArea):
         self,
         cell_idx: int,
         timestep: int,
-        wse_interp: Literal["average", "sloped"] = "sloped",
+        wse_interp: Literal["average", "sloped", "max"] = "sloped",
         vel_weight_method: Literal[
             "area_weighted", "length_weighted", "flow_ratio"
         ] = "length_weighted",
@@ -726,7 +726,7 @@ class FlowAreaResults(FlowArea):
         cell_idx: int,
         timestep: int,
         methods: list[str] | None = None,
-        wse_interp: Literal["average", "sloped"] = "average",
+        wse_interp: Literal["average", "sloped", "max"] = "average",
         vel_weight_method: Literal[
             "area_weighted", "length_weighted", "flow_ratio"
         ] = "area_weighted",
@@ -1443,7 +1443,7 @@ class FlowAreaResults(FlowArea):
         method: Literal[
             "area_weighted", "length_weighted", "flow_ratio"
         ] = "area_weighted",
-        wse_interp: Literal["average", "sloped"] = "average",
+        wse_interp: Literal["average", "sloped", "max"] = "average",
     ) -> tuple[np.ndarray, np.ndarray]:
         """Per-cell maximum speed and corresponding velocity vector.
 
@@ -1495,7 +1495,7 @@ class FlowAreaResults(FlowArea):
         vel_weight_method: Literal[
             "area_weighted", "length_weighted", "flow_ratio"
         ] = "area_weighted",
-        vel_wse_method: Literal["average", "sloped"] = "sloped",
+        vel_wse_method: Literal["average", "sloped", "max"] = "sloped",
         vel_interp_method: Literal[
             "flat_cell_center",
             "triangle_blend", "face_idw", "face_gradient",
@@ -1913,7 +1913,7 @@ class FlowAreaResults(FlowArea):
         vel_weight_method: Literal[
             "area_weighted", "length_weighted", "flow_ratio"
         ] = "length_weighted",
-        vel_wse_method: Literal["average", "sloped"] = "sloped",
+        vel_wse_method: Literal["average", "sloped", "max"] = "sloped",
         vel_interp_method: Literal[
             "flat_cell_center",
             "triangle_blend", "face_idw", "face_gradient",
