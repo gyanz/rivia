@@ -808,6 +808,7 @@ class FlowAreaResults(FlowArea):
         face_velocity_location: Literal[
             "centroid", "normal_intercept"
         ] = "normal_intercept",
+        colorbar: bool = True,
     ) -> tuple:
         """Plot velocity decomposition and scatter-method comparison for a cell.
 
@@ -859,6 +860,11 @@ class FlowAreaResults(FlowArea):
             Position of the face normal velocity measurement point used as
             scatter coordinates and passed to :meth:`cell_velocity_vectors`.
             ``"normal_intercept"`` (default) or ``"centroid"``.
+        colorbar:
+            Whether to draw the shared speed colorbar on Figure 3.
+            ``True`` (default) shows it; ``False`` hides it, which can be
+            useful when all subplot slots are filled and the bar would
+            otherwise overlap the panels.
 
         Returns
         -------
@@ -1435,13 +1441,18 @@ class FlowAreaResults(FlowArea):
         cmap3   = plt.get_cmap("plasma")
         sc3     = cell_diam * 0.38 / sp_max3  # data-units per unit speed
 
-        n_m3   = len(methods)
-        n_col3 = min(3, n_m3)
-        n_row3 = (n_m3 + n_col3 - 1) // n_col3
+        n_m3        = len(methods)
+        n_col3      = min(3, n_m3)
+        n_row3      = (n_m3 + n_col3 - 1) // n_col3
+        has_empty   = n_row3 * n_col3 > n_m3
+        # Use constrained_layout when the colorbar has no empty slot to
+        # occupy — it prevents the bar from overlapping the subplot panels.
+        _layout3    = "constrained" if (colorbar and not has_empty) else None
         fig3, axes3 = plt.subplots(
             n_row3, n_col3,
             figsize=(6.5 * n_col3, 5.5 * n_row3),
             squeeze=False,
+            layout=_layout3,
         )
 
         for idx, method in enumerate(methods):
@@ -1496,27 +1507,32 @@ class FlowAreaResults(FlowArea):
 
         empty_idxs = list(range(n_m3, n_row3 * n_col3))
 
-        # Shared colourbar
-        sm3 = ScalarMappable(cmap=cmap3, norm=norm3)
-        sm3.set_array([])
-        if empty_idxs:
-            # Turn the first empty slot into a blank host, then place a narrow
-            # inset axes centred inside it for the colourbar.
-            host_ax = axes3[empty_idxs[0] // n_col3, empty_idxs[0] % n_col3]
-            host_ax.set_visible(True)
-            host_ax.axis("off")
-            for idx in empty_idxs[1:]:
-                axes3[idx // n_col3, idx % n_col3].set_visible(False)
-            from mpl_toolkits.axes_grid1.inset_locator import inset_axes
-            cbar_ax = inset_axes(host_ax, width="25%", height="80%",
-                                 loc="center")
-            fig3.colorbar(sm3, cax=cbar_ax, label="Speed (model units/s)")
-            cbar_ax.yaxis.set_label_position("left")
-            cbar_ax.yaxis.tick_left()
+        # Shared colourbar (skipped when colorbar=False)
+        if colorbar:
+            sm3 = ScalarMappable(cmap=cmap3, norm=norm3)
+            sm3.set_array([])
+            if empty_idxs:
+                # Turn the first empty slot into a blank host, then place a
+                # narrow inset axes centred inside it for the colourbar.
+                host_ax = axes3[empty_idxs[0] // n_col3, empty_idxs[0] % n_col3]
+                host_ax.set_visible(True)
+                host_ax.axis("off")
+                for idx in empty_idxs[1:]:
+                    axes3[idx // n_col3, idx % n_col3].set_visible(False)
+                from mpl_toolkits.axes_grid1.inset_locator import inset_axes
+                cbar_ax = inset_axes(host_ax, width="25%", height="80%",
+                                     loc="center")
+                fig3.colorbar(sm3, cax=cbar_ax, label="Speed (model units/s)")
+                cbar_ax.yaxis.set_label_position("left")
+                cbar_ax.yaxis.tick_left()
+            else:
+                # constrained_layout (set at figure creation) ensures the bar
+                # does not overlap the subplot panels.
+                fig3.colorbar(sm3, ax=axes3.ravel().tolist(),
+                              label="Speed (model units/s)")
         else:
-            fig3.colorbar(sm3, ax=axes3.ravel().tolist(),
-                          fraction=0.02, pad=0.02,
-                          label="Speed (model units/s)")
+            for idx in empty_idxs:
+                axes3[idx // n_col3, idx % n_col3].set_visible(False)
 
         fig3.suptitle(
             f"{self.name} — Cell {cell_idx}  |  Interpolated Velocity Field\n"
@@ -1524,7 +1540,8 @@ class FlowAreaResults(FlowArea):
             f"vel_weight={vel_weight_method}  wse_interp={wse_interp}",
             fontsize=11, fontweight="bold",
         )
-        fig3.tight_layout()
+        if _layout3 != "constrained":
+            fig3.tight_layout()
         return fig1, fig2, fig3
 
     # ------------------------------------------------------------------
