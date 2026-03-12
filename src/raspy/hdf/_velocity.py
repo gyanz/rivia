@@ -532,10 +532,12 @@ def compute_all_face_velocities(
     The normal component ``vn`` is kept exactly as stored in the HDF; only
     the tangential component is estimated from the WLS reconstruction.
 
-    Ghost-cell support: when *cell_velocity* and *dry_mask* include ghost
-    cells (length ``n_cells + n_ghost``), boundary faces automatically use
-    the ghost-cell WLS velocity for the tangential component, improving
-    accuracy at the domain perimeter.
+    Note on ghost cells: HEC-RAS stores WSE for ghost cells in the HDF
+    output, but ghost cells have no WLS velocity (they are excluded from
+    the WLS reconstruction in :func:`compute_all_cell_velocities`).
+    Boundary faces of real cells fall back to the single valid neighbour's
+    tangential component — this is the correct behaviour regardless of
+    whether *cell_velocity* includes ghost-cell rows.
 
     Parameters
     ----------
@@ -546,8 +548,9 @@ def compute_all_face_velocities(
     face_cell_indexes : ndarray, shape ``(n_faces, 2)``
         Left and right cell indices; ``-1`` = no neighbour.
     cell_velocity : ndarray, shape ``(n_total, 2)``
-        WLS velocity vectors ``[Vx, Vy]`` at each cell centre.  May include
-        ghost cells (indices ``n_cells_real .. n_total-1``).
+        WLS velocity vectors ``[Vx, Vy]`` at each cell centre.  Ghost-cell
+        rows (indices ``n_cells_real .. n_total-1``), if present, are
+        ``[0, 0]`` and will be excluded via *dry_mask*.
     dry_mask : ndarray, shape ``(n_total,)``, bool
         ``True`` where a cell is dry; its WLS velocity is excluded.
         Must have the same length as *cell_velocity*.
