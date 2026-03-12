@@ -1,4 +1,4 @@
-"""PlanHdf — read HEC-RAS plan HDF5 files (.p*.hdf).
+"""PlanHdf - read HEC-RAS plan HDF5 files (.p*.hdf).
 
 Plan HDF files embed the same ``Geometry/`` group as geometry HDF files
 *plus* ``Results/Unsteady/...`` time-series and summary output.
@@ -62,7 +62,7 @@ _RAS_TS_FMT = "%d%b%Y %H:%M:%S"
 
 
 # ---------------------------------------------------------------------------
-# FlowAreaResults — extends FlowArea with plan results
+# FlowAreaResults - extends FlowArea with plan results
 # ---------------------------------------------------------------------------
 
 
@@ -105,7 +105,7 @@ class FlowAreaResults(FlowArea):
         self._sum = sum_group
 
     # ------------------------------------------------------------------
-    # Lazy time-series (h5py.Dataset — slice to control memory)
+    # Lazy time-series (h5py.Dataset - slice to control memory)
     # ------------------------------------------------------------------
 
     @property
@@ -191,7 +191,7 @@ class FlowAreaResults(FlowArea):
         return self._load_summary("Maximum Face Velocity", n=self.n_faces)
 
     # ------------------------------------------------------------------
-    # Computed results — pure numpy, no geo dependency
+    # Computed results - pure numpy, no geo dependency
     # ------------------------------------------------------------------
 
     def depth(self, timestep: int) -> np.ndarray:
@@ -217,7 +217,7 @@ class FlowAreaResults(FlowArea):
 
         ``value = max(0, max_WSE - bed_elevation)``.
         ``time`` is the elapsed time of maximum WSE (days); this is an
-        approximation — maximum depth may not coincide with maximum WSE.
+        approximation - maximum depth may not coincide with maximum WSE.
 
         Returns
         -------
@@ -257,7 +257,7 @@ class FlowAreaResults(FlowArea):
             How to estimate face WSE when ``method="area_weighted"``.
             ``"average"`` (default): simple mean of the two adjacent cell WSEs.
             ``"sloped"``: distance-weighted interpolation at the face's actual
-            position — see *face_velocity_location*.
+            position - see *face_velocity_location*.
             ``"max"``: maximum of the two adjacent cell WSEs.
         face_velocity_location:
             Position used as the face normal velocity measurement point when
@@ -476,16 +476,16 @@ class FlowAreaResults(FlowArea):
 
         Prints four tables:
 
-        1. **WLS inputs** — per-face normal, length, V_n, face WSE, flow area.
-        2. **Double-C stencil face velocities** — full 2D face velocity
-           ``vn·n̂ + vt·t̂`` using the *vel_weight_method* WLS vectors for
+        1. **WLS inputs** - per-face normal, length, V_n, face WSE, flow area.
+        2. **Double-C stencil face velocities** - full 2D face velocity
+           ``vn*n_hat + vt*t_hat`` using the *vel_weight_method* WLS vectors for
            the tangential component.  This is what all intra-cell interpolation
            methods (``triangle_blend``, ``face_idw``, ``face_gradient``,
            ``facepoint_blend``) use at the face midpoints.
-        3. **Facepoint velocities** — velocity assigned to each polygon vertex
+        3. **Facepoint velocities** - velocity assigned to each polygon vertex
            by averaging the full 2D velocities of all adjacent wet faces.
            This is what ``facepoint_blend`` interpolates between.
-        4. **Face normal velocity** — pure normal component ``vn × n̂`` for
+        4. **Face normal velocity** - pure normal component ``vn * n_hat`` for
            each face.  This is the scatter value used by
            ``"scatter_face_normal"`` with no double-C tangential contribution.
 
@@ -547,7 +547,7 @@ class FlowAreaResults(FlowArea):
         # up to n_total (len(cell_wse) includes ghost rows).
         cell_centres = np.vstack([self.cell_centers, self.ghost_cell_centers])
 
-        # ── Face WSE and flow-area weights ─────────────────────────────
+        # -- Face WSE and flow-area weights -----------------------------
         if wse_interp == "sloped":
             face_wse_all = _estimate_face_wse_sloped(
                 face_ci, cell_wse, cell_centres, face_centroids_a
@@ -565,11 +565,11 @@ class FlowAreaResults(FlowArea):
             ]
         )
 
-        # ── Cell-centre WLS vectors (all three methods) ─────────────────
+        # -- Cell-centre WLS vectors (all three methods) -----------------
         vel_aw = _wls_velocity(vn, areas,   normals)
         vel_lw = _wls_velocity(vn, lengths, normals)
 
-        # ── Full cell velocity array for the chosen weight method ────────
+        # -- Full cell velocity array for the chosen weight method --------
         # (used by the double-C stencil as V_L / V_R)
         # Returns (n_cells + n_ghost, 2); dry_mask matches.
         all_cell_vecs = self.cell_velocity_vectors(
@@ -582,7 +582,7 @@ class FlowAreaResults(FlowArea):
         dry_mask = (_vel_mag == 0.0) | ~np.isfinite(_vel_mag)
         n_total = len(dry_mask)
 
-        # ── Face 2D velocities (double-C stencil, vectorised) ───────────
+        # -- Face 2D velocities (double-C stencil, vectorised) -----------
         face_vel_2d_all = compute_all_face_velocities(
             face_normals=self.face_normals,
             face_normal_velocity=face_vel,
@@ -591,7 +591,7 @@ class FlowAreaResults(FlowArea):
             dry_mask=dry_mask,
         )
 
-        # ── Wet-face mask ────────────────────────────────────────────────
+        # -- Wet-face mask ------------------------------------------------
         l_idx  = face_ci[:, 0]
         r_idx  = face_ci[:, 1]
         l_safe = np.where((l_idx >= 0) & (l_idx < n_total), l_idx, 0)
@@ -601,14 +601,14 @@ class FlowAreaResults(FlowArea):
             | ((r_idx >= 0) & (r_idx < n_total) & ~dry_mask[r_safe])
         )
 
-        # ── Facepoint velocities (averaged over all adjacent wet faces) ──
+        # -- Facepoint velocities (averaged over all adjacent wet faces) --
         fp_vel_all = average_face_velocities_at_facepoints(
             face_facepoint_indexes=fp_idx_all,
             face_vel_2d=face_vel_2d_all,
             wet_face=wet_face,
         )
 
-        # ── Unique facepoints for this cell, ordered by face ─────────────
+        # -- Unique facepoints for this cell, ordered by face -------------
         seen_fp: set[int] = set()
         cell_fp_ordered: list[int] = []
         for fi in face_idxs:
@@ -617,7 +617,7 @@ class FlowAreaResults(FlowArea):
                     seen_fp.add(fp)
                     cell_fp_ordered.append(fp)
 
-        # ── Helpers ──────────────────────────────────────────────────────
+        # -- Helpers ------------------------------------------------------
         def _angle(v: np.ndarray) -> str:
             spd = np.linalg.norm(v)
             if spd < 1e-10:
@@ -628,36 +628,37 @@ class FlowAreaResults(FlowArea):
             spd = np.linalg.norm(v)
             return (
                 f"  {label:<18}  Vx={v[0]:+.4f}  Vy={v[1]:+.4f}"
-                f"  speed={spd:.4f}  dir={_angle(v)}°"
+                f"  speed={spd:.4f}  dir={_angle(v)}-"
             )
 
-        SEP = "─" * 72
+        SEP = "-" * 72
 
-        # ════════════════════════════════════════════════════════════════
+        # ----------------------------------------------------------------
         # 1. HEADER
-        # ════════════════════════════════════════════════════════════════
+        # ----------------------------------------------------------------
         dry_label = "DRY" if dry_mask[cell_idx] else "WET"
         cx, cy   = cell_centres[cell_idx]
-        print(f"\n{'═'*72}")
+        print(f"\n{'-'*72}")
         print(
             f"  debug_cell_velocity  |  area={self.name}"
             f"  cell={cell_idx}  ts={timestep}"
         )
-        print(f"{'═'*72}")
+        print(f"{'-'*72}")
         print(f"  Cell centre : ({cx:.3f}, {cy:.3f})")
         print(f"  Cell WSE    : {cell_wse[cell_idx]:.4f}  [{dry_label}]")
         print(f"  wse_interp  : {wse_interp}")
         print(f"  n_faces     : {count}")
 
-        # ════════════════════════════════════════════════════════════════
+        # ----------------------------------------------------------------
         # 2. WLS INPUTS PER FACE
-        # ════════════════════════════════════════════════════════════════
+        # ----------------------------------------------------------------
         print(f"\n{SEP}")
         print("  WLS INPUTS PER FACE")
         print(SEP)
         hdr1 = (
             f"  {'Face':>6}  {'Ori':>3}  {'nx':>7}  {'ny':>7}  {'Length':>8}"
-            f"  {'V_n':>8}  {'L_cell':>7}  {'L_WSE':>8}  {'R_cell':>7}  {'R_WSE':>8}"
+            f"  {'V_n':>8}  {'V_n_x':>8}  {'V_n_y':>8}  {'angle':>8}"
+            f"  {'L_cell':>7}  {'L_WSE':>8}  {'R_cell':>7}  {'R_WSE':>8}"
             f"  {'face_WSE':>9}  {'A_face':>9}  {'fc_x':>11}  {'fc_y':>11}"
         )
         print(hdr1)
@@ -677,16 +678,19 @@ class FlowAreaResults(FlowArea):
             lw_str   = f"{cell_wse[lc]:>8.4f}" if lc_valid else "     n/a"
             rw_str   = f"{cell_wse[rc]:>8.4f}" if rc_valid else "     n/a"
             fcx, fcy = face_centroids_a[fi]
+            vnx, vny  = v * nx, v * ny
+            ang_str   = _angle(np.array([vnx, vny]))
             print(
                 f"  {fi:>6}  {ori:>3}  {nx:>7.4f}  {ny:>7.4f}  {L:>8.2f}"
-                f"  {v:>8.4f}  {lc_str}  {lw_str}  {rc_str}  {rw_str}"
+                f"  {v:>8.4f}  {vnx:>8.4f}  {vny:>8.4f}  {ang_str:>8}"
+                f"  {lc_str}  {lw_str}  {rc_str}  {rw_str}"
                 f"  {fwse:>9.4f}  {a:>9.4f}  {fcx:>11.3f}  {fcy:>11.3f}"
             )
         print("  (* = dry cell)")
 
-        # ════════════════════════════════════════════════════════════════
+        # ----------------------------------------------------------------
         # 3. CELL-CENTRE VELOCITY (WLS)
-        # ════════════════════════════════════════════════════════════════
+        # ----------------------------------------------------------------
         print(f"\n{SEP}")
         print("  CELL-CENTRE VELOCITY (WLS)")
         print(SEP)
@@ -709,9 +713,9 @@ class FlowAreaResults(FlowArea):
         else:
             print("  HEC-RAS stored     : (Cell Velocity scalar not in HDF)")
 
-        # ════════════════════════════════════════════════════════════════
+        # ----------------------------------------------------------------
         # 4. RECONSTRUCTED FACE VELOCITY (double-C stencil)
-        # ════════════════════════════════════════════════════════════════
+        # ----------------------------------------------------------------
         print(f"\n{SEP}")
         print(f"  RECONSTRUCTED FACE VELOCITY  (double-C, wt={vel_weight_method!r})")
         print(SEP)
@@ -747,9 +751,9 @@ class FlowAreaResults(FlowArea):
                 f"  {_angle(vf)}  {side:>6}"
             )
 
-        # ════════════════════════════════════════════════════════════════
+        # ----------------------------------------------------------------
         # 5. FACEPOINT (CORNER) VELOCITIES
-        # ════════════════════════════════════════════════════════════════
+        # ----------------------------------------------------------------
         print(f"\n{SEP}")
         print("  FACEPOINT (CORNER) VELOCITIES")
         print(SEP)
@@ -774,9 +778,9 @@ class FlowAreaResults(FlowArea):
                 f"  {_angle(vfp)}  {len(wet_touching):>5}  [{faces_str}]"
             )
 
-        # ════════════════════════════════════════════════════════════════
-        # 6. FACE NORMAL VELOCITY  (scatter_face_normal: vn × n̂)
-        # ════════════════════════════════════════════════════════════════
+        # ----------------------------------------------------------------
+        # 6. FACE NORMAL VELOCITY  (scatter_face_normal: vn * n_hat)
+        # ----------------------------------------------------------------
         print(f"\n{SEP}")
         print("  FACE NORMAL VELOCITY  (scatter_face_normal: vn \u00d7 n\u0302)")
         print(SEP)
@@ -814,21 +818,21 @@ class FlowAreaResults(FlowArea):
 
         Creates two matplotlib figures:
 
-        **Figure 1 — Velocity Components** shows the focus cell and its
+        **Figure 1 - Velocity Components** shows the focus cell and its
         immediate neighbours.  For each face of the focus cell the face-normal
-        velocity ``V_n·n̂``, the double-C-stencil tangential component
-        ``V_t·t̂``, and the full 2-D face velocity are drawn as arrows.
+        velocity ``V_n*n_hat``, the double-C-stencil tangential component
+        ``V_t*t_hat``, and the full 2-D face velocity are drawn as arrows.
         WLS cell-centre velocity vectors are shown for every cell in the
         neighbourhood.
 
-        **Figure 2 — Scatter Method Comparison** plots one sub-panel per
+        **Figure 2 - Scatter Method Comparison** plots one sub-panel per
         scatter interpolation method.  Each panel shows the velocity values at
         the source points used by that method (cell centres, face midpoints,
         or polygon-corner facepoints) as quiver arrows, overlaid on the
         neighbourhood cell polygons.  This lets you compare how each method's
         scatter set differs in spatial density and origin.
 
-        **Figure 3 — Interpolated Velocity Field** shows one sub-panel per
+        **Figure 3 - Interpolated Velocity Field** shows one sub-panel per
         scatter method (matching *methods*).  Each panel interpolates Vx and
         Vy onto a regular sample grid (masked to neighbourhood cell polygons)
         using ``scipy.interpolate.griddata`` and renders the result as quiver
@@ -930,7 +934,7 @@ class FlowAreaResults(FlowArea):
                 f"cell_idx {cell_idx} is out of range [0, {self.n_cells})"
             )
 
-        # ── Raw geometry and result data ───────────────────────────────
+        # -- Raw geometry and result data -------------------------------
         n_cells     = self.n_cells
         fv_raw      = np.array(self.face_velocity[timestep, :])
         cfi, cfv    = self.cell_face_info
@@ -946,7 +950,7 @@ class FlowAreaResults(FlowArea):
         cc_all      = self.cell_centers             # (n_cells, 2)
         polys       = self.cell_polygons            # list[(n_v, 2)]
 
-        # ── Focus-cell faces and facepoint-adjacent neighbourhood ─────
+        # -- Focus-cell faces and facepoint-adjacent neighbourhood -----
         s0 = int(cfi[cell_idx, 0])
         k0 = int(cfi[cell_idx, 1])
         focus_fv = cfv[s0:s0 + k0]
@@ -981,7 +985,7 @@ class FlowAreaResults(FlowArea):
             nbr_fp_set.add(int(fp_idx[fi, 1]))
         nbr_fpi = np.array(sorted(nbr_fp_set), dtype=int)
 
-        # ── Velocity reconstruction ────────────────────────────────────
+        # -- Velocity reconstruction ------------------------------------
         # cell_vecs has shape (n_cells + n_ghost, 2); dry_mask matches.
         cell_vecs = self.cell_velocity_vectors(
             timestep,
@@ -1016,7 +1020,7 @@ class FlowAreaResults(FlowArea):
             wet_face=wet,
         )
 
-        # ── Source-point arrays for Figure 2 ──────────────────────────
+        # -- Source-point arrays for Figure 2 --------------------------
         nbr_wet_fi  = nbr_fi[wet[nbr_fi]]
         wet_fp_mask = np.zeros(len(fp_xy), dtype=bool)
         wet_fp_mask[fp_idx[wet, 0]] = True
@@ -1029,14 +1033,17 @@ class FlowAreaResults(FlowArea):
         vel_fc  = face_2d[nbr_wet_fi]
         pts_fp  = fp_xy[nbr_wet_fpi]
         vel_fp  = fp_vel[nbr_wet_fpi]
-        # scatter_face_normal: vn * n_hat at face midpoints (no double-C tangential)
+        # scatter_face_normal: vn * n_hat at face centroids (not normal-intercept).
+        # vn is a face-integrated quantity - centroid is always the correct position
+        # regardless of face_velocity_location.
+        pts_fn  = self.face_centroids[nbr_wet_fi]
         vel_fn  = fv_raw[nbr_wet_fi][:, None] * fn_all[nbr_wet_fi, :2]
 
         # Typical cell diameter for arrow scaling
         poly_f    = np.asarray(polys[cell_idx])
         cell_diam = float(np.ptp(poly_f, axis=0).mean()) or 1.0
 
-        # Shared axis limits for all figures — derived from neighbourhood
+        # Shared axis limits for all figures - derived from neighbourhood
         # polygon extents so every panel shows the same spatial window.
         all_poly_pts = np.vstack([np.asarray(polys[ci]) for ci in nbr])
         _nbr_xmin, _nbr_ymin = all_poly_pts.min(axis=0)
@@ -1046,7 +1053,7 @@ class FlowAreaResults(FlowArea):
         _nbr_xlim = (_nbr_xmin - _xpad, _nbr_xmax + _xpad)
         _nbr_ylim = (_nbr_ymin - _ypad, _nbr_ymax + _ypad)
 
-        # ── Shared helpers ─────────────────────────────────────────────
+        # -- Shared helpers ---------------------------------------------
         def _draw_polys(ax) -> None:
             for ci in nbr:
                 poly = np.asarray(polys[ci])
@@ -1112,10 +1119,17 @@ class FlowAreaResults(FlowArea):
             ax.scatter(pts[:, 0], pts[:, 1], color=color,
                        s=14, zorder=6, alpha=0.85)
 
-        # ══════════════════════════════════════════════════════════════
+        # --------------------------------------------------------------
         # Figure 1: Velocity Components
-        # ══════════════════════════════════════════════════════════════
-        fig1, ax1 = plt.subplots(figsize=(11, 9))
+        # --------------------------------------------------------------
+        # GridSpec: left panel (ax1) = velocity components (wide);
+        # right panel (ax_idx) = cell & face index map (narrow).
+        # width_ratios [3, 1] gives ~75 % / 25 % split.
+        from matplotlib.gridspec import GridSpec as _GS
+        fig1 = plt.figure(figsize=(15, 9))
+        _gs1 = _GS(1, 2, figure=fig1, width_ratios=[3, 1], wspace=0.28)
+        ax1    = fig1.add_subplot(_gs1[0, 0])
+        ax_idx = fig1.add_subplot(_gs1[0, 1])
         _draw_polys(ax1)
 
         # Common arrow scale (largest vector = 38 % of cell diameter)
@@ -1131,8 +1145,8 @@ class FlowAreaResults(FlowArea):
         # Numbered-arrow tracking for the speed table (Figure 1 only)
         _arrow_ctr: int = 0
         _arrow_tbl: list[tuple[int, str, float]] = []   # (num, label, speed)
-        _wls_nums:  dict[int, int] = {}                 # ci → arrow num
-        _face_nums: dict[tuple[int, str], int] = {}     # (fi, type) → num
+        _wls_nums:  dict[int, int] = {}                 # ci ? arrow num
+        _face_nums: dict[tuple[int, str], int] = {}     # (fi, type) ? num
 
         # WLS cell-centre velocity arrows
         for ci in nbr:
@@ -1192,22 +1206,22 @@ class FlowAreaResults(FlowArea):
             mpatches.Patch(facecolor="lightgray", alpha=0.3,
                            edgecolor="gray", label="Adjacent cell"),
             mpatches.FancyArrow(0, 0, 1, 0, color="darkred",
-                                label=f"WLS vel – focus ({vel_weight_method})"),
+                                label=f"WLS vel - focus ({vel_weight_method})"),
             mpatches.FancyArrow(0, 0, 1, 0, color="indigo",
-                                label="WLS vel – adjacent"),
+                                label="WLS vel - adjacent"),
             mpatches.FancyArrow(0, 0, 1, 0, color="green",
-                                label="Face Vn  (V_n · n̂)"),
+                                label="Face Vn  (V_n * n_hat)"),
             mpatches.FancyArrow(0, 0, 1, 0, color="darkorange",
-                                label="Face Vt  (V_t · t̂, double-C)"),
+                                label="Face Vt  (V_t * t_hat, double-C)"),
             mpatches.FancyArrow(0, 0, 1, 0, color="dodgerblue",
                                 label="Face 2D  (Vn + Vt)"),
         ]
-        ax1.legend(handles=legend1, loc="best", fontsize=8, framealpha=0.9)
+        ax1.legend(handles=legend1, loc="upper left", fontsize=8, framealpha=0.9)
         ax1.set_aspect("equal")
         ax1.set_xlim(_nbr_xlim)
         ax1.set_ylim(_nbr_ylim)
         ax1.set_title(
-            f"{self.name} — Cell {cell_idx}  |  Velocity Components\n"
+            f"{self.name} - Cell {cell_idx}  |  Velocity Components\n"
             f"ts={timestep}  wse_interp={wse_interp}  "
             f"vel_weight={vel_weight_method}",
             fontsize=10,
@@ -1215,67 +1229,58 @@ class FlowAreaResults(FlowArea):
         ax1.set_xlabel("X (model units)")
         ax1.set_ylabel("Y (model units)")
 
-        # ── Inset: focus cell at local scale ──────────────────────────
-        # When the focus cell's velocity is much smaller than its neighbours
-        # the global-scale arrows are nearly invisible.  The inset shows the
-        # focus cell alone, scaled to its own peak speed, so face-velocity
-        # decomposition is always legible.
-        sp_focus_faces = np.linalg.norm(face_2d[focus_fi], axis=1)
-        sp_focus_wls   = float(np.linalg.norm(cell_vecs[cell_idx]))
-        max_sp_focus   = max(
-            float(np.nanmax(sp_focus_faces)) if len(sp_focus_faces) else 0.0,
-            sp_focus_wls,
-            1e-9,
+        # -- Right panel (ax_idx): cell & face ID index map ---------------
+        # Pure topological reference — no velocity arrows.
+        # Every neighbourhood cell is labelled with its cell index;
+        # every neighbourhood face with its face index.
+        _draw_polys(ax_idx)
+
+        for ci in nbr:
+            poly_ci = np.asarray(polys[ci])
+            is_focus = ci == cell_idx
+            ax_idx.add_patch(MplPolygon(
+                poly_ci, closed=True,
+                facecolor="steelblue" if is_focus else "lightgray",
+                edgecolor="navy"      if is_focus else "gray",
+                linewidth=1.5 if is_focus else 0.9,
+                alpha=0.35, zorder=2,
+            ))
+            cxi, cyi = cc_all[ci]
+            ax_idx.text(
+                cxi, cyi, str(ci),
+                ha="center", va="center",
+                fontsize=8,
+                color="navy" if is_focus else "dimgray",
+                fontweight="bold", zorder=8,
+                bbox=dict(boxstyle="round,pad=0.15", fc="white",
+                          ec="none", alpha=0.85),
+            )
+
+        for fi in nbr_fi:
+            fcx_i, fcy_i = fc_all[fi]
+            ax_idx.text(
+                fcx_i, fcy_i, str(fi),
+                ha="center", va="center",
+                fontsize=7, color="darkgreen", zorder=9,
+                bbox=dict(boxstyle="round,pad=0.10", fc="lightyellow",
+                          ec="none", alpha=0.80),
+            )
+
+        _nbr_pts = np.vstack([np.asarray(polys[ci]) for ci in nbr])
+        _ix_xmin, _ix_ymin = _nbr_pts.min(axis=0)
+        _ix_xmax, _ix_ymax = _nbr_pts.max(axis=0)
+        _ix_xpad = (_ix_xmax - _ix_xmin) * 0.06 or 1.0
+        _ix_ypad = (_ix_ymax - _ix_ymin) * 0.06 or 1.0
+        ax_idx.set_xlim(_ix_xmin - _ix_xpad, _ix_xmax + _ix_xpad)
+        ax_idx.set_ylim(_ix_ymin - _ix_ypad, _ix_ymax + _ix_ypad)
+        ax_idx.set_aspect("equal")
+        ax_idx.set_xlabel("X (model units)", fontsize=8)
+        ax_idx.tick_params(labelsize=7)
+        ax_idx.set_title(
+            "Cell & Face Index\n"
+            "blue=focus  grey=nbr  green=face #",
+            fontsize=8,
         )
-        sc_ins = cell_diam * 0.38 / max_sp_focus
-
-        inset_ax = ax1.inset_axes([0.67, 0.67, 0.31, 0.31])
-        focus_patch = MplPolygon(
-            poly_f, closed=True,
-            facecolor="steelblue", edgecolor="navy",
-            linewidth=1.5, alpha=0.28, zorder=1,
-        )
-        inset_ax.add_patch(focus_patch)
-
-        # WLS arrow for focus cell (reuse number from main axes)
-        cx0, cy0 = cc_all[cell_idx]
-        vx0, vy0 = cell_vecs[cell_idx]
-        _arrow(inset_ax, cx0, cy0, vx0 * sc_ins, vy0 * sc_ins,
-               "darkred", lw=2.2, zo=8, num=_wls_nums.get(cell_idx))
-
-        # Face decomposition arrows for each focus-cell face (reuse numbers)
-        eps_ins = cell_diam * 0.018
-        for fi in focus_fi:
-            fcx, fcy = fc_all[fi]
-            nx, ny   = float(fn_all[fi, 0]), float(fn_all[fi, 1])
-            tx, ty   = -ny, nx
-            vn_s     = float(fv_raw[fi])
-            v2d_f    = face_2d[fi]
-            vt_s     = float(v2d_f[0] * tx + v2d_f[1] * ty)
-            _arrow(inset_ax, fcx - eps_ins, fcy,
-                   nx * vn_s * sc_ins, ny * vn_s * sc_ins, "green", lw=1.6,
-                   num=_face_nums.get((fi, "vn")))
-            _arrow(inset_ax, fcx, fcy - eps_ins,
-                   tx * vt_s * sc_ins, ty * vt_s * sc_ins, "darkorange", lw=1.6,
-                   num=_face_nums.get((fi, "vt")))
-            _arrow(inset_ax, fcx + eps_ins, fcy + eps_ins,
-                   v2d_f[0] * sc_ins, v2d_f[1] * sc_ins, "dodgerblue", lw=1.9, zo=9,
-                   num=_face_nums.get((fi, "v2d")))
-            inset_ax.plot(fcx, fcy, "k.", ms=5, zorder=10)
-
-        fp_xmin, fp_ymin = poly_f.min(axis=0)
-        fp_xmax, fp_ymax = poly_f.max(axis=0)
-        fp_xpad = (fp_xmax - fp_xmin) * 0.20 or 1.0
-        fp_ypad = (fp_ymax - fp_ymin) * 0.20 or 1.0
-        inset_ax.set_xlim(fp_xmin - fp_xpad, fp_xmax + fp_xpad)
-        inset_ax.set_ylim(fp_ymin - fp_ypad, fp_ymax + fp_ypad)
-        inset_ax.set_aspect("equal")
-        inset_ax.tick_params(labelsize=5)
-        inset_ax.set_title(
-            f"Focus cell (local scale ×{max_sp_focus / max_sp1:.1f})",
-            fontsize=6, pad=2,
-        )
-        ax1.indicate_inset_zoom(inset_ax, edgecolor="gray", alpha=0.6)
 
         # Leave bottom margin for the speed table, then draw the table
         fig1.tight_layout(rect=[0, 0.18, 1, 1])
@@ -1305,9 +1310,9 @@ class FlowAreaResults(FlowArea):
                           ec="gray", lw=0.8, alpha=0.92),
             )
 
-        # ══════════════════════════════════════════════════════════════
+        # --------------------------------------------------------------
         # Figure 2: Scatter Method Comparison
-        # ══════════════════════════════════════════════════════════════
+        # --------------------------------------------------------------
 
         # Source-point definitions per scatter method:
         #   each entry is (points, velocities, colour, legend-label)
@@ -1332,7 +1337,7 @@ class FlowAreaResults(FlowArea):
                 (pts_fc, vel_fc, "dodgerblue", "Face midpoints (2D)"),
             ],
             "scatter_face_normal": [
-                (pts_fc, vel_fn, "orange", "Face midpoints (vn×n̂)"),
+                (pts_fn, vel_fn, "orange", "Face centroids (vn*n_hat)"),
             ],
         }
 
@@ -1376,16 +1381,16 @@ class FlowAreaResults(FlowArea):
             axes2[idx // n_col, idx % n_col].set_visible(False)
 
         fig2.suptitle(
-            f"{self.name} — Cell {cell_idx}  |  Scatter Method Comparison\n"
+            f"{self.name} - Cell {cell_idx}  |  Scatter Method Comparison\n"
             f"ts={timestep}  vel_weight={vel_weight_method}  "
             f"wse_interp={wse_interp}",
             fontsize=11, fontweight="bold",
         )
         fig2.tight_layout()
 
-        # ══════════════════════════════════════════════════════════════
+        # --------------------------------------------------------------
         # Figure 3: Interpolated Velocity Field (one panel per method)
-        # ══════════════════════════════════════════════════════════════
+        # --------------------------------------------------------------
         try:
             from scipy.interpolate import griddata as _griddata
         except ImportError as exc:
@@ -1414,7 +1419,7 @@ class FlowAreaResults(FlowArea):
                 np.vstack([pts_cc, pts_fp, pts_fc]),
                 np.vstack([vel_cc, vel_fp, vel_fc]),
             ),
-            "scatter_face_normal": (pts_fc, vel_fn),
+            "scatter_face_normal": (pts_fn, vel_fn),
         }
 
         # Sample grid, masked to neighbourhood cell polygons (computed once).
@@ -1446,7 +1451,7 @@ class FlowAreaResults(FlowArea):
         n_row3      = (n_m3 + n_col3 - 1) // n_col3
         has_empty   = n_row3 * n_col3 > n_m3
         # Use constrained_layout when the colorbar has no empty slot to
-        # occupy — it prevents the bar from overlapping the subplot panels.
+        # occupy - it prevents the bar from overlapping the subplot panels.
         _layout3    = "constrained" if (colorbar and not has_empty) else None
         fig3, axes3 = plt.subplots(
             n_row3, n_col3,
@@ -1535,7 +1540,7 @@ class FlowAreaResults(FlowArea):
                 axes3[idx // n_col3, idx % n_col3].set_visible(False)
 
         fig3.suptitle(
-            f"{self.name} — Cell {cell_idx}  |  Interpolated Velocity Field\n"
+            f"{self.name} - Cell {cell_idx}  |  Interpolated Velocity Field\n"
             f"griddata={scatter_interp_method}  ts={timestep}  "
             f"vel_weight={vel_weight_method}  wse_interp={wse_interp}",
             fontsize=11, fontweight="bold",
@@ -1545,7 +1550,7 @@ class FlowAreaResults(FlowArea):
         return fig1, fig2, fig3
 
     # ------------------------------------------------------------------
-    # Raster export — delegates to raspy.geo (deferred import)
+    # Raster export - delegates to raspy.geo (deferred import)
     # ------------------------------------------------------------------
 
     def _max_velocity(
@@ -1633,13 +1638,13 @@ class FlowAreaResults(FlowArea):
         Parameters
         ----------
         variable:
-            ``"water_surface"`` — water-surface elevation.
-            ``"depth"``         — water depth (requires *reference_raster*):
+            ``"water_surface"`` - water-surface elevation.
+            ``"depth"``         - water depth (requires *reference_raster*):
                                   WSE is interpolated then the DEM pixel value
                                   is subtracted; negative depths are clamped
                                   to 0.
-            ``"cell_speed"``    — WLS-reconstructed velocity magnitude.
-            ``"cell_velocity"`` — WLS-reconstructed velocity vector
+            ``"cell_speed"``    - WLS-reconstructed velocity magnitude.
+            ``"cell_velocity"`` - WLS-reconstructed velocity vector
                                   (4 bands: Vx, Vy, Speed, Direction).
         timestep:
             0-based time index.  Pass ``None`` (default) to use maximum values
@@ -1681,7 +1686,7 @@ class FlowAreaResults(FlowArea):
             Face WSE interpolation method passed to
             :meth:`cell_velocity_vectors`.
         render_mode:
-            Water-surface rendering mode — ``"sloping_corners"`` (default),
+            Water-surface rendering mode - ``"sloping_corners"`` (default),
             ``"horizontal"``, ``"sloping_corners_faces"``, or
             ``"sloping_corners_faces_shallow"``.  See
             :func:`~raspy.geo.raster.mesh_to_wse_raster` for full description.
@@ -1689,44 +1694,44 @@ class FlowAreaResults(FlowArea):
             Intra-cell velocity interpolation method for ``"cell_velocity"``
             and ``"cell_speed"``:
 
-            ``"flat_cell_center"`` — paint the flat WLS cell-centre velocity
+            ``"flat_cell_center"`` - paint the flat WLS cell-centre velocity
             over all pixels inside the cell (fastest; no spatial interpolation).
 
-            ``"triangle_blend"`` — barycentric blend of WLS
+            ``"triangle_blend"`` - barycentric blend of WLS
             cell-centre velocity and reconstructed face velocity within each
             fan-triangle.
 
-            ``"face_idw"`` — inverse-distance-weighted average of all
+            ``"face_idw"`` - inverse-distance-weighted average of all
             face-midpoint 2D velocities within the owning cell.
 
-            ``"face_gradient"`` — least-squares linear gradient fit inside
+            ``"face_gradient"`` - least-squares linear gradient fit inside
             each cell from face-midpoint velocities.
 
-            ``"facepoint_blend"`` — average face velocities onto each polygon
+            ``"facepoint_blend"`` - average face velocities onto each polygon
             vertex (facepoint), then full 3-vertex barycentric interpolation
             within each fan-triangle.  C0-continuous across all cell faces;
             best choice for smooth flow-arrow rendering.
 
-            ``"scatter_cell_face"`` — global ``scipy.griddata`` over wet cell
+            ``"scatter_cell_face"`` - global ``scipy.griddata`` over wet cell
             centres and wet face midpoints.
 
-            ``"scatter_face"`` *(default)* — same but face midpoints only;
+            ``"scatter_face"`` *(default)* - same but face midpoints only;
             avoids discontinuities originating at cell centres.
 
-            ``"scatter_corners"`` — global ``scipy.griddata`` over wet mesh
+            ``"scatter_corners"`` - global ``scipy.griddata`` over wet mesh
             corners; velocity at each corner is the mean of the double-C
             stencil face velocities from all adjacent wet faces.
 
-            ``"scatter_corners_face"`` — combined scatter from wet mesh
+            ``"scatter_corners_face"`` - combined scatter from wet mesh
             corners (double-C stencil mean) and wet face midpoints (2D face
             velocity).
 
-            ``"scatter_cell_corners_face"`` — maximum-density scatter combining
+            ``"scatter_cell_corners_face"`` - maximum-density scatter combining
             wet cell centres (WLS), wet mesh corners (double-C averaged), and
             wet face midpoints (double-C); union of all other scatter sources.
 
-            ``"scatter_face_normal"`` — global ``scipy.griddata`` over wet
-            face midpoints using only the stored normal component (``vn × n̂``).
+            ``"scatter_face_normal"`` - global ``scipy.griddata`` over wet
+            face midpoints using only the stored normal component (``vn * n_hat``).
             No double-C tangential estimation; cell WLS velocities do not
             influence the result.  Avoids tangential contamination near
             wet/dry boundaries.
@@ -1749,7 +1754,7 @@ class FlowAreaResults(FlowArea):
             pixels outside the polygon are set to *nodata*.  Useful when
             malformed boundary cells cause KDTree noise outside the model
             domain.  **Mutually exclusive with** ``snap_to_reference_extent``
-            — a ``ValueError`` is raised if both are ``True``.
+            - a ``ValueError`` is raised if both are ``True``.
             Default ``True``.
         face_velocity_location:
             Position used as the face normal velocity measurement point when
@@ -1774,10 +1779,10 @@ class FlowAreaResults(FlowArea):
             or if ``timestep=None`` is used with ``"cell_speed"`` or
             ``"cell_velocity"``.
         """
-        from raspy.geo import raster as _raster  # deferred — geo not required
+        from raspy.geo import raster as _raster  # deferred - geo not required
 
         logger.info("Exporting hydraulic raster %s at timestep %d", variable, timestep)
-        # ── 0. Guards ──────────────────────────────────────────────────
+        # -- 0. Guards --------------------------------------------------
         if variable == "depth" and reference_raster is None:
             raise ValueError(
                 "reference_raster is required when variable='depth'. "
@@ -1797,7 +1802,7 @@ class FlowAreaResults(FlowArea):
                 "snap_to_reference_extent=False when using clip_to_perimeter=True."
             )
 
-        # ── 1. Resolve values array ────────────────────────────────────
+        # -- 1. Resolve values array ------------------------------------
         if variable == "depth":
             if timestep is None:
                 wse_values = self.max_water_surface["value"].to_numpy()
@@ -1837,13 +1842,13 @@ class FlowAreaResults(FlowArea):
         else:
             raise ValueError(f"Unknown variable: {variable!r}")
 
-        # ── 2. Default cell size ───────────────────────────────────────
+        # -- 2. Default cell size ---------------------------------------
         resolved_cell_size = cell_size
         no_grid = reference_transform is None and reference_raster is None
         if cell_size is None and no_grid:
             resolved_cell_size = float(np.median(self.face_normals[:, 2]))
 
-        # ── 2b. Facepoint WSE for sloping render ───────────────────────
+        # -- 2b. Facepoint WSE for sloping render -----------------------
         # Compute facepoint values from the dry-masked cell WSE so
         # mesh_to_wse_raster receives them for the griddata sloping path.
         # For velocity variables the vel_min mask is applied first.
@@ -1874,7 +1879,7 @@ class FlowAreaResults(FlowArea):
                 if _use_facecenters:
                     _fc_wse_vel = self.wse_at_facecentroids(_vel_wse_masked)
 
-        # ── 3. Common mesh topology keyword arguments ──────────────────
+        # -- 3. Common mesh topology keyword arguments ------------------
         _cfi, _cfv = self.cell_face_info  # property returns (info, values) tuple
         # When clipping to the perimeter, use the perimeter polygon bounding
         # box as the output extent.  _tight_pixel_bounds (inside mesh_to_wse_raster)
@@ -1925,7 +1930,7 @@ class FlowAreaResults(FlowArea):
         _vel_mesh_kw["facepoint_wse"] = _fp_wse_vel
         _vel_mesh_kw["face_center_wse"] = _fc_wse_vel
 
-        # ── 4. Delegate to mesh_to_wse_raster / mesh_to_velocity_raster ──────
+        # -- 4. Delegate to mesh_to_wse_raster / mesh_to_velocity_raster ------
         if variable == "depth":
             wse_ds = _raster.mesh_to_wse_raster(
                 **mesh_kw,
@@ -2083,10 +2088,10 @@ class FlowAreaResults(FlowArea):
         Parameters
         ----------
         timestep:
-            0-based time index.  Required — all three outputs need a specific
+            0-based time index.  Required - all three outputs need a specific
             timestep (speed has no max-value fallback).
         reference_raster:
-            Path to the terrain DEM GeoTIFF.  Required — used to derive depth
+            Path to the terrain DEM GeoTIFF.  Required - used to derive depth
             (WSE minus DEM) and to inherit the output CRS and transform.
         wse_path:
             Destination ``.tif`` for the water-surface elevation raster.
@@ -2103,7 +2108,7 @@ class FlowAreaResults(FlowArea):
         nodata:
             Fill value for pixels outside the wet mesh.
         render_mode:
-            Water-surface rendering mode — ``"horizontal"`` (default),
+            Water-surface rendering mode - ``"horizontal"`` (default),
             ``"sloping_corners"``, ``"sloping_corners_faces"``, or
             ``"sloping_corners_faces_shallow"``.
         depth_min:
@@ -2139,7 +2144,7 @@ class FlowAreaResults(FlowArea):
             restricted to the bounding box of the 2-D flow area boundary
             polygon snapped outward to the nearest reference pixel boundaries,
             and pixels outside the polygon are set to *nodata*.  **Mutually
-            exclusive with** ``snap_to_reference_extent`` — a ``ValueError``
+            exclusive with** ``snap_to_reference_extent`` - a ``ValueError``
             is raised if both are ``True``.  Default ``True``.
         face_velocity_location:
             Position used as the face normal velocity measurement point when
@@ -2159,7 +2164,7 @@ class FlowAreaResults(FlowArea):
         threshold_pct_compare:
             Percentage-difference threshold used to classify outlier pixels in
             the debug comparison shapefiles (default ``5.0``).  Pixels where
-            ``|raspy − reference| / |reference| * 100`` exceeds this value are
+            ``|raspy - reference| / |reference| * 100`` exceeds this value are
             written to a point shapefile in the system temp directory.
         Returns
         -------
@@ -2177,12 +2182,12 @@ class FlowAreaResults(FlowArea):
             If both *clip_to_perimeter* and *snap_to_reference_extent* are
             ``True``.
         """
-        from raspy.geo import raster as _raster  # deferred — geo not required
+        from raspy.geo import raster as _raster  # deferred - geo not required
 
         logger.info(
             "Exporting hydraulic rasters: Water Surface Elevation, Depth and Velocity"
         )
-        # ── 0. Guards ──────────────────────────────────────────────────
+        # -- 0. Guards --------------------------------------------------
         if clip_to_perimeter and snap_to_reference_extent:
             raise ValueError(
                 "clip_to_perimeter and snap_to_reference_extent are mutually "
@@ -2192,7 +2197,7 @@ class FlowAreaResults(FlowArea):
                 "snap_to_reference_extent=False when using clip_to_perimeter=True."
             )
 
-        # ── 1. Read HDF data once ──────────────────────────────────────
+        # -- 1. Read HDF data once --------------------------------------
         wse_values = np.array(self.water_surface[timestep, : self.n_cells])
         depth_at_cells = self.depth(timestep) if depth_min is not None else None
         face_vel_arr = (
@@ -2200,13 +2205,13 @@ class FlowAreaResults(FlowArea):
             else np.array(self.face_velocity[timestep, :])
         )
 
-        # ── 2. WLS velocity vectors once ──────────────────────────────
+        # -- 2. WLS velocity vectors once ------------------------------
         cell_vel_vecs = self.cell_velocity_vectors(
             timestep, method=vel_weight_method, wse_interp=vel_wse_method,
             face_velocity_location=face_velocity_location,
         )
 
-        # ── 3. Mesh topology kwargs ────────────────────────────────────
+        # -- 3. Mesh topology kwargs ------------------------------------
         _cfi, _cfv = self.cell_face_info
         _perimeter_bbox: tuple[float, float, float, float] | None = None
         if clip_to_perimeter:
@@ -2234,7 +2239,7 @@ class FlowAreaResults(FlowArea):
             ),
         )
 
-        # ── 4. WSE raster in-memory (shared for WSE output + depth) ───
+        # -- 4. WSE raster in-memory (shared for WSE output + depth) ---
         logger.info("Building water-surface raster (shared for depth output)...")
 
         cell_wse_masked = (
@@ -2242,7 +2247,7 @@ class FlowAreaResults(FlowArea):
             if depth_min is not None else wse_values
         )
 
-        # Facepoint WSE for sloping render — computed once for WSE/depth;
+        # Facepoint WSE for sloping render - computed once for WSE/depth;
         # velocity uses a separate vel_min-masked array.
         _fp_wse: np.ndarray | None = None
         _fp_wse_vel: np.ndarray | None = None
@@ -2289,7 +2294,7 @@ class FlowAreaResults(FlowArea):
             min_above_ref=depth_min,
         )
 
-        # ── 5. WSE output ──────────────────────────────────────────────
+        # -- 5. WSE output ----------------------------------------------
         if clip_to_perimeter:
             wse_result: Path | rasterio.io.DatasetReader = (
                 _raster._mask_outside_polygon(wse_ds, _perim, nodata, wse_path)
@@ -2299,7 +2304,7 @@ class FlowAreaResults(FlowArea):
         else:
             wse_result = wse_ds
 
-        # ── 6. Depth output ────────────────────────────────────────────
+        # -- 6. Depth output --------------------------------------------
         logger.info("Building depth raster from WSE raster and DEM...")
 
         depth_ds = _raster._depth_from_wse_and_dem(
@@ -2317,7 +2322,7 @@ class FlowAreaResults(FlowArea):
         else:
             depth_result = depth_ds
 
-        # ── 7. Speed output ────────────────────────────────────────────
+        # -- 7. Speed output --------------------------------------------
         # Pass wse_ds directly so mesh_to_velocity_raster reuses the
         # already-rendered wet extent instead of re-running the WSE render.
         logger.info("Building velocity raster for speed output...")
@@ -2360,7 +2365,7 @@ class FlowAreaResults(FlowArea):
         else:
             speed_result = speed_ds
 
-        # ── 8. Debug comparison vs RasMapper (optional) ────────────────
+        # -- 8. Debug comparison vs RasMapper (optional) ----------------
         if wse_path_compare is not None:
             _raster._compare_rasters_debug(
                 "WSE", wse_result, wse_path_compare, nodata, threshold_pct_compare
@@ -2399,9 +2404,9 @@ class FlowAreaResults(FlowArea):
         Runs two complementary checks and combines them into one report:
 
         1. **Mesh geometry** (:func:`~raspy.geo.mesh_validation.check_mesh_cells`)
-           — validates every cell against the HEC-RAS rules (convexity, face
+           - validates every cell against the HEC-RAS rules (convexity, face
            count, duplicate points, cell centre location).
-        2. **Triangulation probe** — actually builds the fan-triangulation used
+        2. **Triangulation probe** - actually builds the fan-triangulation used
            by :func:`~raspy.geo.raster.mesh_to_wse_raster` and attempts to
            initialise ``matplotlib``'s ``TrapezoidMapTriFinder``, both with and
            without the ``fix_triangulation`` pre-processing step, so you can see
@@ -2436,26 +2441,26 @@ class FlowAreaResults(FlowArea):
         ``triangulation``
             Sub-dict describing the triangulation probe result:
 
-            - ``n_triangles_raw`` — triangles before fix.
-            - ``n_triangles_after_fix`` — triangles after dedup + zero-area filter.
-            - ``n_removed_by_fix`` — triangles removed.
-            - ``trifinder_without_fix`` — ``"ok"`` / ``"failed"`` / ``"not_tested"``.
-            - ``trifinder_with_fix`` — ``"ok"`` / ``"failed"``.
-            - ``fallback_needed`` — ``True`` when even the fixed triangulation
+            - ``n_triangles_raw`` - triangles before fix.
+            - ``n_triangles_after_fix`` - triangles after dedup + zero-area filter.
+            - ``n_removed_by_fix`` - triangles removed.
+            - ``trifinder_without_fix`` - ``"ok"`` / ``"failed"`` / ``"not_tested"``.
+            - ``trifinder_with_fix`` - ``"ok"`` / ``"failed"``.
+            - ``fallback_needed`` - ``True`` when even the fixed triangulation
               cannot initialise the trifinder (KDTree fallback will be used).
         """
         import matplotlib.tri as mtri
 
         from raspy.geo.mesh_validation import print_mesh_report
 
-        # ── Step 1: Mesh geometry validation ──────────────────────────────
+        # -- Step 1: Mesh geometry validation ------------------------------
         mesh_report = self.check_cells(check_boundary=check_boundary)
 
         if verbose:
             print(f"=== debug_raster_export: {self.name} ===\n")
             print_mesh_report(mesh_report)
 
-        # ── Step 2: Build dry-cell mask ───────────────────────────────────
+        # -- Step 2: Build dry-cell mask -----------------------------------
         if timestep is not None:
             wse = np.array(self.water_surface[timestep, : self.n_cells])
             if depth_min is not None:
@@ -2471,7 +2476,7 @@ class FlowAreaResults(FlowArea):
         cv[dry_mask] = np.nan
         n_wet = int((~dry_mask).sum())
 
-        # ── Step 3: Build the fan-triangulation ───────────────────────────
+        # -- Step 3: Build the fan-triangulation ---------------------------
         cfi, cfv = self.cell_face_info
         cfi = np.asarray(cfi, dtype=np.int64)[: self.n_cells]
         cfv = np.asarray(cfv, dtype=np.int64)
@@ -2511,7 +2516,7 @@ class FlowAreaResults(FlowArea):
 
         n_raw = len(triangles_raw)
 
-        # ── Step 4: Probe trifinder WITHOUT fix ───────────────────────────
+        # -- Step 4: Probe trifinder WITHOUT fix ---------------------------
         try:
             triang_raw = mtri.Triangulation(
                 all_pts[:, 0], all_pts[:, 1], triangles_raw
@@ -2524,7 +2529,7 @@ class FlowAreaResults(FlowArea):
         except Exception as exc:
             result_without_fix = f"error: {exc}"
 
-        # ── Step 5: Apply fix — track exactly what is removed and why ────────
+        # -- Step 5: Apply fix - track exactly what is removed and why --------
         _, _uniq_idx, _inv_idx = np.unique(
             all_pts, axis=0, return_index=True, return_inverse=True
         )
@@ -2567,7 +2572,7 @@ class FlowAreaResults(FlowArea):
             + _removed_detail(removed_zero_area,  "zero_area")
         )
 
-        # Duplicate facepoints (global — cause duplicate vertices in all_pts).
+        # Duplicate facepoints (global - cause duplicate vertices in all_pts).
         dup_fp_locations: list[dict] = []
         for fp_a, fp_b in mesh_report["duplicate_facepoints"]:
             coord = fp_coords[fp_a].tolist()
@@ -2640,7 +2645,7 @@ class FlowAreaResults(FlowArea):
             if fallback_needed:
                 print("  *** KDTree fallback will be used for horizontal rendering ***")
             else:
-                print("  fix_triangulation=True is sufficient — no fallback needed")
+                print("  fix_triangulation=True is sufficient - no fallback needed")
 
             if dup_fp_locations:
                 print(f"\n  Duplicate facepoints ({len(dup_fp_locations)}):")
@@ -2790,7 +2795,7 @@ class FlowAreaResultsCollection(FlowAreaCollection):
 
 
 # ---------------------------------------------------------------------------
-# StorageAreaResults — extends StorageArea geometry with plan results
+# StorageAreaResults - extends StorageArea geometry with plan results
 # ---------------------------------------------------------------------------
 
 
@@ -2811,10 +2816,10 @@ class StorageAreaResults(StorageArea):
         0-based column index of this SA in the flat ``(n_t, n_sa)`` datasets
         (``Water Surface``, ``Flow``) stored under ``Storage Areas/``.
     ts_sa_group:
-        ``h5py.Group`` at ``…/Unsteady Time Series/Storage Areas``, or ``None``
+        ``h5py.Group`` at ``-/Unsteady Time Series/Storage Areas``, or ``None``
         when the plan has no SA results.
     sum_sa_group:
-        ``h5py.Group`` at ``…/Summary Output/Storage Areas``, or ``None``.
+        ``h5py.Group`` at ``-/Summary Output/Storage Areas``, or ``None``.
     """
 
     def __init__(
@@ -2833,7 +2838,7 @@ class StorageAreaResults(StorageArea):
         self._i = sa_index
         self._ts = ts_sa_group
         self._sum = sum_sa_group
-        # per-SA subgroup: …/Storage Areas/<name>/
+        # per-SA subgroup: -/Storage Areas/<name>/
         self._sub = ts_sa_group.get(sa.name) if ts_sa_group else None
         self._cache: dict[str, np.ndarray] = {}
 
@@ -3050,7 +3055,7 @@ class StorageAreaResultsCollection(StorageAreaCollection):
 
 
 # ---------------------------------------------------------------------------
-# SA2DConnectionResults — one connection between two hydraulic areas
+# SA2DConnectionResults - one connection between two hydraulic areas
 # ---------------------------------------------------------------------------
 
 
@@ -3066,7 +3071,7 @@ class SA2DConnectionResults:
     name:
         Name of the connection (group key in the HDF file).
     group:
-        ``h5py.Group`` at ``…/SA 2D Area Conn/<name>``.
+        ``h5py.Group`` at ``-/SA 2D Area Conn/<name>``.
     """
 
     def __init__(self, name: str, group: "h5py.Group") -> None:
@@ -3089,7 +3094,7 @@ class SA2DConnectionResults:
 
         Typical columns: ``Total Flow``, ``Weir Flow``, ``Stage HW``,
         ``Stage TW`` [, ``Total Gate Flow``].  Falls back to
-        ``col_0``, ``col_1``, … when the attribute is absent.
+        ``col_0``, ``col_1``, - when the attribute is absent.
         """
         ds = self._g["Structure Variables"]
         attr = ds.attrs.get("Variable_Unit")
@@ -3212,7 +3217,7 @@ class SA2DConnectionCollection:
 
     Connections can link a Storage Area to a 2-D Flow Area, two Storage Areas
     to each other, or two 2-D Flow Areas.  Each connection is a named
-    ``h5py.Group`` under ``…/SA 2D Area Conn/``.
+    ``h5py.Group`` under ``-/SA 2D Area Conn/``.
 
     Parameters
     ----------
@@ -3285,7 +3290,7 @@ class SA2DConnectionCollection:
 
 
 # ---------------------------------------------------------------------------
-# PlanHdf — public entry point
+# PlanHdf - public entry point
 # ---------------------------------------------------------------------------
 
 

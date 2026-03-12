@@ -1190,9 +1190,12 @@ def mesh_to_velocity_raster(
             # No double-C tangential estimation — cell WLS velocities are not
             # used.  This prevents tangential contamination from ill-conditioned
             # or marginal-wet cells propagating through the double-C stencil.
+            # Scatter positions are always face centroids (not normal-intercept):
+            # vn is a face-integrated quantity with no directional offset.
             face_vel_normal = face_vel_arr[:, None] * face_normals_arr[:, :2]
+            _face_centroids = np.asarray(face_centers, dtype=np.float64)
 
-            pts     = _face_vel_coords[wet_face]
+            pts     = _face_centroids[wet_face]
             vel     = face_vel_normal[wet_face]
             xi_flat = np.column_stack([xi_grid.ravel(), yi_grid.ravel()])
             vel_flat = griddata(pts, vel, xi_flat, method=scatter_interp_method,
