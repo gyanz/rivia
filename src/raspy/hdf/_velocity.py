@@ -86,7 +86,45 @@ def _wls_velocity(
     b2 = np.dot(weights * vn, ny)
 
     det = a11 * a22 - a12 * a12
-    if abs(det) < 1e-30:
+
+    # Ill-conditioning guard — condition-number relative threshold.
+    #
+    # Background
+    # ----------
+    # An absolute threshold (e.g. 1e-30) is dangerously permissive.
+    # The 2×2 WLS matrix can have a positive det yet be so ill-conditioned
+    # that the solution is physically meaningless.  Two distinct scenarios
+    # arise in practice:
+    #
+    # Scenario A — nearly anti-parallel wet faces (area_weighted):
+    #   A cell may have only two wet faces whose normals are nearly anti-
+    #   parallel (≈180° apart, e.g. n1 ≈ −n2).  Both faces measure the
+    #   same flow component but at different magnitudes (e.g. vn₁ = −26.4
+    #   vs vn₂ = +15.5 m/s for n₁ ≈ −n₂).  The WLS must reconcile this
+    #   inconsistency by assigning a huge perpendicular velocity (~828 m/s)
+    #   to satisfy both equations simultaneously, even though det > 0 (the
+    #   faces are not exactly anti-parallel).
+    #
+    # Scenario B — nearly parallel high-weight faces + tiny-weight outlier:
+    #   Most faces deep (area ≈ 100, nearly parallel normals); one barely-
+    #   wet face (area ≈ 1e-8) is the only constraint for the perpendicular
+    #   direction.  det ≈ (high_w)(low_w)(sin θ)² can be ~1e-11; a 0.001
+    #   m/s discrepancy in that face's vₙ is amplified to hundreds of m/s.
+    #
+    # The 2×2 condition number approximates to
+    #     κ ≈ (a11 + a22)² / det          (for large κ)
+    # Requiring κ ≤ MAX_COND is equivalent to
+    #     det ≥ (a11 + a22)² / MAX_COND
+    # which scales correctly with the weight magnitude.
+    #
+    # MAX_COND = 1e4 in practice:
+    #   Two 90°-separated faces (equal weight): κ ≈ 1     → passes   ✓
+    #   Two  5°-separated faces (equal weight): κ ≈ 530   → passes   ✓
+    #   Two  1°-separated faces (equal weight): κ ≈ 13000 → rejected ✓
+    #   Cell with two anti-parallel wet faces:  κ ≈ 1e5   → rejected ✓
+    _MAX_COND = 1e4
+    _trace = a11 + a22
+    if _trace == 0.0 or abs(det) * _MAX_COND < _trace ** 2:
         return np.zeros(2)
 
     u = (a22 * b1 - a12 * b2) / det

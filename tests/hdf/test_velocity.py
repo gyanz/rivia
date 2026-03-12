@@ -55,6 +55,57 @@ class TestWlsVelocity:
         uv = _wls_velocity(vn, weights, normals)
         np.testing.assert_array_equal(uv, [0.0, 0.0])
 
+    def test_nearly_antiparallel_faces_returns_zero(self):
+        """Two nearly anti-parallel wet faces with inconsistent vn → ill-conditioned.
+
+        Mirrors cell 285 in the Tulloch model where area_weighted WLS produced
+        speed > 1200 m/s.  The two wet faces have nearly opposite normals
+        (~0.5° apart) but vn values that are inconsistent (−26.4 vs +15.5 m/s
+        for what should be the same face-normal direction measured from each
+        side).  The condition number κ ≈ 1e5 >> MAX_COND=1e4, so the guard
+        must return (0, 0) rather than the spurious large velocity.
+        """
+        # Normals taken from the actual HDF face data for that cell.
+        normals = np.array([
+            [ 0.7440,  0.6682],  # face 1970
+            [-0.7381, -0.6747],  # face 1972  (≈ −n1)
+        ])
+        vn = np.array([-26.3988, 15.4975])
+        weights = np.array([0.3643, 2.0924])  # flow areas (area_weighted)
+        uv = _wls_velocity(vn, weights, normals)
+        np.testing.assert_array_equal(uv, [0.0, 0.0])
+
+    def test_nearly_parallel_high_weight_tiny_outlier_returns_zero(self):
+        """Scenario B: many nearly-parallel high-weight faces + tiny-weight outlier.
+
+        Three faces all pointing east (w=100 each) plus one face at 0.001°
+        from east with weight 1e-8.  The barely-wet face is the only source
+        of perpendicular information; its tiny weight makes the effective
+        condition number enormous.
+        """
+        theta = np.radians(0.001)
+        normals = np.array([
+            [1.0, 0.0],
+            [1.0, 0.0],
+            [1.0, 0.0],
+            [np.cos(theta), np.sin(theta)],
+        ])
+        vn = np.array([2.0, 2.0, 2.0, 2.001])
+        weights = np.array([100.0, 100.0, 100.0, 1e-8])
+        uv = _wls_velocity(vn, weights, normals)
+        np.testing.assert_array_equal(uv, [0.0, 0.0])
+
+    def test_well_conditioned_diagonal_not_suppressed(self):
+        """Two faces at 45° with equal weight → well-conditioned, must NOT be zeroed."""
+        theta = np.radians(45)
+        normals = np.array([[1.0, 0.0], [np.cos(theta), np.sin(theta)]])
+        vn = np.array([3.0, 3.0 * np.cos(theta)])
+        weights = np.ones(2)
+        uv = _wls_velocity(vn, weights, normals)
+        # Flow is purely in x; WLS should recover u≈3, v≈0.
+        np.testing.assert_allclose(uv[0], 3.0, rtol=1e-5)
+        np.testing.assert_allclose(uv[1], 0.0, atol=1e-8)
+
     def test_output_shape(self):
         normals = np.random.default_rng(0).uniform(-1, 1, (5, 2))
         normals /= np.linalg.norm(normals, axis=1, keepdims=True)
