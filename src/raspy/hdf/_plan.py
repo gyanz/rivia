@@ -455,347 +455,913 @@ class FlowAreaResults(FlowArea):
             dry_mask=dry_mask,
         )
 
-    def debug_cell_velocity(
-        self,
-        cell_idx: int,
-        timestep: int,
-        wse_interp: Literal["average", "sloped", "max"] = "sloped",
-        vel_weight_method: Literal[
-            "area_weighted", "length_weighted", "flow_ratio"
-        ] = "length_weighted",
-        face_velocity_location: Literal[
-            "centroid", "normal_intercept"
-        ] = "normal_intercept",
-    ) -> None:
-        """Print a detailed per-face breakdown of velocity reconstruction.
+    # ------------------------------------------------------------------
+    # Derived results helpers (computed from HDF result arrays)
+    # ------------------------------------------------------------------
 
-        Displays the WLS input data for each face of the specified cell, then
-        shows the reconstructed velocity for all available weight schemes.
-        Optionally compares against the HEC-RAS stored ``Cell Velocity``
-        scalar when that dataset is present in the HDF file.
+    def water_surface_at_facepoints(self, timestep: int) -> np.ndarray:
+        """WSE interpolated to facepoints for one timestep.
 
-        Prints four tables:
-
-        1. **WLS inputs** - per-face normal, length, V_n, face WSE, flow area.
-        2. **Double-C stencil face velocities** - full 2D face velocity
-           ``vn*n_hat + vt*t_hat`` using the *vel_weight_method* WLS vectors for
-           the tangential component.  This is what all intra-cell interpolation
-           methods (``triangle_blend``, ``face_idw``, ``face_gradient``,
-           ``facepoint_blend``) use at the face midpoints.
-        3. **Facepoint velocities** - velocity assigned to each polygon vertex
-           by averaging the full 2D velocities of all adjacent wet faces.
-           This is what ``facepoint_blend`` interpolates between.
-        4. **Face normal velocity** - pure normal component ``vn * n_hat`` for
-           each face.  This is the scatter value used by
-           ``"scatter_face_normal"`` with no double-C tangential contribution.
+        Convenience wrapper around :meth:`~FlowArea.wse_at_facepoints` that
+        reads the water-surface time series internally.
 
         Parameters
         ----------
-        cell_idx:
-            0-based cell index.
         timestep:
             0-based index into the time dimension.
-        wse_interp:
-            Face WSE interpolation method used for ``area_weighted`` weights.
-        vel_weight_method:
-            WLS weight scheme used as V_L / V_R in the double-C stencil
-            reconstruction.  Defaults to ``"length_weighted"``.
-        face_velocity_location:
-            Position of the face normal velocity measurement point used in
-            ``wse_interp="sloped"`` and passed to :meth:`cell_velocity_vectors`.
-            ``"normal_intercept"`` (default) or ``"centroid"``.
+
+        Returns
+        -------
+        ndarray, shape ``(n_facepoints,)``
+            Facepoint WSE.  ``nan`` where all adjacent cells are dry.
         """
-        from ._velocity import (
-            _estimate_face_wse_average,
-            _estimate_face_wse_max,
-            _estimate_face_wse_sloped,
-            _interpolate_face_flow_area,
-            _wls_velocity,
-            average_face_velocities_at_facepoints,
-            compute_all_face_velocities,
-        )
-
-        if cell_idx < 0 or cell_idx >= self.n_cells:
-            raise IndexError(f"cell_idx {cell_idx} is out of range [0, {self.n_cells})")
-
-        n_cells = self.n_cells
-        face_vel = np.array(self.face_velocity[timestep, :])
-        # Read full water_surface (real + ghost) so boundary faces get
-        # ghost-cell WSE rather than NaN when estimating face WSE.
+        # Include ghost-cell WSE so perimeter facepoints receive a value
+        # from the adjacent boundary cell rather than returning NaN.
         cell_wse = np.array(self.water_surface[timestep, :])
+        return self.wse_at_facepoints(cell_wse)
 
-        cell_face_info, cell_face_values = self.cell_face_info
-        start = int(cell_face_info[cell_idx, 0])
-        count = int(cell_face_info[cell_idx, 1])
-        vals = cell_face_values[start : start + count]
-        face_idxs = vals[:, 0].astype(int)
-        orientations = vals[:, 1].astype(int)
+    def wet_cells(self, timestep: int, depth_min: float = 0.0) -> np.ndarray:
+        """Boolean mask of wet cells for one timestep.
 
-        normals = self.face_normals[face_idxs, :2]  # (k, 2)
-        lengths = self.face_normals[face_idxs, 2]   # (k,)
-        vn      = face_vel[face_idxs]               # (k,)
+        A cell is wet when ``WSE - cell_min_elevation > depth_min``.
 
-        face_ci          = self.face_cell_indexes    # (n_faces, 2)
-        face_centroids_a = (
-            self.face_normal_intercept
-            if face_velocity_location == "normal_intercept"
-            else self.face_centroids
-        )
-        fp_idx_all       = self.face_facepoint_indexes  # (n_faces, 2)
-        fp_coords        = self.facepoint_coordinates   # (n_fp, 2)
-        # Stack ghost cell centres so _estimate_face_wse_sloped can index
-        # up to n_total (len(cell_wse) includes ghost rows).
-        cell_centres = np.vstack([self.cell_centers, self.ghost_cell_centers])
+        Parameters
+        ----------
+        timestep:
+            0-based index into the time dimension.
+        depth_min:
+            Minimum depth threshold in model units.  Default ``0.0``.
 
-        # -- Face WSE and flow-area weights -----------------------------
-        if wse_interp == "sloped":
-            face_wse_all = _estimate_face_wse_sloped(
-                face_ci, cell_wse, cell_centres, face_centroids_a
+        Returns
+        -------
+        ndarray, shape ``(n_cells,)``, dtype bool
+        """
+        wse = np.array(self.water_surface[timestep, : self.n_cells])
+        return (wse - self.cell_min_elevation) > depth_min
+
+    def wet_faces(self, timestep: int, depth_min: float = 0.0) -> np.ndarray:
+        """Boolean mask of wet faces for one timestep.
+
+        A face is wet when at least one of its adjacent cells is wet
+        (see :meth:`wet_cells`).  Boundary faces are wet when their single
+        adjacent real cell is wet.
+
+        Parameters
+        ----------
+        timestep:
+            0-based index into the time dimension.
+        depth_min:
+            Minimum cell depth threshold passed to :meth:`wet_cells`.
+
+        Returns
+        -------
+        ndarray, shape ``(n_faces,)``, dtype bool
+        """
+        wc = self.wet_cells(timestep, depth_min)
+        fci = self.face_cell_indexes  # (n_faces, 2)
+        n = self.n_cells
+        c0_wet = np.where(fci[:, 0] >= 0, wc[np.clip(fci[:, 0], 0, n - 1)], False)
+        c1_wet = np.where(fci[:, 1] >= 0, wc[np.clip(fci[:, 1], 0, n - 1)], False)
+        return c0_wet | c1_wet
+
+
+
+    # ------------------------------------------------------------------
+    # Raster export - delegates to raspy.geo (deferred import)
+    # ------------------------------------------------------------------
+
+    def _max_velocity(
+        self,
+        method: Literal[
+            "area_weighted", "length_weighted", "flow_ratio"
+        ] = "area_weighted",
+        wse_interp: Literal["average", "sloped", "max"] = "average",
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Per-cell maximum speed and corresponding velocity vector.
+
+        Iterates over every timestep, computing WLS velocity vectors and
+        tracking the element-wise maximum speed along with the vector at
+        that peak-speed timestep.
+
+        Returns
+        -------
+        max_speed : ndarray, shape ``(n_cells,)``
+        max_vecs  : ndarray, shape ``(n_cells, 2)``
+            ``[Vx, Vy]`` at the timestep of each cell's peak speed.
+        """
+        n_t = self.water_surface.shape[0]
+        max_speed = np.full(self.n_cells, -np.inf)
+        max_vecs = np.zeros((self.n_cells, 2))
+
+        for t in range(n_t):
+            vecs = self.cell_velocity_vectors(t, method=method, wse_interp=wse_interp)
+            speed = np.sqrt(vecs[:, 0] ** 2 + vecs[:, 1] ** 2)
+            faster = speed > max_speed
+            max_speed[faster] = speed[faster]
+            max_vecs[faster] = vecs[faster]
+
+        return max_speed, max_vecs
+
+    @log_call(logging.INFO)
+    @timed(logging.INFO)
+    def export_raster(
+        self,
+        variable: Literal["water_surface", "depth", "cell_speed", "cell_velocity"],
+        timestep: int | None = None,
+        output_path: str | Path | None = None,
+        *,
+        cell_size: float | None = None,
+        reference_transform: Any | None = None,
+        reference_raster: str | Path | None = None,
+        snap_to_reference_extent: bool = False,
+        crs: Any | None = None,
+        nodata: float = -9999.0,
+        render_mode: Literal[
+            "horizontal",
+            "sloping_corners",
+            "sloping_corners_faces",
+            "sloping_corners_faces_shallow",
+        ] = "sloping_corners",
+        depth_min: float | None = 0.001,
+        vel_min: float | None = 0.0001,
+        vel_weight_method: Literal[
+            "area_weighted", "length_weighted", "flow_ratio"
+        ] = "area_weighted",
+        vel_wse_method: Literal["average", "sloped", "max"] = "sloped",
+        vel_interp_method: Literal[
+            "flat_cell_center",
+            "triangle_blend", "face_idw", "face_gradient",
+            "facepoint_blend", "scatter_cell_face", "scatter_face",
+            "scatter_corners", "scatter_corners_face", "scatter_cell_corners_face",
+            "scatter_face_normal",
+        ] = "scatter_face",
+        scatter_interp_method: Literal["nearest", "linear", "cubic"] = "linear",
+        fix_triangulation: bool = True,
+        clip_to_perimeter: bool = True,
+        face_velocity_location: Literal[
+            "centroid", "normal_intercept"
+        ] = "normal_intercept",
+    ) -> Path | rasterio.io.DatasetReader:
+        """Interpolate a field to a GeoTIFF using mesh-conforming triangulation.
+
+        Uses :func:`~raspy.geo.raster.mesh_to_wse_raster` which sub-divides each
+        mesh cell into triangles from the cell centre to each bounding face,
+        then performs linear (barycentric) interpolation within those triangles.
+        This prevents spurious fill across dry gaps or disconnected wet islands,
+        matching the interpolation used by HEC-RAS RASMapper.
+
+        Requires ``rasterio`` and ``matplotlib`` (``pip install raspy[geo]``).
+
+        Parameters
+        ----------
+        variable:
+            ``"water_surface"`` - water-surface elevation.
+            ``"depth"``         - water depth (requires *reference_raster*):
+                                  WSE is interpolated then the DEM pixel value
+                                  is subtracted; negative depths are clamped
+                                  to 0.
+            ``"cell_speed"``    - WLS-reconstructed velocity magnitude.
+            ``"cell_velocity"`` - WLS-reconstructed velocity vector
+                                  (4 bands: Vx, Vy, Speed, Direction).
+        timestep:
+            0-based time index.  Pass ``None`` (default) to use maximum values
+            (only valid for ``"water_surface"`` and ``"depth"``).
+        output_path:
+            Destination ``.tif`` file path.  ``None`` returns an in-memory
+            ``rasterio.DatasetReader``; the caller must close it.
+        cell_size:
+            Output pixel size in model coordinate units.  Defaults to the
+            median face length when no reference grid is supplied.
+        reference_transform:
+            ``rasterio.transform.Affine`` for pixel-perfect alignment.
+            Mutually exclusive with *reference_raster*.
+        reference_raster:
+            Existing GeoTIFF whose transform and CRS are inherited.
+            **Required** when ``variable="depth"``.
+        snap_to_reference_extent:
+            When *reference_raster* is given, extend the output to its full
+            extent (default ``False``).
+        crs:
+            Output CRS.  When *reference_raster* is given and *crs* is
+            ``None``, the reference raster CRS is inherited.
+        nodata:
+            Fill value for pixels outside the wet mesh.
+        depth_min:
+            Minimum water depth (m).  Only used when ``variable="depth"``.
+            Cells whose HDF depth (WSE minus cell minimum elevation) is
+            below this value are excluded before WSE interpolation, and
+            output pixels shallower than this value are set to *nodata*
+            after DEM subtraction.
+        vel_min:
+            Minimum speed (m/s).  Cells whose WLS speed is below this
+            threshold are excluded from the WSE wet-extent render and from
+            the final velocity output.  Default ``0.0001``.
+        vel_weight_method:
+            Velocity reconstruction scheme passed to
+            :meth:`cell_velocity_vectors`.
+        vel_wse_method:
+            Face WSE interpolation method passed to
+            :meth:`cell_velocity_vectors`.
+        render_mode:
+            Water-surface rendering mode - ``"sloping_corners"`` (default),
+            ``"horizontal"``, ``"sloping_corners_faces"``, or
+            ``"sloping_corners_faces_shallow"``.  See
+            :func:`~raspy.geo.raster.mesh_to_wse_raster` for full description.
+        vel_interp_method:
+            Intra-cell velocity interpolation method for ``"cell_velocity"``
+            and ``"cell_speed"``:
+
+            ``"flat_cell_center"`` - paint the flat WLS cell-centre velocity
+            over all pixels inside the cell (fastest; no spatial interpolation).
+
+            ``"triangle_blend"`` - barycentric blend of WLS
+            cell-centre velocity and reconstructed face velocity within each
+            fan-triangle.
+
+            ``"face_idw"`` - inverse-distance-weighted average of all
+            face-midpoint 2D velocities within the owning cell.
+
+            ``"face_gradient"`` - least-squares linear gradient fit inside
+            each cell from face-midpoint velocities.
+
+            ``"facepoint_blend"`` - average face velocities onto each polygon
+            vertex (facepoint), then full 3-vertex barycentric interpolation
+            within each fan-triangle.  C0-continuous across all cell faces;
+            best choice for smooth flow-arrow rendering.
+
+            ``"scatter_cell_face"`` - global ``scipy.griddata`` over wet cell
+            centres and wet face midpoints.
+
+            ``"scatter_face"`` *(default)* - same but face midpoints only;
+            avoids discontinuities originating at cell centres.
+
+            ``"scatter_corners"`` - global ``scipy.griddata`` over wet mesh
+            corners; velocity at each corner is the mean of the double-C
+            stencil face velocities from all adjacent wet faces.
+
+            ``"scatter_corners_face"`` - combined scatter from wet mesh
+            corners (double-C stencil mean) and wet face midpoints (2D face
+            velocity).
+
+            ``"scatter_cell_corners_face"`` - maximum-density scatter combining
+            wet cell centres (WLS), wet mesh corners (double-C averaged), and
+            wet face midpoints (double-C); union of all other scatter sources.
+
+            ``"scatter_face_normal"`` - global ``scipy.griddata`` over wet
+            face midpoints using only the stored normal component (``vn * n_hat``).
+            No double-C tangential estimation; cell WLS velocities do not
+            influence the result.  Avoids tangential contamination near
+            wet/dry boundaries.
+        scatter_interp_method:
+            ``scipy.interpolate.griddata`` *method* used by
+            ``"scatter_cell_face"``, ``"scatter_face"``, ``"scatter_corners"``,
+            ``"scatter_corners_face"``, ``"scatter_cell_corners_face"``, and
+            ``"scatter_face_normal"``.
+            One of ``"nearest"``, ``"linear"`` *(default)*, ``"cubic"``.
+            Ignored for all other *vel_interp_method* values.
+        fix_triangulation:
+            When ``True`` (default), deduplicate coincident mesh vertices and
+            remove zero-area triangles before building the triangulation.
+            Prevents ``RuntimeError: Triangulation is invalid`` on meshes with
+            unusual cell geometry.  Set ``False`` to skip on large, clean meshes.
+        clip_to_perimeter:
+            When ``True``, the output extent is restricted to the bounding
+            box of the 2-D flow area boundary polygon (``FlowArea.perimeter``)
+            snapped outward to the nearest reference pixel boundaries, and
+            pixels outside the polygon are set to *nodata*.  Useful when
+            malformed boundary cells cause KDTree noise outside the model
+            domain.  **Mutually exclusive with** ``snap_to_reference_extent``
+            - a ``ValueError`` is raised if both are ``True``.
+            Default ``True``.
+        face_velocity_location:
+            Position used as the face normal velocity measurement point when
+            ``vel_wse_method="sloped"``.
+            ``"normal_intercept"`` (default): where the cell-centre connecting
+            line crosses the face polyline.
+            ``"centroid"``: geometric centroid of the face polyline.
+            Passed to :meth:`cell_velocity_vectors`.
+        Returns
+        -------
+        Path
+            Written GeoTIFF path (when *output_path* is given).
+        rasterio.io.DatasetReader
+            Open in-memory dataset (when *output_path* is ``None``).
+
+        Raises
+        ------
+        ImportError
+            If ``rasterio`` or ``matplotlib`` are not installed.
+        ValueError
+            If ``variable="depth"`` and *reference_raster* is not provided,
+            or if ``timestep=None`` is used with ``"cell_speed"`` or
+            ``"cell_velocity"``.
+        """
+        from raspy.geo import raster as _raster  # deferred - geo not required
+
+        logger.info("Exporting hydraulic raster %s at timestep %d", variable, timestep)
+        # -- 0. Guards --------------------------------------------------
+        if variable == "depth" and reference_raster is None:
+            raise ValueError(
+                "reference_raster is required when variable='depth'. "
+                "Provide a path to a terrain DEM GeoTIFF."
             )
-        elif wse_interp == "max":
-            face_wse_all = _estimate_face_wse_max(face_ci, cell_wse)
-        else:
-            face_wse_all = _estimate_face_wse_average(face_ci, cell_wse)
+        if variable in ("cell_speed", "cell_velocity") and timestep is None:
+            raise ValueError(
+                "timestep=None is not supported for cell_speed / cell_velocity. "
+                "Provide an explicit timestep index."
+            )
+        if clip_to_perimeter and snap_to_reference_extent:
+            raise ValueError(
+                "clip_to_perimeter and snap_to_reference_extent are mutually "
+                "exclusive: clip_to_perimeter restricts the output to the "
+                "perimeter bounding box, while snap_to_reference_extent expands "
+                "it to the full reference raster extent.  Set "
+                "snap_to_reference_extent=False when using clip_to_perimeter=True."
+            )
 
-        ae_info, ae_values = self.face_area_elevation
-        areas = np.array(
-            [
-                _interpolate_face_flow_area(fi, face_wse_all[fi], ae_info, ae_values)
-                for fi in face_idxs
-            ]
+        # -- 1. Resolve values array ------------------------------------
+        if variable == "depth":
+            if timestep is None:
+                wse_values = self.max_water_surface["value"].to_numpy()
+                depth_at_cells = (
+                    self.max_depth()["value"].to_numpy()
+                    if depth_min is not None else None
+                )
+            else:
+                wse_values = np.array(self.water_surface[timestep, : self.n_cells])
+                depth_at_cells = self.depth(timestep) if depth_min is not None else None
+            # Pre-mask dry cells so mesh_to_wse_raster excludes those triangles.
+            cell_wse = (
+                np.where(depth_at_cells < depth_min, np.nan, wse_values)
+                if depth_min is not None else wse_values
+            )
+        elif variable == "water_surface":
+            if timestep is None:
+                values = self.max_water_surface["value"].to_numpy()
+                depth_at_cells = (
+                    self.max_depth()["value"].to_numpy()
+                    if depth_min is not None else None
+                )
+            else:
+                values = np.array(self.water_surface[timestep, : self.n_cells])
+                depth_at_cells = self.depth(timestep) if depth_min is not None else None
+            if depth_min is not None:
+                values = np.where(depth_at_cells < depth_min, np.nan, values)
+        elif variable in ("cell_speed", "cell_velocity"):
+            # Compute WLS velocity vectors and cell WSE for the velocity raster.
+            # mesh_to_velocity_raster renders WSE to determine wet extent, then
+            # assigns velocity per-cell (no spatial interpolation across cells).
+            cell_vel_wse = np.array(self.water_surface[timestep, : self.n_cells])
+            cell_vel_vecs = self.cell_velocity_vectors(
+                timestep, method=vel_weight_method, wse_interp=vel_wse_method,
+                face_velocity_location=face_velocity_location,
+            )
+        else:
+            raise ValueError(f"Unknown variable: {variable!r}")
+
+        # -- 2. Default cell size ---------------------------------------
+        resolved_cell_size = cell_size
+        no_grid = reference_transform is None and reference_raster is None
+        if cell_size is None and no_grid:
+            resolved_cell_size = float(np.median(self.face_normals[:, 2]))
+
+        # -- 2b. Facepoint WSE for sloping render -----------------------
+        # Compute facepoint values from the dry-masked cell WSE so
+        # mesh_to_wse_raster receives them for the griddata sloping path.
+        # For velocity variables the vel_min mask is applied first.
+        _fp_wse: np.ndarray | None = None
+        _fp_wse_vel: np.ndarray | None = None
+        _fc_wse: np.ndarray | None = None
+        _fc_wse_vel: np.ndarray | None = None
+        _use_facecenters = render_mode in (
+            "sloping_corners_faces", "sloping_corners_faces_shallow"
+        )
+        if render_mode != "horizontal":
+            if variable == "water_surface":
+                _fp_wse = self.wse_at_facepoints(values)
+                if _use_facecenters:
+                    _fc_wse = self.wse_at_facecentroids(values)
+            elif variable == "depth":
+                _fp_wse = self.wse_at_facepoints(cell_wse)
+                if _use_facecenters:
+                    _fc_wse = self.wse_at_facecentroids(cell_wse)
+            elif variable in ("cell_velocity", "cell_speed"):
+                if vel_min is not None:
+                    with np.errstate(invalid="ignore"):
+                        _speed = np.linalg.norm(cell_vel_vecs[: self.n_cells], axis=1)
+                    _vel_wse_masked = np.where(_speed < vel_min, np.nan, cell_vel_wse)
+                else:
+                    _vel_wse_masked = cell_vel_wse
+                _fp_wse_vel = self.wse_at_facepoints(_vel_wse_masked)
+                if _use_facecenters:
+                    _fc_wse_vel = self.wse_at_facecentroids(_vel_wse_masked)
+
+        # -- 3. Common mesh topology keyword arguments ------------------
+        _cfi, _cfv = self.cell_face_info  # property returns (info, values) tuple
+        # When clipping to the perimeter, use the perimeter polygon bounding
+        # box as the output extent.  _tight_pixel_bounds (inside mesh_to_wse_raster)
+        # snaps this bbox outward to reference pixel boundaries, preserving
+        # grid alignment while keeping the extent compact and consistent with
+        # the polygon mask applied after.
+        _perimeter_bbox: tuple[float, float, float, float] | None = None
+        if clip_to_perimeter:
+            _perim = self.perimeter  # (n_pts, 2)
+            _perimeter_bbox = (
+                float(_perim[:, 0].min()), float(_perim[:, 1].min()),
+                float(_perim[:, 0].max()), float(_perim[:, 1].max()),
+            )
+        mesh_kw: dict[str, Any] = dict(
+            cell_centers=self.cell_centers,
+            facepoint_coordinates=self.facepoint_coordinates,
+            face_facepoint_indexes=self.face_facepoint_indexes,
+            face_cell_indexes=self.face_cell_indexes,
+            cell_face_info=_cfi,
+            cell_face_values=_cfv,
+            cell_size=resolved_cell_size,
+            reference_transform=reference_transform,
+            reference_raster=reference_raster,
+            crs=crs,
+            nodata=nodata,
+            snap_to_reference_extent=snap_to_reference_extent,
+            render_mode=render_mode,
+            fix_triangulation=fix_triangulation,
+            extent_bbox=_perimeter_bbox,
+            facepoint_wse=_fp_wse,
+            scatter_interp_method=scatter_interp_method,
+            cell_polygons=self.cell_polygons,
+            face_centers=(
+                self.face_centroids if _use_facecenters else None
+            ),
+            face_center_wse=_fc_wse,
+            face_min_elevation=(
+                self.face_min_elevation
+                if render_mode == "sloping_corners_faces_shallow" else None
+            ),
+        )
+        # Exclude face_centers: not shared with mesh_to_velocity_raster via mesh_kw
+        # (face_centers is passed explicitly in the velocity call).  Override
+        # facepoint_wse and face_center_wse with vel_min-masked versions.
+        _vel_mesh_kw = {k: v for k, v in mesh_kw.items()
+                        if k not in ("face_centers",
+                                     "facepoint_wse", "face_center_wse")}
+        _vel_mesh_kw["facepoint_wse"] = _fp_wse_vel
+        _vel_mesh_kw["face_center_wse"] = _fc_wse_vel
+
+        # -- 4. Delegate to mesh_to_wse_raster / mesh_to_velocity_raster ------
+        if variable == "depth":
+            wse_ds = _raster.mesh_to_wse_raster(
+                **mesh_kw,
+                cell_wse=cell_wse,
+                output_path=None,   # in-memory; depth written after DEM subtraction
+                min_value=None,     # dry cells already NaN-masked above
+                min_above_ref=depth_min,
+            )
+            depth_ds = _raster._depth_from_wse_and_dem(
+                wse_ds, reference_raster, nodata,
+                None if clip_to_perimeter else output_path,
+                min_value=depth_min,
+            )
+            wse_ds.close()
+            if clip_to_perimeter:
+                result = _raster._mask_outside_polygon(
+                    depth_ds, _perim, nodata, output_path
+                )
+                depth_ds.close()
+                return result
+            return depth_ds
+
+        elif variable == "cell_velocity":
+            _face_vel_arr = (
+                None if vel_interp_method == "flat_cell_center"
+                else np.array(self.face_velocity[timestep, :])
+            )
+            vel_ds = _raster.mesh_to_velocity_raster(
+                **_vel_mesh_kw,
+                cell_wse=cell_vel_wse,
+                cell_velocity=cell_vel_vecs,
+                output_path=None if clip_to_perimeter else output_path,
+                vel_min=vel_min,
+                depth_min=depth_min,
+                method=vel_interp_method,
+                face_normals=self.face_normals,
+                face_normal_velocity=_face_vel_arr,
+                face_centers=self.face_centroids,
+                face_velocity_coords=(
+                    self.face_normal_intercept
+                    if face_velocity_location == "normal_intercept"
+                    else self.face_centroids
+                ),
+            )
+            if clip_to_perimeter:
+                result = _raster._mask_outside_polygon(
+                    vel_ds, _perim, nodata, output_path
+                )
+                vel_ds.close()
+                return result
+            return vel_ds
+
+        elif variable == "cell_speed":
+            _face_vel_arr = (
+                None if vel_interp_method == "flat_cell_center"
+                else np.array(self.face_velocity[timestep, :])
+            )
+            vel_ds = _raster.mesh_to_velocity_raster(
+                **_vel_mesh_kw,
+                cell_wse=cell_vel_wse,
+                cell_velocity=cell_vel_vecs,
+                output_path=None,
+                vel_min=vel_min,
+                depth_min=depth_min,
+                method=vel_interp_method,
+                face_normals=self.face_normals,
+                face_normal_velocity=_face_vel_arr,
+                face_centers=self.face_centroids,
+                face_velocity_coords=(
+                    self.face_normal_intercept
+                    if face_velocity_location == "normal_intercept"
+                    else self.face_centroids
+                ),
+            )
+            speed_ds = _raster._velocity_raster_to_speed(
+                vel_ds, None if clip_to_perimeter else output_path, nodata
+            )
+            if clip_to_perimeter:
+                result = _raster._mask_outside_polygon(
+                    speed_ds, _perim, nodata, output_path
+                )
+                speed_ds.close()
+                return result
+            return speed_ds
+
+        else:
+            # water_surface: min_above_ref controls the wet/dry threshold relative
+            # to the DEM (when reference_raster is given); no scalar min_value needed.
+            wse_ds = _raster.mesh_to_wse_raster(
+                **mesh_kw,
+                cell_wse=values,
+                output_path=None if clip_to_perimeter else output_path,
+                min_value=None,
+                min_above_ref=depth_min,
+            )
+            if clip_to_perimeter:
+                result = _raster._mask_outside_polygon(
+                    wse_ds, _perim, nodata, output_path
+                )
+                wse_ds.close()
+                return result
+            return wse_ds
+
+
+    @log_call(logging.INFO)
+    @timed(logging.INFO)
+    def export_hydraulic_rasters(
+        self,
+        timestep: int,
+        reference_raster: str | Path,
+        *,
+        wse_path: str | Path | None = None,
+        depth_path: str | Path | None = None,
+        speed_path: str | Path | None = None,
+        snap_to_reference_extent: bool = False,
+        nodata: float = -9999.0,
+        render_mode: Literal[
+            "horizontal",
+            "sloping_corners",
+            "sloping_corners_faces",
+            "sloping_corners_faces_shallow",
+        ] = "horizontal",
+        depth_min: float | None = 0.0,
+        vel_min: float | None = 0.0,
+        vel_weight_method: Literal[
+            "area_weighted", "length_weighted", "flow_ratio"
+        ] = "length_weighted",
+        vel_wse_method: Literal["average", "sloped", "max"] = "sloped",
+        vel_interp_method: Literal[
+            "flat_cell_center",
+            "triangle_blend", "face_idw", "face_gradient",
+            "facepoint_blend", "scatter_cell_face", "scatter_face",
+            "scatter_corners", "scatter_corners_face", "scatter_cell_corners_face",
+            "scatter_face_normal",
+        ] = "scatter_face",
+        scatter_interp_method: Literal["nearest", "linear", "cubic"] = "linear",
+        fix_triangulation: bool = True,
+        clip_to_perimeter: bool = True,
+        face_velocity_location: Literal[
+            "centroid", "normal_intercept"
+        ] = "normal_intercept",
+        wse_path_compare: str | Path | None = None,
+        depth_path_compare: str | Path | None = None,
+        vel_path_compare: str | Path | None = None,
+        threshold_pct_compare: float = 5.0,
+    ) -> dict[str, Path | rasterio.io.DatasetReader]:
+        """Export water-surface elevation, depth, and speed rasters in one pass.
+
+        Computes all three hydraulic output rasters for a single timestep while
+        sharing intermediate results: the ``water_surface`` HDF dataset is read
+        once, ``cell_velocity_vectors()`` (WLS reconstruction) is called once,
+        and the ``face_velocity`` HDF dataset is read once.  The in-memory WSE
+        raster produced for the WSE output is reused directly for the depth
+        DEM-subtraction step.
+
+        Parameters
+        ----------
+        timestep:
+            0-based time index.  Required - all three outputs need a specific
+            timestep (speed has no max-value fallback).
+        reference_raster:
+            Path to the terrain DEM GeoTIFF.  Required - used to derive depth
+            (WSE minus DEM) and to inherit the output CRS and transform.
+        wse_path:
+            Destination ``.tif`` for the water-surface elevation raster.
+            ``None`` returns an open in-memory ``rasterio.DatasetReader``.
+        depth_path:
+            Destination ``.tif`` for the depth raster.
+            ``None`` returns an open in-memory ``rasterio.DatasetReader``.
+        speed_path:
+            Destination ``.tif`` for the cell speed raster.
+            ``None`` returns an open in-memory ``rasterio.DatasetReader``.
+        snap_to_reference_extent:
+            Extend the output to the full extent of *reference_raster*
+            (default ``False``).
+        nodata:
+            Fill value for pixels outside the wet mesh.
+        render_mode:
+            Water-surface rendering mode - ``"horizontal"`` (default),
+            ``"sloping_corners"``, ``"sloping_corners_faces"``, or
+            ``"sloping_corners_faces_shallow"``.
+        depth_min:
+            Minimum water depth.  Cells shallower than this are excluded from
+            WSE interpolation; output depth pixels below this are set to
+            *nodata*.
+        vel_min:
+            Minimum speed threshold for velocity reconstruction and wet-extent
+            classification.
+        vel_weight_method:
+            Velocity reconstruction scheme passed to
+            :meth:`cell_velocity_vectors`.
+        vel_wse_method:
+            Face WSE interpolation method passed to
+            :meth:`cell_velocity_vectors`.
+        vel_interp_method:
+            Intra-cell velocity interpolation method.  See
+            :meth:`export_raster` for full description of each option.
+        scatter_interp_method:
+            ``scipy.interpolate.griddata`` *method* used by
+            ``"scatter_cell_face"``, ``"scatter_face"``, ``"scatter_corners"``,
+            ``"scatter_corners_face"``, ``"scatter_cell_corners_face"``, and
+            ``"scatter_face_normal"``.
+            One of ``"nearest"``, ``"linear"`` *(default)*, ``"cubic"``.
+            Ignored for all other *vel_interp_method* values.
+        fix_triangulation:
+            When ``True`` (default), deduplicate coincident mesh vertices and
+            remove zero-area triangles before building the triangulation.
+            Prevents ``RuntimeError: Triangulation is invalid`` on meshes with
+            unusual cell geometry.  Set ``False`` to skip on large, clean meshes.
+        clip_to_perimeter:
+            When ``True``, the output extent for all three rasters is
+            restricted to the bounding box of the 2-D flow area boundary
+            polygon snapped outward to the nearest reference pixel boundaries,
+            and pixels outside the polygon are set to *nodata*.  **Mutually
+            exclusive with** ``snap_to_reference_extent`` - a ``ValueError``
+            is raised if both are ``True``.  Default ``True``.
+        face_velocity_location:
+            Position used as the face normal velocity measurement point when
+            ``vel_wse_method="sloped"``.
+            ``"normal_intercept"`` (default): where the cell-centre connecting
+            line crosses the face polyline.
+            ``"centroid"``: geometric centroid of the face polyline.
+            Passed to :meth:`cell_velocity_vectors`.
+        wse_path_compare:
+            Optional path to a RasMapper WSE raster for debug comparison.
+            When provided, pixel-level difference statistics between the raspy
+            output and this raster are logged at INFO level after export.
+        depth_path_compare:
+            Optional path to a RasMapper depth raster for debug comparison.
+        vel_path_compare:
+            Optional path to a RasMapper speed raster for debug comparison.
+        threshold_pct_compare:
+            Percentage-difference threshold used to classify outlier pixels in
+            the debug comparison shapefiles (default ``5.0``).  Pixels where
+            ``|raspy - reference| / |reference| * 100`` exceeds this value are
+            written to a point shapefile in the system temp directory.
+        Returns
+        -------
+        dict with keys ``"water_surface"``, ``"depth"``, ``"speed"``.
+        Each value is the written ``Path`` (when the corresponding ``*_path``
+        argument is given) or an open in-memory ``rasterio.DatasetReader``
+        (when the argument is ``None``).  The caller must close any in-memory
+        datasets.
+
+        Raises
+        ------
+        ImportError
+            If ``rasterio`` or ``matplotlib`` are not installed.
+        ValueError
+            If both *clip_to_perimeter* and *snap_to_reference_extent* are
+            ``True``.
+        """
+        from raspy.geo import raster as _raster  # deferred - geo not required
+
+        logger.info(
+            "Exporting hydraulic rasters: Water Surface Elevation, Depth and Velocity"
+        )
+        # -- 0. Guards --------------------------------------------------
+        if clip_to_perimeter and snap_to_reference_extent:
+            raise ValueError(
+                "clip_to_perimeter and snap_to_reference_extent are mutually "
+                "exclusive: clip_to_perimeter restricts the output to the "
+                "perimeter bounding box, while snap_to_reference_extent expands "
+                "it to the full reference raster extent.  Set "
+                "snap_to_reference_extent=False when using clip_to_perimeter=True."
+            )
+
+        # -- 1. Read HDF data once --------------------------------------
+        wse_values = np.array(self.water_surface[timestep, : self.n_cells])
+        depth_at_cells = self.depth(timestep) if depth_min is not None else None
+        face_vel_arr = (
+            None if vel_interp_method == "flat_cell_center"
+            else np.array(self.face_velocity[timestep, :])
         )
 
-        # -- Cell-centre WLS vectors (all three methods) -----------------
-        vel_aw = _wls_velocity(vn, areas,   normals)
-        vel_lw = _wls_velocity(vn, lengths, normals)
-
-        # -- Full cell velocity array for the chosen weight method --------
-        # (used by the double-C stencil as V_L / V_R)
-        # Returns (n_cells + n_ghost, 2); dry_mask matches.
-        all_cell_vecs = self.cell_velocity_vectors(
-            timestep,
-            method=vel_weight_method,
-            wse_interp=wse_interp,
+        # -- 2. WLS velocity vectors once ------------------------------
+        cell_vel_vecs = self.cell_velocity_vectors(
+            timestep, method=vel_weight_method, wse_interp=vel_wse_method,
             face_velocity_location=face_velocity_location,
         )
-        _vel_mag = np.linalg.norm(all_cell_vecs, axis=1)
-        dry_mask = (_vel_mag == 0.0) | ~np.isfinite(_vel_mag)
-        n_total = len(dry_mask)
 
-        # -- Face 2D velocities (double-C stencil, vectorised) -----------
-        face_vel_2d_all = compute_all_face_velocities(
-            face_normals=self.face_normals,
-            face_normal_velocity=face_vel,
-            face_cell_indexes=face_ci,
-            cell_velocity=all_cell_vecs,
-            dry_mask=dry_mask,
-        )
-
-        # -- Wet-face mask ------------------------------------------------
-        l_idx  = face_ci[:, 0]
-        r_idx  = face_ci[:, 1]
-        l_safe = np.where((l_idx >= 0) & (l_idx < n_total), l_idx, 0)
-        r_safe = np.where((r_idx >= 0) & (r_idx < n_total), r_idx, 0)
-        wet_face = (
-            ((l_idx >= 0) & (l_idx < n_total) & ~dry_mask[l_safe])
-            | ((r_idx >= 0) & (r_idx < n_total) & ~dry_mask[r_safe])
-        )
-
-        # -- Facepoint velocities (averaged over all adjacent wet faces) --
-        fp_vel_all = average_face_velocities_at_facepoints(
-            face_facepoint_indexes=fp_idx_all,
-            face_vel_2d=face_vel_2d_all,
-            wet_face=wet_face,
-        )
-
-        # -- Unique facepoints for this cell, ordered by face -------------
-        seen_fp: set[int] = set()
-        cell_fp_ordered: list[int] = []
-        for fi in face_idxs:
-            for fp in (int(fp_idx_all[fi, 0]), int(fp_idx_all[fi, 1])):
-                if fp not in seen_fp:
-                    seen_fp.add(fp)
-                    cell_fp_ordered.append(fp)
-
-        # -- Helpers ------------------------------------------------------
-        def _angle(v: np.ndarray) -> str:
-            spd = np.linalg.norm(v)
-            if spd < 1e-10:
-                return "     n/a"
-            return f"{(90.0 - np.degrees(np.arctan2(v[1], v[0]))) % 360.0:>8.2f}"
-
-        def _vel_line(label: str, v: np.ndarray) -> str:
-            spd = np.linalg.norm(v)
-            return (
-                f"  {label:<18}  Vx={v[0]:+.4f}  Vy={v[1]:+.4f}"
-                f"  speed={spd:.4f}  dir={_angle(v)}-"
+        # -- 3. Mesh topology kwargs ------------------------------------
+        _cfi, _cfv = self.cell_face_info
+        _perimeter_bbox: tuple[float, float, float, float] | None = None
+        if clip_to_perimeter:
+            _perim = self.perimeter  # (n_pts, 2)
+            _perimeter_bbox = (
+                float(_perim[:, 0].min()), float(_perim[:, 1].min()),
+                float(_perim[:, 0].max()), float(_perim[:, 1].max()),
             )
-
-        SEP = "-" * 72
-
-        # ----------------------------------------------------------------
-        # 1. HEADER
-        # ----------------------------------------------------------------
-        dry_label = "DRY" if dry_mask[cell_idx] else "WET"
-        cx, cy   = cell_centres[cell_idx]
-        print(f"\n{'-'*72}")
-        print(
-            f"  debug_cell_velocity  |  area={self.name}"
-            f"  cell={cell_idx}  ts={timestep}"
+        mesh_kw: dict[str, Any] = dict(
+            cell_centers=self.cell_centers,
+            facepoint_coordinates=self.facepoint_coordinates,
+            face_facepoint_indexes=self.face_facepoint_indexes,
+            face_cell_indexes=self.face_cell_indexes,
+            cell_face_info=_cfi,
+            cell_face_values=_cfv,
+            reference_raster=reference_raster,
+            nodata=nodata,
+            snap_to_reference_extent=snap_to_reference_extent,
+            render_mode=render_mode,
+            fix_triangulation=fix_triangulation,
+            extent_bbox=_perimeter_bbox,
+            face_min_elevation=(
+                self.face_min_elevation
+                if render_mode == "sloping_corners_faces_shallow" else None
+            ),
         )
-        print(f"{'-'*72}")
-        print(f"  Cell centre : ({cx:.3f}, {cy:.3f})")
-        print(f"  Cell WSE    : {cell_wse[cell_idx]:.4f}  [{dry_label}]")
-        print(f"  wse_interp  : {wse_interp}")
-        print(f"  n_faces     : {count}")
 
-        # ----------------------------------------------------------------
-        # 2. WLS INPUTS PER FACE
-        # ----------------------------------------------------------------
-        print(f"\n{SEP}")
-        print("  WLS INPUTS PER FACE")
-        print(SEP)
-        hdr1 = (
-            f"  {'Face':>6}  {'Ori':>3}  {'nx':>7}  {'ny':>7}  {'Length':>8}"
-            f"  {'V_n':>8}  {'V_n_x':>8}  {'V_n_y':>8}  {'angle':>8}"
-            f"  {'L_cell':>7}  {'L_WSE':>8}  {'R_cell':>7}  {'R_WSE':>8}"
-            f"  {'face_WSE':>9}  {'A_face':>9}  {'fc_x':>11}  {'fc_y':>11}"
+        # -- 4. WSE raster in-memory (shared for WSE output + depth) ---
+        logger.info("Building water-surface raster (shared for depth output)...")
+
+        cell_wse_masked = (
+            np.where(depth_at_cells < depth_min, np.nan, wse_values)
+            if depth_min is not None else wse_values
         )
-        print(hdr1)
-        print(f"  {'-'*68}")
-        for fi, ori, (nx, ny), L, v, fwse, a in zip(
-            face_idxs, orientations, normals, lengths, vn,
-            face_wse_all[face_idxs], areas, strict=False,
-        ):
-            lc = int(face_ci[fi, 0])
-            rc = int(face_ci[fi, 1])
-            lc_valid = 0 <= lc < n_cells
-            rc_valid = 0 <= rc < n_cells
-            lc_str   = (f"{lc:>6}" + ("*" if lc_valid and dry_mask[lc] else " ")) \
-                       if lc_valid else "  ghost "
-            rc_str   = (f"{rc:>6}" + ("*" if rc_valid and dry_mask[rc] else " ")) \
-                       if rc_valid else "  ghost "
-            lw_str   = f"{cell_wse[lc]:>8.4f}" if lc_valid else "     n/a"
-            rw_str   = f"{cell_wse[rc]:>8.4f}" if rc_valid else "     n/a"
-            fcx, fcy = face_centroids_a[fi]
-            vnx, vny  = v * nx, v * ny
-            ang_str   = _angle(np.array([vnx, vny]))
-            print(
-                f"  {fi:>6}  {ori:>3}  {nx:>7.4f}  {ny:>7.4f}  {L:>8.2f}"
-                f"  {v:>8.4f}  {vnx:>8.4f}  {vny:>8.4f}  {ang_str:>8}"
-                f"  {lc_str}  {lw_str}  {rc_str}  {rw_str}"
-                f"  {fwse:>9.4f}  {a:>9.4f}  {fcx:>11.3f}  {fcy:>11.3f}"
-            )
-        print("  (* = dry cell)")
 
-        # ----------------------------------------------------------------
-        # 3. CELL-CENTRE VELOCITY (WLS)
-        # ----------------------------------------------------------------
-        print(f"\n{SEP}")
-        print("  CELL-CENTRE VELOCITY (WLS)")
-        print(SEP)
-        print(_vel_line("area_weighted", vel_aw))
-        print(_vel_line("length_weighted", vel_lw))
-
-        if self.face_flow is not None:
-            face_flow = np.array(self.face_flow[timestep, :])
-            qf         = face_flow[face_idxs]
-            weights_fr = np.where(np.abs(vn) > 1e-10, np.abs(qf / vn), 0.0)
-            vel_fr     = _wls_velocity(vn, weights_fr, normals)
-            print(_vel_line("flow_ratio", vel_fr))
-            print(f"    face Q : {face_flow[face_idxs]}")
-        else:
-            print("  flow_ratio         : (Face Flow not in HDF)")
-
-        if self.cell_velocity is not None:
-            ras_spd = float(self.cell_velocity[timestep, cell_idx])
-            print(f"  HEC-RAS stored     : speed={ras_spd:.4f}  (scalar only)")
-        else:
-            print("  HEC-RAS stored     : (Cell Velocity scalar not in HDF)")
-
-        # ----------------------------------------------------------------
-        # 4. RECONSTRUCTED FACE VELOCITY (double-C stencil)
-        # ----------------------------------------------------------------
-        print(f"\n{SEP}")
-        print(f"  RECONSTRUCTED FACE VELOCITY  (double-C, wt={vel_weight_method!r})")
-        print(SEP)
-        hdr2 = (
-            f"  {'Face':>6}  {'tx':>7}  {'ty':>7}  {'vt_L':>8}  {'vt_R':>8}"
-            f"  {'vt':>8}  {'Vfx':>8}  {'Vfy':>8}  {'|Vf|':>8}  {'dir':>8}  {'side':>6}"
+        # Facepoint WSE for sloping render - computed once for WSE/depth;
+        # velocity uses a separate vel_min-masked array.
+        _fp_wse: np.ndarray | None = None
+        _fp_wse_vel: np.ndarray | None = None
+        _fc_wse: np.ndarray | None = None
+        _fc_wse_vel: np.ndarray | None = None
+        _use_facecenters = render_mode in (
+            "sloping_corners_faces", "sloping_corners_faces_shallow"
         )
-        print(hdr2)
-        print(f"  {'-'*68}")
-        for fi, (nx, ny), _ in zip(face_idxs, normals, vn, strict=False):
-            t_hat = np.array([-ny, nx])
-            lc    = int(face_ci[fi, 0])
-            rc    = int(face_ci[fi, 1])
-            l_ok  = 0 <= lc < n_cells and not dry_mask[lc]
-            r_ok  = 0 <= rc < n_cells and not dry_mask[rc]
-            vt_L  = float(np.dot(all_cell_vecs[lc], t_hat)) if l_ok else float("nan")
-            vt_R  = float(np.dot(all_cell_vecs[rc], t_hat)) if r_ok else float("nan")
-            if l_ok and r_ok:
-                vt, side = 0.5 * (vt_L + vt_R), "both"
-            elif l_ok:
-                vt, side = vt_L, "L"
-            elif r_ok:
-                vt, side = vt_R, "R"
+        if render_mode != "horizontal":
+            _fp_wse = self.wse_at_facepoints(cell_wse_masked)
+            if _use_facecenters:
+                _fc_wse = self.wse_at_facecentroids(cell_wse_masked)
+            if vel_min is not None:
+                with np.errstate(invalid="ignore"):
+                    _speed = np.linalg.norm(cell_vel_vecs[: self.n_cells], axis=1)
+                _vel_wse_masked = np.where(_speed < vel_min, np.nan, wse_values)
             else:
-                vt, side = 0.0, "none"
-            vf       = face_vel_2d_all[fi]
-            vtL_s    = f"{vt_L:>8.4f}" if l_ok else f"{'dry/g':>8}"
-            vtR_s    = f"{vt_R:>8.4f}" if r_ok else f"{'dry/g':>8}"
-            print(
-                f"  {fi:>6}  {t_hat[0]:>7.4f}  {t_hat[1]:>7.4f}"
-                f"  {vtL_s}  {vtR_s}  {vt:>8.4f}"
-                f"  {vf[0]:>8.4f}  {vf[1]:>8.4f}  {np.linalg.norm(vf):>8.4f}"
-                f"  {_angle(vf)}  {side:>6}"
+                _vel_wse_masked = wse_values
+            _fp_wse_vel = self.wse_at_facepoints(_vel_wse_masked)
+            if _use_facecenters:
+                _fc_wse_vel = self.wse_at_facecentroids(_vel_wse_masked)
+
+        mesh_kw["facepoint_wse"] = _fp_wse
+        mesh_kw["scatter_interp_method"] = scatter_interp_method
+        mesh_kw["cell_polygons"] = self.cell_polygons
+        mesh_kw["face_centers"] = (
+            self.face_centroids if _use_facecenters else None
+        )
+        mesh_kw["face_center_wse"] = _fc_wse
+        # Exclude face_centers: not shared with mesh_to_velocity_raster via mesh_kw
+        # (face_centers is passed explicitly in the velocity call).  Override
+        # facepoint_wse and face_center_wse with vel_min-masked versions.
+        _vel_mesh_kw = {k: v for k, v in mesh_kw.items()
+                        if k not in ("face_centers",
+                                     "facepoint_wse", "face_center_wse")}
+        _vel_mesh_kw["facepoint_wse"] = _fp_wse_vel
+        _vel_mesh_kw["face_center_wse"] = _fc_wse_vel
+
+        wse_ds = _raster.mesh_to_wse_raster(
+            **mesh_kw,
+            cell_wse=cell_wse_masked,
+            output_path=None,
+            min_value=None,
+            min_above_ref=depth_min,
+        )
+
+        # -- 5. WSE output ----------------------------------------------
+        if clip_to_perimeter:
+            wse_result: Path | rasterio.io.DatasetReader = (
+                _raster._mask_outside_polygon(wse_ds, _perim, nodata, wse_path)
+            )
+        elif wse_path is not None:
+            wse_result = _raster._write_dataset(wse_ds, wse_path)
+        else:
+            wse_result = wse_ds
+
+        # -- 6. Depth output --------------------------------------------
+        logger.info("Building depth raster from WSE raster and DEM...")
+
+        depth_ds = _raster._depth_from_wse_and_dem(
+            wse_ds, reference_raster, nodata,
+            None if clip_to_perimeter else depth_path,
+            min_value=depth_min,
+        )
+        if clip_to_perimeter:
+            depth_result: Path | rasterio.io.DatasetReader = (
+                _raster._mask_outside_polygon(
+                    depth_ds, _perim, nodata, depth_path
+                )
+            )
+            depth_ds.close()
+        else:
+            depth_result = depth_ds
+
+        # -- 7. Speed output --------------------------------------------
+        # Pass wse_ds directly so mesh_to_velocity_raster reuses the
+        # already-rendered wet extent instead of re-running the WSE render.
+        logger.info("Building velocity raster for speed output...")
+
+        vel_ds = _raster.mesh_to_velocity_raster(
+            **_vel_mesh_kw,
+            wse_raster=wse_ds,
+            cell_wse=wse_values,
+            cell_velocity=cell_vel_vecs,
+            output_path=None,
+            vel_min=vel_min,
+            depth_min=depth_min,
+            method=vel_interp_method,
+            face_normals=self.face_normals,
+            face_normal_velocity=face_vel_arr,
+            face_centers=self.face_centroids,
+            face_velocity_coords=(
+                self.face_normal_intercept
+                if face_velocity_location == "normal_intercept"
+                else self.face_centroids
+            ),
+        )
+
+        # Close shared in-memory WSE dataset now that all consumers are done.
+        # When clip_to_perimeter=True or wse_path is set, wse_result is a
+        # separate object so wse_ds can always be closed.  Otherwise
+        # wse_result IS wse_ds and must stay open for the caller.
+        if clip_to_perimeter or wse_path is not None:
+            wse_ds.close()
+        speed_ds = _raster._velocity_raster_to_speed(
+            vel_ds, None if clip_to_perimeter else speed_path, nodata
+        )
+        if clip_to_perimeter:
+            speed_result: Path | rasterio.io.DatasetReader = (
+                _raster._mask_outside_polygon(
+                    speed_ds, _perim, nodata, speed_path
+                )
+            )
+            speed_ds.close()
+        else:
+            speed_result = speed_ds
+
+        # -- 8. Debug comparison vs RasMapper (optional) ----------------
+        if wse_path_compare is not None:
+            _raster._compare_rasters_debug(
+                "WSE", wse_result, wse_path_compare, nodata, threshold_pct_compare
+            )
+        if depth_path_compare is not None:
+            _raster._compare_rasters_debug(
+                "Depth", depth_result, depth_path_compare, nodata, threshold_pct_compare
+            )
+        if vel_path_compare is not None:
+            _raster._compare_rasters_debug(
+                "Speed", speed_result, vel_path_compare, nodata, threshold_pct_compare
             )
 
-        # ----------------------------------------------------------------
-        # 5. FACEPOINT (CORNER) VELOCITIES
-        # ----------------------------------------------------------------
-        print(f"\n{SEP}")
-        print("  FACEPOINT (CORNER) VELOCITIES")
-        print(SEP)
-        hdr3 = (
-            f"  {'FP':>7}  {'x':>11}  {'y':>11}"
-            f"  {'Vfp_x':>8}  {'Vfp_y':>8}  {'|Vfp|':>8}  {'dir':>8}"
-            f"  {'n_wet':>5}  wet faces"
-        )
-        print(hdr3)
-        print(f"  {'-'*68}")
-        for fp in cell_fp_ordered:
-            touching     = np.where(
-                (fp_idx_all[:, 0] == fp) | (fp_idx_all[:, 1] == fp)
-            )[0]
-            wet_touching = touching[wet_face[touching]]
-            vfp          = fp_vel_all[fp]
-            x, y         = fp_coords[fp]
-            faces_str    = " ".join(str(f) for f in wet_touching)
-            print(
-                f"  {fp:>7}  {x:>11.3f}  {y:>11.3f}"
-                f"  {vfp[0]:>8.4f}  {vfp[1]:>8.4f}  {np.linalg.norm(vfp):>8.4f}"
-                f"  {_angle(vfp)}  {len(wet_touching):>5}  [{faces_str}]"
-            )
-
-        # ----------------------------------------------------------------
-        # 6. FACE NORMAL VELOCITY  (scatter_face_normal: vn * n_hat)
-        # ----------------------------------------------------------------
-        print(f"\n{SEP}")
-        print("  FACE NORMAL VELOCITY  (scatter_face_normal: vn \u00d7 n\u0302)")
-        print(SEP)
-        hdr4 = (
-            f"  {'Face':>6}  {'Vfn_x':>8}  {'Vfn_y':>8}  {'|Vfn|':>8}  {'dir':>8}"
-        )
-        print(hdr4)
-        print(f"  {'-'*44}")
-        for fi, (nx, ny), v in zip(face_idxs, normals, vn, strict=False):
-            vfn = np.array([v * nx, v * ny])
-            print(
-                f"  {fi:>6}  {vfn[0]:>8.4f}  {vfn[1]:>8.4f}"
-                f"  {abs(v):>8.4f}  {_angle(vfn)}"
-            )
-        print()
+        return {
+            "water_surface": wse_result,
+            "depth": depth_result,
+            "speed": speed_result,
+        }
 
     def plot_cell_velocity(
         self,
@@ -1549,841 +2115,347 @@ class FlowAreaResults(FlowArea):
             fig3.tight_layout()
         return fig1, fig2, fig3
 
-    # ------------------------------------------------------------------
-    # Raster export - delegates to raspy.geo (deferred import)
-    # ------------------------------------------------------------------
-
-    def _max_velocity(
+    def debug_cell_velocity(
         self,
-        method: Literal[
-            "area_weighted", "length_weighted", "flow_ratio"
-        ] = "area_weighted",
-        wse_interp: Literal["average", "sloped", "max"] = "average",
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Per-cell maximum speed and corresponding velocity vector.
-
-        Iterates over every timestep, computing WLS velocity vectors and
-        tracking the element-wise maximum speed along with the vector at
-        that peak-speed timestep.
-
-        Returns
-        -------
-        max_speed : ndarray, shape ``(n_cells,)``
-        max_vecs  : ndarray, shape ``(n_cells, 2)``
-            ``[Vx, Vy]`` at the timestep of each cell's peak speed.
-        """
-        n_t = self.water_surface.shape[0]
-        max_speed = np.full(self.n_cells, -np.inf)
-        max_vecs = np.zeros((self.n_cells, 2))
-
-        for t in range(n_t):
-            vecs = self.cell_velocity_vectors(t, method=method, wse_interp=wse_interp)
-            speed = np.sqrt(vecs[:, 0] ** 2 + vecs[:, 1] ** 2)
-            faster = speed > max_speed
-            max_speed[faster] = speed[faster]
-            max_vecs[faster] = vecs[faster]
-
-        return max_speed, max_vecs
-
-    @log_call(logging.INFO)
-    @timed(logging.INFO)
-    def export_raster(
-        self,
-        variable: Literal["water_surface", "depth", "cell_speed", "cell_velocity"],
-        timestep: int | None = None,
-        output_path: str | Path | None = None,
-        *,
-        cell_size: float | None = None,
-        reference_transform: Any | None = None,
-        reference_raster: str | Path | None = None,
-        snap_to_reference_extent: bool = False,
-        crs: Any | None = None,
-        nodata: float = -9999.0,
-        render_mode: Literal[
-            "horizontal",
-            "sloping_corners",
-            "sloping_corners_faces",
-            "sloping_corners_faces_shallow",
-        ] = "sloping_corners",
-        depth_min: float | None = 0.001,
-        vel_min: float | None = 0.0001,
-        vel_weight_method: Literal[
-            "area_weighted", "length_weighted", "flow_ratio"
-        ] = "area_weighted",
-        vel_wse_method: Literal["average", "sloped", "max"] = "sloped",
-        vel_interp_method: Literal[
-            "flat_cell_center",
-            "triangle_blend", "face_idw", "face_gradient",
-            "facepoint_blend", "scatter_cell_face", "scatter_face",
-            "scatter_corners", "scatter_corners_face", "scatter_cell_corners_face",
-            "scatter_face_normal",
-        ] = "scatter_face",
-        scatter_interp_method: Literal["nearest", "linear", "cubic"] = "linear",
-        fix_triangulation: bool = True,
-        clip_to_perimeter: bool = True,
-        face_velocity_location: Literal[
-            "centroid", "normal_intercept"
-        ] = "normal_intercept",
-    ) -> Path | rasterio.io.DatasetReader:
-        """Interpolate a field to a GeoTIFF using mesh-conforming triangulation.
-
-        Uses :func:`~raspy.geo.raster.mesh_to_wse_raster` which sub-divides each
-        mesh cell into triangles from the cell centre to each bounding face,
-        then performs linear (barycentric) interpolation within those triangles.
-        This prevents spurious fill across dry gaps or disconnected wet islands,
-        matching the interpolation used by HEC-RAS RASMapper.
-
-        Requires ``rasterio`` and ``matplotlib`` (``pip install raspy[geo]``).
-
-        Parameters
-        ----------
-        variable:
-            ``"water_surface"`` - water-surface elevation.
-            ``"depth"``         - water depth (requires *reference_raster*):
-                                  WSE is interpolated then the DEM pixel value
-                                  is subtracted; negative depths are clamped
-                                  to 0.
-            ``"cell_speed"``    - WLS-reconstructed velocity magnitude.
-            ``"cell_velocity"`` - WLS-reconstructed velocity vector
-                                  (4 bands: Vx, Vy, Speed, Direction).
-        timestep:
-            0-based time index.  Pass ``None`` (default) to use maximum values
-            (only valid for ``"water_surface"`` and ``"depth"``).
-        output_path:
-            Destination ``.tif`` file path.  ``None`` returns an in-memory
-            ``rasterio.DatasetReader``; the caller must close it.
-        cell_size:
-            Output pixel size in model coordinate units.  Defaults to the
-            median face length when no reference grid is supplied.
-        reference_transform:
-            ``rasterio.transform.Affine`` for pixel-perfect alignment.
-            Mutually exclusive with *reference_raster*.
-        reference_raster:
-            Existing GeoTIFF whose transform and CRS are inherited.
-            **Required** when ``variable="depth"``.
-        snap_to_reference_extent:
-            When *reference_raster* is given, extend the output to its full
-            extent (default ``False``).
-        crs:
-            Output CRS.  When *reference_raster* is given and *crs* is
-            ``None``, the reference raster CRS is inherited.
-        nodata:
-            Fill value for pixels outside the wet mesh.
-        depth_min:
-            Minimum water depth (m).  Only used when ``variable="depth"``.
-            Cells whose HDF depth (WSE minus cell minimum elevation) is
-            below this value are excluded before WSE interpolation, and
-            output pixels shallower than this value are set to *nodata*
-            after DEM subtraction.
-        vel_min:
-            Minimum speed (m/s).  Cells whose WLS speed is below this
-            threshold are excluded from the WSE wet-extent render and from
-            the final velocity output.  Default ``0.0001``.
-        vel_weight_method:
-            Velocity reconstruction scheme passed to
-            :meth:`cell_velocity_vectors`.
-        vel_wse_method:
-            Face WSE interpolation method passed to
-            :meth:`cell_velocity_vectors`.
-        render_mode:
-            Water-surface rendering mode - ``"sloping_corners"`` (default),
-            ``"horizontal"``, ``"sloping_corners_faces"``, or
-            ``"sloping_corners_faces_shallow"``.  See
-            :func:`~raspy.geo.raster.mesh_to_wse_raster` for full description.
-        vel_interp_method:
-            Intra-cell velocity interpolation method for ``"cell_velocity"``
-            and ``"cell_speed"``:
-
-            ``"flat_cell_center"`` - paint the flat WLS cell-centre velocity
-            over all pixels inside the cell (fastest; no spatial interpolation).
-
-            ``"triangle_blend"`` - barycentric blend of WLS
-            cell-centre velocity and reconstructed face velocity within each
-            fan-triangle.
-
-            ``"face_idw"`` - inverse-distance-weighted average of all
-            face-midpoint 2D velocities within the owning cell.
-
-            ``"face_gradient"`` - least-squares linear gradient fit inside
-            each cell from face-midpoint velocities.
-
-            ``"facepoint_blend"`` - average face velocities onto each polygon
-            vertex (facepoint), then full 3-vertex barycentric interpolation
-            within each fan-triangle.  C0-continuous across all cell faces;
-            best choice for smooth flow-arrow rendering.
-
-            ``"scatter_cell_face"`` - global ``scipy.griddata`` over wet cell
-            centres and wet face midpoints.
-
-            ``"scatter_face"`` *(default)* - same but face midpoints only;
-            avoids discontinuities originating at cell centres.
-
-            ``"scatter_corners"`` - global ``scipy.griddata`` over wet mesh
-            corners; velocity at each corner is the mean of the double-C
-            stencil face velocities from all adjacent wet faces.
-
-            ``"scatter_corners_face"`` - combined scatter from wet mesh
-            corners (double-C stencil mean) and wet face midpoints (2D face
-            velocity).
-
-            ``"scatter_cell_corners_face"`` - maximum-density scatter combining
-            wet cell centres (WLS), wet mesh corners (double-C averaged), and
-            wet face midpoints (double-C); union of all other scatter sources.
-
-            ``"scatter_face_normal"`` - global ``scipy.griddata`` over wet
-            face midpoints using only the stored normal component (``vn * n_hat``).
-            No double-C tangential estimation; cell WLS velocities do not
-            influence the result.  Avoids tangential contamination near
-            wet/dry boundaries.
-        scatter_interp_method:
-            ``scipy.interpolate.griddata`` *method* used by
-            ``"scatter_cell_face"``, ``"scatter_face"``, ``"scatter_corners"``,
-            ``"scatter_corners_face"``, ``"scatter_cell_corners_face"``, and
-            ``"scatter_face_normal"``.
-            One of ``"nearest"``, ``"linear"`` *(default)*, ``"cubic"``.
-            Ignored for all other *vel_interp_method* values.
-        fix_triangulation:
-            When ``True`` (default), deduplicate coincident mesh vertices and
-            remove zero-area triangles before building the triangulation.
-            Prevents ``RuntimeError: Triangulation is invalid`` on meshes with
-            unusual cell geometry.  Set ``False`` to skip on large, clean meshes.
-        clip_to_perimeter:
-            When ``True``, the output extent is restricted to the bounding
-            box of the 2-D flow area boundary polygon (``FlowArea.perimeter``)
-            snapped outward to the nearest reference pixel boundaries, and
-            pixels outside the polygon are set to *nodata*.  Useful when
-            malformed boundary cells cause KDTree noise outside the model
-            domain.  **Mutually exclusive with** ``snap_to_reference_extent``
-            - a ``ValueError`` is raised if both are ``True``.
-            Default ``True``.
-        face_velocity_location:
-            Position used as the face normal velocity measurement point when
-            ``vel_wse_method="sloped"``.
-            ``"normal_intercept"`` (default): where the cell-centre connecting
-            line crosses the face polyline.
-            ``"centroid"``: geometric centroid of the face polyline.
-            Passed to :meth:`cell_velocity_vectors`.
-        Returns
-        -------
-        Path
-            Written GeoTIFF path (when *output_path* is given).
-        rasterio.io.DatasetReader
-            Open in-memory dataset (when *output_path* is ``None``).
-
-        Raises
-        ------
-        ImportError
-            If ``rasterio`` or ``matplotlib`` are not installed.
-        ValueError
-            If ``variable="depth"`` and *reference_raster* is not provided,
-            or if ``timestep=None`` is used with ``"cell_speed"`` or
-            ``"cell_velocity"``.
-        """
-        from raspy.geo import raster as _raster  # deferred - geo not required
-
-        logger.info("Exporting hydraulic raster %s at timestep %d", variable, timestep)
-        # -- 0. Guards --------------------------------------------------
-        if variable == "depth" and reference_raster is None:
-            raise ValueError(
-                "reference_raster is required when variable='depth'. "
-                "Provide a path to a terrain DEM GeoTIFF."
-            )
-        if variable in ("cell_speed", "cell_velocity") and timestep is None:
-            raise ValueError(
-                "timestep=None is not supported for cell_speed / cell_velocity. "
-                "Provide an explicit timestep index."
-            )
-        if clip_to_perimeter and snap_to_reference_extent:
-            raise ValueError(
-                "clip_to_perimeter and snap_to_reference_extent are mutually "
-                "exclusive: clip_to_perimeter restricts the output to the "
-                "perimeter bounding box, while snap_to_reference_extent expands "
-                "it to the full reference raster extent.  Set "
-                "snap_to_reference_extent=False when using clip_to_perimeter=True."
-            )
-
-        # -- 1. Resolve values array ------------------------------------
-        if variable == "depth":
-            if timestep is None:
-                wse_values = self.max_water_surface["value"].to_numpy()
-                depth_at_cells = (
-                    self.max_depth()["value"].to_numpy()
-                    if depth_min is not None else None
-                )
-            else:
-                wse_values = np.array(self.water_surface[timestep, : self.n_cells])
-                depth_at_cells = self.depth(timestep) if depth_min is not None else None
-            # Pre-mask dry cells so mesh_to_wse_raster excludes those triangles.
-            cell_wse = (
-                np.where(depth_at_cells < depth_min, np.nan, wse_values)
-                if depth_min is not None else wse_values
-            )
-        elif variable == "water_surface":
-            if timestep is None:
-                values = self.max_water_surface["value"].to_numpy()
-                depth_at_cells = (
-                    self.max_depth()["value"].to_numpy()
-                    if depth_min is not None else None
-                )
-            else:
-                values = np.array(self.water_surface[timestep, : self.n_cells])
-                depth_at_cells = self.depth(timestep) if depth_min is not None else None
-            if depth_min is not None:
-                values = np.where(depth_at_cells < depth_min, np.nan, values)
-        elif variable in ("cell_speed", "cell_velocity"):
-            # Compute WLS velocity vectors and cell WSE for the velocity raster.
-            # mesh_to_velocity_raster renders WSE to determine wet extent, then
-            # assigns velocity per-cell (no spatial interpolation across cells).
-            cell_vel_wse = np.array(self.water_surface[timestep, : self.n_cells])
-            cell_vel_vecs = self.cell_velocity_vectors(
-                timestep, method=vel_weight_method, wse_interp=vel_wse_method,
-                face_velocity_location=face_velocity_location,
-            )
-        else:
-            raise ValueError(f"Unknown variable: {variable!r}")
-
-        # -- 2. Default cell size ---------------------------------------
-        resolved_cell_size = cell_size
-        no_grid = reference_transform is None and reference_raster is None
-        if cell_size is None and no_grid:
-            resolved_cell_size = float(np.median(self.face_normals[:, 2]))
-
-        # -- 2b. Facepoint WSE for sloping render -----------------------
-        # Compute facepoint values from the dry-masked cell WSE so
-        # mesh_to_wse_raster receives them for the griddata sloping path.
-        # For velocity variables the vel_min mask is applied first.
-        _fp_wse: np.ndarray | None = None
-        _fp_wse_vel: np.ndarray | None = None
-        _fc_wse: np.ndarray | None = None
-        _fc_wse_vel: np.ndarray | None = None
-        _use_facecenters = render_mode in (
-            "sloping_corners_faces", "sloping_corners_faces_shallow"
-        )
-        if render_mode != "horizontal":
-            if variable == "water_surface":
-                _fp_wse = self.wse_at_facepoints(values)
-                if _use_facecenters:
-                    _fc_wse = self.wse_at_facecentroids(values)
-            elif variable == "depth":
-                _fp_wse = self.wse_at_facepoints(cell_wse)
-                if _use_facecenters:
-                    _fc_wse = self.wse_at_facecentroids(cell_wse)
-            elif variable in ("cell_velocity", "cell_speed"):
-                if vel_min is not None:
-                    with np.errstate(invalid="ignore"):
-                        _speed = np.linalg.norm(cell_vel_vecs[: self.n_cells], axis=1)
-                    _vel_wse_masked = np.where(_speed < vel_min, np.nan, cell_vel_wse)
-                else:
-                    _vel_wse_masked = cell_vel_wse
-                _fp_wse_vel = self.wse_at_facepoints(_vel_wse_masked)
-                if _use_facecenters:
-                    _fc_wse_vel = self.wse_at_facecentroids(_vel_wse_masked)
-
-        # -- 3. Common mesh topology keyword arguments ------------------
-        _cfi, _cfv = self.cell_face_info  # property returns (info, values) tuple
-        # When clipping to the perimeter, use the perimeter polygon bounding
-        # box as the output extent.  _tight_pixel_bounds (inside mesh_to_wse_raster)
-        # snaps this bbox outward to reference pixel boundaries, preserving
-        # grid alignment while keeping the extent compact and consistent with
-        # the polygon mask applied after.
-        _perimeter_bbox: tuple[float, float, float, float] | None = None
-        if clip_to_perimeter:
-            _perim = self.perimeter  # (n_pts, 2)
-            _perimeter_bbox = (
-                float(_perim[:, 0].min()), float(_perim[:, 1].min()),
-                float(_perim[:, 0].max()), float(_perim[:, 1].max()),
-            )
-        mesh_kw: dict[str, Any] = dict(
-            cell_centers=self.cell_centers,
-            facepoint_coordinates=self.facepoint_coordinates,
-            face_facepoint_indexes=self.face_facepoint_indexes,
-            face_cell_indexes=self.face_cell_indexes,
-            cell_face_info=_cfi,
-            cell_face_values=_cfv,
-            cell_size=resolved_cell_size,
-            reference_transform=reference_transform,
-            reference_raster=reference_raster,
-            crs=crs,
-            nodata=nodata,
-            snap_to_reference_extent=snap_to_reference_extent,
-            render_mode=render_mode,
-            fix_triangulation=fix_triangulation,
-            extent_bbox=_perimeter_bbox,
-            facepoint_wse=_fp_wse,
-            scatter_interp_method=scatter_interp_method,
-            cell_polygons=self.cell_polygons,
-            face_centers=(
-                self.face_centroids if _use_facecenters else None
-            ),
-            face_center_wse=_fc_wse,
-            face_min_elevation=(
-                self.face_min_elevation
-                if render_mode == "sloping_corners_faces_shallow" else None
-            ),
-        )
-        # Exclude face_centers: not shared with mesh_to_velocity_raster via mesh_kw
-        # (face_centers is passed explicitly in the velocity call).  Override
-        # facepoint_wse and face_center_wse with vel_min-masked versions.
-        _vel_mesh_kw = {k: v for k, v in mesh_kw.items()
-                        if k not in ("face_centers",
-                                     "facepoint_wse", "face_center_wse")}
-        _vel_mesh_kw["facepoint_wse"] = _fp_wse_vel
-        _vel_mesh_kw["face_center_wse"] = _fc_wse_vel
-
-        # -- 4. Delegate to mesh_to_wse_raster / mesh_to_velocity_raster ------
-        if variable == "depth":
-            wse_ds = _raster.mesh_to_wse_raster(
-                **mesh_kw,
-                cell_wse=cell_wse,
-                output_path=None,   # in-memory; depth written after DEM subtraction
-                min_value=None,     # dry cells already NaN-masked above
-                min_above_ref=depth_min,
-            )
-            depth_ds = _raster._depth_from_wse_and_dem(
-                wse_ds, reference_raster, nodata,
-                None if clip_to_perimeter else output_path,
-                min_value=depth_min,
-            )
-            wse_ds.close()
-            if clip_to_perimeter:
-                result = _raster._mask_outside_polygon(
-                    depth_ds, _perim, nodata, output_path
-                )
-                depth_ds.close()
-                return result
-            return depth_ds
-
-        elif variable == "cell_velocity":
-            _face_vel_arr = (
-                None if vel_interp_method == "flat_cell_center"
-                else np.array(self.face_velocity[timestep, :])
-            )
-            vel_ds = _raster.mesh_to_velocity_raster(
-                **_vel_mesh_kw,
-                cell_wse=cell_vel_wse,
-                cell_velocity=cell_vel_vecs,
-                output_path=None if clip_to_perimeter else output_path,
-                vel_min=vel_min,
-                depth_min=depth_min,
-                method=vel_interp_method,
-                face_normals=self.face_normals,
-                face_normal_velocity=_face_vel_arr,
-                face_centers=self.face_centroids,
-                face_velocity_coords=(
-                    self.face_normal_intercept
-                    if face_velocity_location == "normal_intercept"
-                    else self.face_centroids
-                ),
-            )
-            if clip_to_perimeter:
-                result = _raster._mask_outside_polygon(
-                    vel_ds, _perim, nodata, output_path
-                )
-                vel_ds.close()
-                return result
-            return vel_ds
-
-        elif variable == "cell_speed":
-            _face_vel_arr = (
-                None if vel_interp_method == "flat_cell_center"
-                else np.array(self.face_velocity[timestep, :])
-            )
-            vel_ds = _raster.mesh_to_velocity_raster(
-                **_vel_mesh_kw,
-                cell_wse=cell_vel_wse,
-                cell_velocity=cell_vel_vecs,
-                output_path=None,
-                vel_min=vel_min,
-                depth_min=depth_min,
-                method=vel_interp_method,
-                face_normals=self.face_normals,
-                face_normal_velocity=_face_vel_arr,
-                face_centers=self.face_centroids,
-                face_velocity_coords=(
-                    self.face_normal_intercept
-                    if face_velocity_location == "normal_intercept"
-                    else self.face_centroids
-                ),
-            )
-            speed_ds = _raster._velocity_raster_to_speed(
-                vel_ds, None if clip_to_perimeter else output_path, nodata
-            )
-            if clip_to_perimeter:
-                result = _raster._mask_outside_polygon(
-                    speed_ds, _perim, nodata, output_path
-                )
-                speed_ds.close()
-                return result
-            return speed_ds
-
-        else:
-            # water_surface: min_above_ref controls the wet/dry threshold relative
-            # to the DEM (when reference_raster is given); no scalar min_value needed.
-            wse_ds = _raster.mesh_to_wse_raster(
-                **mesh_kw,
-                cell_wse=values,
-                output_path=None if clip_to_perimeter else output_path,
-                min_value=None,
-                min_above_ref=depth_min,
-            )
-            if clip_to_perimeter:
-                result = _raster._mask_outside_polygon(
-                    wse_ds, _perim, nodata, output_path
-                )
-                wse_ds.close()
-                return result
-            return wse_ds
-
-    @log_call(logging.INFO)
-    @timed(logging.INFO)
-    def export_hydraulic_rasters(
-        self,
+        cell_idx: int,
         timestep: int,
-        reference_raster: str | Path,
-        *,
-        wse_path: str | Path | None = None,
-        depth_path: str | Path | None = None,
-        speed_path: str | Path | None = None,
-        snap_to_reference_extent: bool = False,
-        nodata: float = -9999.0,
-        render_mode: Literal[
-            "horizontal",
-            "sloping_corners",
-            "sloping_corners_faces",
-            "sloping_corners_faces_shallow",
-        ] = "horizontal",
-        depth_min: float | None = 0.0,
-        vel_min: float | None = 0.0,
+        wse_interp: Literal["average", "sloped", "max"] = "sloped",
         vel_weight_method: Literal[
             "area_weighted", "length_weighted", "flow_ratio"
         ] = "length_weighted",
-        vel_wse_method: Literal["average", "sloped", "max"] = "sloped",
-        vel_interp_method: Literal[
-            "flat_cell_center",
-            "triangle_blend", "face_idw", "face_gradient",
-            "facepoint_blend", "scatter_cell_face", "scatter_face",
-            "scatter_corners", "scatter_corners_face", "scatter_cell_corners_face",
-            "scatter_face_normal",
-        ] = "scatter_face",
-        scatter_interp_method: Literal["nearest", "linear", "cubic"] = "linear",
-        fix_triangulation: bool = True,
-        clip_to_perimeter: bool = True,
         face_velocity_location: Literal[
             "centroid", "normal_intercept"
         ] = "normal_intercept",
-        wse_path_compare: str | Path | None = None,
-        depth_path_compare: str | Path | None = None,
-        vel_path_compare: str | Path | None = None,
-        threshold_pct_compare: float = 5.0,
-    ) -> dict[str, Path | rasterio.io.DatasetReader]:
-        """Export water-surface elevation, depth, and speed rasters in one pass.
+    ) -> None:
+        """Print a detailed per-face breakdown of velocity reconstruction.
 
-        Computes all three hydraulic output rasters for a single timestep while
-        sharing intermediate results: the ``water_surface`` HDF dataset is read
-        once, ``cell_velocity_vectors()`` (WLS reconstruction) is called once,
-        and the ``face_velocity`` HDF dataset is read once.  The in-memory WSE
-        raster produced for the WSE output is reused directly for the depth
-        DEM-subtraction step.
+        Displays the WLS input data for each face of the specified cell, then
+        shows the reconstructed velocity for all available weight schemes.
+        Optionally compares against the HEC-RAS stored ``Cell Velocity``
+        scalar when that dataset is present in the HDF file.
+
+        Prints four tables:
+
+        1. **WLS inputs** - per-face normal, length, V_n, face WSE, flow area.
+        2. **Double-C stencil face velocities** - full 2D face velocity
+           ``vn*n_hat + vt*t_hat`` using the *vel_weight_method* WLS vectors for
+           the tangential component.  This is what all intra-cell interpolation
+           methods (``triangle_blend``, ``face_idw``, ``face_gradient``,
+           ``facepoint_blend``) use at the face midpoints.
+        3. **Facepoint velocities** - velocity assigned to each polygon vertex
+           by averaging the full 2D velocities of all adjacent wet faces.
+           This is what ``facepoint_blend`` interpolates between.
+        4. **Face normal velocity** - pure normal component ``vn * n_hat`` for
+           each face.  This is the scatter value used by
+           ``"scatter_face_normal"`` with no double-C tangential contribution.
 
         Parameters
         ----------
+        cell_idx:
+            0-based cell index.
         timestep:
-            0-based time index.  Required - all three outputs need a specific
-            timestep (speed has no max-value fallback).
-        reference_raster:
-            Path to the terrain DEM GeoTIFF.  Required - used to derive depth
-            (WSE minus DEM) and to inherit the output CRS and transform.
-        wse_path:
-            Destination ``.tif`` for the water-surface elevation raster.
-            ``None`` returns an open in-memory ``rasterio.DatasetReader``.
-        depth_path:
-            Destination ``.tif`` for the depth raster.
-            ``None`` returns an open in-memory ``rasterio.DatasetReader``.
-        speed_path:
-            Destination ``.tif`` for the cell speed raster.
-            ``None`` returns an open in-memory ``rasterio.DatasetReader``.
-        snap_to_reference_extent:
-            Extend the output to the full extent of *reference_raster*
-            (default ``False``).
-        nodata:
-            Fill value for pixels outside the wet mesh.
-        render_mode:
-            Water-surface rendering mode - ``"horizontal"`` (default),
-            ``"sloping_corners"``, ``"sloping_corners_faces"``, or
-            ``"sloping_corners_faces_shallow"``.
-        depth_min:
-            Minimum water depth.  Cells shallower than this are excluded from
-            WSE interpolation; output depth pixels below this are set to
-            *nodata*.
-        vel_min:
-            Minimum speed threshold for velocity reconstruction and wet-extent
-            classification.
+            0-based index into the time dimension.
+        wse_interp:
+            Face WSE interpolation method used for ``area_weighted`` weights.
         vel_weight_method:
-            Velocity reconstruction scheme passed to
-            :meth:`cell_velocity_vectors`.
-        vel_wse_method:
-            Face WSE interpolation method passed to
-            :meth:`cell_velocity_vectors`.
-        vel_interp_method:
-            Intra-cell velocity interpolation method.  See
-            :meth:`export_raster` for full description of each option.
-        scatter_interp_method:
-            ``scipy.interpolate.griddata`` *method* used by
-            ``"scatter_cell_face"``, ``"scatter_face"``, ``"scatter_corners"``,
-            ``"scatter_corners_face"``, ``"scatter_cell_corners_face"``, and
-            ``"scatter_face_normal"``.
-            One of ``"nearest"``, ``"linear"`` *(default)*, ``"cubic"``.
-            Ignored for all other *vel_interp_method* values.
-        fix_triangulation:
-            When ``True`` (default), deduplicate coincident mesh vertices and
-            remove zero-area triangles before building the triangulation.
-            Prevents ``RuntimeError: Triangulation is invalid`` on meshes with
-            unusual cell geometry.  Set ``False`` to skip on large, clean meshes.
-        clip_to_perimeter:
-            When ``True``, the output extent for all three rasters is
-            restricted to the bounding box of the 2-D flow area boundary
-            polygon snapped outward to the nearest reference pixel boundaries,
-            and pixels outside the polygon are set to *nodata*.  **Mutually
-            exclusive with** ``snap_to_reference_extent`` - a ``ValueError``
-            is raised if both are ``True``.  Default ``True``.
+            WLS weight scheme used as V_L / V_R in the double-C stencil
+            reconstruction.  Defaults to ``"length_weighted"``.
         face_velocity_location:
-            Position used as the face normal velocity measurement point when
-            ``vel_wse_method="sloped"``.
-            ``"normal_intercept"`` (default): where the cell-centre connecting
-            line crosses the face polyline.
-            ``"centroid"``: geometric centroid of the face polyline.
-            Passed to :meth:`cell_velocity_vectors`.
-        wse_path_compare:
-            Optional path to a RasMapper WSE raster for debug comparison.
-            When provided, pixel-level difference statistics between the raspy
-            output and this raster are logged at INFO level after export.
-        depth_path_compare:
-            Optional path to a RasMapper depth raster for debug comparison.
-        vel_path_compare:
-            Optional path to a RasMapper speed raster for debug comparison.
-        threshold_pct_compare:
-            Percentage-difference threshold used to classify outlier pixels in
-            the debug comparison shapefiles (default ``5.0``).  Pixels where
-            ``|raspy - reference| / |reference| * 100`` exceeds this value are
-            written to a point shapefile in the system temp directory.
-        Returns
-        -------
-        dict with keys ``"water_surface"``, ``"depth"``, ``"speed"``.
-        Each value is the written ``Path`` (when the corresponding ``*_path``
-        argument is given) or an open in-memory ``rasterio.DatasetReader``
-        (when the argument is ``None``).  The caller must close any in-memory
-        datasets.
-
-        Raises
-        ------
-        ImportError
-            If ``rasterio`` or ``matplotlib`` are not installed.
-        ValueError
-            If both *clip_to_perimeter* and *snap_to_reference_extent* are
-            ``True``.
+            Position of the face normal velocity measurement point used in
+            ``wse_interp="sloped"`` and passed to :meth:`cell_velocity_vectors`.
+            ``"normal_intercept"`` (default) or ``"centroid"``.
         """
-        from raspy.geo import raster as _raster  # deferred - geo not required
-
-        logger.info(
-            "Exporting hydraulic rasters: Water Surface Elevation, Depth and Velocity"
+        from ._velocity import (
+            _estimate_face_wse_average,
+            _estimate_face_wse_max,
+            _estimate_face_wse_sloped,
+            _interpolate_face_flow_area,
+            _wls_velocity,
+            average_face_velocities_at_facepoints,
+            compute_all_face_velocities,
         )
-        # -- 0. Guards --------------------------------------------------
-        if clip_to_perimeter and snap_to_reference_extent:
-            raise ValueError(
-                "clip_to_perimeter and snap_to_reference_extent are mutually "
-                "exclusive: clip_to_perimeter restricts the output to the "
-                "perimeter bounding box, while snap_to_reference_extent expands "
-                "it to the full reference raster extent.  Set "
-                "snap_to_reference_extent=False when using clip_to_perimeter=True."
+
+        if cell_idx < 0 or cell_idx >= self.n_cells:
+            raise IndexError(f"cell_idx {cell_idx} is out of range [0, {self.n_cells})")
+
+        n_cells = self.n_cells
+        face_vel = np.array(self.face_velocity[timestep, :])
+        # Read full water_surface (real + ghost) so boundary faces get
+        # ghost-cell WSE rather than NaN when estimating face WSE.
+        cell_wse = np.array(self.water_surface[timestep, :])
+
+        cell_face_info, cell_face_values = self.cell_face_info
+        start = int(cell_face_info[cell_idx, 0])
+        count = int(cell_face_info[cell_idx, 1])
+        vals = cell_face_values[start : start + count]
+        face_idxs = vals[:, 0].astype(int)
+        orientations = vals[:, 1].astype(int)
+
+        normals = self.face_normals[face_idxs, :2]  # (k, 2)
+        lengths = self.face_normals[face_idxs, 2]   # (k,)
+        vn      = face_vel[face_idxs]               # (k,)
+
+        face_ci          = self.face_cell_indexes    # (n_faces, 2)
+        face_centroids_a = (
+            self.face_normal_intercept
+            if face_velocity_location == "normal_intercept"
+            else self.face_centroids
+        )
+        fp_idx_all       = self.face_facepoint_indexes  # (n_faces, 2)
+        fp_coords        = self.facepoint_coordinates   # (n_fp, 2)
+        # Stack ghost cell centres so _estimate_face_wse_sloped can index
+        # up to n_total (len(cell_wse) includes ghost rows).
+        cell_centres = np.vstack([self.cell_centers, self.ghost_cell_centers])
+
+        # -- Face WSE and flow-area weights -----------------------------
+        if wse_interp == "sloped":
+            face_wse_all = _estimate_face_wse_sloped(
+                face_ci, cell_wse, cell_centres, face_centroids_a
             )
+        elif wse_interp == "max":
+            face_wse_all = _estimate_face_wse_max(face_ci, cell_wse)
+        else:
+            face_wse_all = _estimate_face_wse_average(face_ci, cell_wse)
 
-        # -- 1. Read HDF data once --------------------------------------
-        wse_values = np.array(self.water_surface[timestep, : self.n_cells])
-        depth_at_cells = self.depth(timestep) if depth_min is not None else None
-        face_vel_arr = (
-            None if vel_interp_method == "flat_cell_center"
-            else np.array(self.face_velocity[timestep, :])
+        ae_info, ae_values = self.face_area_elevation
+        areas = np.array(
+            [
+                _interpolate_face_flow_area(fi, face_wse_all[fi], ae_info, ae_values)
+                for fi in face_idxs
+            ]
         )
 
-        # -- 2. WLS velocity vectors once ------------------------------
-        cell_vel_vecs = self.cell_velocity_vectors(
-            timestep, method=vel_weight_method, wse_interp=vel_wse_method,
+        # -- Cell-centre WLS vectors (all three methods) -----------------
+        vel_aw = _wls_velocity(vn, areas,   normals)
+        vel_lw = _wls_velocity(vn, lengths, normals)
+
+        # -- Full cell velocity array for the chosen weight method --------
+        # (used by the double-C stencil as V_L / V_R)
+        # Returns (n_cells + n_ghost, 2); dry_mask matches.
+        all_cell_vecs = self.cell_velocity_vectors(
+            timestep,
+            method=vel_weight_method,
+            wse_interp=wse_interp,
             face_velocity_location=face_velocity_location,
         )
+        _vel_mag = np.linalg.norm(all_cell_vecs, axis=1)
+        dry_mask = (_vel_mag == 0.0) | ~np.isfinite(_vel_mag)
+        n_total = len(dry_mask)
 
-        # -- 3. Mesh topology kwargs ------------------------------------
-        _cfi, _cfv = self.cell_face_info
-        _perimeter_bbox: tuple[float, float, float, float] | None = None
-        if clip_to_perimeter:
-            _perim = self.perimeter  # (n_pts, 2)
-            _perimeter_bbox = (
-                float(_perim[:, 0].min()), float(_perim[:, 1].min()),
-                float(_perim[:, 0].max()), float(_perim[:, 1].max()),
-            )
-        mesh_kw: dict[str, Any] = dict(
-            cell_centers=self.cell_centers,
-            facepoint_coordinates=self.facepoint_coordinates,
-            face_facepoint_indexes=self.face_facepoint_indexes,
-            face_cell_indexes=self.face_cell_indexes,
-            cell_face_info=_cfi,
-            cell_face_values=_cfv,
-            reference_raster=reference_raster,
-            nodata=nodata,
-            snap_to_reference_extent=snap_to_reference_extent,
-            render_mode=render_mode,
-            fix_triangulation=fix_triangulation,
-            extent_bbox=_perimeter_bbox,
-            face_min_elevation=(
-                self.face_min_elevation
-                if render_mode == "sloping_corners_faces_shallow" else None
-            ),
-        )
-
-        # -- 4. WSE raster in-memory (shared for WSE output + depth) ---
-        logger.info("Building water-surface raster (shared for depth output)...")
-
-        cell_wse_masked = (
-            np.where(depth_at_cells < depth_min, np.nan, wse_values)
-            if depth_min is not None else wse_values
-        )
-
-        # Facepoint WSE for sloping render - computed once for WSE/depth;
-        # velocity uses a separate vel_min-masked array.
-        _fp_wse: np.ndarray | None = None
-        _fp_wse_vel: np.ndarray | None = None
-        _fc_wse: np.ndarray | None = None
-        _fc_wse_vel: np.ndarray | None = None
-        _use_facecenters = render_mode in (
-            "sloping_corners_faces", "sloping_corners_faces_shallow"
-        )
-        if render_mode != "horizontal":
-            _fp_wse = self.wse_at_facepoints(cell_wse_masked)
-            if _use_facecenters:
-                _fc_wse = self.wse_at_facecentroids(cell_wse_masked)
-            if vel_min is not None:
-                with np.errstate(invalid="ignore"):
-                    _speed = np.linalg.norm(cell_vel_vecs[: self.n_cells], axis=1)
-                _vel_wse_masked = np.where(_speed < vel_min, np.nan, wse_values)
-            else:
-                _vel_wse_masked = wse_values
-            _fp_wse_vel = self.wse_at_facepoints(_vel_wse_masked)
-            if _use_facecenters:
-                _fc_wse_vel = self.wse_at_facecentroids(_vel_wse_masked)
-
-        mesh_kw["facepoint_wse"] = _fp_wse
-        mesh_kw["scatter_interp_method"] = scatter_interp_method
-        mesh_kw["cell_polygons"] = self.cell_polygons
-        mesh_kw["face_centers"] = (
-            self.face_centroids if _use_facecenters else None
-        )
-        mesh_kw["face_center_wse"] = _fc_wse
-        # Exclude face_centers: not shared with mesh_to_velocity_raster via mesh_kw
-        # (face_centers is passed explicitly in the velocity call).  Override
-        # facepoint_wse and face_center_wse with vel_min-masked versions.
-        _vel_mesh_kw = {k: v for k, v in mesh_kw.items()
-                        if k not in ("face_centers",
-                                     "facepoint_wse", "face_center_wse")}
-        _vel_mesh_kw["facepoint_wse"] = _fp_wse_vel
-        _vel_mesh_kw["face_center_wse"] = _fc_wse_vel
-
-        wse_ds = _raster.mesh_to_wse_raster(
-            **mesh_kw,
-            cell_wse=cell_wse_masked,
-            output_path=None,
-            min_value=None,
-            min_above_ref=depth_min,
-        )
-
-        # -- 5. WSE output ----------------------------------------------
-        if clip_to_perimeter:
-            wse_result: Path | rasterio.io.DatasetReader = (
-                _raster._mask_outside_polygon(wse_ds, _perim, nodata, wse_path)
-            )
-        elif wse_path is not None:
-            wse_result = _raster._write_dataset(wse_ds, wse_path)
-        else:
-            wse_result = wse_ds
-
-        # -- 6. Depth output --------------------------------------------
-        logger.info("Building depth raster from WSE raster and DEM...")
-
-        depth_ds = _raster._depth_from_wse_and_dem(
-            wse_ds, reference_raster, nodata,
-            None if clip_to_perimeter else depth_path,
-            min_value=depth_min,
-        )
-        if clip_to_perimeter:
-            depth_result: Path | rasterio.io.DatasetReader = (
-                _raster._mask_outside_polygon(
-                    depth_ds, _perim, nodata, depth_path
-                )
-            )
-            depth_ds.close()
-        else:
-            depth_result = depth_ds
-
-        # -- 7. Speed output --------------------------------------------
-        # Pass wse_ds directly so mesh_to_velocity_raster reuses the
-        # already-rendered wet extent instead of re-running the WSE render.
-        logger.info("Building velocity raster for speed output...")
-
-        vel_ds = _raster.mesh_to_velocity_raster(
-            **_vel_mesh_kw,
-            wse_raster=wse_ds,
-            cell_wse=wse_values,
-            cell_velocity=cell_vel_vecs,
-            output_path=None,
-            vel_min=vel_min,
-            depth_min=depth_min,
-            method=vel_interp_method,
+        # -- Face 2D velocities (double-C stencil, vectorised) -----------
+        face_vel_2d_all = compute_all_face_velocities(
             face_normals=self.face_normals,
-            face_normal_velocity=face_vel_arr,
-            face_centers=self.face_centroids,
-            face_velocity_coords=(
-                self.face_normal_intercept
-                if face_velocity_location == "normal_intercept"
-                else self.face_centroids
-            ),
+            face_normal_velocity=face_vel,
+            face_cell_indexes=face_ci,
+            cell_velocity=all_cell_vecs,
+            dry_mask=dry_mask,
         )
 
-        # Close shared in-memory WSE dataset now that all consumers are done.
-        # When clip_to_perimeter=True or wse_path is set, wse_result is a
-        # separate object so wse_ds can always be closed.  Otherwise
-        # wse_result IS wse_ds and must stay open for the caller.
-        if clip_to_perimeter or wse_path is not None:
-            wse_ds.close()
-        speed_ds = _raster._velocity_raster_to_speed(
-            vel_ds, None if clip_to_perimeter else speed_path, nodata
+        # -- Wet-face mask ------------------------------------------------
+        l_idx  = face_ci[:, 0]
+        r_idx  = face_ci[:, 1]
+        l_safe = np.where((l_idx >= 0) & (l_idx < n_total), l_idx, 0)
+        r_safe = np.where((r_idx >= 0) & (r_idx < n_total), r_idx, 0)
+        wet_face = (
+            ((l_idx >= 0) & (l_idx < n_total) & ~dry_mask[l_safe])
+            | ((r_idx >= 0) & (r_idx < n_total) & ~dry_mask[r_safe])
         )
-        if clip_to_perimeter:
-            speed_result: Path | rasterio.io.DatasetReader = (
-                _raster._mask_outside_polygon(
-                    speed_ds, _perim, nodata, speed_path
-                )
+
+        # -- Facepoint velocities (averaged over all adjacent wet faces) --
+        fp_vel_all = average_face_velocities_at_facepoints(
+            face_facepoint_indexes=fp_idx_all,
+            face_vel_2d=face_vel_2d_all,
+            wet_face=wet_face,
+        )
+
+        # -- Unique facepoints for this cell, ordered by face -------------
+        seen_fp: set[int] = set()
+        cell_fp_ordered: list[int] = []
+        for fi in face_idxs:
+            for fp in (int(fp_idx_all[fi, 0]), int(fp_idx_all[fi, 1])):
+                if fp not in seen_fp:
+                    seen_fp.add(fp)
+                    cell_fp_ordered.append(fp)
+
+        # -- Helpers ------------------------------------------------------
+        def _angle(v: np.ndarray) -> str:
+            spd = np.linalg.norm(v)
+            if spd < 1e-10:
+                return "     n/a"
+            return f"{(90.0 - np.degrees(np.arctan2(v[1], v[0]))) % 360.0:>8.2f}"
+
+        def _vel_line(label: str, v: np.ndarray) -> str:
+            spd = np.linalg.norm(v)
+            return (
+                f"  {label:<18}  Vx={v[0]:+.4f}  Vy={v[1]:+.4f}"
+                f"  speed={spd:.4f}  dir={_angle(v)}-"
             )
-            speed_ds.close()
+
+        SEP = "-" * 72
+
+        # ----------------------------------------------------------------
+        # 1. HEADER
+        # ----------------------------------------------------------------
+        dry_label = "DRY" if dry_mask[cell_idx] else "WET"
+        cx, cy   = cell_centres[cell_idx]
+        print(f"\n{'-'*72}")
+        print(
+            f"  debug_cell_velocity  |  area={self.name}"
+            f"  cell={cell_idx}  ts={timestep}"
+        )
+        print(f"{'-'*72}")
+        print(f"  Cell centre : ({cx:.3f}, {cy:.3f})")
+        print(f"  Cell WSE    : {cell_wse[cell_idx]:.4f}  [{dry_label}]")
+        print(f"  wse_interp  : {wse_interp}")
+        print(f"  n_faces     : {count}")
+
+        # ----------------------------------------------------------------
+        # 2. WLS INPUTS PER FACE
+        # ----------------------------------------------------------------
+        print(f"\n{SEP}")
+        print("  WLS INPUTS PER FACE")
+        print(SEP)
+        hdr1 = (
+            f"  {'Face':>6}  {'Ori':>3}  {'nx':>7}  {'ny':>7}  {'Length':>8}"
+            f"  {'V_n':>8}  {'V_n_x':>8}  {'V_n_y':>8}  {'angle':>8}"
+            f"  {'L_cell':>7}  {'L_WSE':>8}  {'R_cell':>7}  {'R_WSE':>8}"
+            f"  {'face_WSE':>9}  {'A_face':>9}  {'fc_x':>11}  {'fc_y':>11}"
+        )
+        print(hdr1)
+        print(f"  {'-'*68}")
+        for fi, ori, (nx, ny), L, v, fwse, a in zip(
+            face_idxs, orientations, normals, lengths, vn,
+            face_wse_all[face_idxs], areas, strict=False,
+        ):
+            lc = int(face_ci[fi, 0])
+            rc = int(face_ci[fi, 1])
+            lc_valid = 0 <= lc < n_cells
+            rc_valid = 0 <= rc < n_cells
+            lc_str   = (f"{lc:>6}" + ("*" if lc_valid and dry_mask[lc] else " ")) \
+                       if lc_valid else "  ghost "
+            rc_str   = (f"{rc:>6}" + ("*" if rc_valid and dry_mask[rc] else " ")) \
+                       if rc_valid else "  ghost "
+            lw_str   = f"{cell_wse[lc]:>8.4f}" if lc_valid else "     n/a"
+            rw_str   = f"{cell_wse[rc]:>8.4f}" if rc_valid else "     n/a"
+            fcx, fcy = face_centroids_a[fi]
+            vnx, vny  = v * nx, v * ny
+            ang_str   = _angle(np.array([vnx, vny]))
+            print(
+                f"  {fi:>6}  {ori:>3}  {nx:>7.4f}  {ny:>7.4f}  {L:>8.2f}"
+                f"  {v:>8.4f}  {vnx:>8.4f}  {vny:>8.4f}  {ang_str:>8}"
+                f"  {lc_str}  {lw_str}  {rc_str}  {rw_str}"
+                f"  {fwse:>9.4f}  {a:>9.4f}  {fcx:>11.3f}  {fcy:>11.3f}"
+            )
+        print("  (* = dry cell)")
+
+        # ----------------------------------------------------------------
+        # 3. CELL-CENTRE VELOCITY (WLS)
+        # ----------------------------------------------------------------
+        print(f"\n{SEP}")
+        print("  CELL-CENTRE VELOCITY (WLS)")
+        print(SEP)
+        print(_vel_line("area_weighted", vel_aw))
+        print(_vel_line("length_weighted", vel_lw))
+
+        if self.face_flow is not None:
+            face_flow = np.array(self.face_flow[timestep, :])
+            qf         = face_flow[face_idxs]
+            weights_fr = np.where(np.abs(vn) > 1e-10, np.abs(qf / vn), 0.0)
+            vel_fr     = _wls_velocity(vn, weights_fr, normals)
+            print(_vel_line("flow_ratio", vel_fr))
+            print(f"    face Q : {face_flow[face_idxs]}")
         else:
-            speed_result = speed_ds
+            print("  flow_ratio         : (Face Flow not in HDF)")
 
-        # -- 8. Debug comparison vs RasMapper (optional) ----------------
-        if wse_path_compare is not None:
-            _raster._compare_rasters_debug(
-                "WSE", wse_result, wse_path_compare, nodata, threshold_pct_compare
-            )
-        if depth_path_compare is not None:
-            _raster._compare_rasters_debug(
-                "Depth", depth_result, depth_path_compare, nodata, threshold_pct_compare
-            )
-        if vel_path_compare is not None:
-            _raster._compare_rasters_debug(
-                "Speed", speed_result, vel_path_compare, nodata, threshold_pct_compare
+        if self.cell_velocity is not None:
+            ras_spd = float(self.cell_velocity[timestep, cell_idx])
+            print(f"  HEC-RAS stored     : speed={ras_spd:.4f}  (scalar only)")
+        else:
+            print("  HEC-RAS stored     : (Cell Velocity scalar not in HDF)")
+
+        # ----------------------------------------------------------------
+        # 4. RECONSTRUCTED FACE VELOCITY (double-C stencil)
+        # ----------------------------------------------------------------
+        print(f"\n{SEP}")
+        print(f"  RECONSTRUCTED FACE VELOCITY  (double-C, wt={vel_weight_method!r})")
+        print(SEP)
+        hdr2 = (
+            f"  {'Face':>6}  {'tx':>7}  {'ty':>7}  {'vt_L':>8}  {'vt_R':>8}"
+            f"  {'vt':>8}  {'Vfx':>8}  {'Vfy':>8}  {'|Vf|':>8}  {'dir':>8}  {'side':>6}"
+        )
+        print(hdr2)
+        print(f"  {'-'*68}")
+        for fi, (nx, ny), _ in zip(face_idxs, normals, vn, strict=False):
+            t_hat = np.array([-ny, nx])
+            lc    = int(face_ci[fi, 0])
+            rc    = int(face_ci[fi, 1])
+            l_ok  = 0 <= lc < n_cells and not dry_mask[lc]
+            r_ok  = 0 <= rc < n_cells and not dry_mask[rc]
+            vt_L  = float(np.dot(all_cell_vecs[lc], t_hat)) if l_ok else float("nan")
+            vt_R  = float(np.dot(all_cell_vecs[rc], t_hat)) if r_ok else float("nan")
+            if l_ok and r_ok:
+                vt, side = 0.5 * (vt_L + vt_R), "both"
+            elif l_ok:
+                vt, side = vt_L, "L"
+            elif r_ok:
+                vt, side = vt_R, "R"
+            else:
+                vt, side = 0.0, "none"
+            vf       = face_vel_2d_all[fi]
+            vtL_s    = f"{vt_L:>8.4f}" if l_ok else f"{'dry/g':>8}"
+            vtR_s    = f"{vt_R:>8.4f}" if r_ok else f"{'dry/g':>8}"
+            print(
+                f"  {fi:>6}  {t_hat[0]:>7.4f}  {t_hat[1]:>7.4f}"
+                f"  {vtL_s}  {vtR_s}  {vt:>8.4f}"
+                f"  {vf[0]:>8.4f}  {vf[1]:>8.4f}  {np.linalg.norm(vf):>8.4f}"
+                f"  {_angle(vf)}  {side:>6}"
             )
 
-        return {
-            "water_surface": wse_result,
-            "depth": depth_result,
-            "speed": speed_result,
-        }
+        # ----------------------------------------------------------------
+        # 5. FACEPOINT (CORNER) VELOCITIES
+        # ----------------------------------------------------------------
+        print(f"\n{SEP}")
+        print("  FACEPOINT (CORNER) VELOCITIES")
+        print(SEP)
+        hdr3 = (
+            f"  {'FP':>7}  {'x':>11}  {'y':>11}"
+            f"  {'Vfp_x':>8}  {'Vfp_y':>8}  {'|Vfp|':>8}  {'dir':>8}"
+            f"  {'n_wet':>5}  wet faces"
+        )
+        print(hdr3)
+        print(f"  {'-'*68}")
+        for fp in cell_fp_ordered:
+            touching     = np.where(
+                (fp_idx_all[:, 0] == fp) | (fp_idx_all[:, 1] == fp)
+            )[0]
+            wet_touching = touching[wet_face[touching]]
+            vfp          = fp_vel_all[fp]
+            x, y         = fp_coords[fp]
+            faces_str    = " ".join(str(f) for f in wet_touching)
+            print(
+                f"  {fp:>7}  {x:>11.3f}  {y:>11.3f}"
+                f"  {vfp[0]:>8.4f}  {vfp[1]:>8.4f}  {np.linalg.norm(vfp):>8.4f}"
+                f"  {_angle(vfp)}  {len(wet_touching):>5}  [{faces_str}]"
+            )
+
+        # ----------------------------------------------------------------
+        # 6. FACE NORMAL VELOCITY  (scatter_face_normal: vn * n_hat)
+        # ----------------------------------------------------------------
+        print(f"\n{SEP}")
+        print("  FACE NORMAL VELOCITY  (scatter_face_normal: vn \u00d7 n\u0302)")
+        print(SEP)
+        hdr4 = (
+            f"  {'Face':>6}  {'Vfn_x':>8}  {'Vfn_y':>8}  {'|Vfn|':>8}  {'dir':>8}"
+        )
+        print(hdr4)
+        print(f"  {'-'*44}")
+        for fi, (nx, ny), v in zip(face_idxs, normals, vn, strict=False):
+            vfn = np.array([v * nx, v * ny])
+            print(
+                f"  {fi:>6}  {vfn[0]:>8.4f}  {vfn[1]:>8.4f}"
+                f"  {abs(v):>8.4f}  {_angle(vfn)}"
+            )
+        print()
 
     def debug_raster_export(
         self,
@@ -2677,74 +2749,6 @@ class FlowAreaResults(FlowArea):
             "triangulation": tri_report,
         }
 
-    # ------------------------------------------------------------------
-    # Derived results helpers (computed from HDF result arrays)
-    # ------------------------------------------------------------------
-
-    def water_surface_at_facepoints(self, timestep: int) -> np.ndarray:
-        """WSE interpolated to facepoints for one timestep.
-
-        Convenience wrapper around :meth:`~FlowArea.wse_at_facepoints` that
-        reads the water-surface time series internally.
-
-        Parameters
-        ----------
-        timestep:
-            0-based index into the time dimension.
-
-        Returns
-        -------
-        ndarray, shape ``(n_facepoints,)``
-            Facepoint WSE.  ``nan`` where all adjacent cells are dry.
-        """
-        # Include ghost-cell WSE so perimeter facepoints receive a value
-        # from the adjacent boundary cell rather than returning NaN.
-        cell_wse = np.array(self.water_surface[timestep, :])
-        return self.wse_at_facepoints(cell_wse)
-
-    def wet_cells(self, timestep: int, depth_min: float = 0.0) -> np.ndarray:
-        """Boolean mask of wet cells for one timestep.
-
-        A cell is wet when ``WSE - cell_min_elevation > depth_min``.
-
-        Parameters
-        ----------
-        timestep:
-            0-based index into the time dimension.
-        depth_min:
-            Minimum depth threshold in model units.  Default ``0.0``.
-
-        Returns
-        -------
-        ndarray, shape ``(n_cells,)``, dtype bool
-        """
-        wse = np.array(self.water_surface[timestep, : self.n_cells])
-        return (wse - self.cell_min_elevation) > depth_min
-
-    def wet_faces(self, timestep: int, depth_min: float = 0.0) -> np.ndarray:
-        """Boolean mask of wet faces for one timestep.
-
-        A face is wet when at least one of its adjacent cells is wet
-        (see :meth:`wet_cells`).  Boundary faces are wet when their single
-        adjacent real cell is wet.
-
-        Parameters
-        ----------
-        timestep:
-            0-based index into the time dimension.
-        depth_min:
-            Minimum cell depth threshold passed to :meth:`wet_cells`.
-
-        Returns
-        -------
-        ndarray, shape ``(n_faces,)``, dtype bool
-        """
-        wc = self.wet_cells(timestep, depth_min)
-        fci = self.face_cell_indexes  # (n_faces, 2)
-        n = self.n_cells
-        c0_wet = np.where(fci[:, 0] >= 0, wc[np.clip(fci[:, 0], 0, n - 1)], False)
-        c1_wet = np.where(fci[:, 1] >= 0, wc[np.clip(fci[:, 1], 0, n - 1)], False)
-        return c0_wet | c1_wet
 
 
 # ---------------------------------------------------------------------------
@@ -3328,8 +3332,9 @@ class PlanHdf(GeometryHdf):
             ds.close()
     """
 
-    def __init__(self, filename: str | Path) -> None:
+    def __init__(self, filename: str | Path, program_directory: str | Path | None = None) -> None:
         super().__init__(filename)
+        self._program_directory = Path(program_directory) if program_directory else None
         self._plan_flow_areas: FlowAreaResultsCollection | None = None
         self._plan_storage_areas: StorageAreaResultsCollection | None = None
         self._sa_connections: SA2DConnectionCollection | None = None

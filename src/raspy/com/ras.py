@@ -73,3 +73,12 @@ def installed_ras_display_name(version: str | int) -> str | None:
         raise RuntimeError(f"HEC-RAS {version} is not installed.")
 
     return entry["display_name"]
+
+def installed_ras_directory(version: str | int) -> str | None:
+    xxx = ras_registry_xxx(version)
+    entry = next((e for e in _cached_installs() if e.get("registry_xxx") == xxx), None)
+    if entry is None:
+        raise RuntimeError(f"HEC-RAS {version} is not installed.")
+
+    return entry["install_location"]
+

@@ -3,9 +3,14 @@
 import atexit
 import logging
 import shutil
+import subprocess
+import tempfile
 from pathlib import Path
+from typing import Literal
+from xml.sax.saxutils import escape
 
 from .. import com
+from ..com.ras import installed_ras_directory
 from .flow_steady import SteadyBoundary, SteadyFlowFile
 from .flow_unsteady import (
     FlowHydrograph,
@@ -288,3 +293,163 @@ class Model:
             src = dst.with_suffix(f"{dst.suffix}.{EXT_BACKUP_FILE}")
             if src.exists():
                 src.replace(dst)
+
+    def export_using_mapper( 
+        self,
+        variable: Literal["water_surface", "depth", "cell_speed"],
+        output_path: str | Path,
+        timestep: int | None = None,
+    ):
+        """Legacy export method with hardcoded parameters for quick raster export.
+
+        See :meth:`export_raster` for the new flexible method with full
+        parameterization.  This is retained for quick-and-dirty exports using
+        the most common settings, but all parameters are fixed and it delegates
+        to :meth:`export_raster` internally.
+
+        Parameters
+        ----------
+        variable:
+            ``"water_surface"``, ``"depth"``, ``"cell_speed"``, or
+            ``"cell_velocity"``.
+        timestep:
+            0-based time index.  Pass ``None`` to use maximum values (only
+            valid for ``"water_surface"`` and ``"depth"``).
+        output_path:
+            Destination ``.tif`` file path.  ``None`` returns an in-memory
+            ``rasterio.DatasetReader``; the caller must close it.
+
+        Returns
+        -------
+        Path
+            Written GeoTIFF path (when *output_path* is given).
+        rasterio.io.DatasetReader
+            Open in-memory dataset (when *output_path* is ``None``).
+        """
+        return self.store_map(variable=variable, output_path=output_path, timestep=timestep)
+
+    def _store_map_profile_name(self, timestep: int | None) -> str:
+        if timestep is None:
+            return "Max"
+        if timestep < 0:
+            raise ValueError("timestep must be >= 0 or None")
+
+        ts = self.hdf.time_stamps
+        if timestep >= len(ts):
+            raise IndexError(
+                f"timestep index {timestep} out of range; available range is 0 to {len(ts) - 1}"
+            )
+        return ts[timestep].strftime("%d%b%Y %H:%M:%S")
+
+    def store_map(
+        self,
+        variable: Literal[
+            "wse",
+            "water_surface",
+            "depth",
+            "velocity",
+            "froude",
+            "shear_stress",
+            "depth_x_velocity",
+            "dv"
+            "depth_x_velocity_sq",
+            "dv2"
+        ],
+        output_path: str | Path,
+        timestep: int | None = None,
+        timeout: int = 600,
+    ) -> Path:
+        """Store one map with RasProcess.exe using a single variable/timestep.
+
+        Parameters
+        ----------
+        variable:
+            Map variable name. Supported values:
+            ``"wse"``/``"water_surface"``, ``"depth"``, ``"velocity"``/``"cell_speed"``,
+            ``"froude"``, ``"shear_stress"``, ``"depth_x_velocity"``,
+            ``"depth_x_velocity_sq"``.
+        output_path:
+            Output base path for the generated map.
+        timestep:
+            0-based timestep index. ``None`` uses ``"Max"`` profile.
+        timeout:
+            RasProcess timeout in seconds.
+        """
+        variable_key = str(variable).strip().lower()
+        map_type_by_variable = {
+            "wse": "elevation",
+            "water_surface": "elevation",
+            "depth": "depth",
+            "velocity": "velocity",
+            "froude": "froude",
+            "shear_stress": "Shear",
+            "depth_x_velocity": "depth and velocity",
+            "dv": "depth and velocity",
+            "depth_x_velocity_sq": "depth and velocity squared",
+            "dv2": "depth and velocity squared",
+        }
+        map_type = map_type_by_variable.get(variable_key)
+        if map_type is None:
+            supported = ", ".join(map_type_by_variable.keys())
+            raise ValueError(f"Unsupported variable '{variable}'. Supported: {supported}")
+
+        program_dir = installed_ras_directory(self.version)
+        if not program_dir:
+            raise FileNotFoundError(
+                f"Could not find installed HEC-RAS directory for version {self.version}"
+            )
+
+        ras_process = Path(program_dir) / "RasProcess.exe"
+        if not ras_process.exists():
+            raise FileNotFoundError(f"RasProcess.exe not found: {ras_process}")
+
+        result_hdf = self.plan_hdf_file
+        if not result_hdf.exists():
+            raise FileNotFoundError(f"Plan HDF file not found: {result_hdf}")
+
+        output_base = Path(output_path)
+        output_base.parent.mkdir(parents=True, exist_ok=True)
+        profile_name = self._store_map_profile_name(timestep)
+
+        xml_text = (
+            '<?xml version="1.0" encoding="utf-8"?>\n'
+            '<Command Type="StoreMap">\n'
+            f"  <MapType>{escape(map_type)}</MapType>\n"
+            f"  <Result>{escape(str(result_hdf))}</Result>\n"
+            f"  <ProfileName>{escape(profile_name)}</ProfileName>\n"
+            f"  <OutputBaseFilename>{escape(str(output_base))}</OutputBaseFilename>\n"
+            "</Command>\n"
+        )
+
+        tmp_xml = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                suffix=".xml",
+                delete=False,
+                encoding="utf-8",
+            ) as f:
+                f.write(xml_text)
+                tmp_xml = Path(f.name)
+
+            result = subprocess.run(
+                [str(ras_process), f"-CommandFile={tmp_xml}"],
+                cwd=str(self.project_file.parent),
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                check=False,
+            )
+        finally:
+            if tmp_xml is not None and tmp_xml.exists():
+                tmp_xml.unlink(missing_ok=True)
+
+        if result.returncode != 0:
+            raise RuntimeError(
+                "RasProcess StoreMap failed.\n"
+                f"Return code: {result.returncode}\n"
+                f"stdout: {result.stdout}\n"
+                f"stderr: {result.stderr}"
+            )
+
+        return output_base
