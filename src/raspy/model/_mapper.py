@@ -1,4 +1,13 @@
-"""Read/write HEC-RAS text input files (.prj, .g*, .f*, etc.)."""
+"""RasMapper integration for exporting hydraulic result rasters.
+
+Provides :class:`VrtMap` — a handle to a VRT raster exported by RasProcess.exe —
+and :class:`MapperExtension`, a mixin that adds ``store_map`` / ``open_map`` and
+per-variable convenience wrappers (``export_wse``, ``open_wse``, etc.) to the
+Model class.
+
+RasProcess.exe always writes output to ``{project_dir}/{plan_short_id}/``
+regardless of any path configured in the rasmap XML.
+"""
 
 import atexit
 import logging
@@ -15,6 +24,7 @@ if TYPE_CHECKING:
     import rasterio.io
 
 from ..com.ras import installed_ras_directory
+from ..utils.helpers import log_call, timed
 
 logger = logging.getLogger("raspy.model")
 
@@ -94,8 +104,10 @@ class VrtMap:
         """
         self._check_valid()
         sources = self.source_files if include_sources else []
+        logger.debug("Deleting VRT: %s", self._path)
         self._path.unlink(missing_ok=True)
         for src in sources:
+            logger.debug("Deleting source: %s", src)
             src.unlink(missing_ok=True)
         self._deleted = True
 
@@ -192,6 +204,8 @@ class MapperExtension:
             f"could not infer which one to use: {[str(p) for p in candidates]}"
         )
 
+    @log_call(logging.INFO)
+    @timed(logging.INFO)
     def store_map(
         self,
         variable: Literal[
@@ -445,6 +459,7 @@ class MapperExtension:
 
         return vrt
 
+    @log_call(logging.INFO)
     @contextmanager
     def open_map(
         self,
@@ -493,6 +508,7 @@ class MapperExtension:
             vrt.delete()
             _temp_vrts.discard(vrt_path)
 
+    @log_call(logging.INFO)
     def export_wse(
         self,
         timestep: int | None = None,
@@ -503,6 +519,7 @@ class MapperExtension:
             "wse", timestep=timestep, raster_name=raster_name, timeout=timeout
         )
 
+    @log_call(logging.INFO)
     def open_wse(
         self,
         timestep: int | None = None,
@@ -514,6 +531,7 @@ class MapperExtension:
             "wse", timestep=timestep, raster_name=name, timeout=timeout
         )
 
+    @log_call(logging.INFO)
     def export_depth(
         self,
         timestep: int | None = None,
@@ -524,6 +542,7 @@ class MapperExtension:
             "depth", timestep=timestep, raster_name=raster_name, timeout=timeout
         )
 
+    @log_call(logging.INFO)
     def open_depth(
         self,
         timestep: int | None = None,
@@ -535,6 +554,7 @@ class MapperExtension:
             "depth", timestep=timestep, raster_name=name, timeout=timeout
         )
 
+    @log_call(logging.INFO)
     def export_velocity(
         self,
         timestep: int | None = None,
@@ -545,6 +565,7 @@ class MapperExtension:
             "velocity", timestep=timestep, raster_name=raster_name, timeout=timeout
         )
 
+    @log_call(logging.INFO)
     def open_velocity(
         self,
         timestep: int | None = None,
@@ -556,6 +577,7 @@ class MapperExtension:
             "velocity", timestep=timestep, raster_name=name, timeout=timeout
         )
 
+    @log_call(logging.INFO)
     def export_froude(
         self,
         timestep: int | None = None,
@@ -566,6 +588,7 @@ class MapperExtension:
             "froude", timestep=timestep, raster_name=raster_name, timeout=timeout
         )
 
+    @log_call(logging.INFO)
     def open_froude(
         self,
         timestep: int | None = None,
@@ -577,6 +600,7 @@ class MapperExtension:
             "froude", timestep=timestep, raster_name=name, timeout=timeout
         )
 
+    @log_call(logging.INFO)
     def export_shear_stress(
         self,
         timestep: int | None = None,
@@ -587,6 +611,7 @@ class MapperExtension:
             "shear_stress", timestep=timestep, raster_name=raster_name, timeout=timeout
         )
 
+    @log_call(logging.INFO)
     def open_shear_stress(
         self,
         timestep: int | None = None,
@@ -598,6 +623,7 @@ class MapperExtension:
             "shear_stress", timestep=timestep, raster_name=name, timeout=timeout
         )
 
+    @log_call(logging.INFO)
     def export_dv(
         self,
         timestep: int | None = None,
@@ -608,6 +634,7 @@ class MapperExtension:
             "dv", timestep=timestep, raster_name=raster_name, timeout=timeout
         )
 
+    @log_call(logging.INFO)
     def open_dv(
         self,
         timestep: int | None = None,
@@ -619,6 +646,7 @@ class MapperExtension:
             "dv", timestep=timestep, raster_name=name, timeout=timeout
         )
 
+    @log_call(logging.INFO)
     def export_dv2(
         self,
         timestep: int | None = None,
@@ -629,6 +657,7 @@ class MapperExtension:
             "dv2", timestep=timestep, raster_name=raster_name, timeout=timeout
         )
 
+    @log_call(logging.INFO)
     def open_dv2(
         self,
         timestep: int | None = None,
