@@ -5,18 +5,15 @@ import logging
 import shutil
 import subprocess
 import tempfile
-import uuid
 import xml.etree.ElementTree as ET
-from contextlib import contextmanager
-from pathlib import Path
 from collections.abc import Generator
-from contextlib import AbstractContextManager
+from contextlib import AbstractContextManager, contextmanager
+from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     import rasterio.io
 
-from .. import com
 from ..com.ras import installed_ras_directory
 
 __all__ = [
@@ -24,18 +21,24 @@ __all__ = [
     "VrtMap",
 ]
 
-EXT_BACKUP_FILE = "raspy_bkup"
-
-_temp_dirs: set[Path] = set()
+_temp_vrts: set[Path] = set()
 
 
-def _cleanup_temp_dirs() -> None:
-    for d in list(_temp_dirs):
-        shutil.rmtree(d, ignore_errors=True)
-        _temp_dirs.discard(d)
+def _cleanup_temp_vrts() -> None:
+    """Delete any VRT files and their source rasters left over from ``read_map`` calls.
+
+    Registered with :func:`atexit` so it runs on normal interpreter shutdown,
+    catching cases where the ``with`` block was not exited cleanly (e.g. a
+    Jupyter kernel restart). Has no effect if the set is already empty.
+    """
+    for vrt_path in list(_temp_vrts):
+        import contextlib
+        with contextlib.suppress(Exception):
+            VrtMap(vrt_path).delete()
+        _temp_vrts.discard(vrt_path)
 
 
-atexit.register(_cleanup_temp_dirs)
+atexit.register(_cleanup_temp_vrts)
 
 
 class VrtMap:
@@ -95,7 +98,7 @@ class VrtMap:
         self._deleted = True
 
     def exists(self, include_sources: bool = False) -> bool:
-        """Return ``True`` if the VRT file (and optionally all source rasters) exist on disk.
+        """Return ``True`` if the VRT file (and optionally all source rasters) exist.
 
         Parameters
         ----------
@@ -112,7 +115,7 @@ class VrtMap:
         return True
 
     def is_locked(self) -> bool:
-        """Return ``True`` if the VRT or any existing source raster is locked by another process.
+        """Return ``True`` if the VRT or any source raster is locked by another process.
 
         On Windows, a file is considered locked when it cannot be opened
         for writing (e.g. because QGIS or another application holds it open).
@@ -147,7 +150,15 @@ class VrtMap:
 class MapperExtension:
     """Extends raspy.model.Model with RasMapper functions"""
 
-    def _store_map_profile_name(self, timestep: int | None) -> str:
+    def timestep_to_profile_name(self, timestep: int | None) -> str:
+        """Return the HEC-RAS profile name for a given timestep index.
+
+        Parameters
+        ----------
+        timestep:
+            Zero-based index into the plan's time series. ``None`` returns
+            ``"Max"``, which selects the maximum-value profile.
+        """
         if timestep is None:
             return "Max"
         if timestep < 0:
@@ -156,7 +167,8 @@ class MapperExtension:
         ts = self.hdf.time_stamps
         if timestep >= len(ts):
             raise IndexError(
-                f"timestep index {timestep} out of range; available range is 0 to {len(ts) - 1}"
+                f"timestep index {timestep} out of range; "
+                f"available range is 0 to {len(ts) - 1}"
             )
         return ts[timestep].strftime("%d%b%Y %H:%M:%S")
 
@@ -193,17 +205,14 @@ class MapperExtension:
             "depth_x_velocity_sq",
         ],
         timestep: int | None = None,
-        raster_name: str | None = None,
-        output_folder: str | None = None,
         timeout: int = 600,
+        raster_name: str | None = None,
     ) -> "VrtMap":
         """Store one map by editing a temporary copy of the project's .rasmap file.
 
-        Parameters
-        ----------
-        output_folder:
-            Optional sub-folder name under ``.\\<plan short id>``.
-            If ``None``, outputs go to ``.\\<plan short id>``.
+        Output is always written to ``{project_dir}/{plan_short_id}/`` — RasProcess.exe
+        reads the Plan ShortID from the plan file and uses it as the output folder
+        regardless of any path set in the rasmap XML.
         """
         variable_key = str(variable).strip().lower()
         map_type_by_variable = {
@@ -221,19 +230,11 @@ class MapperExtension:
         map_type_info = map_type_by_variable.get(variable_key)
         if map_type_info is None:
             supported = ", ".join(map_type_by_variable.keys())
-            raise ValueError(f"Unsupported variable '{variable}'. Supported: {supported}")
+            raise ValueError(
+                f"Unsupported variable '{variable}'. Supported: {supported}"
+            )
         map_type, display_name = map_type_info
 
-        if output_folder is not None:
-            if not isinstance(output_folder, str):
-                raise TypeError("output_folder must be a string or None")
-            if output_folder.strip() == "":
-                raise ValueError("output_folder cannot be empty")
-            if any(sep in output_folder for sep in ("/", "\\")):
-                raise ValueError(
-                    "output_folder must be a sub-folder name only, not a full/relative path"
-                )
-        
         if raster_name is not None:
             if not isinstance(raster_name, str):
                 raise TypeError("raster_name must be a string or None")
@@ -251,17 +252,9 @@ class MapperExtension:
             )
 
         project_dir = self.plan_file.parent
-        output_dir = project_dir / plan_short_id
-        if output_folder is not None:
-            output_dir = output_dir / output_folder
-        output_dir.mkdir(parents=True, exist_ok=True)
-
-        absolute_output_dir = project_dir / f"{plan_short_id}"
+        absolute_output_dir = project_dir / plan_short_id
         relative_output_dir = f"./{plan_short_id}"
-        if output_folder is not None:
-            relative_output_dir = f"{relative_output_dir}/{output_folder}"
-            absolute_output_dir = absolute_output_dir / output_folder
-        
+        absolute_output_dir.mkdir(parents=True, exist_ok=True)
         output_raster = None
 
         program_dir = installed_ras_directory(self.version)
@@ -278,7 +271,7 @@ class MapperExtension:
         if not result_hdf.exists():
             raise FileNotFoundError(f"Plan HDF file not found: {result_hdf}")
 
-        profile_name = self._store_map_profile_name(timestep)
+        profile_name = self.timestep_to_profile_name(timestep)
         profile_index = 2147483647 if timestep is None else timestep
         safe_profile = profile_name.replace(":", " ").replace("/", "_")
 
@@ -327,7 +320,9 @@ class MapperExtension:
             for layer in to_remove:
                 plan_layer.remove(layer)
 
-            stored_vrt_rel = f"{relative_output_dir}/{display_name} ({safe_profile}).vrt"
+            stored_vrt_rel = (
+                f"{relative_output_dir}/{display_name} ({safe_profile}).vrt"
+            )
             stored_vrt_attr = stored_vrt_rel.replace("/", "\\")
 
             layer_elem = ET.SubElement(plan_layer, "Layer")
@@ -359,15 +354,20 @@ class MapperExtension:
                         "Close the file before calling store_map."
                     )
 
-            logging.info("Pre RasProcess: output raster expected at: %s", absolute_output_dir / f"{raster_name}.vrt")
+            logging.info(
+                "Pre RasProcess: output raster expected at: %s",
+                absolute_output_dir / f"{raster_name}.vrt",
+            )
 
+            cmd = [
+                str(ras_process),
+                "-Command=StoreAllMaps",
+                f"-RasMapFilename={temp_rasmap}",
+                f"-ResultFilename={result_hdf}",
+            ]
+            logging.debug("RasProcess command: %s", " ".join(cmd))
             result = subprocess.run(
-                [
-                    str(ras_process),
-                    "-Command=StoreAllMaps",
-                    f"-RasMapFilename={temp_rasmap}",
-                    f"-ResultFilename={result_hdf}",
-                ],
+                cmd,
                 cwd=str(project_dir),
                 capture_output=True,
                 text=True,
@@ -391,7 +391,10 @@ class MapperExtension:
             )
 
         if output_raster is None:
-            raise Exception("Unexpected error: RasProcess completed but output raster path is not set.")
+            raise Exception(
+                "Unexpected error: RasProcess completed but "
+                "output raster path is not set."
+            )
 
         vrt = VrtMap(output_raster)
         if not vrt.exists():
@@ -412,9 +415,9 @@ class MapperExtension:
             )
 
         return vrt
-    
+
     @contextmanager
-    def read_map(
+    def open_map(
         self,
         variable: Literal[
             "wse",
@@ -429,43 +432,181 @@ class MapperExtension:
             "depth_x_velocity_sq",
         ],
         timestep: int | None = None,
-        raster_name: str | None = None,
         timeout: int = 600,
+        raster_name: str | None = None,
     ) -> Generator["rasterio.io.DatasetReader", None, None]:
-        """Store a temporary map and yield an open rasterio dataset, then clean up.
+        """Store a map, yield an open rasterio dataset, then delete it.
 
-        Each call writes to a unique subfolder so concurrent calls never
-        collide with each other or with a file already open in QGIS.
+        RasProcess.exe always writes to ``{project_dir}/{plan_short_id}/``
+        regardless of any path set in the rasmap XML — the output location
+        cannot be redirected. Files are deleted on context exit, and also
+        registered for cleanup on interpreter shutdown via ``atexit``.
 
         Usage::
 
-            with model.read_map("wse") as ds:
+            with model.open_map("wse") as ds:
                 data = ds.read(1)
         """
         import rasterio
 
-        temp_folder = uuid.uuid4().hex
         vrt = self.store_map(
             variable,
             timestep=timestep,
             raster_name=raster_name,
-            output_folder=temp_folder,
             timeout=timeout,
         )
-        temp_dir = vrt.path.parent
-        _temp_dirs.add(temp_dir)
+        vrt_path = vrt.path
+        _temp_vrts.add(vrt_path)
         try:
-            with rasterio.open(vrt.path) as ds:
+            with rasterio.open(vrt_path) as ds:
                 yield ds
         finally:
             vrt.delete()
-            temp_dir.rmdir()
-            _temp_dirs.discard(temp_dir)
-    
-    def read_wse(
+            _temp_vrts.discard(vrt_path)
+
+    def export_wse(
+        self,
+        timestep: int | None = None,
+        timeout: int = 600,
+        raster_name: str | None = None,
+    ) -> "VrtMap":
+        return self.store_map(
+            "wse", timestep=timestep, raster_name=raster_name, timeout=timeout
+        )
+
+    def open_wse(
         self,
         timestep: int | None = None,
         timeout: int = 600,
     ) -> "AbstractContextManager[rasterio.io.DatasetReader]":
-        return self.read_map("wse", timestep=timestep, timeout=timeout)
+        import secrets
+        name = secrets.token_hex(8)
+        return self.open_map(
+            "wse", timestep=timestep, raster_name=name, timeout=timeout
+        )
 
+    def export_depth(
+        self,
+        timestep: int | None = None,
+        timeout: int = 600,
+        raster_name: str | None = None,
+    ) -> "VrtMap":
+        return self.store_map(
+            "depth", timestep=timestep, raster_name=raster_name, timeout=timeout
+        )
+
+    def open_depth(
+        self,
+        timestep: int | None = None,
+        timeout: int = 600,
+    ) -> "AbstractContextManager[rasterio.io.DatasetReader]":
+        import secrets
+        name = secrets.token_hex(8)
+        return self.open_map(
+            "depth", timestep=timestep, raster_name=name, timeout=timeout
+        )
+
+    def export_velocity(
+        self,
+        timestep: int | None = None,
+        timeout: int = 600,
+        raster_name: str | None = None,
+    ) -> "VrtMap":
+        return self.store_map(
+            "velocity", timestep=timestep, raster_name=raster_name, timeout=timeout
+        )
+
+    def open_velocity(
+        self,
+        timestep: int | None = None,
+        timeout: int = 600,
+    ) -> "AbstractContextManager[rasterio.io.DatasetReader]":
+        import secrets
+        name = secrets.token_hex(8)
+        return self.open_map(
+            "velocity", timestep=timestep, raster_name=name, timeout=timeout
+        )
+
+    def export_froude(
+        self,
+        timestep: int | None = None,
+        timeout: int = 600,
+        raster_name: str | None = None,
+    ) -> "VrtMap":
+        return self.store_map(
+            "froude", timestep=timestep, raster_name=raster_name, timeout=timeout
+        )
+
+    def open_froude(
+        self,
+        timestep: int | None = None,
+        timeout: int = 600,
+    ) -> "AbstractContextManager[rasterio.io.DatasetReader]":
+        import secrets
+        name = secrets.token_hex(8)
+        return self.open_map(
+            "froude", timestep=timestep, raster_name=name, timeout=timeout
+        )
+
+    def export_shear_stress(
+        self,
+        timestep: int | None = None,
+        timeout: int = 600,
+        raster_name: str | None = None,
+    ) -> "VrtMap":
+        return self.store_map(
+            "shear_stress", timestep=timestep, raster_name=raster_name, timeout=timeout
+        )
+
+    def open_shear_stress(
+        self,
+        timestep: int | None = None,
+        timeout: int = 600,
+    ) -> "AbstractContextManager[rasterio.io.DatasetReader]":
+        import secrets
+        name = secrets.token_hex(8)
+        return self.open_map(
+            "shear_stress", timestep=timestep, raster_name=name, timeout=timeout
+        )
+
+    def export_dv(
+        self,
+        timestep: int | None = None,
+        timeout: int = 600,
+        raster_name: str | None = None,
+    ) -> "VrtMap":
+        return self.store_map(
+            "dv", timestep=timestep, raster_name=raster_name, timeout=timeout
+        )
+
+    def open_dv(
+        self,
+        timestep: int | None = None,
+        timeout: int = 600,
+    ) -> "AbstractContextManager[rasterio.io.DatasetReader]":
+        import secrets
+        name = secrets.token_hex(8)
+        return self.open_map(
+            "dv", timestep=timestep, raster_name=name, timeout=timeout
+        )
+
+    def export_dv2(
+        self,
+        timestep: int | None = None,
+        timeout: int = 600,
+        raster_name: str | None = None,
+    ) -> "VrtMap":
+        return self.store_map(
+            "dv2", timestep=timestep, raster_name=raster_name, timeout=timeout
+        )
+
+    def open_dv2(
+        self,
+        timestep: int | None = None,
+        timeout: int = 600,
+    ) -> "AbstractContextManager[rasterio.io.DatasetReader]":
+        import secrets
+        name = secrets.token_hex(8)
+        return self.open_map(
+            "dv2", timestep=timestep, raster_name=name, timeout=timeout
+        )
