@@ -3,14 +3,10 @@
 import atexit
 import logging
 import shutil
-import subprocess
-import tempfile
-import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Literal
 
 from .. import com
-from ..com.ras import installed_ras_directory
+from ._mapper import MapperExtension
 from .flow_steady import SteadyBoundary, SteadyFlowFile
 from .flow_unsteady import (
     FlowHydrograph,
@@ -40,7 +36,6 @@ from .geometry import (
     ManningEntry,
 )
 from .plan import PlanFile
-from ._mapper import MapperExtension
 
 __all__ = [
     "Model",
@@ -78,7 +73,7 @@ EXT_BACKUP_FILE = "raspy_bkup"
 
 
 class Model(MapperExtension):
-    """High-level interface for working with an HEC-RAS project via the wrapped COM object.
+    """High-level interface for working with an HEC-RAS project via the COM object.
 
     Use this class in preference to `com.open`. While `com.open` returns a raw HEC-RAS
     controller instance that is not associated with any project, `Model` binds the COM
@@ -95,16 +90,16 @@ class Model(MapperExtension):
         self._backup = backup
 
         # restore if there are any backup files
-        model_files = Model._get_project_files(project_file)
-        Model._restore_backups(model_files)
+        model_files = _get_project_files(project_file)
+        _restore_backups(model_files)
 
         if ras_version is None:
-            ras_version = Model._get_ras_version_from_project_file(project_file)
+            ras_version = _get_ras_version_from_project_file(project_file)
 
         if backup:
-            Model._create_backups(model_files)
-            # Bypassing this in __del__ which is unreliable for system operation during interpretor teardown
-            atexit.register(Model._restore_backups, model_files)
+            _create_backups(model_files)
+            # Bypassing __del__ which is unreliable during interpreter teardown
+            atexit.register(_restore_backups, model_files)
 
         self._rc = com.open(ras_version)
         self._ras_version = self._rc.ras_version()
@@ -191,8 +186,35 @@ class Model(MapperExtension):
             raise ValueError(
                 "Model instance does not have back files to perform reset."
             )
-        model_files = Model._get_project_files(self._project_path)
-        Model._restore_backups(model_files)
+        model_files = _get_project_files(self._project_path)
+        _restore_backups(model_files)
+        self.reload()
+
+    def change_plan(self, plan: str | int) -> None:
+        """Set the active plan by name or zero-based index, then reload.
+
+        Parameters
+        ----------
+        plan:
+            Plan title (str) or zero-based index into the project's plan list (int).
+        """
+        _, plan_names = self._rc.Plan_Names(IncludeOnlyPlansInBaseDirectory=True)
+        if isinstance(plan, int):
+            if plan < 0 or plan >= len(plan_names):
+                raise IndexError(
+                    f"Plan index {plan} out of range; "
+                    f"available range is 0 to {len(plan_names) - 1}"
+                )
+            plan_name = plan_names[plan]
+        else:
+            if plan not in plan_names:
+                raise ValueError(
+                    f"Plan '{plan}' not found; available plans: {plan_names}"
+                )
+            plan_name = plan
+        success = self._rc.Plan_SetCurrent(plan_name)
+        if not success:
+            raise RuntimeError(f"HEC-RAS failed to set current plan to '{plan_name}'")
         self.reload()
 
     def reload(self):
@@ -222,77 +244,70 @@ class Model(MapperExtension):
         else:
             self._rc.Compute_HideComputationWindow()
 
-    def compute_blocking(self, flag: bool):
-        if flag:
-            self._compute_blocking = 1
-        else:
-            self._compute_blocking = 0
+    @property
+    def compute_blocking(self) -> bool:
+        """Return ``True`` if compute runs are blocking (synchronous)."""
+        return bool(self._compute_blocking)
+
+    @compute_blocking.setter
+    def compute_blocking(self, flag: bool) -> None:
+        self._compute_blocking = 1 if flag else 0
 
     def __del__(self):
-        try:
+        import contextlib
+        with contextlib.suppress(Exception):
             logger.debug("Executing Model destructor.")
-        except Exception:
-            pass
-        try:
+        with contextlib.suppress(Exception):
             self._rc.close()
-        except Exception:
-            pass
 
-    @staticmethod
-    def _get_ras_version_from_project_file(project_file: str | Path):
-        path = Path(project_file)
 
-        if not path.is_file():
-            raise OSError(f"HEC-RAS Project not found: {project_file}")
+def _get_ras_version_from_project_file(project_file: str | Path):
+    path = Path(project_file)
+    if not path.is_file():
+        raise OSError(f"HEC-RAS Project not found: {project_file}")
+    plan_file = None
+    with open(project_file) as fid:
+        for line in fid:
+            if line.startswith("Current Plan"):
+                ext = line.split("=")[1].strip()
+                plan_file = path.parent / f"{path.stem}.{ext}"
+    if plan_file is None:
+        raise RuntimeError(
+            f"The HEC-RAS project file does not have current plan specified: "
+            f"{project_file}"
+        )
+    with open(plan_file) as fid:
+        for line in fid:
+            if line.startswith("Program Version"):
+                return line.split("=")[1].strip()
+    raise OSError(f"HEC-RAS version info not found in current plan: {plan_file}")
 
-        plan_file = None
-        with open(project_file) as fid:
-            for line in fid:
-                if line.startswith("Current Plan"):
-                    ext = line.split("=")[1].strip()
-                    plan_file = path.parent / f"{path.stem}.{ext}"
-        if plan_file is None:
-            raise RuntimeError(
-                f"The HEC-RAS project file does not have current plan specified: {project_file}"
-            )
 
-        with open(plan_file) as fid:
-            for line in fid:
-                if line.startswith("Program Version"):
-                    version = line.split("=")[1].strip()
-                    return version
+def _get_project_files(project_file: str | Path) -> list[Path]:
+    path = Path(project_file)
+    if not path.is_file():
+        raise OSError(f"HEC-RAS Project not found: {project_file}")
+    keys = ("Geom File", "Plan File", "Unsteady File", "Steady File")
+    files = []
+    with open(project_file) as fid:
+        for line in fid:
+            if line.startswith(keys):
+                ext = line.split("=")[1].strip()
+                files.append(path.parent / f"{path.stem}.{ext}")
+    return files
 
-        raise OSError(f"HEC-RAS version info not found in current plan: {plan_file}")
 
-    @staticmethod
-    def _get_project_files(project_file: str | Path) -> list[Path]:
-        path = Path(project_file)
+def _create_backups(project_files: list[Path]) -> None:
+    for src in project_files:
+        dst = src.with_suffix(f"{src.suffix}.{EXT_BACKUP_FILE}")
+        tmp = dst.with_suffix(".tmp")
+        shutil.copyfile(src, tmp)
+        tmp.replace(dst)
 
-        if not path.is_file():
-            raise OSError(f"HEC-RAS Project not found: {project_file}")
 
-        keys = ("Geom File", "Plan File", "Unsteady File", "Steady File")
-        files = []
+def _restore_backups(project_files: list[Path]) -> None:
+    for dst in project_files:
+        src = dst.with_suffix(f"{dst.suffix}.{EXT_BACKUP_FILE}")
+        if src.exists():
+            src.replace(dst)
 
-        with open(project_file) as fid:
-            for line in fid:
-                if line.startswith(keys):
-                    ext = line.split("=")[1].strip()
-                    files.append(path.parent / f"{path.stem}.{ext}")
-
-        return files
-
-    @staticmethod
-    def _create_backups(project_files: list[Path]) -> None:
-        for src in project_files:
-            dst = src.with_suffix(f"{src.suffix}.{EXT_BACKUP_FILE}")
-            tmp = dst.with_suffix(".tmp")
-            shutil.copyfile(src, tmp)
-            tmp.replace(dst)
-
-    @staticmethod
-    def _restore_backups(project_files: list[Path]) -> None:
-        for dst in project_files:
-            src = dst.with_suffix(f"{dst.suffix}.{EXT_BACKUP_FILE}")
-            if src.exists():
-                src.replace(dst)

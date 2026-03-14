@@ -356,8 +356,10 @@ class MapperExtension:
             params.set("ProfileName", profile_name)
             if raster_name:
                 params.set("OverwriteOutputFilename", raster_name)
+                logger.debug("Using custom raster name: %s", raster_name)
             else:
                 raster_name = f"{display_name} ({safe_profile})"
+                logger.debug("Using default raster name: %s", raster_name)
 
             tree.write(temp_rasmap, encoding="utf-8", xml_declaration=True)
 
@@ -422,10 +424,17 @@ class MapperExtension:
             logger.info("RasProcess output raster expected at: %s", output_raster)
 
         finally:
-            shutil.copy2(temp_rasmap, "gbtest.rasmap")
+            #shutil.copy2(temp_rasmap, "gbtest.rasmap")
             temp_rasmap.unlink(missing_ok=True)
 
-        if result.returncode != 0:
+        stderr_lower = result.stderr.lower()
+        if result.returncode != 0 or "error" in stderr_lower:
+            if stream_output:
+                raise RuntimeError(
+                    "RasProcess StoreAllMaps failed for temporary rasmap copy.\n"
+                    f"Return code: {result.returncode}\n"
+                    "(stdout/stderr already streamed to logger)"
+                )
             raise RuntimeError(
                 "RasProcess StoreAllMaps failed for temporary rasmap copy.\n"
                 f"Return code: {result.returncode}\n"
