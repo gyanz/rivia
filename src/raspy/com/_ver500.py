@@ -1,4 +1,8 @@
+import logging
+
 from . import _ver400
+
+logger = logging.getLogger("raspy.com")
 
 
 class ControllerDeprecated(object):

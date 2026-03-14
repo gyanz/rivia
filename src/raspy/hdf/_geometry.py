@@ -11,6 +11,7 @@ archive/ras_tools/r2d/ras2d_cell_velocity.py.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -23,6 +24,7 @@ from ._base import _HdfFile
 if TYPE_CHECKING:
     import h5py
 
+logger = logging.getLogger("raspy.hdf")
 
 # ---------------------------------------------------------------------------
 # HDF path constants

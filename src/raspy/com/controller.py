@@ -1,4 +1,5 @@
 import logging
+
 import psutil
 import pywintypes
 import win32com.client
@@ -9,6 +10,8 @@ from ._geometry import GeometryBase as _GeometryBase
 from ._ver400 import Controller as C400, RASEvents as E400
 from ._ver500 import Controller as C500, RASEvents as E500
 from ._ver503 import Controller as C503, RASEvents as E503
+
+logger = logging.getLogger("raspy.com")
 
 
 def controller(version: str | int):
@@ -131,7 +134,7 @@ class _ControllerBase:
 
     def __del__(self):
         try:
-            logging.debug("HEC-RAS Controller destructor called.")
+            logger.debug("HEC-RAS Controller destructor called.")
         except Exception:
             pass
         try:

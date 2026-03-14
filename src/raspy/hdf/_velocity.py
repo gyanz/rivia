@@ -47,8 +47,11 @@ to the current cell.  Orientation cancels in the WLS product
 
 from __future__ import annotations
 
+import logging
+
 import numpy as np
 
+logger = logging.getLogger("raspy.hdf")
 
 # ---------------------------------------------------------------------------
 # Single-cell helpers (used internally and exposed for testing)

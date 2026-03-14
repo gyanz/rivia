@@ -9,6 +9,8 @@ import win32con
 import win32gui
 import win32process
 
+logger = logging.getLogger("raspy.com")
+
 # Map of short names to the window title substrings HEC-RAS uses for each editor.
 _WINDOW_TITLES: dict[str, str] = {
     "bridge_culvert": "Bridge Culvert Data",
@@ -49,15 +51,15 @@ class Runtime:
         """
         pid = self._get_pid_from_window()
         if pid is None:
-            logging.warning(
+            logger.warning(
                 "Window-based PID lookup failed; falling back to process name scan."
             )
             pid = self._get_pid_from_name()
         if pid is not None:
             self.parent_pid = pid
-            logging.debug("%s Runtime pid assigned: %s", self.display_name, pid)
+            logger.debug("%s Runtime pid assigned: %s", self.display_name, pid)
         else:
-            logging.error("Could not determine HEC-RAS process PID.")
+            logger.error("Could not determine HEC-RAS process PID.")
         return pid
 
     def _get_pid_from_window(self) -> int | None:
@@ -164,7 +166,7 @@ class Runtime:
         win32gui.EnumWindows(_enum_handler, None)
 
         if window is None:
-            logging.warning("HEC-RAS window %r not found.", window_text)
+            logger.warning("HEC-RAS window %r not found.", window_text)
             return
 
         if close:
@@ -190,7 +192,7 @@ def kill_process(pid: int | None) -> bool:
     try:
         proc = psutil.Process(pid)
         if proc.name().lower() != "ras.exe":
-            logging.debug("%s is not a HEC-RAS process", pid)
+            logger.debug("%s is not a HEC-RAS process", pid)
             return False
         proc.terminate()
         try:
@@ -200,9 +202,9 @@ def kill_process(pid: int | None) -> bool:
             with contextlib.suppress(psutil.NoSuchProcess, psutil.TimeoutExpired):
                 proc.wait(timeout=2)
     except (psutil.NoSuchProcess, psutil.AccessDenied):
-        logging.info("Unable to terminate process %s", pid)
+        logger.info("Unable to terminate process %s", pid)
         return False
-    logging.info("HEC-RAS process pid=%s terminated", pid)
+    logger.info("HEC-RAS process pid=%s terminated", pid)
     return True
 
 
@@ -234,7 +236,7 @@ def kill_hecras_version(display_name: str) -> None:
     if not procs:
         return
 
-    logging.debug(
+    logger.debug(
         "Waiting for HEC-RAS %r processes to exit: pids=%r",
         display_name,
         [p.pid for p in procs],
@@ -267,7 +269,7 @@ def kill_hecras() -> None:
     if not procs:
         return
 
-    logging.debug(
+    logger.debug(
         "Waiting for HEC-RAS processes to exit: pids=%r", [p.pid for p in procs]
     )
     _, still_alive = psutil.wait_procs(procs, timeout=3)

@@ -39,7 +39,7 @@ if TYPE_CHECKING:
     import h5py
     import rasterio.io
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("raspy.hdf")
 
 
 # ---------------------------------------------------------------------------

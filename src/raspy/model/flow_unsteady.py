@@ -18,10 +18,13 @@ Derived from: ``archive/ras_tools/unsteadyFlowParser.py``
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from math import ceil
 from pathlib import Path
 from typing import Literal
+
+logger = logging.getLogger("raspy.model")
 
 # Scalar or sequence accepted by all set_* methods.
 # A bare float/int is broadcast to fill the current time-series length.

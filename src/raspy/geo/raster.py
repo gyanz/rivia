@@ -10,7 +10,7 @@ import numpy as np
 
 from raspy.utils import log_call, timed
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("raspy.geo")
 
 if TYPE_CHECKING:
     import rasterio.io

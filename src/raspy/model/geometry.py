@@ -38,6 +38,7 @@ Derived from format inspection of HEC-RAS 6.6 example files and
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from math import ceil
 from pathlib import Path
@@ -232,6 +233,8 @@ class CrossSection:
     right_length: float | None = None
     interpolated: bool = False
 
+
+logger = logging.getLogger("raspy.model")
 
 # ---------------------------------------------------------------------------
 # GeometryFile

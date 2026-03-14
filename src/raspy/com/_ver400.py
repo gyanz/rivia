@@ -3,7 +3,10 @@
 import logging
 import os.path as osp
 
-from raspy.utils.helpers import ensure_dir as _create_dir, fix_ras_dates as _fix_dates
+from raspy.utils.helpers import ensure_dir as _create_dir
+from raspy.utils.helpers import fix_ras_dates as _fix_dates
+
+logger = logging.getLogger("raspy.com")
 
 
 class ControllerDeprecated(object):
@@ -2150,7 +2153,7 @@ class ControllerBase(object):
     show = ShowRas  # alias for ShowRas function
 
     def QuitRas(self):
-        logging.warning("HEC-Version < 5.X.X does not have window hide interface.")
+        logger.warning("HEC-Version < 5.X.X does not have window hide interface.")
 
     hide = QuitRas
 
@@ -2325,7 +2328,7 @@ class RASEvents:
 
         Python: this event does not work with win32com
         """
-        logging.debug("%s", Progress)
+        logger.debug("%s", Progress)
         return Progress
 
     def ComputeProgressMessage(self, msg):
@@ -2347,5 +2350,5 @@ class RASEvents:
 
         Python: this event does not work with win32com
         """
-        logging.debug("%s", msg)
+        logger.debug("%s", msg)
         return msg

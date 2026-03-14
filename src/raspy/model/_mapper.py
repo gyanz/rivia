@@ -16,6 +16,8 @@ if TYPE_CHECKING:
 
 from ..com.ras import installed_ras_directory
 
+logger = logging.getLogger("raspy.model")
+
 __all__ = [
     "MapperExtension",
     "VrtMap",
@@ -205,8 +207,9 @@ class MapperExtension:
             "depth_x_velocity_sq",
         ],
         timestep: int | None = None,
-        timeout: int = 600,
+        timeout: int | None = None,
         raster_name: str | None = None,
+        stream_output: bool = True,
     ) -> "VrtMap":
         """Store one map by editing a temporary copy of the project's .rasmap file.
 
@@ -354,7 +357,7 @@ class MapperExtension:
                         "Close the file before calling store_map."
                     )
 
-            logging.info(
+            logger.info(
                 "Pre RasProcess: output raster expected at: %s",
                 absolute_output_dir / f"{raster_name}.vrt",
             )
@@ -365,18 +368,44 @@ class MapperExtension:
                 f"-RasMapFilename={temp_rasmap}",
                 f"-ResultFilename={result_hdf}",
             ]
-            logging.debug("RasProcess command: %s", " ".join(cmd))
-            result = subprocess.run(
-                cmd,
-                cwd=str(project_dir),
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                check=False,
-            )
+            logger.debug("RasProcess command: %s", " ".join(cmd))
+            if stream_output:
+                stdout_lines: list[str] = []
+                stderr_lines: list[str] = []
+                with subprocess.Popen(
+                    cmd,
+                    cwd=str(project_dir),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                ) as proc:
+                    for line in proc.stdout:
+                        line = line.rstrip()
+                        logger.info("RasProcess stdout: %s", line)
+                        stdout_lines.append(line)
+                    for line in proc.stderr:
+                        line = line.rstrip()
+                        logger.warning("RasProcess stderr: %s", line)
+                        stderr_lines.append(line)
+                    proc.wait(timeout=timeout)
+                result = subprocess.CompletedProcess(
+                    args=cmd,
+                    returncode=proc.returncode,
+                    stdout="\n".join(stdout_lines),
+                    stderr="\n".join(stderr_lines),
+                )
+            else:
+                result = subprocess.run(
+                    cmd,
+                    cwd=str(project_dir),
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                    check=False,
+                )
 
             output_raster = absolute_output_dir / f"{raster_name}.vrt"
-            logging.info("RasProcess output raster expected at: %s", output_raster)
+            logger.info("RasProcess output raster expected at: %s", output_raster)
 
         finally:
             shutil.copy2(temp_rasmap, "gbtest.rasmap")
@@ -432,7 +461,7 @@ class MapperExtension:
             "depth_x_velocity_sq",
         ],
         timestep: int | None = None,
-        timeout: int = 600,
+        timeout: int | None = None,
         raster_name: str | None = None,
     ) -> Generator["rasterio.io.DatasetReader", None, None]:
         """Store a map, yield an open rasterio dataset, then delete it.
@@ -467,7 +496,7 @@ class MapperExtension:
     def export_wse(
         self,
         timestep: int | None = None,
-        timeout: int = 600,
+        timeout: int | None = None,
         raster_name: str | None = None,
     ) -> "VrtMap":
         return self.store_map(
@@ -477,7 +506,7 @@ class MapperExtension:
     def open_wse(
         self,
         timestep: int | None = None,
-        timeout: int = 600,
+        timeout: int | None = None,
     ) -> "AbstractContextManager[rasterio.io.DatasetReader]":
         import secrets
         name = secrets.token_hex(8)
@@ -488,7 +517,7 @@ class MapperExtension:
     def export_depth(
         self,
         timestep: int | None = None,
-        timeout: int = 600,
+        timeout: int | None = None,
         raster_name: str | None = None,
     ) -> "VrtMap":
         return self.store_map(
@@ -498,7 +527,7 @@ class MapperExtension:
     def open_depth(
         self,
         timestep: int | None = None,
-        timeout: int = 600,
+        timeout: int | None = None,
     ) -> "AbstractContextManager[rasterio.io.DatasetReader]":
         import secrets
         name = secrets.token_hex(8)
@@ -509,7 +538,7 @@ class MapperExtension:
     def export_velocity(
         self,
         timestep: int | None = None,
-        timeout: int = 600,
+        timeout: int | None = None,
         raster_name: str | None = None,
     ) -> "VrtMap":
         return self.store_map(
@@ -519,7 +548,7 @@ class MapperExtension:
     def open_velocity(
         self,
         timestep: int | None = None,
-        timeout: int = 600,
+        timeout: int | None = None,
     ) -> "AbstractContextManager[rasterio.io.DatasetReader]":
         import secrets
         name = secrets.token_hex(8)
@@ -530,7 +559,7 @@ class MapperExtension:
     def export_froude(
         self,
         timestep: int | None = None,
-        timeout: int = 600,
+        timeout: int | None = None,
         raster_name: str | None = None,
     ) -> "VrtMap":
         return self.store_map(
@@ -540,7 +569,7 @@ class MapperExtension:
     def open_froude(
         self,
         timestep: int | None = None,
-        timeout: int = 600,
+        timeout: int | None = None,
     ) -> "AbstractContextManager[rasterio.io.DatasetReader]":
         import secrets
         name = secrets.token_hex(8)
@@ -551,7 +580,7 @@ class MapperExtension:
     def export_shear_stress(
         self,
         timestep: int | None = None,
-        timeout: int = 600,
+        timeout: int | None = None,
         raster_name: str | None = None,
     ) -> "VrtMap":
         return self.store_map(
@@ -561,7 +590,7 @@ class MapperExtension:
     def open_shear_stress(
         self,
         timestep: int | None = None,
-        timeout: int = 600,
+        timeout: int | None = None,
     ) -> "AbstractContextManager[rasterio.io.DatasetReader]":
         import secrets
         name = secrets.token_hex(8)
@@ -572,7 +601,7 @@ class MapperExtension:
     def export_dv(
         self,
         timestep: int | None = None,
-        timeout: int = 600,
+        timeout: int | None = None,
         raster_name: str | None = None,
     ) -> "VrtMap":
         return self.store_map(
@@ -582,7 +611,7 @@ class MapperExtension:
     def open_dv(
         self,
         timestep: int | None = None,
-        timeout: int = 600,
+        timeout: int | None = None,
     ) -> "AbstractContextManager[rasterio.io.DatasetReader]":
         import secrets
         name = secrets.token_hex(8)
@@ -593,7 +622,7 @@ class MapperExtension:
     def export_dv2(
         self,
         timestep: int | None = None,
-        timeout: int = 600,
+        timeout: int | None = None,
         raster_name: str | None = None,
     ) -> "VrtMap":
         return self.store_map(
@@ -603,7 +632,7 @@ class MapperExtension:
     def open_dv2(
         self,
         timestep: int | None = None,
-        timeout: int = 600,
+        timeout: int | None = None,
     ) -> "AbstractContextManager[rasterio.io.DatasetReader]":
         import secrets
         name = secrets.token_hex(8)

@@ -72,6 +72,8 @@ __all__ = [
     "SteadyBoundary",
 ]
 
+logger = logging.getLogger("raspy.model")
+
 EXT_BACKUP_FILE = "raspy_bkup"
 
 
@@ -228,7 +230,7 @@ class Model(MapperExtension):
 
     def __del__(self):
         try:
-            logging.debug("Executing Model destructor.")
+            logger.debug("Executing Model destructor.")
         except Exception:
             pass
         try:

@@ -1,5 +1,8 @@
 import logging
+
 from . import _ver500
+
+logger = logging.getLogger("raspy.com")
 
 
 class Controller(_ver500.Controller):
@@ -114,11 +117,11 @@ class RASEvents(_ver500.RASEvents):
         duration of the HEC-RAS Computations.
 
         """
-        logging.debug("Compute Message Event: %s", msg)
+        logger.debug("Compute Message Event: %s", msg)
         return msg
 
     def OnComputeComplete(self):
-        logging.debug("Compute Complete Event!")
+        logger.debug("Compute Complete Event!")
 
     def OnComputeProgressEvent(self, Progress):
         """
@@ -139,5 +142,5 @@ class RASEvents(_ver500.RASEvents):
         duration of the HEC-RAS Computations.
 
         """
-        logging.debug("Compute Progress Event: %s", Progress)
+        logger.debug("Compute Progress Event: %s", Progress)
         return Progress
