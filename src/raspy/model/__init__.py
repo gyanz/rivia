@@ -87,7 +87,7 @@ class Model(MapperExtension):
         ras_version: str | int | None = None,
         backup: bool = False,
     ):
-        self._project_path = Path(project_file)
+        self._project_path = Path(project_file).resolve()
         self._backup = backup
 
         # restore if there are any backup files

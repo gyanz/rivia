@@ -436,6 +436,7 @@ class MapperExtension:
             raster_name = f"{display_name} ({safe_profile})"
 
         rasmap_src = self._locate_project_rasmap().resolve()
+        rasmap_src2 = f".\\{rasmap_src.name}"  # RasProcess.exe wants a relative path with .\ prefix
 
         # -- Branch: build command, manage temp file, run --
         if output_path is None:
@@ -569,7 +570,7 @@ class MapperExtension:
 
             try:
                 cmd = [str(ras_process), f"-CommandFile={temp_xml}"]
-                result = self._run_rasprocess(cmd, None, timeout, stream_output)
+                result = self._run_rasprocess(cmd, project_dir, timeout, stream_output)
             finally:
                 temp_xml.unlink(missing_ok=True)
 
