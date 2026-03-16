@@ -1,6 +1,7 @@
 """Read/write HEC-RAS text input files (.prj, .g*, .f*, etc.)."""
 
 import atexit
+import contextlib
 import logging
 import shutil
 from pathlib import Path
@@ -254,7 +255,6 @@ class Model(MapperExtension):
         self._compute_blocking = 1 if flag else 0
 
     def __del__(self):
-        import contextlib
         with contextlib.suppress(Exception):
             logger.debug("Executing Model destructor.")
         with contextlib.suppress(Exception):
