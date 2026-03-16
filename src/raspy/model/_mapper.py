@@ -38,7 +38,7 @@ _temp_vrt_paths: set[Path] = set()
 
 
 def _cleanup_temp_dirs() -> None:
-    """Delete temp directories created by ``open_map("temp")`` calls.
+    """Delete temp directories created by ``open_map("temp_dir")`` calls.
 
     Registered with :func:`atexit` so it runs on normal interpreter shutdown,
     catching cases where the ``with`` block was not exited cleanly (e.g. a
@@ -320,7 +320,7 @@ class MapperExtension:
         ],
         timestep: int | None = None,
         raster_name: str | None = None,
-        output_path: 'Literal["temp"] | None' = None,
+        output_path: 'Literal["temp_dir"] | None' = None,
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> "VrtMap":
@@ -621,7 +621,7 @@ class MapperExtension:
             "depth_x_velocity_sq",
         ],
         timestep: int | None,
-        output_path: 'Literal["temp"] | None' = None,
+        output_path: 'Literal["temp_dir"] | None' = None,
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> Generator["rasterio.io.DatasetReader", None, None]:
@@ -643,7 +643,7 @@ class MapperExtension:
               ``{project_dir}/{plan_short_id}/``.  The VRT and source tiles are
               deleted via :meth:`VrtMap.delete` on context exit and registered
               with :func:`atexit` for cleanup on interpreter shutdown.
-            - ``"temp"``: output is written to a freshly-created system temp
+            - ``"temp_dir"``: output is written to a freshly-created system temp
               directory that is removed with :func:`shutil.rmtree` on context
               exit and registered with :func:`atexit` for cleanup on
               interpreter shutdown.
@@ -662,7 +662,7 @@ class MapperExtension:
             with model.open_map("wse", 10) as ds:
                 data = ds.read(1)
 
-            with model.open_map("wse", 10, "temp") as ds:
+            with model.open_map("wse", 10, "temp_dir") as ds:
                 data = ds.read(1)
         """
         import secrets
@@ -758,7 +758,7 @@ class MapperExtension:
     def open_wse(
         self,
         timestep: int | None,
-        output_path: 'Literal["temp"] | None' = None,
+        output_path: 'Literal["temp_dir"] | None' = None,
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> "AbstractContextManager[rasterio.io.DatasetReader]":
@@ -822,7 +822,7 @@ class MapperExtension:
     def open_depth(
         self,
         timestep: int | None,
-        output_path: 'Literal["temp"] | None' = None,
+        output_path: 'Literal["temp_dir"] | None' = None,
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> "AbstractContextManager[rasterio.io.DatasetReader]":
@@ -886,7 +886,7 @@ class MapperExtension:
     def open_velocity(
         self,
         timestep: int | None,
-        output_path: 'Literal["temp"] | None' = None,
+        output_path: 'Literal["temp_dir"] | None' = None,
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> "AbstractContextManager[rasterio.io.DatasetReader]":
@@ -950,7 +950,7 @@ class MapperExtension:
     def open_froude(
         self,
         timestep: int | None,
-        output_path: 'Literal["temp"] | None' = None,
+        output_path: 'Literal["temp_dir"] | None' = None,
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> "AbstractContextManager[rasterio.io.DatasetReader]":
@@ -1014,7 +1014,7 @@ class MapperExtension:
     def open_shear_stress(
         self,
         timestep: int | None,
-        output_path: 'Literal["temp"] | None' = None,
+        output_path: 'Literal["temp_dir"] | None' = None,
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> "AbstractContextManager[rasterio.io.DatasetReader]":
@@ -1078,7 +1078,7 @@ class MapperExtension:
     def open_dv(
         self,
         timestep: int | None,
-        output_path: 'Literal["temp"] | None' = None,
+        output_path: 'Literal["temp_dir"] | None' = None,
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> "AbstractContextManager[rasterio.io.DatasetReader]":
@@ -1142,7 +1142,7 @@ class MapperExtension:
     def open_dv2(
         self,
         timestep: int | None,
-        output_path: 'Literal["temp"] | None' = None,
+        output_path: 'Literal["temp_dir"] | None' = None,
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> "AbstractContextManager[rasterio.io.DatasetReader]":
