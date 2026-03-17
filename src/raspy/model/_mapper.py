@@ -310,7 +310,7 @@ class MapperExtension:
             )
         return layers
 
-    def plan_terrain(self) -> TerrainLayer:
+    def get_plan_terrain(self) -> TerrainLayer:
         """Return the :class:`TerrainLayer` associated with the current plan.
 
         The terrain name is read from the ``Geometry`` group attribute
@@ -349,14 +349,14 @@ class MapperExtension:
             f"Available: {available}"
         )
 
-    def plan_terrain_export(
+    def export_plan_terrain(
         self,
         raster_path: "str | Path",
         copy: bool = False,
     ) -> Path:
         """Export the terrain used by the current plan to a GeoTIFF or GDAL VRT.
 
-        Identifies the terrain HDF from :meth:`plan_terrain`, mosaics all
+        Identifies the terrain HDF from :meth:`get_plan_terrain`, mosaics all
         source GeoTIFFs by priority order, applies any ``Levee``- or
         ``Channel``-type ground-line modifications stored in the same HDF,
         and writes the result to *raster_path*.
@@ -392,7 +392,7 @@ class MapperExtension:
         """
         from ..hdf._terrain import export_terrain
 
-        terrain_layer = self.plan_terrain()
+        terrain_layer = self.get_plan_terrain()
         return export_terrain(terrain_layer.filename, raster_path, copy=copy)
 
     def _locate_project_rasmap(self) -> Path:
