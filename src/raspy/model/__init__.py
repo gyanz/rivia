@@ -256,16 +256,23 @@ class Model(MapperExtension):
 
         # --- validate COM plan list matches project file ---
         _, com_titles = self._rc.Plan_Names(IncludeOnlyPlansInBaseDirectory=True)
-        prj_titles = {p["title"] for p in plans if p["title"] is not None}
-        com_titles_set = set(com_titles)
-        if prj_titles != com_titles_set:
+        if len(com_titles) != len(plans):
             logger.warning(
-                "Plan titles in project file do not match COM plan list.\n"
-                "  project file only: %s\n"
-                "  COM only:          %s",
-                prj_titles - com_titles_set,
-                com_titles_set - prj_titles,
+                "COM reports %d plans but project file lists %d.",
+                len(com_titles),
+                len(plans),
             )
+        else:
+            mismatches = [
+                (i, com_titles[i], plans[i]["title"])
+                for i in range(len(plans))
+                if com_titles[i] != plans[i]["title"]
+            ]
+            if mismatches:
+                logger.warning(
+                    "Plan title mismatches between COM and project file: %s",
+                    [(i, com, prj) for i, com, prj in mismatches],
+                )
 
         # --- resolve target plan entry ---
         if index is not None:
