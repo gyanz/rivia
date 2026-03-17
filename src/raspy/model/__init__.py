@@ -200,22 +200,6 @@ class Model(MapperExtension):
             if plan_info["path"].name == self.plan_file.name:
                 return i
 
-    @property
-    def plan_title(self) -> str | None:
-        """Title of the current plan (``Plan Title=`` from the plan file)."""
-        idx = self.plan_index
-        if idx is None:
-            return None
-        return self.project.plans()[idx]["title"]
-
-    @property
-    def plan_short_id(self) -> str | None:
-        """Short identifier of the current plan (``Short Identifier=``)."""
-        idx = self.plan_index
-        if idx is None:
-            return None
-        return self.project.plans()[idx]["short_id"]
-
     def change_plan(
         self,
         *,
@@ -282,6 +266,7 @@ class Model(MapperExtension):
                     f"valid range is 0 to {len(plans) - 1}."
                 )
             if index == self.plan_index:
+                logger.debug("Plan index %d is already active — no-op.", index)
                 return
             target = plans[index]
         elif title is not None:
@@ -308,11 +293,13 @@ class Model(MapperExtension):
                 "cannot pass to HEC-RAS COM."
             )
 
+        logger.debug("Setting current plan to %r", plan_title)
         success = self._rc.Plan_SetCurrent(plan_title)
         if not success:
             raise RuntimeError(
                 f"HEC-RAS failed to set current plan to {plan_title!r}."
             )
+        self._rc.Project_Save()
         self.reload()
 
     def reset(self):
