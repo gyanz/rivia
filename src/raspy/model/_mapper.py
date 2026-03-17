@@ -364,7 +364,8 @@ class MapperExtension:
         Raises
         ------
         ValueError
-            If *variable* is not recognised or *raster_name* is invalid.
+            If *variable* is not recognised, *raster_name* is invalid, or
+            *output_path* exists but is not a directory.
         FileNotFoundError
             If HEC-RAS is not installed, the plan HDF is missing, *output_path*
             does not exist, or RasProcess.exe did not produce the expected VRT.
@@ -417,7 +418,7 @@ class MapperExtension:
 
         project_dir = _resolve(self.plan_file.parent)
 
-        program_dir = _resolve(installed_ras_directory(self.version))
+        program_dir = _resolve(Path(installed_ras_directory(self.version)))
         if not program_dir:
             raise FileNotFoundError(
                 f"Could not find installed HEC-RAS directory for version {self.version}"
@@ -447,6 +448,11 @@ class MapperExtension:
             abs_output_dir.mkdir(parents=True, exist_ok=True)
         else:
             abs_output_dir = _resolve(Path(output_path))
+
+            if abs_output_dir.is_file() or abs_output_dir.suffix:
+                raise ValueError(
+                    f"output_path must be a directory, not a file: {abs_output_dir}"
+                )
             if not abs_output_dir.exists():
                 raise FileNotFoundError(
                     f"output_path does not exist: {abs_output_dir}"
@@ -561,6 +567,11 @@ class MapperExtension:
                 f"stdout: {result.stdout}\nstderr: {result.stderr}"
             )
 
+        logger.info(
+            "store_map: folder %s vrt %s",
+            vrt.path.parent.as_uri(),
+            vrt.path.as_uri(),
+        )
         return vrt
 
     @log_call(logging.INFO)
@@ -628,7 +639,11 @@ class MapperExtension:
                 stream_output=stream_output,
                 timeout=timeout,
             )
-            logger.debug("open_map: created %s", vrt.path)
+            logger.debug(
+                "open_map: folder %s created %s",
+                vrt.path.parent.as_uri(),
+                vrt.path.as_uri(),
+            )
             with rasterio.open(vrt.path) as ds:
                 yield ds
         finally:
