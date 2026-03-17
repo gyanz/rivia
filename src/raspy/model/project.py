@@ -255,6 +255,28 @@ class ProjectFile:
         """
         return [_read_plan_field(p, "Short Identifier") for p in self._plan_files]
 
+    def plans(self) -> list[dict[str, str | Path | None]]:
+        """Return metadata for each plan file in project order.
+
+        Each entry is a dict with keys:
+
+        - ``"ext"``      — file extension token, e.g. ``'p01'``
+        - ``"path"``     — full :class:`~pathlib.Path` to the plan file
+        - ``"title"``    — value of ``Plan Title=``, or ``None``
+        - ``"short_id"`` — value of ``Short Identifier=``, or ``None``
+        """
+        result = []
+        for p in self._plan_files:
+            result.append(
+                {
+                    "ext": p.suffix.lstrip("."),
+                    "path": p,
+                    "title": _read_plan_field(p, "Plan Title"),
+                    "short_id": _read_plan_field(p, "Short Identifier"),
+                }
+            )
+        return result
+
     def __repr__(self) -> str:
         return f"ProjectFile({self._path!r})"
 
