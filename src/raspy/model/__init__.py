@@ -37,10 +37,12 @@ from .geometry import (
     ManningEntry,
 )
 from .plan import PlanFile
+from .project import ProjectFile
 
 __all__ = [
     "Model",
     "PlanFile",
+    "ProjectFile",
     "GeometryFile",
     "CrossSection",
     "ManningEntry",
@@ -87,7 +89,7 @@ class Model(MapperExtension):
         ras_version: str | int | None = None,
         backup: bool = False,
     ):
-        self._project_path = Path(project_file).resolve()
+        self._project_path = Path(project_file)
         self._backup = backup
 
         # restore if there are any backup files
@@ -107,6 +109,7 @@ class Model(MapperExtension):
         self._rc.Project_Open(str(self._project_path))
         self._compute_blocking = 1
         self._plan: PlanFile | None = None
+        self._project: ProjectFile | None = None
         self._hdf = None
 
     @property
@@ -150,6 +153,15 @@ class Model(MapperExtension):
                         return plan_file.with_suffix(f".{ext}")
 
     @property
+    def project(self) -> ProjectFile:
+        """Lazily parsed project file.
+
+        """
+        if self._project is None:
+            self._project = ProjectFile(self.project_file)
+        return self._project
+
+    @property
     def plan(self) -> PlanFile:
         """Lazily parsed plan file.
 
@@ -181,15 +193,15 @@ class Model(MapperExtension):
         if self._hdf is None:
             self._hdf = PlanHdf(self.plan_hdf_file)
         return self._hdf
+    
+    def plan_info(self):
+        """Return a dict of plan info from the COM object."""
+        #info = {}
+        #info["title"] = self._rc.Plan_Title()
+        #info["current"] = self._rc.Plan_Current()
+        #info["count"] = self._rc.Plan_Count()
+        count, titles = self._rc.Plan_Names(IncludeOnlyPlansInBaseDirectory=True)
 
-    def reset(self):
-        if not self._backup:
-            raise ValueError(
-                "Model instance does not have back files to perform reset."
-            )
-        model_files = _get_project_files(self._project_path)
-        _restore_backups(model_files)
-        self.reload()
 
     def change_plan(self, plan: str | int) -> None:
         """Set the active plan by name or zero-based index, then reload.
@@ -216,6 +228,15 @@ class Model(MapperExtension):
         success = self._rc.Plan_SetCurrent(plan_name)
         if not success:
             raise RuntimeError(f"HEC-RAS failed to set current plan to '{plan_name}'")
+        self.reload()
+
+    def reset(self):
+        if not self._backup:
+            raise ValueError(
+                "Model instance does not have back files to perform reset."
+            )
+        model_files = _get_project_files(self._project_path)
+        _restore_backups(model_files)
         self.reload()
 
     def reload(self):

@@ -73,6 +73,8 @@ def controller(version: str | int):
 def _dispatch(prog_id: str):
     return win32com.client.DispatchEx(prog_id)
 
+def _dispatch2(prog_id: str):
+    return win32com.client.Dispatch(prog_id)
 
 def _bind_events(com_obj, event_class):
     return win32com.client.WithEvents(com_obj, event_class)
