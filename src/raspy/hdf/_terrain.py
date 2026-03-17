@@ -294,13 +294,19 @@ def _write_vrt(
             file_ref = src_path.as_posix()
             relative_to_vrt = "0"
 
-        simple_src = SubElement(band_el, "SimpleSource")
+        # ComplexSource (vs SimpleSource) is required so that nodata pixels in
+        # the source are masked (transparent) when compositing.  With
+        # SimpleSource, nodata values are copied as-is and would overwrite
+        # valid pixels from underlying sources — critically wrong for the
+        # modification sidecar TIF which is nodata everywhere except where
+        # modifications were applied.
+        src_el = SubElement(band_el, "ComplexSource")
         SubElement(
-            simple_src, "SourceFilename", relativeToVRT=relative_to_vrt
+            src_el, "SourceFilename", relativeToVRT=relative_to_vrt
         ).text = file_ref
-        SubElement(simple_src, "SourceBand").text = "1"
+        SubElement(src_el, "SourceBand").text = "1"
         SubElement(
-            simple_src,
+            src_el,
             "SourceProperties",
             RasterXSize=str(src_w),
             RasterYSize=str(src_h),
@@ -309,7 +315,7 @@ def _write_vrt(
             BlockYSize=str(block_h),
         )
         SubElement(
-            simple_src,
+            src_el,
             "SrcRect",
             xOff="0",
             yOff="0",
@@ -317,13 +323,14 @@ def _write_vrt(
             ySize=str(src_h),
         )
         SubElement(
-            simple_src,
+            src_el,
             "DstRect",
             xOff=str(dst_x_off),
             yOff=str(dst_y_off),
             xSize=str(dst_x_size),
             ySize=str(dst_y_size),
         )
+        SubElement(src_el, "NODATA").text = str(nodata)
 
     xml_str = xml.dom.minidom.parseString(tostring(root)).toprettyxml(indent="  ")
     vrt_path.write_text(xml_str, encoding="utf-8")
