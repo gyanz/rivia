@@ -38,6 +38,65 @@ __all__ = [
 ]
 
 
+def _run_rasprocess(
+    cmd: list[str],
+    cwd: "Path | None",
+    timeout: "int | None",
+    stream_output: bool,
+) -> "subprocess.CompletedProcess[str]":
+    """Run a RasProcess.exe command and return a CompletedProcess.
+
+    Parameters
+    ----------
+    cmd:
+        Full command list, e.g. ``[str(ras_process), "-Command=..."]``.
+    cwd:
+        Working directory passed to the subprocess, or ``None`` to
+        inherit the calling process's CWD (same behaviour as the
+        archive's ``RasProcess._run_rasprocess``).
+    timeout:
+        Timeout in seconds, or ``None`` for no limit.
+    stream_output:
+        When ``True``, lines are read and logged in real time via
+        ``subprocess.Popen``; stdout lines at INFO, stderr at WARNING.
+        When ``False``, output is captured silently via ``subprocess.run``.
+    """
+    logger.debug("RasProcess command: %s", " ".join(cmd))
+    if stream_output:
+        stdout_lines: list[str] = []
+        stderr_lines: list[str] = []
+        with subprocess.Popen(
+            cmd,
+            cwd=str(cwd) if cwd is not None else None,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        ) as proc:
+            for line in proc.stdout:
+                line = line.rstrip()
+                logger.info("RasProcess stdout: %s", line)
+                stdout_lines.append(line)
+            for line in proc.stderr:
+                line = line.rstrip()
+                logger.warning("RasProcess stderr: %s", line)
+                stderr_lines.append(line)
+            proc.wait(timeout=timeout)
+        return subprocess.CompletedProcess(
+            args=cmd,
+            returncode=proc.returncode,
+            stdout="\n".join(stdout_lines),
+            stderr="\n".join(stderr_lines),
+        )
+    return subprocess.run(
+        cmd,
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        check=False,
+    )
+
+
 @dataclass
 class TerrainSubLayer:
     """A modification sub-layer nested inside a :class:`TerrainLayer`.
@@ -413,65 +472,6 @@ class MapperExtension:
             f"could not infer which one to use: {[str(p) for p in candidates]}"
         )
 
-    @staticmethod
-    def _run_rasprocess(
-        cmd: list[str],
-        cwd: "Path | None",
-        timeout: "int | None",
-        stream_output: bool,
-    ) -> "subprocess.CompletedProcess[str]":
-        """Run a RasProcess.exe command and return a CompletedProcess.
-
-        Parameters
-        ----------
-        cmd:
-            Full command list, e.g. ``[str(ras_process), "-Command=..."]``.
-        cwd:
-            Working directory passed to the subprocess, or ``None`` to
-            inherit the calling process's CWD (same behaviour as the
-            archive's ``RasProcess._run_rasprocess``).
-        timeout:
-            Timeout in seconds, or ``None`` for no limit.
-        stream_output:
-            When ``True``, lines are read and logged in real time via
-            ``subprocess.Popen``; stdout lines at INFO, stderr at WARNING.
-            When ``False``, output is captured silently via ``subprocess.run``.
-        """
-        logger.debug("RasProcess command: %s", " ".join(cmd))
-        if stream_output:
-            stdout_lines: list[str] = []
-            stderr_lines: list[str] = []
-            with subprocess.Popen(
-                cmd,
-                cwd=str(cwd) if cwd is not None else None,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            ) as proc:
-                for line in proc.stdout:
-                    line = line.rstrip()
-                    logger.info("RasProcess stdout: %s", line)
-                    stdout_lines.append(line)
-                for line in proc.stderr:
-                    line = line.rstrip()
-                    logger.warning("RasProcess stderr: %s", line)
-                    stderr_lines.append(line)
-                proc.wait(timeout=timeout)
-            return subprocess.CompletedProcess(
-                args=cmd,
-                returncode=proc.returncode,
-                stdout="\n".join(stdout_lines),
-                stderr="\n".join(stderr_lines),
-            )
-        return subprocess.run(
-            cmd,
-            cwd=str(cwd),
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
-        )
-
     @log_call(logging.INFO)
     @timed(logging.INFO)
     def store_map(
@@ -702,7 +702,7 @@ class MapperExtension:
                 f"-RasMapFilename={temp_rasmap}",
                 f"-ResultFilename={result_hdf}",
             ]
-            result = self._run_rasprocess(cmd, None, timeout, stream_output)
+            result = _run_rasprocess(cmd, None, timeout, stream_output)
         finally:
             temp_rasmap.unlink(missing_ok=True)
 
