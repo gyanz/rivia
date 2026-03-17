@@ -388,15 +388,16 @@ def _read_modifications(mod_grp: Any) -> list[dict[str, Any]]:
         right_slope = float(attrs["Right Slope"])
         max_reach = float(attrs["Max Reach"])
 
-        # Slope normalisation: NaN → 3.0 (archive default); 0 → inf (vertical wall).
+        # Slope normalisation: NaN → 3.0 (archive default); 0 → 0.001 (near-
+        # vertical wall, matching RasMapper's GetUsableSlope behaviour).
         if np.isnan(left_slope):
             left_slope = 3.0
         if np.isnan(right_slope):
             right_slope = 3.0
         if left_slope == 0.0:
-            left_slope = float("inf")
+            left_slope = 0.001
         if right_slope == 0.0:
-            right_slope = float("inf")
+            right_slope = 0.001
 
         pts_ds = grp.get("Polyline Points")
         if pts_ds is None:
@@ -482,11 +483,16 @@ def _apply_modifications(
         if max_reach <= 0:
             continue
 
+        # Max Reach in the HDF is the total edge-to-edge width of the
+        # modification footprint; the distance from the centerline to the
+        # outer edge is therefore half that value.
+        half_reach = max_reach / 2.0
+
         # -- Bounding box of modification footprint in map coordinates ------
-        minx = pts[:, 0].min() - max_reach
-        maxx = pts[:, 0].max() + max_reach
-        miny = pts[:, 1].min() - max_reach
-        maxy = pts[:, 1].max() + max_reach
+        minx = pts[:, 0].min() - half_reach
+        maxx = pts[:, 0].max() + half_reach
+        miny = pts[:, 1].min() - half_reach
+        maxy = pts[:, 1].max() + half_reach
 
         # Convert to pixel row/col (rowcol expects xs then ys)
         (r0, r1), (c0, c1) = rowcol(
@@ -534,13 +540,13 @@ def _apply_modifications(
         mod_elev[on_top] = crest[on_top]
 
         # Left side (signed_perp > 0) sloping zone
-        left_zone = (signed_perp > half_w) & (abs_perp <= max_reach)
+        left_zone = (signed_perp > half_w) & (abs_perp <= half_reach)
         if np.any(left_zone):
             drop = (abs_perp[left_zone] - half_w) / left_slope
             mod_elev[left_zone] = crest[left_zone] + sign * drop
 
         # Right side (signed_perp < 0) sloping zone
-        right_zone = (signed_perp < -half_w) & (abs_perp <= max_reach)
+        right_zone = (signed_perp < -half_w) & (abs_perp <= half_reach)
         if np.any(right_zone):
             drop = (abs_perp[right_zone] - half_w) / right_slope
             mod_elev[right_zone] = crest[right_zone] + sign * drop
