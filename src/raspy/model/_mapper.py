@@ -18,6 +18,7 @@ import tempfile
 import xml.etree.ElementTree as ET
 from collections.abc import Generator
 from contextlib import AbstractContextManager, contextmanager, suppress
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -31,8 +32,53 @@ logger = logging.getLogger("raspy.model")
 
 __all__ = [
     "MapperExtension",
+    "TerrainLayer",
+    "TerrainSubLayer",
     "VrtMap",
 ]
+
+
+@dataclass
+class TerrainSubLayer:
+    """A modification sub-layer nested inside a :class:`TerrainLayer`.
+
+    Represents any ``<Layer>`` child node under a terrain layer, including
+    ``ElevationModificationGroup``, ``GroundLineModificationLayer``, and
+    ``ElevationControlPointLayer`` nodes.  The tree structure mirrors the XML.
+    """
+
+    name: str
+    type: str
+    filename: Path
+    children: list["TerrainSubLayer"] = field(default_factory=list)
+
+
+@dataclass
+class TerrainLayer:
+    """A terrain layer entry from the ``<Terrains>`` section of a .rasmap file."""
+
+    name: str
+    type: str
+    filename: Path
+    resample_method: str | None = None
+    modifications: list[TerrainSubLayer] = field(default_factory=list)
+
+
+def _parse_terrain_sublayers(
+    el: ET.Element, base_dir: Path
+) -> list[TerrainSubLayer]:
+    """Recursively parse child ``<Layer>`` elements into :class:`TerrainSubLayer`."""
+    result = []
+    for child in el.findall("Layer"):
+        name = child.get("Name", "")
+        type_ = child.get("Type", "")
+        filename_str = child.get("Filename", "")
+        filename = (base_dir / filename_str).resolve() if filename_str else Path()
+        children = _parse_terrain_sublayers(child, base_dir)
+        result.append(
+            TerrainSubLayer(name=name, type=type_, filename=filename, children=children)
+        )
+    return result
 
 _temp_dirs: set[Path] = set()
 
@@ -226,6 +272,115 @@ class MapperExtension:
                 f"available range is 0 to {len(ts) - 1}"
             )
         return ts[timestep].strftime("%d%b%Y %H:%M:%S")
+    
+    def _terrain_layer(self) -> list[TerrainLayer]:
+        """Return terrain layers from the ``<Terrains>`` section of the .rasmap file.
+
+        Each :class:`TerrainLayer` carries ``name``, ``type``, ``filename``
+        (absolute :class:`~pathlib.Path`), and ``modifications`` — a recursive
+        list of :class:`TerrainSubLayer` objects for any modification sub-layers
+        (``ElevationModificationGroup``, ``GroundLineModificationLayer``,
+        ``ElevationControlPointLayer``) nested inside the terrain layer.
+        """
+        rasmap = self._locate_project_rasmap()
+        tree = ET.parse(rasmap)
+        root = tree.getroot()
+        terrains_el = root.find("Terrains")
+        if terrains_el is None:
+            return []
+        layers = []
+        for el in terrains_el.findall("Layer[@Type='TerrainLayer']"):
+            name = el.get("Name", "")
+            type_ = el.get("Type", "")
+            filename_str = el.get("Filename", "")
+            filename = (
+                (rasmap.parent / filename_str).resolve() if filename_str else Path()
+            )
+            resample_el = el.find("ResampleMethod")
+            resample_method = resample_el.text if resample_el is not None else None
+            modifications = _parse_terrain_sublayers(el, rasmap.parent)
+            layers.append(
+                TerrainLayer(
+                    name=name,
+                    type=type_,
+                    filename=filename,
+                    resample_method=resample_method,
+                    modifications=modifications,
+                )
+            )
+        return layers
+
+    def plan_terrain(self) -> TerrainLayer:
+        """Return the :class:`TerrainLayer` associated with the current plan.
+
+        The terrain name is read from the ``Geometry`` group attribute
+        ``Terrain Layername`` in the geometry HDF file, then matched against
+        the ``<Terrains>`` section of the ``.rasmap`` file.
+
+        Raises:
+            FileNotFoundError: if the geometry HDF file does not exist.
+            KeyError: if the HDF has no ``Terrain Layername`` attribute, or the
+                name does not match any layer in ``<Terrains>``.
+        """
+        import h5py
+
+        hdf_path = Path(str(self.geom_file) + ".hdf")
+        if not hdf_path.exists():
+            raise FileNotFoundError(
+                f"Geometry HDF file not found: {hdf_path}"
+            )
+        with h5py.File(hdf_path, "r") as f:
+            geom = f.get("Geometry")
+            if geom is None or "Terrain Layername" not in geom.attrs:
+                raise KeyError(
+                    f"No 'Terrain Layername' attribute in Geometry group of {hdf_path}"
+                )
+            terrain_name = geom.attrs["Terrain Layername"]
+            if isinstance(terrain_name, bytes):
+                terrain_name = terrain_name.decode()
+
+        layers = self._terrain_layer()
+        for layer in layers:
+            if layer.name == terrain_name:
+                return layer
+        available = [lay.name for lay in layers]
+        raise KeyError(
+            f"Terrain {terrain_name!r} (from plan HDF) not found in .rasmap. "
+            f"Available: {available}"
+        )
+
+    def plan_terrain_export(self, raster_path: "str | Path") -> Path:
+        """Export the terrain used by the current plan to a GeoTIFF.
+
+        Identifies the terrain HDF from :meth:`plan_terrain`, mosaics all
+        source GeoTIFFs by priority order, applies any ``Levee``-type
+        ground-line modifications stored in the same HDF, and writes the
+        result to *raster_path*.
+
+        Parameters
+        ----------
+        raster_path:
+            Destination path for the output GeoTIFF (e.g. ``"terrain.tif"``).
+            Parent directories are created automatically.
+
+        Returns
+        -------
+        Path
+            Resolved absolute path of the written GeoTIFF.
+
+        Raises
+        ------
+        FileNotFoundError
+            If the geometry HDF, terrain HDF, or any source TIFF is missing.
+        KeyError
+            If the geometry HDF has no ``Terrain Layername`` attribute, the
+            terrain name is not in the ``.rasmap`` file, or the terrain HDF
+            has no source TIFF entries.
+        """
+        from ..hdf._terrain import export_terrain
+
+        terrain_layer = self.plan_terrain()
+        return export_terrain(terrain_layer.filename, raster_path)
 
     def _locate_project_rasmap(self) -> Path:
         rasmap = self.project_file.with_suffix(".rasmap")
