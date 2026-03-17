@@ -216,31 +216,96 @@ class Model(MapperExtension):
             return None
         return self.project.plans()[idx]["short_id"]
 
-    def change_plan(self, plan: str | int) -> None:
-        """Set the active plan by name or zero-based index, then reload.
+    def change_plan(
+        self,
+        *,
+        index: int | None = None,
+        title: str | None = None,
+        short_id: str | None = None,
+    ) -> None:
+        """Set the active plan, then reload.
+
+        Exactly one keyword argument must be supplied.
 
         Parameters
         ----------
-        plan:
-            Plan title (str) or zero-based index into the project's plan list (int).
+        index:
+            Zero-based position in the project's plan list.  No-op if
+            already the current plan.
+        title:
+            ``Plan Title=`` string from the plan file.
+        short_id:
+            ``Short Identifier=`` string from the plan file.
+
+        Raises
+        ------
+        ValueError
+            If not exactly one argument is given, the requested plan is not
+            found, or the COM plan list does not match the project file.
+        RuntimeError
+            If HEC-RAS fails to switch the active plan.
         """
-        _, plan_names = self._rc.Plan_Names(IncludeOnlyPlansInBaseDirectory=True)
-        if isinstance(plan, int):
-            if plan < 0 or plan >= len(plan_names):
-                raise IndexError(
-                    f"Plan index {plan} out of range; "
-                    f"available range is 0 to {len(plan_names) - 1}"
-                )
-            plan_name = plan_names[plan]
-        else:
-            if plan not in plan_names:
+        given = sum(x is not None for x in (index, title, short_id))
+        if given != 1:
+            raise ValueError(
+                "Exactly one of index, title, or short_id must be provided "
+                f"({given} given)."
+            )
+
+        plans = self.project.plans()
+
+        # --- validate COM plan list matches project file ---
+        _, com_titles = self._rc.Plan_Names(IncludeOnlyPlansInBaseDirectory=True)
+        prj_titles = {p["title"] for p in plans if p["title"] is not None}
+        com_titles_set = set(com_titles)
+        if prj_titles != com_titles_set:
+            logger.warning(
+                "Plan titles in project file do not match COM plan list.\n"
+                "  project file only: %s\n"
+                "  COM only:          %s",
+                prj_titles - com_titles_set,
+                com_titles_set - prj_titles,
+            )
+
+        # --- resolve target plan entry ---
+        if index is not None:
+            if index < 0 or index >= len(plans):
                 raise ValueError(
-                    f"Plan '{plan}' not found; available plans: {plan_names}"
+                    f"Plan index {index} out of range; "
+                    f"valid range is 0 to {len(plans) - 1}."
                 )
-            plan_name = plan
-        success = self._rc.Plan_SetCurrent(plan_name)
+            if index == self.plan_index:
+                return
+            target = plans[index]
+        elif title is not None:
+            matches = [p for p in plans if p["title"] == title]
+            if not matches:
+                raise ValueError(
+                    f"No plan with title {title!r}; "
+                    f"available titles: {[p['title'] for p in plans]}"
+                )
+            target = matches[0]
+        else:  # short_id
+            matches = [p for p in plans if p["short_id"] == short_id]
+            if not matches:
+                raise ValueError(
+                    f"No plan with short_id {short_id!r}; "
+                    f"available short_ids: {[p['short_id'] for p in plans]}"
+                )
+            target = matches[0]
+
+        plan_title = target["title"]
+        if plan_title is None:
+            raise ValueError(
+                f"Plan file {target['path'].name} has no Plan Title — "
+                "cannot pass to HEC-RAS COM."
+            )
+
+        success = self._rc.Plan_SetCurrent(plan_title)
         if not success:
-            raise RuntimeError(f"HEC-RAS failed to set current plan to '{plan_name}'")
+            raise RuntimeError(
+                f"HEC-RAS failed to set current plan to {plan_title!r}."
+            )
         self.reload()
 
     def reset(self):
