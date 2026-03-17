@@ -11,6 +11,7 @@ regardless of any path configured in the rasmap XML.
 
 import atexit
 import logging
+import re
 import shutil
 import subprocess
 import tempfile
@@ -34,7 +35,22 @@ __all__ = [
 ]
 
 _temp_dirs: set[Path] = set()
-_temp_vrt_paths: set[Path] = set()
+
+_MAC_UNC_RE = re.compile(r"^\\\\Mac\\([A-Za-z])$")
+
+
+def _resolve(p: Path) -> Path:
+    """Resolve *p* to an absolute path, converting Mac Parallels virtual-drive
+    UNC paths (``\\\\Mac\\Z\\...``) back to Windows drive-letter paths (``Z:\\...``).
+
+    On Mac with Parallels, ``Z:\\`` resolves as ``//Mac/Z/`` which RasProcess.exe
+    cannot handle.  This function re-maps those UNC roots to the drive letter.
+    """
+    p = p.resolve()
+    m = _MAC_UNC_RE.match(p.drive)
+    if m:
+        p = Path(f"{m.group(1).upper()}:\\") / p.relative_to(p.anchor)
+    return p
 
 
 def _cleanup_temp_dirs() -> None:
@@ -50,21 +66,7 @@ def _cleanup_temp_dirs() -> None:
         _temp_dirs.discard(tmp_dir)
 
 
-def _cleanup_temp_vrts() -> None:
-    """Delete VRT files and source tiles created by ``open_map(None)`` calls.
-
-    Registered with :func:`atexit` so it runs on normal interpreter shutdown,
-    catching cases where the ``with`` block was not exited cleanly (e.g. a
-    Jupyter kernel restart). Has no effect if the set is already empty.
-    """
-    for vrt_path in list(_temp_vrt_paths):
-        with suppress(Exception):
-            VrtMap(vrt_path).delete(include_sources=True)
-        _temp_vrt_paths.discard(vrt_path)
-
-
 atexit.register(_cleanup_temp_dirs)
-atexit.register(_cleanup_temp_vrts)
 
 
 class VrtMap:
@@ -320,7 +322,7 @@ class MapperExtension:
         ],
         timestep: int | None = None,
         raster_name: str | None = None,
-        output_path: 'Literal["temp_dir"] | None' = None,
+        output_path: "Path | str | None" = None,
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> "VrtMap":
@@ -395,15 +397,16 @@ class MapperExtension:
         map_type, display_name = map_type_info
 
         # -- raster_name validation --
-        if raster_name is not None:
-            if not isinstance(raster_name, str):
-                raise TypeError("raster_name must be a string or None")
-            if raster_name.strip() == "":
-                raise ValueError("raster_name cannot be empty")
-            if any(sep in raster_name for sep in ("/", "\\", ".")):
-                raise ValueError(
-                    "raster_name cannot contain path separators or an extension"
-                )
+        if raster_name is not None and Path(raster_name).parent != Path("."):
+            raise ValueError(
+                f"raster_name must be a plain filename with no directory component,"
+                f" got: {raster_name!r}"
+            )
+
+        if raster_name is not None and Path(raster_name).suffix:
+            raise ValueError(
+                f"raster_name must not include a file extension, got: {raster_name!r}"
+            )
 
         # -- Common setup --
         plan_short_id = self.plan.short_id
@@ -412,9 +415,9 @@ class MapperExtension:
                 "self.plan.short_id is empty; set a plan short id before storing maps"
             )
 
-        project_dir = self.plan_file.parent
+        project_dir = _resolve(self.plan_file.parent)
 
-        program_dir = installed_ras_directory(self.version)
+        program_dir = _resolve(installed_ras_directory(self.version))
         if not program_dir:
             raise FileNotFoundError(
                 f"Could not find installed HEC-RAS directory for version {self.version}"
@@ -423,7 +426,7 @@ class MapperExtension:
         if not ras_process.exists():
             raise FileNotFoundError(f"RasProcess.exe not found: {ras_process}")
 
-        result_hdf = self.plan_hdf_file.resolve()
+        result_hdf = _resolve(self.plan_hdf_file)
         if not result_hdf.exists():
             raise FileNotFoundError(f"Plan HDF file not found: {result_hdf}")
 
@@ -435,144 +438,99 @@ class MapperExtension:
         if raster_name is None:
             raster_name = f"{display_name} ({safe_profile})"
 
-        rasmap_src = self._locate_project_rasmap().resolve()
-        rasmap_src2 = f".\\{rasmap_src.name}"  # RasProcess.exe wants a relative path with .\ prefix
+        rasmap_src = _resolve(self._locate_project_rasmap())
 
-        # -- Branch: build command, manage temp file, run --
+        # StoreAllMaps: By default it outputs rasters to relative 'project_dir / plan_short_id'
+        # Here we always use absolute path in OverwriteFilname to reduce complexity
         if output_path is None:
-            # StoreAllMaps: inject map layer into a temp rasmap copy; output
-            # always goes to {project_dir}/{plan_short_id}/ regardless of XML.
             abs_output_dir = project_dir / plan_short_id
             abs_output_dir.mkdir(parents=True, exist_ok=True)
-
-            stored_vrt_attr = f".\\{plan_short_id}\\{display_name} ({safe_profile}).vrt"
-
-            with tempfile.NamedTemporaryFile(
-                mode="w",
-                suffix=".rasmap",
-                delete=False,
-                dir=project_dir,
-                encoding="utf-8",
-            ) as f:
-                temp_rasmap = Path(f.name)
-
-            shutil.copy2(rasmap_src, temp_rasmap)
-            try:
-                tree = ET.parse(temp_rasmap)
-                root = tree.getroot()
-
-                results_elem = root.find(".//Results")
-                if results_elem is None:
-                    results_elem = ET.SubElement(root, "Results")
-                    results_elem.set("Checked", "True")
-                    results_elem.set("Expanded", "True")
-
-                plan_layer = None
-                plan_basename = result_hdf.name.lower()
-                for layer in results_elem.findall("Layer"):
-                    if Path(layer.get("Filename", "")).name.lower() == plan_basename:
-                        plan_layer = layer
-                        break
-                if plan_layer is None:
-                    plan_layer = ET.SubElement(results_elem, "Layer")
-                    plan_layer.set("Name", plan_short_id)
-                    plan_layer.set("Type", "RASResults")
-                    plan_layer.set("Filename", f".\\{result_hdf.name}")
-
-                to_remove = [
-                    layer for layer in plan_layer.findall("Layer")
-                    if layer.get("Type") == "RASResultsMap"
-                    and layer.find("MapParameters") is not None
-                    and "Stored" in layer.find("MapParameters").get("OutputMode", "")
-                ]
-                for layer in to_remove:
-                    plan_layer.remove(layer)
-
-                layer_elem = ET.SubElement(plan_layer, "Layer")
-                layer_elem.set("Name", display_name)
-                layer_elem.set("Type", "RASResultsMap")
-                layer_elem.set("Checked", "True")
-                layer_elem.set("Filename", stored_vrt_attr)
-
-                params = ET.SubElement(layer_elem, "MapParameters")
-                params.set("MapType", map_type)
-                params.set("OutputMode", "Stored Current Terrain")
-                params.set("StoredFilename", stored_vrt_attr)
-                params.set("ProfileIndex", str(profile_index))
-                params.set("ProfileName", profile_name)
-                if custom_raster_name:
-                    params.set("OverwriteOutputFilename", raster_name)
-
-                tree.write(temp_rasmap, encoding="utf-8", xml_declaration=True)
-
-                expected_vrt = abs_output_dir / f"{raster_name}.vrt"
-                if expected_vrt.exists() and VrtMap(expected_vrt).is_locked():
-                    raise PermissionError(
-                        f"Output file is locked by another process (e.g. QGIS): "
-                        f"{expected_vrt}\nClose the file before calling store_map."
-                    )
-
-                logger.info("StoreAllMaps: output expected at %s", expected_vrt)
-                cmd = [
-                    str(ras_process),
-                    "-Command=StoreAllMaps",
-                    f"-RasMapFilename={temp_rasmap}",
-                    f"-ResultFilename={result_hdf}",
-                ]
-                result = self._run_rasprocess(cmd, None, timeout, stream_output)
-            finally:
-                temp_rasmap.unlink(missing_ok=True)
-
         else:
-            # StoreMap XML: original rasmap, output to caller-supplied directory.
-            abs_output_dir = Path(output_path)
-            if not abs_output_dir.is_absolute():
-                abs_output_dir = (abs_output_dir).resolve()
+            abs_output_dir = _resolve(Path(output_path))
             if not abs_output_dir.exists():
                 raise FileNotFoundError(
                     f"output_path does not exist: {abs_output_dir}"
                 )
 
-            # OutputBaseFilename has no extension — RasProcess.exe appends .vrt
-            out_base = abs_output_dir / raster_name
-            expected_vrt = abs_output_dir / f"{raster_name}.vrt"
+        abs_output_filename_wo_ext = abs_output_dir / raster_name
+        abs_output_filename_w_ext = abs_output_dir / f"{raster_name}.vrt"
 
-            if expected_vrt.exists() and VrtMap(expected_vrt).is_locked():
+        stored_vrt_attr = f".\\{plan_short_id}\\{display_name} ({safe_profile}).vrt"
+
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            suffix=".rasmap",
+            delete=False,
+            dir=project_dir,
+            encoding="utf-8",
+        ) as f:
+            temp_rasmap = Path(f.name)
+
+        shutil.copy2(rasmap_src, temp_rasmap)
+        try:
+            tree = ET.parse(temp_rasmap)
+            root = tree.getroot()
+
+            results_elem = root.find(".//Results")
+            if results_elem is None:
+                results_elem = ET.SubElement(root, "Results")
+                results_elem.set("Checked", "True")
+                results_elem.set("Expanded", "True")
+
+            plan_layer = None
+            plan_basename = result_hdf.name.lower()
+            for layer in results_elem.findall("Layer"):
+                if Path(layer.get("Filename", "")).name.lower() == plan_basename:
+                    plan_layer = layer
+                    break
+            if plan_layer is None:
+                plan_layer = ET.SubElement(results_elem, "Layer")
+                plan_layer.set("Name", plan_short_id)
+                plan_layer.set("Type", "RASResults")
+                plan_layer.set("Filename", f".\\{result_hdf.name}")
+
+            to_remove = [
+                layer for layer in plan_layer.findall("Layer")
+                if layer.get("Type") == "RASResultsMap"
+                and layer.find("MapParameters") is not None
+                and "Stored" in layer.find("MapParameters").get("OutputMode", "")
+            ]
+            for layer in to_remove:
+                plan_layer.remove(layer)
+
+            layer_elem = ET.SubElement(plan_layer, "Layer")
+            layer_elem.set("Name", display_name)
+            layer_elem.set("Type", "RASResultsMap")
+            layer_elem.set("Checked", "True")
+            layer_elem.set("Filename", stored_vrt_attr)
+
+            params = ET.SubElement(layer_elem, "MapParameters")
+            params.set("MapType", map_type)
+            params.set("OutputMode", "Stored Current Terrain")
+            params.set("StoredFilename", stored_vrt_attr)
+            params.set("ProfileIndex", str(profile_index))
+            params.set("ProfileName", profile_name)
+            params.set("OverwriteOutputFilename", str(abs_output_filename_wo_ext))
+
+            tree.write(temp_rasmap, encoding="utf-8", xml_declaration=True)
+
+            logger.info("StoreAllMaps: output expected at %s", abs_output_filename_w_ext)
+
+            if abs_output_filename_w_ext.exists() and VrtMap(abs_output_filename_w_ext).is_locked():
                 raise PermissionError(
                     f"Output file is locked by another process (e.g. QGIS): "
-                    f"{expected_vrt}\nClose the file before calling store_map."
+                    f"{abs_output_filename_w_ext}\nClose the file before calling store_map."
                 )
 
-            xml = (
-                '<?xml version="1.0" encoding="utf-8"?>\n'
-                '<Command Type="StoreMap">\n'
-                f"  <RasMapFilename>{rasmap_src}</RasMapFilename>\n"
-                f"  <MapType>{map_type}</MapType>\n"
-                f"  <Result>{result_hdf}</Result>\n"
-                f"  <ProfileName>{profile_name}</ProfileName>\n"
-                f"  <ProfileIndex>{profile_index}</ProfileIndex>\n"
-                "  <OutputMode>Stored Current Terrain</OutputMode>\n"
-                f"  <OutputBaseFilename>{out_base}</OutputBaseFilename>\n"
-                "</Command>"
-            )
-            logger.debug("StoreMap XML:\n%s", xml)
-            logger.info("StoreMap: output expected at %s", expected_vrt)
-
-            with tempfile.NamedTemporaryFile(
-                mode="w",
-                suffix=".xml",
-                delete=False,
-                dir=project_dir,
-                encoding="utf-8",
-            ) as f:
-                temp_xml = Path(f.name)
-                f.write(xml)
-
-            try:
-                cmd = [str(ras_process), f"-CommandFile={temp_xml}"]
-                result = self._run_rasprocess(cmd, project_dir, timeout, stream_output)
-            finally:
-                temp_xml.unlink(missing_ok=True)
+            cmd = [
+                str(ras_process),
+                "-Command=StoreAllMaps",
+                f"-RasMapFilename={temp_rasmap}",
+                f"-ResultFilename={result_hdf}",
+            ]
+            result = self._run_rasprocess(cmd, None, timeout, stream_output)
+        finally:
+            temp_rasmap.unlink(missing_ok=True)
 
         # -- Common tail: error check and VrtMap validation --
         stderr_lower = result.stderr.lower()
@@ -587,10 +545,10 @@ class MapperExtension:
                 + stdout_detail
             )
 
-        vrt = VrtMap(expected_vrt)
+        vrt = VrtMap(abs_output_filename_w_ext)
         if not vrt.exists():
             raise FileNotFoundError(
-                f"RasProcess completed but output VRT was not found: {expected_vrt}\n"
+                f"RasProcess completed but output VRT was not found: {abs_output_filename_w_ext}\n"
                 f"stdout: {result.stdout}\nstderr: {result.stderr}"
             )
 
@@ -622,14 +580,15 @@ class MapperExtension:
             "depth_x_velocity_sq",
         ],
         timestep: int | None,
-        output_path: 'Literal["temp_dir"] | None' = None,
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> Generator["rasterio.io.DatasetReader", None, None]:
-        """Store a map and yield an open ``rasterio.DatasetReader``.
+        """Store a map in a temporary directory and yield an open
+        ``rasterio.DatasetReader``.
 
-        The raster name is always generated internally via :mod:`secrets`.
-        Output is cleaned up on context exit in both modes.
+        Output is written to a freshly-created system temp directory that is
+        removed with :func:`shutil.rmtree` on context exit and registered with
+        :func:`atexit` for cleanup on interpreter shutdown.
 
         Parameters
         ----------
@@ -637,17 +596,6 @@ class MapperExtension:
             Hydraulic variable — same accepted values as :meth:`store_map`.
         timestep:
             Zero-based timestep index.  ``None`` uses the maximum-value profile.
-        output_path:
-            Controls where the VRT is written and how it is cleaned up:
-
-            - ``None`` (default): StoreAllMaps strategy; output lands in
-              ``{project_dir}/{plan_short_id}/``.  The VRT and source tiles are
-              deleted via :meth:`VrtMap.delete` on context exit and registered
-              with :func:`atexit` for cleanup on interpreter shutdown.
-            - ``"temp_dir"``: output is written to a freshly-created system temp
-              directory that is removed with :func:`shutil.rmtree` on context
-              exit and registered with :func:`atexit` for cleanup on
-              interpreter shutdown.
         stream_output:
             Passed through to :meth:`store_map`.
         timeout:
@@ -662,54 +610,30 @@ class MapperExtension:
 
             with model.open_map("wse", 10) as ds:
                 data = ds.read(1)
-
-            with model.open_map("wse", 10, "temp_dir") as ds:
-                data = ds.read(1)
         """
         import secrets
 
         import rasterio
 
+        out_dir = Path(tempfile.mkdtemp())
         raster_name = secrets.token_hex(8)
-
-        if output_path is None:
+        logger.debug("open_map: temp dir %s, raster name %s", out_dir, raster_name)
+        _temp_dirs.add(out_dir)
+        try:
             vrt = self.store_map(
                 variable,
                 timestep=timestep,
                 raster_name=raster_name,
+                output_path=out_dir,
                 stream_output=stream_output,
                 timeout=timeout,
             )
             logger.debug("open_map: created %s", vrt.path)
-            vrt_path = vrt.path
-            _temp_vrt_paths.add(vrt_path)
-            try:
-                with rasterio.open(vrt_path) as ds:
-                    yield ds
-            finally:
-                vrt.delete(include_sources=True)
-                _temp_vrt_paths.discard(vrt_path)
-        else:
-            out_dir = Path(tempfile.mkdtemp())
-            logger.debug(
-                "open_map: temp dir %s, raster name %s", out_dir, raster_name
-            )
-            _temp_dirs.add(out_dir)
-            try:
-                vrt = self.store_map(
-                    variable,
-                    timestep=timestep,
-                    raster_name=raster_name,
-                    output_path=out_dir,
-                    stream_output=stream_output,
-                    timeout=timeout,
-                )
-                logger.debug("open_map: created %s", vrt.path)
-                with rasterio.open(vrt.path) as ds:
-                    yield ds
-            finally:
-                shutil.rmtree(out_dir, ignore_errors=True)
-                _temp_dirs.discard(out_dir)
+            with rasterio.open(vrt.path) as ds:
+                yield ds
+        finally:
+            shutil.rmtree(out_dir, ignore_errors=True)
+            _temp_dirs.discard(out_dir)
 
     @log_call(logging.INFO)
     def export_wse(
@@ -726,13 +650,21 @@ class MapperExtension:
         timestep:
             Zero-based timestep index.  ``None`` exports the maximum profile.
         output_vrt:
-            Destination path including ``.vrt`` extension.  When ``None`` the
-            VRT is written to ``{project_dir}/{plan_short_id}/`` via the
-            StoreAllMaps strategy.
+            Destination for the exported VRT.  Three forms accepted:
+            ``None`` — written to ``{project_dir}/{plan_short_id}/`` via the
+            StoreAllMaps strategy; an existing directory — written into that
+            folder with an auto-generated name; a path ending with ``.vrt`` —
+            written to that exact file.
         stream_output:
             Stream RasProcess.exe output to the logger in real time.
         timeout:
             Subprocess timeout in seconds.  ``None`` means no limit.
+
+        Raises
+        ------
+        ValueError
+            If *output_vrt* is not ``None``, not an existing directory, and
+            does not end with ``.vrt``.
         """
         if output_vrt is None:
             return self.store_map(
@@ -742,9 +674,18 @@ class MapperExtension:
                 timeout=timeout,
             )
         output_vrt = Path(output_vrt)
+        if output_vrt.is_dir():
+            return self.store_map(
+                "wse",
+                timestep=timestep,
+                output_path=output_vrt,
+                stream_output=stream_output,
+                timeout=timeout,
+            )
         if output_vrt.suffix != ".vrt":
             raise ValueError(
-                f"output_vrt must have a .vrt extension, got: {output_vrt}"
+                f"output_vrt must be a .vrt file path or an existing directory,"
+                f" got: {output_vrt}"
             )
         return self.store_map(
             "wse",
@@ -759,7 +700,6 @@ class MapperExtension:
     def open_wse(
         self,
         timestep: int | None,
-        output_path: 'Literal["temp_dir"] | None' = None,
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> "AbstractContextManager[rasterio.io.DatasetReader]":
@@ -770,7 +710,6 @@ class MapperExtension:
         return self.open_map(
             "wse",
             timestep,
-            output_path=output_path,
             stream_output=stream_output,
             timeout=timeout,
         )
@@ -790,13 +729,21 @@ class MapperExtension:
         timestep:
             Zero-based timestep index.  ``None`` exports the maximum profile.
         output_vrt:
-            Destination path including ``.vrt`` extension.  When ``None`` the
-            VRT is written to ``{project_dir}/{plan_short_id}/`` via the
-            StoreAllMaps strategy.
+            Destination for the exported VRT.  Three forms accepted:
+            ``None`` — written to ``{project_dir}/{plan_short_id}/`` via the
+            StoreAllMaps strategy; an existing directory — written into that
+            folder with an auto-generated name; a path ending with ``.vrt`` —
+            written to that exact file.
         stream_output:
             Stream RasProcess.exe output to the logger in real time.
         timeout:
             Subprocess timeout in seconds.  ``None`` means no limit.
+
+        Raises
+        ------
+        ValueError
+            If *output_vrt* is not ``None``, not an existing directory, and
+            does not end with ``.vrt``.
         """
         if output_vrt is None:
             return self.store_map(
@@ -806,9 +753,18 @@ class MapperExtension:
                 timeout=timeout,
             )
         output_vrt = Path(output_vrt)
+        if output_vrt.is_dir():
+            return self.store_map(
+                "depth",
+                timestep=timestep,
+                output_path=output_vrt,
+                stream_output=stream_output,
+                timeout=timeout,
+            )
         if output_vrt.suffix != ".vrt":
             raise ValueError(
-                f"output_vrt must have a .vrt extension, got: {output_vrt}"
+                f"output_vrt must be a .vrt file path or an existing directory,"
+                f" got: {output_vrt}"
             )
         return self.store_map(
             "depth",
@@ -823,7 +779,6 @@ class MapperExtension:
     def open_depth(
         self,
         timestep: int | None,
-        output_path: 'Literal["temp_dir"] | None' = None,
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> "AbstractContextManager[rasterio.io.DatasetReader]":
@@ -834,7 +789,6 @@ class MapperExtension:
         return self.open_map(
             "depth",
             timestep,
-            output_path=output_path,
             stream_output=stream_output,
             timeout=timeout,
         )
@@ -854,13 +808,21 @@ class MapperExtension:
         timestep:
             Zero-based timestep index.  ``None`` exports the maximum profile.
         output_vrt:
-            Destination path including ``.vrt`` extension.  When ``None`` the
-            VRT is written to ``{project_dir}/{plan_short_id}/`` via the
-            StoreAllMaps strategy.
+            Destination for the exported VRT.  Three forms accepted:
+            ``None`` — written to ``{project_dir}/{plan_short_id}/`` via the
+            StoreAllMaps strategy; an existing directory — written into that
+            folder with an auto-generated name; a path ending with ``.vrt`` —
+            written to that exact file.
         stream_output:
             Stream RasProcess.exe output to the logger in real time.
         timeout:
             Subprocess timeout in seconds.  ``None`` means no limit.
+
+        Raises
+        ------
+        ValueError
+            If *output_vrt* is not ``None``, not an existing directory, and
+            does not end with ``.vrt``.
         """
         if output_vrt is None:
             return self.store_map(
@@ -870,9 +832,18 @@ class MapperExtension:
                 timeout=timeout,
             )
         output_vrt = Path(output_vrt)
+        if output_vrt.is_dir():
+            return self.store_map(
+                "velocity",
+                timestep=timestep,
+                output_path=output_vrt,
+                stream_output=stream_output,
+                timeout=timeout,
+            )
         if output_vrt.suffix != ".vrt":
             raise ValueError(
-                f"output_vrt must have a .vrt extension, got: {output_vrt}"
+                f"output_vrt must be a .vrt file path or an existing directory,"
+                f" got: {output_vrt}"
             )
         return self.store_map(
             "velocity",
@@ -887,7 +858,6 @@ class MapperExtension:
     def open_velocity(
         self,
         timestep: int | None,
-        output_path: 'Literal["temp_dir"] | None' = None,
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> "AbstractContextManager[rasterio.io.DatasetReader]":
@@ -898,7 +868,6 @@ class MapperExtension:
         return self.open_map(
             "velocity",
             timestep,
-            output_path=output_path,
             stream_output=stream_output,
             timeout=timeout,
         )
@@ -918,13 +887,21 @@ class MapperExtension:
         timestep:
             Zero-based timestep index.  ``None`` exports the maximum profile.
         output_vrt:
-            Destination path including ``.vrt`` extension.  When ``None`` the
-            VRT is written to ``{project_dir}/{plan_short_id}/`` via the
-            StoreAllMaps strategy.
+            Destination for the exported VRT.  Three forms accepted:
+            ``None`` — written to ``{project_dir}/{plan_short_id}/`` via the
+            StoreAllMaps strategy; an existing directory — written into that
+            folder with an auto-generated name; a path ending with ``.vrt`` —
+            written to that exact file.
         stream_output:
             Stream RasProcess.exe output to the logger in real time.
         timeout:
             Subprocess timeout in seconds.  ``None`` means no limit.
+
+        Raises
+        ------
+        ValueError
+            If *output_vrt* is not ``None``, not an existing directory, and
+            does not end with ``.vrt``.
         """
         if output_vrt is None:
             return self.store_map(
@@ -934,9 +911,18 @@ class MapperExtension:
                 timeout=timeout,
             )
         output_vrt = Path(output_vrt)
+        if output_vrt.is_dir():
+            return self.store_map(
+                "froude",
+                timestep=timestep,
+                output_path=output_vrt,
+                stream_output=stream_output,
+                timeout=timeout,
+            )
         if output_vrt.suffix != ".vrt":
             raise ValueError(
-                f"output_vrt must have a .vrt extension, got: {output_vrt}"
+                f"output_vrt must be a .vrt file path or an existing directory,"
+                f" got: {output_vrt}"
             )
         return self.store_map(
             "froude",
@@ -951,7 +937,6 @@ class MapperExtension:
     def open_froude(
         self,
         timestep: int | None,
-        output_path: 'Literal["temp_dir"] | None' = None,
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> "AbstractContextManager[rasterio.io.DatasetReader]":
@@ -962,7 +947,6 @@ class MapperExtension:
         return self.open_map(
             "froude",
             timestep,
-            output_path=output_path,
             stream_output=stream_output,
             timeout=timeout,
         )
@@ -982,13 +966,21 @@ class MapperExtension:
         timestep:
             Zero-based timestep index.  ``None`` exports the maximum profile.
         output_vrt:
-            Destination path including ``.vrt`` extension.  When ``None`` the
-            VRT is written to ``{project_dir}/{plan_short_id}/`` via the
-            StoreAllMaps strategy.
+            Destination for the exported VRT.  Three forms accepted:
+            ``None`` — written to ``{project_dir}/{plan_short_id}/`` via the
+            StoreAllMaps strategy; an existing directory — written into that
+            folder with an auto-generated name; a path ending with ``.vrt`` —
+            written to that exact file.
         stream_output:
             Stream RasProcess.exe output to the logger in real time.
         timeout:
             Subprocess timeout in seconds.  ``None`` means no limit.
+
+        Raises
+        ------
+        ValueError
+            If *output_vrt* is not ``None``, not an existing directory, and
+            does not end with ``.vrt``.
         """
         if output_vrt is None:
             return self.store_map(
@@ -998,9 +990,18 @@ class MapperExtension:
                 timeout=timeout,
             )
         output_vrt = Path(output_vrt)
+        if output_vrt.is_dir():
+            return self.store_map(
+                "shear_stress",
+                timestep=timestep,
+                output_path=output_vrt,
+                stream_output=stream_output,
+                timeout=timeout,
+            )
         if output_vrt.suffix != ".vrt":
             raise ValueError(
-                f"output_vrt must have a .vrt extension, got: {output_vrt}"
+                f"output_vrt must be a .vrt file path or an existing directory,"
+                f" got: {output_vrt}"
             )
         return self.store_map(
             "shear_stress",
@@ -1015,7 +1016,6 @@ class MapperExtension:
     def open_shear_stress(
         self,
         timestep: int | None,
-        output_path: 'Literal["temp_dir"] | None' = None,
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> "AbstractContextManager[rasterio.io.DatasetReader]":
@@ -1026,7 +1026,6 @@ class MapperExtension:
         return self.open_map(
             "shear_stress",
             timestep,
-            output_path=output_path,
             stream_output=stream_output,
             timeout=timeout,
         )
@@ -1046,13 +1045,21 @@ class MapperExtension:
         timestep:
             Zero-based timestep index.  ``None`` exports the maximum profile.
         output_vrt:
-            Destination path including ``.vrt`` extension.  When ``None`` the
-            VRT is written to ``{project_dir}/{plan_short_id}/`` via the
-            StoreAllMaps strategy.
+            Destination for the exported VRT.  Three forms accepted:
+            ``None`` — written to ``{project_dir}/{plan_short_id}/`` via the
+            StoreAllMaps strategy; an existing directory — written into that
+            folder with an auto-generated name; a path ending with ``.vrt`` —
+            written to that exact file.
         stream_output:
             Stream RasProcess.exe output to the logger in real time.
         timeout:
             Subprocess timeout in seconds.  ``None`` means no limit.
+
+        Raises
+        ------
+        ValueError
+            If *output_vrt* is not ``None``, not an existing directory, and
+            does not end with ``.vrt``.
         """
         if output_vrt is None:
             return self.store_map(
@@ -1062,9 +1069,18 @@ class MapperExtension:
                 timeout=timeout,
             )
         output_vrt = Path(output_vrt)
+        if output_vrt.is_dir():
+            return self.store_map(
+                "dv",
+                timestep=timestep,
+                output_path=output_vrt,
+                stream_output=stream_output,
+                timeout=timeout,
+            )
         if output_vrt.suffix != ".vrt":
             raise ValueError(
-                f"output_vrt must have a .vrt extension, got: {output_vrt}"
+                f"output_vrt must be a .vrt file path or an existing directory,"
+                f" got: {output_vrt}"
             )
         return self.store_map(
             "dv",
@@ -1079,7 +1095,6 @@ class MapperExtension:
     def open_dv(
         self,
         timestep: int | None,
-        output_path: 'Literal["temp_dir"] | None' = None,
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> "AbstractContextManager[rasterio.io.DatasetReader]":
@@ -1090,7 +1105,6 @@ class MapperExtension:
         return self.open_map(
             "dv",
             timestep,
-            output_path=output_path,
             stream_output=stream_output,
             timeout=timeout,
         )
@@ -1110,13 +1124,21 @@ class MapperExtension:
         timestep:
             Zero-based timestep index.  ``None`` exports the maximum profile.
         output_vrt:
-            Destination path including ``.vrt`` extension.  When ``None`` the
-            VRT is written to ``{project_dir}/{plan_short_id}/`` via the
-            StoreAllMaps strategy.
+            Destination for the exported VRT.  Three forms accepted:
+            ``None`` — written to ``{project_dir}/{plan_short_id}/`` via the
+            StoreAllMaps strategy; an existing directory — written into that
+            folder with an auto-generated name; a path ending with ``.vrt`` —
+            written to that exact file.
         stream_output:
             Stream RasProcess.exe output to the logger in real time.
         timeout:
             Subprocess timeout in seconds.  ``None`` means no limit.
+
+        Raises
+        ------
+        ValueError
+            If *output_vrt* is not ``None``, not an existing directory, and
+            does not end with ``.vrt``.
         """
         if output_vrt is None:
             return self.store_map(
@@ -1126,9 +1148,18 @@ class MapperExtension:
                 timeout=timeout,
             )
         output_vrt = Path(output_vrt)
+        if output_vrt.is_dir():
+            return self.store_map(
+                "dv2",
+                timestep=timestep,
+                output_path=output_vrt,
+                stream_output=stream_output,
+                timeout=timeout,
+            )
         if output_vrt.suffix != ".vrt":
             raise ValueError(
-                f"output_vrt must have a .vrt extension, got: {output_vrt}"
+                f"output_vrt must be a .vrt file path or an existing directory,"
+                f" got: {output_vrt}"
             )
         return self.store_map(
             "dv2",
@@ -1143,7 +1174,6 @@ class MapperExtension:
     def open_dv2(
         self,
         timestep: int | None,
-        output_path: 'Literal["temp_dir"] | None' = None,
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> "AbstractContextManager[rasterio.io.DatasetReader]":
@@ -1154,7 +1184,6 @@ class MapperExtension:
         return self.open_map(
             "dv2",
             timestep,
-            output_path=output_path,
             stream_output=stream_output,
             timeout=timeout,
         )
