@@ -113,6 +113,9 @@ class ProjectFile:
         # --- description block ---
         self._description = _parse_description(self._lines)
 
+        # --- cache ---
+        self._plans_cache: list[dict[str, str | Path | None]] | None = None
+
         # --- DSS ---
         self._dss_start_date = self._get_first("DSS Start Date")
         self._dss_start_time = self._get_first("DSS Start Time")
@@ -264,18 +267,20 @@ class ProjectFile:
         - ``"path"``     — full :class:`~pathlib.Path` to the plan file
         - ``"title"``    — value of ``Plan Title=``, or ``None``
         - ``"short_id"`` — value of ``Short Identifier=``, or ``None``
+
+        Results are cached after the first call.
         """
-        result = []
-        for p in self._plan_files:
-            result.append(
+        if self._plans_cache is None:
+            self._plans_cache = [
                 {
                     "ext": p.suffix.lstrip("."),
                     "path": p,
                     "title": _read_plan_field(p, "Plan Title"),
                     "short_id": _read_plan_field(p, "Short Identifier"),
                 }
-            )
-        return result
+                for p in self._plan_files
+            ]
+        return list(self._plans_cache)
 
     def __repr__(self) -> str:
         return f"ProjectFile({self._path!r})"
