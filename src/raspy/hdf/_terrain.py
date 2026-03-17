@@ -1,8 +1,9 @@
-"""Terrain HDF reading and GeoTIFF export.
+"""Terrain HDF reading and GeoTIFF/VRT export.
 
 Provides :func:`export_terrain` — reads a RasMapper terrain HDF5 file,
 mosaics the source GeoTIFFs by priority, applies any Levee-type ground-line
-modifications stored in the same HDF, and writes the result to a GeoTIFF.
+modifications stored in the same HDF, and writes the result to a GeoTIFF or
+GDAL VRT.
 
 Derived from analysis of:
   archive/DLLs/RasMapperLib/RasMapperLib/TerrainLayer.cs
@@ -17,8 +18,11 @@ the modification-rasterisation algorithm.
 from __future__ import annotations
 
 import logging
+import shutil
+import xml.dom.minidom
 from pathlib import Path
 from typing import Any
+from xml.etree.ElementTree import Element, SubElement, tostring
 
 import numpy as np
 
@@ -29,32 +33,59 @@ __all__ = ["export_terrain"]
 # NoData sentinel used by RasMapper terrain TIFFs.
 _NODATA = -9999.0
 
+# Mapping from rasterio dtype strings to GDAL VRT dataType attribute values.
+_GDAL_DTYPE: dict[str, str] = {
+    "float32": "Float32",
+    "float64": "Float64",
+    "int16": "Int16",
+    "int32": "Int32",
+    "uint8": "Byte",
+    "uint16": "UInt16",
+    "uint32": "UInt32",
+}
+
 
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
 
-def export_terrain(hdf_path: str | Path, raster_path: str | Path) -> Path:
-    """Export a RasMapper terrain HDF to a GeoTIFF.
+def export_terrain(
+    hdf_path: str | Path,
+    raster_path: str | Path,
+    copy: bool = False,
+) -> Path:
+    """Export a RasMapper terrain HDF to a GeoTIFF or GDAL VRT.
 
     Reads all source GeoTIFFs from the ``Terrain/`` group of *hdf_path*,
     mosaics them in priority order (lowest ``@Priority`` value wins), applies
     any ``Levee``-type ground-line modifications from the ``Modifications/``
     group, and writes the result to *raster_path*.
 
+    When *raster_path* has a ``.vrt`` extension the output is a GDAL VRT that
+    references the original source TIFFs directly rather than re-encoding
+    pixels.  If modifications are present a sidecar
+    ``<stem>_mods.tif`` is written beside the VRT and included as the
+    top-most layer.
+
     Parameters
     ----------
     hdf_path:
         Path to a RasMapper terrain HDF file (``File Type = "HEC Terrain"``).
     raster_path:
-        Destination path for the output GeoTIFF.  Parent directories are
-        created automatically.
+        Destination path.  Use a ``.tif`` extension for a merged GeoTIFF or a
+        ``.vrt`` extension for a GDAL VRT.  Parent directories are created
+        automatically.
+    copy:
+        Only relevant when *raster_path* is a ``.vrt``.  When ``True`` each
+        source TIFF is copied into the VRT's parent directory and the VRT uses
+        relative paths.  When ``False`` (default) the VRT uses absolute paths
+        and source files are not copied.
 
     Returns
     -------
     Path
-        Resolved absolute path of the written GeoTIFF.
+        Resolved absolute path of the written file.
 
     Raises
     ------
@@ -136,22 +167,166 @@ def export_terrain(hdf_path: str | Path, raster_path: str | Path) -> Path:
         for ds in datasets:
             ds.close()
 
+    is_vrt = raster_path.suffix.lower() == ".vrt"
+
     # ------------------------------------------------------------------
     # 3. Apply modifications (if any)
     # ------------------------------------------------------------------
+    mod_sidecar_path: Path | None = None
     if modifications:
         nodata = float(profile.get("nodata") or _NODATA)
+        merged_unmodified = mosaic.copy()
         mosaic = _apply_modifications(mosaic, transform, modifications, nodata)
+
+        if is_vrt:
+            # Write a sidecar TIF containing only the pixels that changed so
+            # that the VRT can reference it as a top-most layer.
+            changed = mosaic[0] != merged_unmodified[0]
+            mod_only = np.full_like(mosaic, nodata)
+            mod_only[0][changed] = mosaic[0][changed]
+
+            mod_sidecar_path = raster_path.with_name(raster_path.stem + "_mods.tif")
+            mod_profile = profile.copy()
+            mod_profile["nodata"] = nodata
+            raster_path.parent.mkdir(parents=True, exist_ok=True)
+            with rasterio.open(mod_sidecar_path, "w", **mod_profile) as dst:
+                dst.write(mod_only)
+            logger.debug("export_terrain: wrote mod sidecar %s", mod_sidecar_path)
 
     # ------------------------------------------------------------------
     # 4. Write output
     # ------------------------------------------------------------------
     raster_path.parent.mkdir(parents=True, exist_ok=True)
-    with rasterio.open(raster_path, "w", **profile) as dst:
-        dst.write(mosaic)
+
+    if is_vrt:
+        # VRT: sources in descending priority order so that the lowest
+        # Priority number (highest precedence) is listed last and wins
+        # overlapping pixels (GDAL VRT last-source-wins semantics).
+        vrt_sources = list(reversed(tiff_paths))
+        if mod_sidecar_path is not None:
+            vrt_sources.append(mod_sidecar_path)
+        _write_vrt(raster_path, vrt_sources, profile, transform, copy=copy)
+    else:
+        with rasterio.open(raster_path, "w", **profile) as dst:
+            dst.write(mosaic)
 
     logger.info("export_terrain: wrote %s", raster_path)
     return raster_path.resolve()
+
+
+# ---------------------------------------------------------------------------
+# VRT writer
+# ---------------------------------------------------------------------------
+
+
+def _write_vrt(
+    vrt_path: Path,
+    source_paths: list[Path],
+    vrt_profile: dict[str, Any],
+    vrt_transform: Any,
+    copy: bool,
+) -> None:
+    """Write a GDAL VRT mosaic referencing *source_paths*.
+
+    Parameters
+    ----------
+    vrt_path:
+        Destination ``.vrt`` file.
+    source_paths:
+        Ordered list of source TIFFs.  Sources listed later overwrite earlier
+        ones in overlapping pixels (GDAL last-source-wins semantics), so the
+        highest-precedence source should be last.
+    vrt_profile:
+        rasterio profile for the VRT canvas (must include ``width``,
+        ``height``, ``crs``, ``dtype``).
+    vrt_transform:
+        Affine transform for the VRT canvas.
+    copy:
+        When ``True``, copy each source into the VRT's parent directory and
+        use relative ``SourceFilename`` paths.  When ``False``, use absolute
+        paths and leave source files in place.
+    """
+    import rasterio
+
+    vrt_dir = vrt_path.parent
+    W = vrt_profile["width"]
+    H = vrt_profile["height"]
+    nodata = float(vrt_profile.get("nodata") or _NODATA)
+    dtype = str(vrt_profile.get("dtype", "float32")).lower()
+    gdal_dtype = _GDAL_DTYPE.get(dtype, "Float32")
+
+    crs = vrt_profile.get("crs")
+    crs_wkt = crs.to_wkt() if crs else ""
+
+    gt = vrt_transform
+    gt_str = f"  {gt.c}, {gt.a}, {gt.b}, {gt.f}, {gt.d}, {gt.e}"
+
+    root = Element("VRTDataset", rasterXSize=str(W), rasterYSize=str(H))
+    if crs_wkt:
+        SubElement(root, "SRS").text = crs_wkt
+    SubElement(root, "GeoTransform").text = gt_str
+
+    band_el = SubElement(root, "VRTRasterBand", dataType=gdal_dtype, band="1")
+    SubElement(band_el, "NoDataValue").text = str(nodata)
+
+    for src_path in source_paths:
+        with rasterio.open(src_path) as src:
+            src_w = src.width
+            src_h = src.height
+            src_t = src.transform
+            block_shapes = src.block_shapes
+            block_w, block_h = block_shapes[0] if block_shapes else (256, 256)
+
+        # Pixel offset of this source within the VRT canvas.
+        dst_x_off = round((src_t.c - gt.c) / gt.a)
+        dst_y_off = round((src_t.f - gt.f) / gt.e)
+        # Destination size scaled for any resolution difference.
+        dst_x_size = round(src_w * src_t.a / gt.a)
+        dst_y_size = round(src_h * abs(src_t.e) / abs(gt.e))
+
+        if copy:
+            if src_path.parent != vrt_dir:
+                dest = vrt_dir / src_path.name
+                shutil.copy2(src_path, dest)
+            file_ref = src_path.name
+            relative_to_vrt = "1"
+        else:
+            file_ref = src_path.as_posix()
+            relative_to_vrt = "0"
+
+        simple_src = SubElement(band_el, "SimpleSource")
+        SubElement(
+            simple_src, "SourceFilename", relativeToVRT=relative_to_vrt
+        ).text = file_ref
+        SubElement(simple_src, "SourceBand").text = "1"
+        SubElement(
+            simple_src,
+            "SourceProperties",
+            RasterXSize=str(src_w),
+            RasterYSize=str(src_h),
+            DataType=gdal_dtype,
+            BlockXSize=str(block_w),
+            BlockYSize=str(block_h),
+        )
+        SubElement(
+            simple_src,
+            "SrcRect",
+            xOff="0",
+            yOff="0",
+            xSize=str(src_w),
+            ySize=str(src_h),
+        )
+        SubElement(
+            simple_src,
+            "DstRect",
+            xOff=str(dst_x_off),
+            yOff=str(dst_y_off),
+            xSize=str(dst_x_size),
+            ySize=str(dst_y_size),
+        )
+
+    xml_str = xml.dom.minidom.parseString(tostring(root)).toprettyxml(indent="  ")
+    vrt_path.write_text(xml_str, encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
