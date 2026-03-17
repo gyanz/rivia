@@ -349,24 +349,37 @@ class MapperExtension:
             f"Available: {available}"
         )
 
-    def plan_terrain_export(self, raster_path: "str | Path") -> Path:
-        """Export the terrain used by the current plan to a GeoTIFF.
+    def plan_terrain_export(
+        self,
+        raster_path: "str | Path",
+        copy: bool = False,
+    ) -> Path:
+        """Export the terrain used by the current plan to a GeoTIFF or GDAL VRT.
 
         Identifies the terrain HDF from :meth:`plan_terrain`, mosaics all
-        source GeoTIFFs by priority order, applies any ``Levee``-type
-        ground-line modifications stored in the same HDF, and writes the
-        result to *raster_path*.
+        source GeoTIFFs by priority order, applies any ``Levee``- or
+        ``Channel``-type ground-line modifications stored in the same HDF,
+        and writes the result to *raster_path*.
+
+        When *raster_path* has a ``.vrt`` extension the output is a GDAL VRT
+        referencing the original source TIFFs.  If modifications are present
+        a sidecar ``<stem>_mods.tif`` is written beside the VRT.
 
         Parameters
         ----------
         raster_path:
-            Destination path for the output GeoTIFF (e.g. ``"terrain.tif"``).
+            Destination path (e.g. ``"terrain.tif"`` or ``"terrain.vrt"``).
             Parent directories are created automatically.
+        copy:
+            Only relevant for ``.vrt`` output.  When ``True``, source TIFFs
+            are copied into the VRT's parent directory and the VRT uses
+            relative paths.  When ``False`` (default) the VRT uses absolute
+            paths and no files are copied.
 
         Returns
         -------
         Path
-            Resolved absolute path of the written GeoTIFF.
+            Resolved absolute path of the written file.
 
         Raises
         ------
@@ -380,7 +393,7 @@ class MapperExtension:
         from ..hdf._terrain import export_terrain
 
         terrain_layer = self.plan_terrain()
-        return export_terrain(terrain_layer.filename, raster_path)
+        return export_terrain(terrain_layer.filename, raster_path, copy=copy)
 
     def _locate_project_rasmap(self) -> Path:
         rasmap = self.project_file.with_suffix(".rasmap")
