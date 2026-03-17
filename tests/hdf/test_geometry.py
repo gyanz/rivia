@@ -123,6 +123,58 @@ class TestFlowArea:
             b = area.cell_centers
         np.testing.assert_array_equal(a, b)
 
+    def test_facepoint_face_orientation_shapes(self, synthetic_plan_hdf):
+        """fp_face_info is (n_fp, 2) and fp_face_values is (total, 2)."""
+        with PlanHdf(synthetic_plan_hdf) as hdf:
+            area = hdf.flow_areas[AREA]
+            info, vals = area.facepoint_face_orientation
+        n_fp = len(area.facepoint_coordinates)
+        assert info.shape == (n_fp, 2)
+        assert vals.ndim == 2 and vals.shape[1] == 2
+
+    def test_facepoint_face_orientation_dtypes(self, synthetic_plan_hdf):
+        """Both arrays must be int32."""
+        with PlanHdf(synthetic_plan_hdf) as hdf:
+            info, vals = hdf.flow_areas[AREA].facepoint_face_orientation
+        assert info.dtype == np.int32
+        assert vals.dtype == np.int32
+
+    def test_facepoint_face_orientation_counts_sum(self, synthetic_plan_hdf):
+        """Sum of counts in fp_face_info equals len(fp_face_values)."""
+        with PlanHdf(synthetic_plan_hdf) as hdf:
+            info, vals = hdf.flow_areas[AREA].facepoint_face_orientation
+        assert int(info[:, 1].sum()) == len(vals)
+
+    def test_facepoint_face_orientation_total_entries(self, synthetic_plan_hdf):
+        """Total entries == 2 * n_faces (each face contributes fpA and fpB)."""
+        with PlanHdf(synthetic_plan_hdf) as hdf:
+            area = hdf.flow_areas[AREA]
+            info, vals = area.facepoint_face_orientation
+        assert len(vals) == 2 * N_FACES
+
+    def test_facepoint_face_orientation_valid_face_indices(self, synthetic_plan_hdf):
+        """All face indices in fp_face_values are within [0, n_faces)."""
+        with PlanHdf(synthetic_plan_hdf) as hdf:
+            area = hdf.flow_areas[AREA]
+            _, vals = area.facepoint_face_orientation
+        assert (vals[:, 0] >= 0).all()
+        assert (vals[:, 0] < N_FACES).all()
+
+    def test_facepoint_face_orientation_valid_orientations(self, synthetic_plan_hdf):
+        """Orientation flags are 0 or 1 only."""
+        with PlanHdf(synthetic_plan_hdf) as hdf:
+            _, vals = hdf.flow_areas[AREA].facepoint_face_orientation
+        assert set(vals[:, 1].tolist()).issubset({0, 1})
+
+    def test_facepoint_face_orientation_cached(self, synthetic_plan_hdf):
+        """Second call returns the same array objects (cached)."""
+        with PlanHdf(synthetic_plan_hdf) as hdf:
+            area = hdf.flow_areas[AREA]
+            info1, vals1 = area.facepoint_face_orientation
+            info2, vals2 = area.facepoint_face_orientation
+        assert info1 is info2
+        assert vals1 is vals2
+
 
 # ---------------------------------------------------------------------------
 # Integration tests against the real example file

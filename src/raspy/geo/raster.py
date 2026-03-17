@@ -2489,6 +2489,435 @@ def _mask_outside_polygon(
     return out_path
 
 
+@log_call(logging.INFO)
+@timed(logging.INFO)
+def rasmap_raster(
+    variable: Literal["water_surface", "depth", "speed", "velocity"],
+    cell_wse: np.ndarray,
+    cell_min_elevation: np.ndarray,
+    face_min_elevation: np.ndarray,
+    face_cell_indexes: np.ndarray,
+    cell_face_info: np.ndarray,
+    cell_face_values: np.ndarray,
+    face_facepoint_indexes: np.ndarray,
+    fp_coords: np.ndarray,
+    face_normals: np.ndarray,
+    fp_face_info: np.ndarray,
+    fp_face_values: np.ndarray,
+    cell_polygons: list[np.ndarray],
+    face_normal_velocity: np.ndarray | None = None,
+    output_path: str | Path | None = None,
+    *,
+    reference_raster: str | Path | None = None,
+    cell_size: float | None = None,
+    crs: Any | None = None,
+    nodata: float = -9999.0,
+    interp_mode: Literal["flat", "sloping"] = "sloping",
+    depth_threshold: float = 0.001,
+    clip_to_perimeter: bool = True,
+    perimeter: np.ndarray | None = None,
+    use_numba: bool | None = None,
+) -> Path | rasterio.io.DatasetReader:
+    """Rasterize HEC-RAS 2D mesh results using the RASMapper-exact algorithm.
+
+    Implements the pixel-perfect pipeline reverse-engineered from
+    ``RasMapperLib.dll`` (CLB Engineering, 2026).  Produces output that
+    matches RASMapper's ``"Sloping Cell Corners"`` (``interp_mode="sloping"``)
+    and ``"Horizontal"`` (``interp_mode="flat"``) render modes.
+
+    See ``docs/export_raster2_plan.md`` for a full description of the
+    algorithm steps.
+
+    Parameters
+    ----------
+    variable:
+        ``"water_surface"`` — water-surface elevation.
+        ``"depth"``         — water depth; requires *reference_raster* (DEM).
+        ``"speed"``         — velocity magnitude ``sqrt(Vx²+Vy²)``; requires
+                              *face_normal_velocity*.
+        ``"velocity"``      — 4-band raster ``[Vx, Vy, speed, direction_deg]``;
+                              requires *face_normal_velocity*.
+    cell_wse:
+        ``(n_cells,)`` water-surface elevation per cell.
+    cell_min_elevation:
+        ``(n_cells,)`` minimum bed elevation per cell
+        (:attr:`~raspy.hdf.FlowArea.cell_min_elevation`).
+    face_min_elevation:
+        ``(n_faces,)`` minimum bed elevation at each face
+        (:attr:`~raspy.hdf.FlowArea.face_min_elevation`).
+    face_cell_indexes:
+        ``(n_faces, 2)`` — ``[cellA, cellB]``
+        (:attr:`~raspy.hdf.FlowArea.face_cell_indexes`).
+    cell_face_info:
+        ``(n_cells, 2)`` ``[start, count]``
+        (first element of :attr:`~raspy.hdf.FlowArea.cell_face_info` tuple).
+    cell_face_values:
+        ``(total, 2)`` ``[face_idx, orientation]``
+        (second element of :attr:`~raspy.hdf.FlowArea.cell_face_info` tuple).
+    face_facepoint_indexes:
+        ``(n_faces, 2)`` (:attr:`~raspy.hdf.FlowArea.face_facepoint_indexes`).
+    fp_coords:
+        ``(n_fp, 2)`` (:attr:`~raspy.hdf.FlowArea.facepoint_coordinates`).
+    face_normals:
+        ``(n_faces, 3)`` ``[nx, ny, length]``
+        (:attr:`~raspy.hdf.FlowArea.face_normals`).  Columns 0–1 are used as
+        unit normal vectors; column 2 as face lengths.
+    fp_face_info:
+        ``(n_fp, 2)`` angle-sorted CSR start/count from
+        :attr:`~raspy.hdf.FlowArea.facepoint_face_orientation`.
+    fp_face_values:
+        ``(total, 2)`` angle-sorted ``[face_idx, orientation]`` from
+        :attr:`~raspy.hdf.FlowArea.facepoint_face_orientation`.
+    cell_polygons:
+        Per-cell polygon vertex arrays from
+        :attr:`~raspy.hdf.FlowArea.cell_polygons`.
+    face_normal_velocity:
+        ``(n_faces,)`` signed face-normal velocity scalars.  Required for
+        ``variable="speed"`` or ``"velocity"``.
+    output_path:
+        Destination ``.tif`` file path.  ``None`` returns an open in-memory
+        ``rasterio.DatasetReader``; the caller must close it.
+    reference_raster:
+        Existing GeoTIFF whose transform and CRS are inherited.  Also used
+        as the terrain DEM for depth computation and per-pixel wet/dry
+        masking.  Mutually exclusive with *cell_size*.
+    cell_size:
+        Output pixel size in model coordinate units.  Used when no
+        *reference_raster* is provided; the grid origin is derived from
+        *perimeter* (if given) or from the facepoint bounding box.
+    crs:
+        Output CRS.  Inherited from *reference_raster* when ``None``.
+    nodata:
+        Fill value for dry / out-of-domain pixels.
+    interp_mode:
+        ``"sloping"`` (default) — full RASMapper pipeline with per-pixel WSE
+        interpolation and sloped wet/dry masking.
+        ``"flat"`` — flat cell value painted over each owned pixel (no
+        spatial interpolation within cells).
+    depth_threshold:
+        Minimum depth for a pixel to be considered wet (default ``0.001``).
+        Matches ``RASResults.MinWSPlotTolerance``.
+    clip_to_perimeter:
+        When ``True`` (default), pixels outside *perimeter* are set to
+        *nodata*.  Has no effect when *perimeter* is ``None``.
+    perimeter:
+        ``(n_pts, 2)`` boundary polygon used for extent and clipping.
+        Pass :attr:`~raspy.hdf.FlowArea.perimeter` here.  When ``None`` the
+        bounding box of *fp_coords* is used for the grid extent and no
+        polygon clipping is applied.
+    use_numba:
+        ``True`` — require Numba JIT (raises ``ImportError`` if absent).
+        ``False`` — force pure-Python fallback.
+        ``None`` (default) — use Numba if available, otherwise fall back
+        silently. *(Numba path not yet implemented; reserved for future.)*
+
+    Returns
+    -------
+    Path
+        Written GeoTIFF path when *output_path* is given.
+    rasterio.io.DatasetReader
+        Open in-memory dataset when *output_path* is ``None``.
+
+    Raises
+    ------
+    ImportError
+        If ``rasterio`` or ``shapely`` are not installed.
+    ValueError
+        If ``variable="depth"`` and *reference_raster* is ``None``.
+        If ``variable`` is ``"speed"`` or ``"velocity"`` and
+        *face_normal_velocity* is ``None``.
+        If both *reference_raster* and *cell_size* are ``None``.
+    """
+    try:
+        import rasterio
+        from rasterio.crs import CRS
+        from rasterio.transform import from_origin
+    except ImportError as exc:
+        raise ImportError(
+            "rasmap_raster requires rasterio.  "
+            "Install it with: pip install raspy[geo]"
+        ) from exc
+
+    from raspy.geo import _rasmap
+
+    # -- 0. Guards ----------------------------------------------------------
+    if variable == "depth" and reference_raster is None:
+        raise ValueError(
+            "reference_raster is required when variable='depth'. "
+            "Provide a path to a terrain DEM GeoTIFF."
+        )
+    if variable in ("speed", "velocity") and face_normal_velocity is None:
+        raise ValueError(
+            f"face_normal_velocity is required when variable={variable!r}."
+        )
+    if reference_raster is None and cell_size is None:
+        raise ValueError(
+            "Provide either reference_raster or cell_size to define the output grid."
+        )
+    if reference_raster is not None and cell_size is not None:
+        raise ValueError(
+            "Specify either reference_raster or cell_size, not both."
+        )
+
+    # -- 1. Resolve output grid and optionally load terrain -----------------
+    terrain_grid: np.ndarray | None = None
+    out_transform: Any
+    out_width: int
+    out_height: int
+    out_crs: Any
+
+    if reference_raster is not None:
+        with rasterio.open(reference_raster) as src:
+            out_transform = src.transform
+            out_width     = src.width
+            out_height    = src.height
+            out_crs       = crs if crs is not None else src.crs
+            raw = src.read(1).astype(np.float32)
+            nd  = src.nodata
+        if nd is not None:
+            raw[raw == nd] = np.nan
+        terrain_grid = raw.astype(np.float64)
+    else:
+        # Derive grid from perimeter bbox or facepoint bbox
+        if perimeter is not None and len(perimeter) >= 3:
+            x_min = float(perimeter[:, 0].min())
+            x_max = float(perimeter[:, 0].max())
+            y_min = float(perimeter[:, 1].min())
+            y_max = float(perimeter[:, 1].max())
+        else:
+            x_min = float(fp_coords[:, 0].min())
+            x_max = float(fp_coords[:, 0].max())
+            y_min = float(fp_coords[:, 1].min())
+            y_max = float(fp_coords[:, 1].max())
+        west  = float(np.floor(x_min / cell_size) * cell_size)  # type: ignore[operator]
+        north = float(np.ceil(y_max  / cell_size) * cell_size)  # type: ignore[operator]
+        out_transform = from_origin(west, north, cell_size, cell_size)
+        east  = float(np.ceil(x_max / cell_size) * cell_size)  # type: ignore[operator]
+        south = float(np.floor(y_min / cell_size) * cell_size)  # type: ignore[operator]
+        out_width  = int(round((east - west) / cell_size))
+        out_height = int(round((north - south) / cell_size))
+        out_crs    = CRS.from_user_input(crs) if crs is not None else None
+
+    if out_crs is not None and not isinstance(out_crs, CRS):
+        out_crs = CRS.from_user_input(out_crs)
+
+    n_cells = len(cell_wse)
+    n_faces = len(face_cell_indexes)
+
+    logger.info(
+        "rasmap_raster: variable=%r, interp_mode=%r, n_cells=%d, n_faces=%d, "
+        "grid=%dx%d, pixel_size=%.2f",
+        variable, interp_mode, n_cells, n_faces,
+        out_width, out_height, abs(out_transform.a),
+    )
+
+    # -- 2. Wet-cell mask (common to flat and sloping) ----------------------
+    # Number of faces per cell (needed for virtual-cell detection in Step A)
+    _cell_face_count_arr = cell_face_info[:n_cells, 1].astype(np.int32)
+
+    wet_mask = (cell_wse - cell_min_elevation[:n_cells]) > depth_threshold
+
+    # -- 3a. Flat mode — paint cell values directly -------------------------
+    if interp_mode == "flat":
+        cell_id_grid = _rasmap.build_cell_id_raster(
+            cell_polygons, wet_mask, out_transform, out_height, out_width
+        )
+        valid_rows, valid_cols = np.where(cell_id_grid > 0)
+        if variable in ("speed", "velocity") and face_normal_velocity is not None:
+            # Flat speed: area-weighted mean of |face_vel| over cell faces
+            face_areas = face_normals[:, 2]  # lengths used as area proxy
+            cell_speed_flat = np.zeros(n_cells, dtype=np.float32)
+            for ci in range(n_cells):
+                start = int(cell_face_info[ci, 0])
+                count = int(cell_face_info[ci, 1])
+                fids  = cell_face_values[start : start + count, 0]
+                lens  = face_areas[fids]
+                vels  = np.abs(face_normal_velocity[fids])
+                total = float(lens.sum())
+                val = float((vels * lens).sum() / total) if total > 0 else 0.0
+                cell_speed_flat[ci] = val
+
+        n_bands = 4 if variable == "velocity" else 1
+        if n_bands == 4:
+            out_arr: np.ndarray = np.full(
+                (4, out_height, out_width), nodata, dtype=np.float32
+            )
+        else:
+            out_arr = np.full((out_height, out_width), nodata, dtype=np.float32)
+
+        for idx in range(len(valid_rows)):
+            r = int(valid_rows[idx])
+            c = int(valid_cols[idx])
+            ci = int(cell_id_grid[r, c]) - 1
+            if variable == "water_surface":
+                out_arr[r, c] = np.float32(cell_wse[ci])
+            elif variable == "depth":
+                t = float(terrain_grid[r, c]) if terrain_grid is not None else 0.0
+                if np.isnan(t) or t == nodata:
+                    continue
+                dep = float(cell_wse[ci]) - t
+                out_arr[r, c] = np.float32(max(0.0, dep)) if dep > 0 else nodata
+            elif variable == "speed":
+                out_arr[r, c] = cell_speed_flat[ci]
+            elif variable == "velocity":
+                spd = float(cell_speed_flat[ci])
+                out_arr[0, r, c] = np.float32(spd)  # simplified: Vx=spd, Vy=0
+                out_arr[1, r, c] = np.float32(0.0)
+                out_arr[2, r, c] = np.float32(spd)
+                out_arr[3, r, c] = np.float32(0.0)
+
+    # -- 3b. Sloping mode — full RASMapper pipeline -------------------------
+    else:
+        # Step A: hydraulic connectivity
+        face_connected, face_value_a, face_value_b = _rasmap.compute_face_wss(
+            cell_wse, cell_min_elevation[:n_cells], face_min_elevation,
+            face_cell_indexes, _cell_face_count_arr,
+        )
+
+        # Step B: facepoint WSE (for WSE/depth sloping render)
+        fp_wse: np.ndarray | None = None
+        if variable in ("water_surface", "depth"):
+            fp_wse = _rasmap.compute_facepoint_wse(
+                fp_coords, fp_face_info, fp_face_values,
+                face_facepoint_indexes, face_value_a, face_value_b,
+            )
+
+        # Steps 2 / 3 / 3.5: velocity reconstruction (speed/velocity only)
+        fp_velocities = None
+        fp_face_local_map: dict | None = None
+        replaced_face_vel = None
+        face_vel_A = None
+        face_vel_B = None
+        if variable in ("speed", "velocity") and face_normal_velocity is not None:
+            face_normals_2d = face_normals[:, :2]
+            face_vel_A, face_vel_B = _rasmap.reconstruct_face_velocities(
+                face_normal_velocity.astype(np.float64),
+                face_normals_2d, face_connected,
+                face_cell_indexes, cell_face_info[:n_cells], cell_face_values,
+            )
+            fp_velocities, fp_face_local_map = _rasmap.compute_vertex_velocities(
+                face_vel_A, face_vel_B, face_connected,
+                face_normals[:, 2],  # face lengths
+                face_facepoint_indexes, face_cell_indexes,
+                cell_wse, fp_face_info, fp_face_values,
+                face_value_a, face_value_b,
+            )
+            replaced_face_vel = _rasmap.replace_face_velocities_sloped(
+                fp_velocities, fp_face_local_map, face_facepoint_indexes,
+            )
+
+        # Step 4a: cell-ID raster
+        cell_id_grid = _rasmap.build_cell_id_raster(
+            cell_polygons, wet_mask, out_transform, out_height, out_width
+        )
+
+        # Sample terrain at facepoints for depth-weighted rebalancing
+        fp_elev: np.ndarray | None = None
+        if terrain_grid is not None and fp_wse is not None:
+            fp_elev = _rasmap.sample_terrain_at_facepoints(
+                fp_coords, terrain_grid, out_transform
+            )
+
+        # Step 4b–4e: pixel loop
+        out_arr = _rasmap.rasterize_rasmap(
+            variable=variable,
+            cell_id_grid=cell_id_grid,
+            transform=out_transform,
+            terrain_grid=terrain_grid,
+            cell_wse=cell_wse,
+            cell_face_info=cell_face_info[:n_cells],
+            cell_face_values=cell_face_values,
+            face_facepoint_indexes=face_facepoint_indexes,
+            face_cell_indexes=face_cell_indexes,
+            face_min_elev=face_min_elevation,
+            fp_coords=fp_coords,
+            fp_wse=fp_wse,
+            face_value_a=face_value_a,
+            face_value_b=face_value_b,
+            fp_velocities=fp_velocities,
+            fp_face_local_map=fp_face_local_map,
+            replaced_face_vel=replaced_face_vel,
+            face_vel_A=face_vel_A,
+            face_vel_B=face_vel_B,
+            fp_elev=fp_elev,
+            nodata=nodata,
+            depth_threshold=depth_threshold,
+        )
+
+    # -- 4. Write output ----------------------------------------------------
+    n_bands = 4 if variable == "velocity" else 1
+    profile: dict[str, Any] = dict(
+        driver="GTiff",
+        dtype="float32",
+        count=n_bands,
+        width=out_width,
+        height=out_height,
+        transform=out_transform,
+        nodata=nodata,
+    )
+    if out_crs is not None:
+        profile["crs"] = out_crs
+
+    # Apply perimeter mask if requested
+    if clip_to_perimeter and perimeter is not None:
+        if n_bands == 1:
+            out_arr = _mask_outside_polygon_array(
+                out_arr, perimeter, out_transform, nodata
+            )
+        else:
+            for b in range(n_bands):
+                out_arr[b] = _mask_outside_polygon_array(
+                    out_arr[b], perimeter, out_transform, nodata
+                )
+
+    if output_path is None:
+        memfile = rasterio.MemoryFile()
+        with memfile.open(**profile) as dst:
+            if n_bands == 1:
+                dst.write(out_arr.astype(np.float32), 1)
+            else:
+                for b in range(n_bands):
+                    dst.write(out_arr[b].astype(np.float32), b + 1)
+        return memfile.open()
+
+    out_path = Path(output_path).resolve()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with rasterio.open(out_path, "w", **profile) as dst:
+        if n_bands == 1:
+            dst.write(out_arr.astype(np.float32), 1)
+        else:
+            for b in range(n_bands):
+                dst.write(out_arr[b].astype(np.float32), b + 1)
+    return out_path
+
+
+def _mask_outside_polygon_array(
+    arr: np.ndarray,
+    polygon_xy: np.ndarray,
+    transform: Any,
+    nodata: float,
+) -> np.ndarray:
+    """Set pixels outside *polygon_xy* to *nodata* in a 2D float array.
+
+    Thin wrapper around rasterio.features.geometry_mask so the caller
+    doesn't need to manage an in-memory dataset just for masking.
+    """
+    import rasterio.features
+    from shapely.geometry import Polygon as _Polygon
+
+    out = arr.copy()
+    poly = _Polygon(polygon_xy)
+    mask = rasterio.features.geometry_mask(
+        [poly],
+        out_shape=arr.shape,
+        transform=transform,
+        invert=False,  # True = inside polygon; False = mask outside
+        all_touched=False,
+    )
+    out[mask] = nodata
+    return out
+
+
 def _compare_rasters_debug(
     label: str,
     output: Path | rasterio.io.DatasetReader,

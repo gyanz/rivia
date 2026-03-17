@@ -734,6 +734,115 @@ class FlowArea:
     # ------------------------------------------------------------------
 
     @property
+    def facepoint_face_orientation(self) -> tuple[np.ndarray, np.ndarray]:
+        """Angle-sorted facepoint→face mapping with orientation flags.
+
+        Returns ``(fp_face_info, fp_face_values)`` where:
+
+        * ``fp_face_info``:  shape ``(n_facepoints, 2)``, dtype ``int32``.
+          Each row is ``[start, count]`` — a slice into ``fp_face_values``
+          for that facepoint.
+        * ``fp_face_values``: shape ``(total_entries, 2)``, dtype ``int32``.
+          Each row is ``[face_idx, orientation]`` where ``orientation = 0``
+          means this facepoint is ``fpA`` (first endpoint) of that face and
+          ``orientation = 1`` means it is ``fpB`` (second endpoint).
+
+        Entries for each facepoint are sorted in clockwise angular order
+        around the facepoint coordinate.  This ordering is required for
+        correct arc traversal in the RASMapper vertex-velocity algorithm
+        (Step 3, ``MeshFV2D.cs``).
+
+        Reads ``FacePoints Face and Orientation Info/Values`` from the HDF
+        group when present; otherwise builds the CSR arrays from
+        ``face_facepoint_indexes``.  The angle sort is always applied.
+
+        Computed once and cached.
+
+        Notes
+        -----
+        Derived from ``_build_fp_face_connectivity`` and
+        ``_sort_fp_faces_by_angle`` in
+        ``velocity_rasterizer_combined.py`` (CLB Engineering, 2026).
+        """
+        cache_key = "_facepoint_face_orientation"
+        if cache_key in self._cache:
+            return (
+                self._cache["_fpo_info"],   # type: ignore[return-value]
+                self._cache["_fpo_values"],
+            )
+
+        face_fps = self.face_facepoint_indexes  # (n_faces, 2)
+        fp_coords = self.facepoint_coordinates  # (n_fp, 2)
+        n_fp = len(fp_coords)
+        n_faces = len(face_fps)
+
+        # --- Load from HDF if available, else build from scratch -----------
+        if ("FacePoints Face and Orientation Info" in self._g
+                and "FacePoints Face and Orientation Values" in self._g):
+            fp_info = np.array(
+                self._g["FacePoints Face and Orientation Info"], dtype=np.int32
+            )
+            fp_vals = np.array(
+                self._g["FacePoints Face and Orientation Values"], dtype=np.int32
+            )
+        else:
+            # Build CSR-style arrays from face_facepoint_indexes.
+            # orientation 0 = fpA (first endpoint), 1 = fpB (second endpoint)
+            fp_counts = np.zeros(n_fp, dtype=np.int32)
+            for fi in range(n_faces):
+                fp_counts[int(face_fps[fi, 0])] += 1
+                fp_counts[int(face_fps[fi, 1])] += 1
+
+            fp_info = np.zeros((n_fp, 2), dtype=np.int32)
+            offset = 0
+            for i in range(n_fp):
+                fp_info[i, 0] = offset
+                fp_info[i, 1] = fp_counts[i]
+                offset += fp_counts[i]
+
+            fp_vals = np.zeros((offset, 2), dtype=np.int32)
+            current = np.zeros(n_fp, dtype=np.int32)
+            for fi in range(n_faces):
+                fpA = int(face_fps[fi, 0])
+                fpB = int(face_fps[fi, 1])
+                pos_a = fp_info[fpA, 0] + current[fpA]
+                fp_vals[pos_a, 0] = fi
+                fp_vals[pos_a, 1] = 0  # fpA side
+                current[fpA] += 1
+                pos_b = fp_info[fpB, 0] + current[fpB]
+                fp_vals[pos_b, 0] = fi
+                fp_vals[pos_b, 1] = 1  # fpB side
+                current[fpB] += 1
+
+        # --- Angle-sort entries for each facepoint -------------------------
+        # Required so that arc traversal in vertex-velocity computation
+        # visits faces in consistent clockwise angular order.
+        for fp in range(n_fp):
+            start = int(fp_info[fp, 0])
+            count = int(fp_info[fp, 1])
+            if count <= 1:
+                continue
+            fp_x, fp_y = float(fp_coords[fp, 0]), float(fp_coords[fp, 1])
+            angles = np.empty(count, dtype=np.float64)
+            for j in range(count):
+                fi = int(fp_vals[start + j, 0])
+                fpA_idx = int(face_fps[fi, 0])
+                fpB_idx = int(face_fps[fi, 1])
+                other = fpB_idx if fpA_idx == fp else fpA_idx
+                ox = float(fp_coords[other, 0])
+                oy = float(fp_coords[other, 1])
+                angles[j] = np.arctan2(oy - fp_y, ox - fp_x)
+            order = np.argsort(angles)
+            temp = fp_vals[start : start + count].copy()
+            for j in range(count):
+                fp_vals[start + j] = temp[order[j]]
+
+        self._cache["_fpo_info"] = fp_info    # type: ignore[assignment]
+        self._cache["_fpo_values"] = fp_vals  # type: ignore[assignment]
+        self._cache[cache_key] = True         # type: ignore[assignment]
+        return fp_info, fp_vals
+
+    @property
     def facepoint_to_faces(self) -> list[np.ndarray]:
         """Face indices adjacent to each facepoint.
 
