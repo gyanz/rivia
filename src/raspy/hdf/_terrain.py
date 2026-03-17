@@ -337,11 +337,14 @@ def _write_vrt(
 def _read_modifications(mod_grp: Any) -> list[dict[str, Any]]:
     """Return a list of parsed modification dicts from an HDF Modifications/ group.
 
-    Only ``Levee`` subtypes are parsed; others emit a warning and are skipped.
-    The returned list is sorted so lower-priority modifications come first
-    (they are applied first and can be overwritten by higher-priority ones).
+    ``Levee`` and ``Channel`` subtypes are parsed; others emit a warning and
+    are skipped.  The returned list is sorted so lower-priority modifications
+    come first (they are applied first and can be overwritten by
+    higher-priority ones).
     """
     import h5py
+
+    _SUPPORTED_SUBTYPES = {"Levee", "Channel"}
 
     mods: list[dict[str, Any]] = []
     for name, grp in mod_grp.items():
@@ -352,10 +355,10 @@ def _read_modifications(mod_grp: Any) -> list[dict[str, Any]]:
             subtype = subtype.decode()
         subtype = subtype.strip("\x00")
 
-        if subtype != "Levee":
+        if subtype not in _SUPPORTED_SUBTYPES:
             logger.warning(
                 "Modification %r has unsupported subtype %r — skipped "
-                "(only 'Levee' is currently implemented)",
+                "(only 'Levee' and 'Channel' are currently implemented)",
                 name,
                 subtype,
             )
@@ -407,6 +410,7 @@ def _read_modifications(mod_grp: Any) -> list[dict[str, Any]]:
         mods.append(
             {
                 "name": name,
+                "subtype": subtype,
                 "elev_type": elev_type,
                 "top_width": top_width,
                 "left_slope": left_slope,
@@ -435,7 +439,7 @@ def _apply_modifications(
     modifications: list[dict[str, Any]],
     nodata: float,
 ) -> np.ndarray:
-    """Apply levee modifications to *mosaic* and return the updated array.
+    """Apply levee/channel modifications to *mosaic* and return the updated array.
 
     Parameters
     ----------
@@ -466,6 +470,7 @@ def _apply_modifications(
         left_slope = mod["left_slope"]
         right_slope = mod["right_slope"]
         elev_type = mod["elev_type"]
+        subtype = mod["subtype"]
 
         if max_reach <= 0:
             continue
@@ -507,12 +512,17 @@ def _apply_modifications(
         crest = np.interp(stations, profile[:, 0], profile[:, 1])
 
         # -- Cross-section elevation ----------------------------------------
+        # For a Levee the flat crest is the high point; sides slope *down*
+        # away from it (crest − drop).  For a Channel the flat bottom is the
+        # low point; sides slope *up* away from it (crest + drop).
+        sign = 1.0 if subtype == "Channel" else -1.0
+
         abs_perp = np.abs(signed_perp)
         half_w = top_width / 2.0
 
         mod_elev = np.full(len(px), np.nan, dtype=np.float64)
 
-        # Flat crest: |perp| <= half_width
+        # Flat bottom/crest: |perp| <= half_width
         on_top = abs_perp <= half_w
         mod_elev[on_top] = crest[on_top]
 
@@ -520,13 +530,13 @@ def _apply_modifications(
         left_zone = (signed_perp > half_w) & (abs_perp <= max_reach)
         if np.any(left_zone):
             drop = (abs_perp[left_zone] - half_w) / left_slope
-            mod_elev[left_zone] = crest[left_zone] - drop
+            mod_elev[left_zone] = crest[left_zone] + sign * drop
 
         # Right side (signed_perp < 0) sloping zone
         right_zone = (signed_perp < -half_w) & (abs_perp <= max_reach)
         if np.any(right_zone):
             drop = (abs_perp[right_zone] - half_w) / right_slope
-            mod_elev[right_zone] = crest[right_zone] - drop
+            mod_elev[right_zone] = crest[right_zone] + sign * drop
 
         # -- Apply elevation type -------------------------------------------
         valid = ~np.isnan(mod_elev)
