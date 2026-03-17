@@ -193,15 +193,28 @@ class Model(MapperExtension):
         if self._hdf is None:
             self._hdf = PlanHdf(self.plan_hdf_file)
         return self._hdf
-    
-    def plan_info(self):
-        """Return a dict of plan info from the COM object."""
-        #info = {}
-        #info["title"] = self._rc.Plan_Title()
-        #info["current"] = self._rc.Plan_Current()
-        #info["count"] = self._rc.Plan_Count()
-        count, titles = self._rc.Plan_Names(IncludeOnlyPlansInBaseDirectory=True)
 
+    @property
+    def plan_index(self) -> int:
+        for i, plan_info in enumerate(self.project.plans()):
+            if plan_info["path"].name == self.plan_file.name:
+                return i
+
+    @property
+    def plan_title(self) -> str | None:
+        """Title of the current plan (``Plan Title=`` from the plan file)."""
+        idx = self.plan_index
+        if idx is None:
+            return None
+        return self.project.plans()[idx]["title"]
+
+    @property
+    def plan_short_id(self) -> str | None:
+        """Short identifier of the current plan (``Short Identifier=``)."""
+        idx = self.plan_index
+        if idx is None:
+            return None
+        return self.project.plans()[idx]["short_id"]
 
     def change_plan(self, plan: str | int) -> None:
         """Set the active plan by name or zero-based index, then reload.
