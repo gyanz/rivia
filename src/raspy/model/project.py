@@ -235,6 +235,26 @@ class ProjectFile:
         """
         return self._get_all(key)
 
+    # ------------------------------------------------------------------
+    # Plan metadata helpers
+    # ------------------------------------------------------------------
+
+    def plan_titles(self) -> list[str | None]:
+        """Return the ``Plan Title`` for each plan file, in project order.
+
+        A ``None`` entry means the plan file does not exist or has no
+        ``Plan Title=`` line.
+        """
+        return [_read_plan_field(p, "Plan Title") for p in self._plan_files]
+
+    def plan_short_ids(self) -> list[str | None]:
+        """Return the ``Short Identifier`` for each plan file, in project order.
+
+        A ``None`` entry means the plan file does not exist or has no
+        ``Short Identifier=`` line.
+        """
+        return [_read_plan_field(p, "Short Identifier") for p in self._plan_files]
+
     def __repr__(self) -> str:
         return f"ProjectFile({self._path!r})"
 
@@ -242,6 +262,26 @@ class ProjectFile:
 # ------------------------------------------------------------------
 # Module-level helpers
 # ------------------------------------------------------------------
+
+def _read_plan_field(plan_path: Path, key: str) -> str | None:
+    """Read the first ``key=value`` line from *plan_path*, or return ``None``.
+
+    Reads only until the key is found (plan headers are always near the top),
+    so this is efficient even for large plan files.
+    """
+    if not plan_path.is_file():
+        return None
+    prefix = key + "="
+    try:
+        with open(plan_path, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                if line.startswith(prefix):
+                    value = line[len(prefix):].strip()
+                    return value if value else None
+    except OSError:
+        return None
+    return None
+
 
 def _parse_description(lines: list[str]) -> str:
     """Extract the text between ``BEGIN DESCRIPTION:`` and ``END DESCRIPTION:``."""
