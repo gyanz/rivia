@@ -759,6 +759,24 @@ class FlowArea:
         for that facepoint.
 
         HDF source: ``FacePoints Face and Orientation Info``.
+
+        Examples
+        --------
+        Using the 5-facepoint mesh from :attr:`facepoint_face_orientation`
+        (fp0 at centre with 4 adjacent faces; fp1–fp4 each with 1)::
+
+            facepoint_face_orientation_info = np.array([
+                [0, 4],   # fp0: 4 entries starting at slot 0
+                [4, 1],   # fp1: 1 entry  starting at slot 4
+                [5, 1],   # fp2: 1 entry  starting at slot 5
+                [6, 1],   # fp3: 1 entry  starting at slot 6
+                [7, 1],   # fp4: 1 entry  starting at slot 7
+            ], dtype=np.int32)
+
+        To get the entries for fp0::
+
+            start, count = info[0]          # 0, 4
+            fp0_entries = values[start : start + count]   # slots 0-3
         """
         return self._load("FacePoints Face and Orientation Info").astype(np.int32)
 
@@ -767,13 +785,33 @@ class FlowArea:
         """Face index and orientation flag for each facepoint→face entry.
 
         Shape ``(total_entries, 2)``, dtype ``int32``.  Each row is
-        ``[face_idx, orientation]`` where ``orientation = 0`` means this
-        facepoint is ``fpA`` (first endpoint) of that face and ``orientation = 1``
-        means it is ``fpB`` (second endpoint).
+        ``[face_idx, orientation]`` where ``orientation = -1`` means this
+        facepoint is ``fpA`` (first endpoint) of that face and ``orientation = +1``
+        means it is ``fpB`` (second endpoint).  Matches the values written by
+        RasMapper (``MeshFV2D.cs``: fpA → ``-1``, fpB → ``+1``).
 
         Use :attr:`facepoint_face_orientation_info` to slice per facepoint.
 
         HDF source: ``FacePoints Face and Orientation Values``.
+
+        Examples
+        --------
+        Using the 5-facepoint mesh from :attr:`facepoint_face_orientation`::
+
+            facepoint_face_orientation_values = np.array([
+                [1, -1],   # slot 0 — face 1, fp0 is fpA
+                [3, -1],   # slot 1 — face 3, fp0 is fpA
+                [0, -1],   # slot 2 — face 0, fp0 is fpA
+                [2, -1],   # slot 3 — face 2, fp0 is fpA
+                [3,  1],   # slot 4 — face 3, fp1 is fpB
+                [0,  1],   # slot 5 — face 0, fp2 is fpB
+                [2,  1],   # slot 6 — face 2, fp3 is fpB
+                [1,  1],   # slot 7 — face 1, fp4 is fpB
+            ], dtype=np.int32)
+
+        Note that the face indices for fp0 (slots 0–3) are ``[1, 3, 0, 2]``,
+        not ``[0, 1, 2, 3]`` — they are in counter-clockwise angular order,
+        not creation order.
         """
         return self._load("FacePoints Face and Orientation Values").astype(np.int32)
 
@@ -849,15 +887,15 @@ class FlowArea:
               fp3: [6, 1]
               fp4: [7, 1]
 
-            fp_face_values          # [face_idx, orientation]
-              slot 0: [1, 0]   ← face 1 (South), fp0 is fpA
-              slot 1: [3, 0]   ← face 3 (East),  fp0 is fpA
-              slot 2: [0, 0]   ← face 0 (North), fp0 is fpA
-              slot 3: [2, 0]   ← face 2 (West),  fp0 is fpA
-              slot 4: [3, 1]   ← face 3, fp1 is fpB
-              slot 5: [0, 1]   ← face 0, fp2 is fpB
-              slot 6: [2, 1]   ← face 2, fp3 is fpB
-              slot 7: [1, 1]   ← face 1, fp4 is fpB
+            fp_face_values          # [face_idx, orientation]  (-1=fpA, +1=fpB)
+              slot 0: [1, -1]  ← face 1 (South), fp0 is fpA
+              slot 1: [3, -1]  ← face 3 (East),  fp0 is fpA
+              slot 2: [0, -1]  ← face 0 (North), fp0 is fpA
+              slot 3: [2, -1]  ← face 2 (West),  fp0 is fpA
+              slot 4: [3,  1]  ← face 3, fp1 is fpB
+              slot 5: [0,  1]  ← face 0, fp2 is fpB
+              slot 6: [2,  1]  ← face 2, fp3 is fpB
+              slot 7: [1,  1]  ← face 1, fp4 is fpB
 
         fp0's faces in angular order: ``fp_face_values[0:4, 0]`` → ``[1, 3, 0, 2]``,
         not ``[0, 1, 2, 3]``.
@@ -886,7 +924,8 @@ class FlowArea:
             fp_vals = self.facepoint_face_orientation_values.copy()
         else:
             # Build CSR-style arrays from face_facepoint_indexes.
-            # orientation 0 = fpA (first endpoint), 1 = fpB (second endpoint)
+            # orientation -1 = fpA (first endpoint), +1 = fpB (second endpoint)
+            # matching the values written by RasMapper (MeshFV2D.cs).
             fp_counts = np.zeros(n_fp, dtype=np.int32)
             for fi in range(n_faces):
                 fp_counts[int(face_fps[fi, 0])] += 1
@@ -906,11 +945,11 @@ class FlowArea:
                 fpB = int(face_fps[fi, 1])
                 pos_a = fp_info[fpA, 0] + current[fpA]
                 fp_vals[pos_a, 0] = fi
-                fp_vals[pos_a, 1] = 0  # fpA side
+                fp_vals[pos_a, 1] = -1  # fpA side
                 current[fpA] += 1
                 pos_b = fp_info[fpB, 0] + current[fpB]
                 fp_vals[pos_b, 0] = fi
-                fp_vals[pos_b, 1] = 1  # fpB side
+                fp_vals[pos_b, 1] = 1   # fpB side
                 current[fpB] += 1
 
         # --- Angle-sort entries for each facepoint -------------------------

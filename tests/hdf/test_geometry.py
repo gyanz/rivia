@@ -161,10 +161,10 @@ class TestFlowArea:
         assert (vals[:, 0] < N_FACES).all()
 
     def test_facepoint_face_orientation_valid_orientations(self, synthetic_plan_hdf):
-        """Orientation flags are 0 or 1 only."""
+        """Orientation flags are -1 or +1 only (fpA=-1, fpB=+1)."""
         with PlanHdf(synthetic_plan_hdf) as hdf:
             _, vals = hdf.flow_areas[AREA].facepoint_face_orientation
-        assert set(vals[:, 1].tolist()).issubset({0, 1})
+        assert set(vals[:, 1].tolist()).issubset({-1, 1})
 
     def test_facepoint_face_orientation_cached(self, synthetic_plan_hdf):
         """Second call returns the same array objects (cached)."""
