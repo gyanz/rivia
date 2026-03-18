@@ -2540,8 +2540,14 @@ def rasmap_raster(
     cell_wse:
         ``(n_cells,)`` water-surface elevation per cell.
     cell_min_elevation:
-        ``(n_cells,)`` minimum bed elevation per cell
-        (:attr:`~raspy.hdf.FlowArea.cell_min_elevation`).
+        ``(n_cells + n_ghost,)`` minimum bed elevation per cell including
+        ghost (virtual boundary) cell rows.  Must be the full unsliced array
+        (:attr:`~raspy.hdf.FlowArea.cell_min_elevation` returns only real
+        cells — pass the raw HDF dataset or append ghost rows).  Ghost rows
+        have ``NaN`` in HEC-RAS output.  The extra rows are required because
+        :func:`~raspy.geo._rasmap.compute_face_wss` indexes into this array
+        using ``face_cell_indexes`` which contains ghost cell indices on the
+        cellB side of perimeter faces.
     face_min_elevation:
         ``(n_faces,)`` minimum bed elevation at each face
         (:attr:`~raspy.hdf.FlowArea.face_min_elevation`).
@@ -2713,7 +2719,7 @@ def rasmap_raster(
 
     # -- 2. Wet-cell mask (common to flat and sloping) ----------------------
     # Number of faces per cell (needed for virtual-cell detection in Step A)
-    _cell_face_count_arr = cell_face_info[:n_cells, 1].astype(np.int32)
+    _cell_face_count_arr = cell_face_info[:, 1].astype(np.int32)
 
     wet_mask = (cell_wse - cell_min_elevation[:n_cells]) > depth_threshold
 
@@ -2770,7 +2776,7 @@ def rasmap_raster(
     else:
         # Step A: hydraulic connectivity
         face_connected, face_value_a, face_value_b = _rasmap.compute_face_wss(
-            cell_wse, cell_min_elevation[:n_cells], face_min_elevation,
+            cell_wse, cell_min_elevation, face_min_elevation,
             face_cell_indexes, _cell_face_count_arr,
         )
 
@@ -2795,7 +2801,7 @@ def rasmap_raster(
                 face_normals_2d, face_connected,
                 face_cell_indexes, cell_face_info[:n_cells], cell_face_values,
             )
-            fp_velocities, fp_face_local_map = _rasmap.compute_vertex_velocities(
+            fp_velocities, fp_face_local_map = _rasmap.compute_facepoint_velocities(
                 face_vel_A, face_vel_B, face_connected,
                 face_normals[:, 2],  # face lengths
                 face_facepoint_indexes, face_cell_indexes,

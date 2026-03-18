@@ -15,7 +15,7 @@ Pipeline stages (see ``export_raster2_plan.md`` for full description)
 Step A  — Hydraulic connectivity + per-face WSE values
 Step B  — Facepoint WSE via PlanarRegressionZ
 Step 2  — C-stencil tangential velocity reconstruction
-Step 3  — Inverse-face-length weighted vertex velocity averaging
+Step 3  — Inverse-face-length weighted facepoint velocity averaging
 Step 3.5— Sloped face velocity replacement
 Step 4  — Polygon barycentric weights + donate + pixel interpolation
 
@@ -24,7 +24,7 @@ Public API
 compute_face_wss
 compute_facepoint_wse
 reconstruct_face_velocities
-compute_vertex_velocities
+compute_facepoint_velocities
 replace_face_velocities_sloped
 build_cell_id_raster
 rasterize_rasmap
@@ -80,6 +80,64 @@ def compute_face_wss(
     Replicates ``compute_face_wss_new`` from ``velocity_rasterizer_combined.py``
     which mirrors ``MeshFV2D.cs`` / ``RASResults.cs`` internal logic.
 
+    For each face the function determines whether water is actively flowing
+    across it (hydraulic connectivity) and assigns a WSE value to each side
+    (cellA side → ``face_value_a``, cellB side → ``face_value_b``).  These
+    per-side values are later used by :func:`compute_facepoint_wse` to fit a
+    sloped water surface across the mesh.
+
+    Decision logic (applied in order)
+    ----------------------------------
+    1. **No real neighbour** (``cellA < 0`` or ``cellB < 0``): face sits on
+       the outer mesh boundary with only one real cell.  Skip entirely —
+       outputs remain at ``_NODATA`` / ``False``.
+
+    2. **Virtual cell or dry cell**: cells with ``face_count == 1`` are
+       virtual boundary cells inserted by HEC-RAS as computational
+       placeholders.  cellA and cellB are the left and right cells of the
+       face respectively (relative to the face normal orientation).  By
+       HEC-RAS mesh construction convention, the virtual cell is always
+       placed on the right (cellB) side of perimeter faces, so
+       ``face_is_perimeter`` is determined solely by ``cell_b_virtual``.  If
+       either cell is dry (``wse ≤ min_elev + _MIN_WS_PLOT_TOLERANCE``) or
+       the face is a perimeter face, connectivity is ``False``.  The side
+       belonging to a dry or virtual cell gets ``_NODATA``; a wet real cell
+       keeps its WSE.
+
+    3. **Both cells below the face invert** (``wse_a ≤ min_elev_face`` and
+       ``wse_b ≤ min_elev_face``): water on both sides is ponded below the
+       face sill — no flow over the face.  Both sides take the cell WSE and
+       connectivity is ``False``.
+
+    4. **Overtopping / weir-crest condition** (``was_crit_cap_used`` and
+       depth ratio ``depth_higher / depth_above_face > 2``): the face is
+       acting as a crested structure (levee, weir, or high sill) where water
+       overtops with critical flow.  ``was_crit_cap_used`` indicates the
+       average WSE fell below the critical-depth threshold (2/3 of head above
+       the sill), and the depth ratio confirms the upstream cell is a deep
+       pool with only a small head driving flow over the crest.  Both a levee
+       and a weir satisfy these same two criteria — they are the same
+       hydraulic condition.  Connectivity is ``False``; the upstream
+       (higher) side takes ``higher_wse`` and the downstream side keeps its
+       own cell WSE.
+
+    5. **Backfill condition** (``(wse_b - wse_a) * (min_elev_b - min_elev_a) ≤ 0``):
+       WSE gradient and bed-elevation gradient point in opposite directions —
+       the lower cell sits on higher ground, which can occur when flow backs
+       up into a depression.  Both sides take ``face_ws`` and connectivity is
+       ``True``.
+
+    6. **Deep flow** (``depth_higher ≥ 2 × delta_min_elev``): the water depth
+       in the higher cell is at least twice the bed-elevation difference
+       between cells, so the slope effect is negligible.  Both sides take
+       ``face_ws`` and connectivity is ``True``.
+
+    7. **Transitional flow** (everything else): the bed-elevation difference
+       is significant relative to depth.  A quadratic interpolation blends
+       between a depth-based estimate and ``face_ws``, giving a smoothly
+       varying WSE that accounts for the sloping bed.  Both sides take this
+       interpolated value and connectivity is ``True``.
+
     Parameters
     ----------
     cell_wse:
@@ -92,7 +150,8 @@ def compute_face_wss(
         ``(n_faces, 2)`` — ``[cellA, cellB]``.  ``-1`` = boundary / no cell.
     cell_face_count:
         Number of faces per cell, shape ``(n_cells,)``.  Cells with count == 1
-        are treated as virtual (ghost) boundary cells.
+        are treated as virtual boundary cells (also called ghost cells in
+        general CFD literature).
 
     Returns
     -------
@@ -408,37 +467,94 @@ def reconstruct_face_velocities(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Step 2 — C-stencil least-squares tangential velocity reconstruction.
 
-    HEC-RAS stores only face-normal velocity scalars.  This function
-    reconstructs full 2D ``(Vx, Vy)`` velocity vectors at each face using
-    a 3-face C-stencil from the cells on each side of the face.
+    HEC-RAS stores only face-normal velocity scalars ``vn`` (the component
+    perpendicular to each face).  This function reconstructs the full 2D
+    ``(Vx, Vy)`` velocity vector at every face by estimating the missing
+    tangential component via a 3-face C-stencil.
 
-    Replicates ``reconstruct_face_velocities_least_squares`` from
-    ``velocity_rasterizer_combined.py`` (``MeshFV2D.cs``).
+    Replicates ``reconstruct_face_velocities_least_squares`` from RASMapper's
+    ``MeshFV2D.cs`` (also exposed in ``velocity_rasterizer_combined.py``).
+
+    Algorithm
+    ---------
+    For every face *f* with unit normal ``n̂ = (fn_x, fn_y)`` and stored
+    face-normal velocity ``vn``, the reconstruction is performed **twice** —
+    once from each adjacent cell's perspective (cellA and cellB):
+
+    1. **C-stencil selection** — within the current cell, find the two faces
+       immediately adjacent to *f* in the cell's face-ordering ring:
+
+       - *cw*  : the face one step clockwise from *f* (index ``(pos+1) % count``)
+       - *ccw* : the face one step counter-clockwise (index ``(pos-1) % count``)
+
+       These three faces (cw, ccw, and *f* itself) form the "C-stencil".
+
+    2. **Normal-equation matrix** — accumulate the 2×2 symmetric WLS matrix
+       using the unit normals of the three C-stencil faces::
+
+           A = Σ  [nx²   nx·ny]     (sum over cw, ccw, and f)
+                  [nx·ny  ny²]
+
+       The inverse ``A⁻¹`` is computed analytically (Cramer's rule).  If
+       ``det(A) == 0`` (degenerate geometry), the identity scaled by 1/count
+       is substituted so the solve degrades gracefully.
+
+    3. **RHS vector** — using only the *connected* (wet) CW and CCW neighbors,
+       assemble::
+
+           B = n̂_cw * vn_cw  +  n̂_ccw * vn_ccw  +  n̂_f * vn_f
+
+    4. **Least-squares solve** — recover the full velocity vector ``(sx, sy)``
+       as ``A⁻¹ · B``.  Project it onto the tangential direction
+       ``t̂ = (-fn_y, fn_x)`` to obtain the scalar tangential component::
+
+           tangential = sx * t̂_x + sy * t̂_y
+
+    5. **Compose face velocity**::
+
+           Vx = vn * fn_x + tangential * t̂_x
+           Vy = vn * fn_y + tangential * t̂_y
+
+       The normal component is kept exactly as stored in the HDF; only the
+       tangential component is estimated.
+
+    6. **Averaging for connected faces** — when a face is marked connected
+       (``face_connected[f] == True``) *and* both cellA and cellB exist, the
+       two independent reconstructions are averaged::
+
+           face_vel_A[f] = face_vel_B[f] = (velA + velB) / 2
 
     Parameters
     ----------
-    face_normal_vel:
-        ``(n_faces,)`` — signed face-normal velocity scalars from HDF.
-    face_normals_2d:
-        ``(n_faces, 2)`` — unit normal vectors ``[nx, ny]``.
-        Use ``face_normals[:, :2]`` from :attr:`~raspy.hdf.FlowArea.face_normals`.
-    face_connected:
-        ``(n_faces,)`` bool from :func:`compute_face_wss`.
-    face_cell_indexes:
-        ``(n_faces, 2)`` — ``[cellA, cellB]``.
-    cell_face_info:
-        ``(n_cells, 2)`` — ``[start, count]`` from
-        :attr:`~raspy.hdf.FlowArea.cell_face_info`.
-    cell_face_values:
-        ``(total, 2)`` — ``[face_idx, orientation]`` from
-        :attr:`~raspy.hdf.FlowArea.cell_face_info`.
+    face_normal_vel : ndarray, shape ``(n_faces,)``
+        Signed face-normal velocity scalars read directly from the HDF result.
+    face_normals_2d : ndarray, shape ``(n_faces, 2)``
+        Unit normal vectors ``[nx, ny]`` for each face.
+        Pass ``face_normals[:, :2]`` from :attr:`~raspy.hdf.FlowArea.face_normals`.
+    face_connected : ndarray, shape ``(n_faces,)``, bool
+        ``True`` for faces that are hydraulically connected (wet) for this
+        timestep.  Obtained from :func:`compute_face_wss`.
+    face_cell_indexes : ndarray, shape ``(n_faces, 2)``
+        ``[cellA, cellB]`` — indices of the left and right cell for each face.
+        ``-1`` indicates no neighbour (boundary face).
+    cell_face_info : ndarray, shape ``(n_cells, 2)``
+        ``[start, count]`` — index into *cell_face_values* for each cell's
+        face list.  From :attr:`~raspy.hdf.FlowArea.cell_face_info`.
+    cell_face_values : ndarray, shape ``(total, 2)``
+        ``[face_idx, orientation]`` — the ordered face ring for each cell,
+        used to find CW/CCW neighbors.
+        From :attr:`~raspy.hdf.FlowArea.cell_face_values`.
 
     Returns
     -------
     face_vel_A : float64 ndarray, shape ``(n_faces, 2)``
-        2D velocity vector at each face as seen from cellA's C-stencil (Item1).
+        Full ``[Vx, Vy]`` velocity at each face reconstructed from cellA's
+        C-stencil (Item1 in RASMapper terminology).
     face_vel_B : float64 ndarray, shape ``(n_faces, 2)``
-        2D velocity vector at each face as seen from cellB's C-stencil (Item2).
+        Full ``[Vx, Vy]`` velocity at each face reconstructed from cellB's
+        C-stencil (Item2 in RASMapper terminology).
+        For connected faces both arrays hold the averaged value.
+        Boundary faces (no cellA or cellB) fall back to ``vn * n̂``.
     """
     n_faces = len(face_cell_indexes)
     face_vel_A = np.zeros((n_faces, 2), dtype=np.float64)
@@ -515,7 +631,7 @@ def reconstruct_face_velocities(
 
 
 # ---------------------------------------------------------------------------
-# Step 3 — Inverse-face-length weighted vertex velocity averaging
+# Step 3 — Inverse-face-length weighted facepoint velocity averaging
 # ---------------------------------------------------------------------------
 
 
@@ -551,7 +667,7 @@ def _connected_arc(
     return start_idx, end_idx
 
 
-def compute_vertex_velocities(
+def compute_facepoint_velocities(
     face_vel_A: np.ndarray,
     face_vel_B: np.ndarray,
     face_connected: np.ndarray,
@@ -564,7 +680,7 @@ def compute_vertex_velocities(
     face_value_a: np.ndarray,
     face_value_b: np.ndarray,
 ) -> tuple[list[np.ndarray], dict[tuple[int, int], int]]:
-    """Step 3 — inverse-face-length weighted vertex velocity averaging.
+    """Step 3 — inverse-face-length weighted facepoint velocity averaging.
 
     For each facepoint, computes one velocity vector per adjacent face
     (arc-context specific).  Uses **float32 accumulators** to match C#
@@ -702,10 +818,10 @@ def replace_face_velocities_sloped(
     fp_face_local_map: dict[tuple[int, int], int],
     face_facepoint_indexes: np.ndarray,
 ) -> np.ndarray:
-    """Step 3.5 — replace face velocity with average of endpoint vertex velocities.
+    """Step 3.5 — replace face velocity with average of endpoint facepoint velocities.
 
     For each face, the "sloped" velocity is the mean of the arc-context
-    velocities at its two endpoint facepoints.  Used for **vertex** weight
+    velocities at its two endpoint facepoints.  Used for **facepoint** weight
     contributions in Step 4; face midpoint contributions still use the
     original Item1/Item2 from Step 2.
 
@@ -715,9 +831,9 @@ def replace_face_velocities_sloped(
     Parameters
     ----------
     fp_velocities:
-        From :func:`compute_vertex_velocities`.
+        From :func:`compute_facepoint_velocities`.
     fp_face_local_map:
-        From :func:`compute_vertex_velocities`.
+        From :func:`compute_facepoint_velocities`.
     face_facepoint_indexes:
         ``(n_faces, 2)`` — ``[fpA, fpB]``.
 
@@ -786,10 +902,10 @@ def _barycentric_weights(px: float, py: float, verts_x: np.ndarray, verts_y: np.
 
 
 def _donate(fp_weights: np.ndarray) -> np.ndarray:
-    """Redistribute vertex weights to edge midpoints.
+    """Redistribute facepoint weights to edge midpoints.
 
     Returns ``velocity_weights`` of length ``2*N``.  First N entries are
-    updated vertex weights; last N entries are face-midpoint weights.
+    updated facepoint weights; last N entries are face-midpoint weights.
 
     Matches ``redistribute_weights_to_edge_midpoints`` /
     C# ``RASGeometryMapPoints.cs`` donate logic.
@@ -847,7 +963,7 @@ def _depth_weights_for_cell(
     """Depth weights for PaintCell_8Stencil_RebalanceWeights.
 
     C# ``WaterSurfaceRenderer.cs:2842 ComputeDepthWeightedValuesPerCell``.
-    Returns float64 array of length ``2*count`` (vertices then face midpoints).
+    Returns float64 array of length ``2*count`` (facepoints then face midpoints).
     Minimum depth = 0.01 (matches C#).
     """
     start = int(cell_face_info[cell_idx, 0])
@@ -857,7 +973,7 @@ def _depth_weights_for_cell(
     for k in range(count):
         fi  = int(cell_face_values[start + k, 0])
         ori = int(cell_face_values[start + k, 1])
-        # Vertex for this face edge (orientation-based selection)
+        # Facepoint for this face edge (orientation-based selection)
         fp  = int(face_facepoint_indexes[fi, 0]) if ori > 0 else int(face_facepoint_indexes[fi, 1])
 
         # Facepoint depth weight
@@ -1101,7 +1217,7 @@ def rasterize_rasmap(
     for raster_id, pix_indices in pixel_groups.items():
         cell_idx = raster_id - 1  # back to 0-based
 
-        # ---- Build ordered vertex list for this cell ---------------------
+        # ---- Build ordered facepoint list for this cell ------------------
         start = int(cell_face_info[cell_idx, 0])
         count = int(cell_face_info[cell_idx, 1])
         if count < 3:
@@ -1110,7 +1226,7 @@ def rasterize_rasmap(
         face_indices = [int(cell_face_values[start + k, 0]) for k in range(count)]
         face_orients = [int(cell_face_values[start + k, 1]) for k in range(count)]
 
-        # One vertex per face edge (orientation selects fpA or fpB)
+        # One facepoint per face edge (orientation selects fpA or fpB)
         verts_fp = [
             int(face_facepoint_indexes[fi, 0]) if ori > 0
             else int(face_facepoint_indexes[fi, 1])

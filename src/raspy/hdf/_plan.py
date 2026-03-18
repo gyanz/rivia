@@ -112,7 +112,10 @@ class FlowAreaResults(FlowArea):
     def water_surface(self) -> "h5py.Dataset":
         """Water-surface elevation time series.
 
-        ``h5py.Dataset``, shape ``(n_timesteps, n_cells)``.
+        ``h5py.Dataset``, shape ``(n_timesteps, n_cells + n_ghost)``.
+        HEC-RAS stores ghost cell WSE (boundary condition stages) in the
+        trailing columns.  Slice with ``[:self.n_cells]`` for real cells only,
+        or ``[:]`` for all including ghost cells.
         Slice to read: ``area.water_surface[10]``.
         """
         return self._ts["Water Surface"]
@@ -172,14 +175,32 @@ class FlowAreaResults(FlowArea):
         DataFrame with columns ``['value', 'time']``.
         ``value``: maximum water-surface elevation (model units).
         ``time``: elapsed simulation time (days) when max occurred.
-        Index: 0-based cell index.
+        Index: 0-based cell index.  Real cells only (ghost rows excluded).
         """
         return self._load_summary("Maximum Water Surface", n=self.n_cells)
 
     @property
+    def _max_water_surface(self) -> pd.DataFrame:
+        """Maximum WSE including ghost cell rows.  Same layout as
+        :attr:`max_water_surface` but shape ``(n_cells + n_ghost,)``.
+        Required when indexing with raw ``face_cell_indexes`` values.
+        """
+        return self._load_summary("Maximum Water Surface")
+
+    @property
     def min_water_surface(self) -> pd.DataFrame:
-        """Minimum WSE per cell.  Same column layout as :attr:`max_water_surface`."""
+        """Minimum WSE per cell.  Same column layout as :attr:`max_water_surface`.
+        Real cells only (ghost rows excluded).
+        """
         return self._load_summary("Minimum Water Surface", n=self.n_cells)
+
+    @property
+    def _min_water_surface(self) -> pd.DataFrame:
+        """Minimum WSE including ghost cell rows.  Same layout as
+        :attr:`min_water_surface` but shape ``(n_cells + n_ghost,)``.
+        Required when indexing with raw ``face_cell_indexes`` values.
+        """
+        return self._load_summary("Minimum Water Surface")
 
     @property
     def max_face_velocity(self) -> pd.DataFrame:
@@ -193,6 +214,29 @@ class FlowAreaResults(FlowArea):
     # ------------------------------------------------------------------
     # Computed results - pure numpy, no geo dependency
     # ------------------------------------------------------------------
+
+    def wse(self, timestep: int) -> np.ndarray:
+        """Water-surface elevation at each real cell for one timestep.
+
+        Parameters
+        ----------
+        timestep:
+            0-based index into the time dimension.
+
+        Returns
+        -------
+        ndarray, shape ``(n_cells,)``
+            Water-surface elevation in model units.  Real cells only.
+        """
+        return np.array(self.water_surface[timestep, : self.n_cells])
+
+    def _wse(self, timestep: int) -> np.ndarray:
+        """Water-surface elevation including ghost cell rows for one timestep.
+
+        Shape ``(n_cells + n_ghost,)``.  Required when indexing with raw
+        ``face_cell_indexes`` values which contain ghost cell indices.
+        """
+        return np.array(self.water_surface[timestep, :])
 
     def depth(self, timestep: int) -> np.ndarray:
         """Water depth at each cell centre for one timestep.
@@ -208,6 +252,7 @@ class FlowAreaResults(FlowArea):
         Returns
         -------
         ndarray, shape ``(n_cells,)``
+            Real cells only (ghost rows excluded).
         """
         wse = np.array(self.water_surface[timestep, : self.n_cells])
         return np.maximum(0.0, wse - self.cell_min_elevation)
@@ -1104,9 +1149,9 @@ class FlowAreaResults(FlowArea):
 
         # ---- Read HDF arrays ------------------------------------------------
         if timestep is None:
-            cell_wse = self.max_water_surface["value"].to_numpy()
+            cell_wse = self._max_water_surface["value"].to_numpy()
         else:
-            cell_wse = np.array(self.water_surface[timestep, : self.n_cells])
+            cell_wse = self._wse(timestep)
 
         face_normal_velocity: np.ndarray | None = None
         if variable in ("speed", "velocity"):
@@ -1119,7 +1164,7 @@ class FlowAreaResults(FlowArea):
         return _raster.rasmap_raster(
             variable=variable,
             cell_wse=cell_wse,
-            cell_min_elevation=self.cell_min_elevation,
+            cell_min_elevation=self._cell_min_elevation,
             face_min_elevation=self.face_min_elevation,
             face_cell_indexes=self.face_cell_indexes,
             cell_face_info=cell_face_info,

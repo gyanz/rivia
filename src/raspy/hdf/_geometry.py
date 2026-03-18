@@ -145,8 +145,29 @@ class FlowArea:
 
     @property
     def cell_min_elevation(self) -> np.ndarray:
-        """Minimum bed elevation per cell.  Shape ``(n_cells,)``."""
+        """Minimum bed elevation per cell.  Shape ``(n_cells,)``.  Real cells only
+        (ghost rows excluded).  See :attr:`_cell_min_elevation` for the full array.
+        """
         return self._load("Cells Minimum Elevation")[: self._n_cells]
+
+    @property
+    def _cell_min_elevation(self) -> np.ndarray:
+        """Minimum bed elevation including ghost cell rows.
+
+        Shape ``(n_cells + n_ghost,)``.
+
+        Ghost rows contain ``NaN`` — the HDF5 dataset fill value (IEEE 754
+        float32 ``0x FFC00000``).  HEC-RAS leaves ghost rows unwritten so they
+        take the dataset fill value.  Note that not all cell arrays behave this
+        way: ``Cells Center Manning's n`` ghost rows hold real Manning's n
+        values copied from adjacent real cells, and ``Cells Surface Area``
+        ghost rows are ``0.0``.
+
+        Use this instead of :attr:`cell_min_elevation` when indexing with raw
+        ``face_cell_indexes`` values, which contain ghost cell indices on the
+        cellB side of perimeter faces.
+        """
+        return self._load("Cells Minimum Elevation")
 
     @property
     def cell_mannings_n(self) -> np.ndarray:
