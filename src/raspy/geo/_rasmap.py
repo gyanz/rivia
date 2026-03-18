@@ -62,9 +62,27 @@ _NODATA = -9999.0
 def _avg_wse_with_crit_check(
     wse_a: float, wse_b: float, max_wse: float, min_z_face: float
 ) -> tuple[float, bool]:
-    """Average WSE capped at critical depth.  C# ``_avg_water_surface_with_crit_check``."""
+    """Average WSE capped at the critical-flow WSE over the face sill.
+
+    For a rectangular cross-section, specific energy at critical flow is
+    E_c = (3/2) * y_c, so critical depth y_c = (2/3) * E_c.  Taking the
+    upstream head H = max_wse - min_z_face as the specific energy (negligible
+    approach-velocity head), the WSE at the crest under critical flow is::
+
+        WSE_crit = min_z_face + (2/3) * H
+
+    If the simple average of the two cell WSEs falls below this threshold,
+    the face is at or below critical depth — flow is accelerating to critical
+    velocity at the crest (weir / levee overtopping condition) — and the
+    average is capped at WSE_crit.  Returns ``(face_wse, was_crit_cap_used)``.
+
+    Note: the (2/3) rule is exact for rectangular sections; HEC-RAS applies it
+    as a simplifying assumption at the face level.
+
+    C# equivalent: ``_avg_water_surface_with_crit_check``.
+    """
     avg = (wse_a + wse_b) * 0.5
-    crit = (max_wse - min_z_face) * (2.0 / 3.0) + min_z_face
+    crit = (max_wse - min_z_face) * (2.0 / 3.0) + min_z_face  # WSE at critical depth
     return (avg, False) if avg > crit else (crit, True)
 
 
@@ -171,6 +189,7 @@ def compute_face_wss(
         cellA = int(face_cell_indexes[f, 0])
         cellB = int(face_cell_indexes[f, 1])
 
+        # Logic 1: no real neighbour on either side
         if cellA < 0 or cellB < 0:
             continue
 
@@ -193,18 +212,28 @@ def compute_face_wss(
             else wse_b <= min_elev_b + _MIN_WS_PLOT_TOLERANCE
         )
 
+        # Logic 2: virtual cell or dry cell
         if flag_a_dry or flag_b_dry or face_is_perimeter:
             face_value_a[f] = _NODATA if (flag_a_dry or cell_a_virtual) else wse_a
             face_value_b[f] = _NODATA if (flag_b_dry or cell_b_virtual) else wse_b
             face_connected[f] = False
             continue
 
+        # Logic 3: both cells below face invert
         if wse_a <= min_elev_face and wse_b <= min_elev_face:
             face_value_a[f] = wse_a
             face_value_b[f] = wse_b
             face_connected[f] = False
             continue
 
+        # Strict `>` mirrors C# MeshFV2D.cs — when wse_a == wse_b, cellB is
+        # arbitrarily labeled "higher".  The tie-breaking choice is harmless:
+        # the equal-WSE case always satisfies flag_backfill (0 * x <= 0), so
+        # Logic 5 fires and both face values are set to the same WSE regardless
+        # of which cell was chosen.  Conceptually this is the wrong branch
+        # (there is no gradient, so "backfill" is a misnomer), but the output
+        # is identical to what Logic 6/7 would produce.  RasMapper makes the
+        # same "accidental" shortcut in its C# implementation.
         if wse_a > wse_b:
             higher_cell = cellA
             higher_wse = wse_a
@@ -214,20 +243,66 @@ def compute_face_wss(
             higher_wse = wse_b
             lower_wse = wse_a
 
+        # Bed elevation of the higher-WSE cell — used as the reference datum
+        # for all depth calculations below.
         higher_min_elev = float(cell_min_elev[higher_cell])
+
+        # Signed bed-elevation difference: positive when B's bed is higher
+        # than A's bed, negative when A's bed is higher.
         delta_min_elev_signed = min_elev_b - min_elev_a
+
+        # Backfill flag: True when the WSE gradient and the bed gradient point
+        # in opposite directions.  Example: A has the higher WSE but B sits on
+        # higher ground.  This means water is backing up into a depression
+        # (the low-WSE cell is actually elevated), so both sides of the face
+        # share the same WSE.  The product (wse_b - wse_a) * (min_elev_b -
+        # min_elev_a) is negative when the gradients oppose; <= 0 also catches
+        # the equal-WSE edge case (product == 0).
         flag_backfill = (wse_b - wse_a) * delta_min_elev_signed <= 0.0
+
+        # Absolute bed-elevation difference between the two cells — used as a
+        # length scale to decide between deep-flow and transitional-flow.
         delta_min_elev = abs(delta_min_elev_signed)
+
+        # Water depth at the higher-WSE cell above its own bed minimum.
         depth_higher = higher_wse - higher_min_elev
+
+        # Effective lower reference level for interpolation.  The lower cell's
+        # WSE may sit below the face sill (the sill is above the lower water
+        # surface), meaning water on the lower side has not yet reached the
+        # face.  In that case the sill elevation is used as the lower boundary
+        # instead of lower_wse, so the reference never drops below the face
+        # invert.  When lower_wse >= min_elev_face, water on both sides
+        # touches the face and lower_wse is used directly.
         eff_lower = max(min_elev_face, lower_wse)
+
+        # Distance from the higher cell's bed to the effective lower reference.
+        # Used in the transitional quadratic interpolation.  Can be negative
+        # when the face sill sits below the higher cell's bed minimum.
         depth_ref_lower = eff_lower - higher_min_elev
+
+        # Head driving flow over the face sill from the higher side.
+        # Positive whenever the higher WSE is above the face invert.
         depth_above_face = higher_wse - min_elev_face
 
+        # Check whether the average WSE falls below the critical-flow
+        # threshold (2/3 of the head above the face sill).  was_crit_cap_used
+        # == True means the face is at or below critical depth — a weir-like
+        # condition.  The average itself is not used here (hence `_`).
         _, was_crit_cap_used = _avg_wse_with_crit_check(
             wse_a, wse_b, higher_wse, min_elev_face
         )
+
+        # The face WSE is always anchored to the higher cell's WSE.
         face_ws = higher_wse
 
+        # Levee / weir-crest flag: two conditions must both be met:
+        #   1. was_crit_cap_used — flow is at critical depth over the face
+        #      (i.e. the face is a prominent crest, not just a slight rise).
+        #   2. depth_higher / depth_above_face > 2 — the upstream pool is
+        #      deep relative to the head above the crest.  A ratio > 2 means
+        #      most of the water in the higher cell sits *below* the face sill;
+        #      the face is a significant barrier, not just a gentle slope.
         if depth_above_face > 0:
             flag_levee = was_crit_cap_used and (depth_higher / depth_above_face > 2.0)
         else:
@@ -235,6 +310,11 @@ def compute_face_wss(
 
         if flag_levee or flag_backfill:
             if flag_levee:
+                # Logic 4: overtopping / weir-crest
+                # The higher side takes face_ws (= higher_wse); the lower side
+                # keeps its own cell WSE.  Connectivity is False because the
+                # face is acting as a crest — the two pools are hydraulically
+                # separated at the face.
                 if higher_cell == cellA:
                     face_value_a[f] = face_ws
                     face_value_b[f] = wse_b
@@ -242,21 +322,46 @@ def compute_face_wss(
                     face_value_a[f] = wse_a
                     face_value_b[f] = face_ws
                 face_connected[f] = False
-            else:  # backfill
+            else:
+                # Logic 5: backfill
+                # WSE and bed gradients oppose — water backs into a depression.
+                # Both sides share face_ws and the face is connected.
                 face_value_a[f] = face_ws
                 face_value_b[f] = face_ws
                 face_connected[f] = True
         elif depth_higher >= 2.0 * delta_min_elev:
+            # Logic 6: deep flow
+            # The higher cell's depth is at least twice the bed-elevation
+            # difference, so the sloping bed has negligible effect on the
+            # water surface.  Both sides take face_ws and the face is
+            # connected.
             face_value_a[f] = face_ws
             face_value_b[f] = face_ws
             face_connected[f] = True
         else:
+            # Logic 7: transitional flow
+            # The bed-elevation difference is significant relative to depth.
+            # A quadratic formula (derived from assuming a linearly sloping
+            # water surface) interpolates the WSE at the face.
+            #
+            # Step 7a — quadratic interpolation:
+            #   num9 = eff_lower + (depth_higher² - depth_ref_lower²)
+            #                      / (2 * delta_min_elev)
+            # This balances depths on both sides of the sloping bed.
             if delta_min_elev > 1e-12:
                 num9 = eff_lower + (depth_higher ** 2 - depth_ref_lower ** 2) / (
                     2.0 * delta_min_elev
                 )
             else:
+                # Flat bed — no interpolation needed; use higher WSE directly.
                 num9 = face_ws
+
+            # Step 7b — linear blend toward face_ws as depth increases:
+            # When depth_higher is between delta_min_elev and 2*delta_min_elev,
+            # blend num9 with face_ws so the result transitions smoothly into
+            # Logic 6 (deep flow) at the upper boundary.
+            #   weight of num9    = (2*Δz - d) / Δz  →  1 at d=Δz, 0 at d=2Δz
+            #   weight of face_ws = (d - Δz)  / Δz  →  0 at d=Δz, 1 at d=2Δz
             if depth_higher > delta_min_elev and delta_min_elev > 1e-12:
                 num9 = (
                     (2.0 * delta_min_elev - depth_higher) * num9
