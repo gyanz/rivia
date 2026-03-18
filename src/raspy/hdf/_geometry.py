@@ -750,6 +750,33 @@ class FlowArea:
             tol=tol,
         )
 
+    @property
+    def facepoint_face_orientation_info(self) -> np.ndarray:
+        """CSR start/count index into :attr:`facepoint_face_orientation_values`.
+
+        Shape ``(n_facepoints, 2)``, dtype ``int32``.  Each row is
+        ``[start, count]`` — a slice into :attr:`facepoint_face_orientation_values`
+        for that facepoint.
+
+        HDF source: ``FacePoints Face and Orientation Info``.
+        """
+        return self._load("FacePoints Face and Orientation Info").astype(np.int32)
+
+    @property
+    def facepoint_face_orientation_values(self) -> np.ndarray:
+        """Face index and orientation flag for each facepoint→face entry.
+
+        Shape ``(total_entries, 2)``, dtype ``int32``.  Each row is
+        ``[face_idx, orientation]`` where ``orientation = 0`` means this
+        facepoint is ``fpA`` (first endpoint) of that face and ``orientation = 1``
+        means it is ``fpB`` (second endpoint).
+
+        Use :attr:`facepoint_face_orientation_info` to slice per facepoint.
+
+        HDF source: ``FacePoints Face and Orientation Values``.
+        """
+        return self._load("FacePoints Face and Orientation Values").astype(np.int32)
+
     # ------------------------------------------------------------------
     # Derived topology and geometry helpers (computed from HDF arrays)
     # ------------------------------------------------------------------
@@ -776,9 +803,11 @@ class FlowArea:
         relative ordering.  This ordering is required for correct arc traversal
         in the RASMapper vertex-velocity algorithm (Step 3, ``MeshFV2D.cs``).
 
-        Reads ``FacePoints Face and Orientation Info/Values`` from the HDF
-        group when present; otherwise builds the CSR arrays from
-        ``face_facepoint_indexes``.  The angle sort is always applied.
+        Uses :attr:`facepoint_face_orientation_info` and
+        :attr:`facepoint_face_orientation_values` when present (production
+        HDF files always include them).  Falls back to building the CSR
+        arrays from :attr:`face_facepoint_indexes` for older or minimal
+        test fixtures.  The angle sort is always applied.
 
         Computed once and cached.
 
@@ -848,17 +877,15 @@ class FlowArea:
         n_fp = len(fp_coords)
         n_faces = len(face_fps)
 
-        # --- Load from HDF if available, else build from scratch -----------
+        # Production geometry HDF files always contain these datasets.
+        # Older or minimal test fixtures may not; fall back to building
+        # the CSR arrays from face_facepoint_indexes in that case.
         if ("FacePoints Face and Orientation Info" in self._g
                 and "FacePoints Face and Orientation Values" in self._g):
-            fp_info = np.array(
-                self._g["FacePoints Face and Orientation Info"], dtype=np.int32
-            )
-            fp_vals = np.array(
-                self._g["FacePoints Face and Orientation Values"], dtype=np.int32
-            )
+            fp_info = self.facepoint_face_orientation_info.copy()
+            fp_vals = self.facepoint_face_orientation_values.copy()
         else:
-            # Build (Compressed Sparse Row) CSR-style arrays from face_facepoint_indexes.
+            # Build CSR-style arrays from face_facepoint_indexes.
             # orientation 0 = fpA (first endpoint), 1 = fpB (second endpoint)
             fp_counts = np.zeros(n_fp, dtype=np.int32)
             for fi in range(n_faces):
