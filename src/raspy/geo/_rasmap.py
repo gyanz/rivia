@@ -311,16 +311,12 @@ def compute_face_wss(
         if flag_levee or flag_backfill:
             if flag_levee:
                 # Logic 4: overtopping / weir-crest
-                # The higher side takes face_ws (= higher_wse); the lower side
-                # keeps its own cell WSE.  Connectivity is False because the
-                # face is acting as a crest — the two pools are hydraulically
-                # separated at the face.
-                if higher_cell == cellA:
-                    face_value_a[f] = face_ws
-                    face_value_b[f] = wse_b
-                else:
-                    face_value_a[f] = wse_a
-                    face_value_b[f] = face_ws
+                # Each side keeps its own cell WSE (the higher side's WSE ==
+                # face_ws by definition, so the if/else in the C# source is
+                # redundant).  Connectivity is False — the two pools are
+                # hydraulically separated at the crest.
+                face_value_a[f] = wse_a
+                face_value_b[f] = wse_b
                 face_connected[f] = False
             else:
                 # Logic 5: backfill
@@ -331,10 +327,18 @@ def compute_face_wss(
                 face_connected[f] = True
         elif depth_higher >= 2.0 * delta_min_elev:
             # Logic 6: deep flow
-            # The higher cell's depth is at least twice the bed-elevation
-            # difference, so the sloping bed has negligible effect on the
-            # water surface.  Both sides take face_ws and the face is
-            # connected.
+            # The water depth in the higher cell is at least twice the
+            # bed-elevation step between the two cells.  The step is
+            # effectively submerged — like a small bump at the bottom of a
+            # deep pool — and has negligible influence on the water surface.
+            # The two cells behave as a single connected pool with a nearly
+            # horizontal WSE, so both sides of the face are assigned face_ws.
+            #
+            # The threshold 2*delta_min_elev is not arbitrary: it is exactly
+            # the point where Logic 7's quadratic blend (step 7b) converges
+            # to face_ws (blend weight of face_ws → 1 as depth_higher →
+            # 2*delta_min_elev).  This ensures a smooth, continuous transition
+            # between Logic 6 and Logic 7 with no jump at the boundary.
             face_value_a[f] = face_ws
             face_value_b[f] = face_ws
             face_connected[f] = True
@@ -399,10 +403,12 @@ def compute_facepoint_wse(
         ``(n_fp, 2)`` — facepoint XY coordinates.
     fp_face_info:
         ``(n_fp, 2)`` int32 — ``[start, count]`` into ``fp_face_values``.
-        From :attr:`~raspy.hdf.FlowArea.facepoint_face_orientation`.
+        First element of :attr:`~raspy.hdf.FlowArea.facepoint_face_orientation`
+        (HDF: ``FacePoints Face and Orientation Info``).
     fp_face_values:
         ``(total, 2)`` int32 — ``[face_idx, orientation]``.
-        From :attr:`~raspy.hdf.FlowArea.facepoint_face_orientation`.
+        Second element of :attr:`~raspy.hdf.FlowArea.facepoint_face_orientation`
+        (HDF: ``FacePoints Face and Orientation Values``).
     face_facepoint_indexes:
         ``(n_faces, 2)`` — ``[fpA, fpB]`` for each face.
     face_value_a:

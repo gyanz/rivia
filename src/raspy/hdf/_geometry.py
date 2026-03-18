@@ -768,16 +768,70 @@ class FlowArea:
           means this facepoint is ``fpA`` (first endpoint) of that face and
           ``orientation = 1`` means it is ``fpB`` (second endpoint).
 
-        Entries for each facepoint are sorted in clockwise angular order
-        around the facepoint coordinate.  This ordering is required for
-        correct arc traversal in the RASMapper vertex-velocity algorithm
-        (Step 3, ``MeshFV2D.cs``).
+        Entries for each facepoint are sorted in **counter-clockwise** (ascending
+        bearing) angular order around the facepoint coordinate.  Bearing is
+        measured from the positive x-axis using ``atan2(dy, dx)``, mapped to
+        ``[0, 2π)`` in RasMapper (``SegmentM.Bearing()``) and ``[-π, π)`` in
+        the Python re-implementation (``np.arctan2``); both produce the same
+        relative ordering.  This ordering is required for correct arc traversal
+        in the RASMapper vertex-velocity algorithm (Step 3, ``MeshFV2D.cs``).
 
         Reads ``FacePoints Face and Orientation Info/Values`` from the HDF
         group when present; otherwise builds the CSR arrays from
         ``face_facepoint_indexes``.  The angle sort is always applied.
 
         Computed once and cached.
+
+        Examples
+        --------
+        Five-facepoint mesh with fp0 at the centre and four faces created in
+        arbitrary order::
+
+                     fp2 (0,1)
+                      |
+             face 0   |   face 3
+                      |
+            fp3 -----fp0----- fp1
+           (-1,0)     |       (1,0)
+             face 2   |   face 1
+                      |
+                     fp4 (0,-1)
+
+            face 0: fp0→fp2  (North)
+            face 1: fp0→fp4  (South)
+            face 2: fp0→fp3  (West)
+            face 3: fp0→fp1  (East)
+
+        Bearings from fp0 to the far endpoint of each adjacent face:
+
+            face 0 → atan2(1, 0)  = +π/2  (North)
+            face 1 → atan2(-1, 0) = -π/2  (South)
+            face 2 → atan2(0, -1) =  ±π   (West)
+            face 3 → atan2(0,  1) =   0   (East)
+
+        After sorting ascending (counter-clockwise: S → E → N → W):
+
+        .. code-block:: text
+
+            fp_face_info
+              fp0: [0, 4]   # 4 entries starting at slot 0
+              fp1: [4, 1]
+              fp2: [5, 1]
+              fp3: [6, 1]
+              fp4: [7, 1]
+
+            fp_face_values          # [face_idx, orientation]
+              slot 0: [1, 0]   ← face 1 (South), fp0 is fpA
+              slot 1: [3, 0]   ← face 3 (East),  fp0 is fpA
+              slot 2: [0, 0]   ← face 0 (North), fp0 is fpA
+              slot 3: [2, 0]   ← face 2 (West),  fp0 is fpA
+              slot 4: [3, 1]   ← face 3, fp1 is fpB
+              slot 5: [0, 1]   ← face 0, fp2 is fpB
+              slot 6: [2, 1]   ← face 2, fp3 is fpB
+              slot 7: [1, 1]   ← face 1, fp4 is fpB
+
+        fp0's faces in angular order: ``fp_face_values[0:4, 0]`` → ``[1, 3, 0, 2]``,
+        not ``[0, 1, 2, 3]``.
 
         Notes
         -----
@@ -787,10 +841,7 @@ class FlowArea:
         """
         cache_key = "_facepoint_face_orientation"
         if cache_key in self._cache:
-            return (
-                self._cache["_fpo_info"],   # type: ignore[return-value]
-                self._cache["_fpo_values"],
-            )
+            return self._cache[cache_key]  # type: ignore[return-value]
 
         face_fps = self.face_facepoint_indexes  # (n_faces, 2)
         fp_coords = self.facepoint_coordinates  # (n_fp, 2)
@@ -807,7 +858,7 @@ class FlowArea:
                 self._g["FacePoints Face and Orientation Values"], dtype=np.int32
             )
         else:
-            # Build CSR-style arrays from face_facepoint_indexes.
+            # Build (Compressed Sparse Row) CSR-style arrays from face_facepoint_indexes.
             # orientation 0 = fpA (first endpoint), 1 = fpB (second endpoint)
             fp_counts = np.zeros(n_fp, dtype=np.int32)
             for fi in range(n_faces):
@@ -858,9 +909,7 @@ class FlowArea:
             for j in range(count):
                 fp_vals[start + j] = temp[order[j]]
 
-        self._cache["_fpo_info"] = fp_info    # type: ignore[assignment]
-        self._cache["_fpo_values"] = fp_vals  # type: ignore[assignment]
-        self._cache[cache_key] = True         # type: ignore[assignment]
+        self._cache[cache_key] = (fp_info, fp_vals)  # type: ignore[assignment]
         return fp_info, fp_vals
 
     @property
