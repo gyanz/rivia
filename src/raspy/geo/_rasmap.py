@@ -838,12 +838,62 @@ def compute_facepoint_velocities(
 ) -> tuple[list[np.ndarray], dict[tuple[int, int], int]]:
     """Step 3 — inverse-face-length weighted facepoint velocity averaging.
 
-    For each facepoint, computes one velocity vector per adjacent face
-    (arc-context specific).  Uses **float32 accumulators** to match C#
-    ``MeshFV2D.cs:8677`` (``float num5=0f, num6=0f, num7=0f``).
-
     Replicates ``compute_vertex_velocities`` from
-    ``velocity_rasterizer_combined.py``.
+    ``velocity_rasterizer_combined.py`` (``MeshFV2D.cs``).
+
+    **Goal**
+
+    Produce a velocity vector at each facepoint for use in barycentric
+    interpolation (Step 4).  Because a facepoint sits at the junction of
+    multiple faces, its velocity depends on which *connected arc* of wet
+    faces surrounds it — giving a different result depending on which
+    adjacent face's arc context is being evaluated.  The function therefore
+    returns **one vector per adjacent face**, not a single vector per
+    facepoint.
+
+    **Algorithm (per facepoint ``fp``, per adjacent face ``j``)**
+
+    1. *Connected arc* — starting from face ``j`` in the angle-sorted face
+       ring of ``fp``, walk forward through consecutive hydraulically
+       connected faces (``face_connected[fi] == True``) to find the arc
+       end, then walk backward to find the true arc start
+       (:func:`_connected_arc`).  The arc is the maximal contiguous run of
+       wet faces that includes face ``j``.
+
+    2. *Weighted sum* — accumulate an inverse-face-length weighted velocity
+       over all faces in the arc::
+
+           sum_vx += vel[0] / face_length[fi]
+           sum_vy += vel[1] / face_length[fi]
+           total_w += 1 / face_length[fi]
+
+       Shorter faces get higher weight (they represent sharper local
+       geometry and should dominate the velocity estimate at the corner).
+
+    3. *Velocity selection* — which of Item1/Item2 (``face_vel_A`` /
+       ``face_vel_B``) to use for each face in the arc:
+
+       - **Arc-start face**: use Item1 (``face_vel_A``) if ``fp`` is fpA of
+         that face, otherwise Item2 (``face_vel_B``).  This picks the
+         reconstruction that was done from the cell whose boundary this
+         facepoint lies on.
+       - **Interior connected faces**: always use Item1 (``face_vel_A``).
+       - **Arc-end boundary face** (the first disconnected face past the
+         arc): always use the *opposite* selection from the start face —
+         Item2 if the start used Item1, and vice versa.  This boundary face
+         is included in the weighted sum to anchor the average at the wet/dry
+         interface.
+
+    4. *Normalise*::
+
+           vel_j = (sum_vx / total_w, sum_vy / total_w)
+
+       All accumulators are **float32** to exactly match
+       ``MeshFV2D.cs:8677`` (``float num5=0f, num6=0f, num7=0f``).
+
+    5. *Dry facepoints* — if all adjacent face WSE values are ``_NODATA``
+       the facepoint is considered fully dry and all velocity vectors are
+       set to ``(0, 0)``.
 
     Parameters
     ----------
@@ -863,16 +913,22 @@ def compute_facepoint_velocities(
     fp_face_info, fp_face_values:
         Angle-sorted facepoint-to-face CSR arrays from
         :attr:`~raspy.hdf.FlowArea.facepoint_face_orientation`.
+        The angular order is required here so that arc traversal visits
+        faces in consistent counter-clockwise order.
     face_value_a, face_value_b:
-        ``(n_faces,)`` — from :func:`compute_face_wss`.
+        ``(n_faces,)`` — from :func:`compute_face_wss`.  Used only for
+        the dry-facepoint check.
 
     Returns
     -------
     fp_velocities : list of ndarray, length ``n_fp``
-        ``fp_velocities[fp]`` is shape ``(n_adj_faces, 2)`` — one velocity
-        vector per adjacent face of this facepoint (arc-context specific).
+        ``fp_velocities[fp]`` is shape ``(n_adj_faces, 2)`` — one
+        ``[Vx, Vy]`` vector per adjacent face of facepoint ``fp``,
+        in the same order as the angle-sorted face ring.
     fp_face_local_map : dict ``(fp_idx, face_idx) -> local_j``
-        Maps ``(facepoint, face)`` to the local index in ``fp_velocities[fp]``.
+        Maps a ``(facepoint, face)`` pair to the row index ``local_j``
+        in ``fp_velocities[fp]``.  Used by :func:`replace_face_velocities_sloped`
+        and Step 4 to look up the arc-context velocity for a given face.
     """
     n_fp = len(fp_face_info)
     face_inv_lengths = 1.0 / np.maximum(face_lengths, 1e-12)
@@ -976,26 +1032,63 @@ def replace_face_velocities_sloped(
 ) -> np.ndarray:
     """Step 3.5 — replace face velocity with average of endpoint facepoint velocities.
 
-    For each face, the "sloped" velocity is the mean of the arc-context
-    velocities at its two endpoint facepoints.  Used for **facepoint** weight
-    contributions in Step 4; face midpoint contributions still use the
-    original Item1/Item2 from Step 2.
-
     Replicates ``replace_face_velocities_sloped`` from
-    ``velocity_rasterizer_combined.py``.
+    ``velocity_rasterizer_combined.py`` (``MeshFV2D.cs``).
+
+    **Context**
+
+    Step 3 (:func:`compute_facepoint_velocities`) produces, for every
+    facepoint ``fp``, an array ``fp_velocities[fp]`` of one velocity vector
+    per adjacent face.  These are *arc-context* velocities: each entry
+    reflects the weighted average of the connected-face arc that includes
+    that particular adjacent face, so the velocity at a facepoint can vary
+    depending on which face's arc is being considered.
+
+    **What this step does**
+
+    For every face ``f`` with endpoint facepoints ``fpA`` and ``fpB``:
+
+    1. Look up the arc-context velocity that Step 3 assigned to ``fpA``
+       while processing face ``f``:
+       ``vel_A = fp_velocities[fpA][fp_face_local_map[(fpA, f)]]``
+    2. Do the same for ``fpB``:
+       ``vel_B = fp_velocities[fpB][fp_face_local_map[(fpB, f)]]``
+    3. Replace the face velocity with the component-wise average:
+       ``replaced[f] = (vel_A + vel_B) / 2``
+
+    If either facepoint has no entry for face ``f`` in the map (e.g. a
+    boundary facepoint not covered by the arc), the missing velocity
+    defaults to ``(0, 0)``.
+
+    **Why**
+
+    The sloped-cell render mode needs a velocity that is spatially smooth
+    across each cell polygon, not just at face midpoints.  By averaging the
+    two endpoint facepoint velocities, this step produces a face-centre
+    value that is consistent with the corner values used for barycentric
+    interpolation in Step 4.  In Step 4 this ``replaced_face_vel`` is used
+    for face-midpoint sample contributions; corner (facepoint) contributions
+    use ``fp_velocities`` directly.
 
     Parameters
     ----------
     fp_velocities:
-        From :func:`compute_facepoint_velocities`.
+        ``list[ndarray]``, length ``n_fp`` — from
+        :func:`compute_facepoint_velocities`.  ``fp_velocities[fp]`` has
+        shape ``(n_adj_faces, 2)``, one row per adjacent face of that
+        facepoint.
     fp_face_local_map:
-        From :func:`compute_facepoint_velocities`.
+        ``dict[(fp_idx, face_idx) -> local_j]`` — from
+        :func:`compute_facepoint_velocities`.  Maps a ``(facepoint, face)``
+        pair to the row index in ``fp_velocities[fp]``.
     face_facepoint_indexes:
-        ``(n_faces, 2)`` — ``[fpA, fpB]``.
+        ``(n_faces, 2)`` — ``[fpA, fpB]`` endpoint facepoint indices for
+        each face.
 
     Returns
     -------
     replaced_face_vel : float64 ndarray, shape ``(n_faces, 2)``
+        ``[Vx, Vy]`` sloped replacement velocity for each face.
     """
     n_faces = len(face_facepoint_indexes)
     replaced = np.zeros((n_faces, 2), dtype=np.float64)
@@ -1315,9 +1408,92 @@ def rasterize_rasmap(
 ) -> np.ndarray:
     """Step 4 — pixel-level barycentric interpolation for all wet cells.
 
-    Processes all pixels whose owning cell is recorded in ``cell_id_grid``,
-    applies polygon barycentric weights + donate redistribution, and
-    interpolates the requested variable.
+    Replicates ``PaintCell_8Stencil`` / ``PaintCell_8Stencil_RebalanceWeights``
+    from ``Renderer.cs`` in RasMapperLib.
+
+    **Algorithm**
+
+    *Setup*
+
+    Collect all pixels with a valid owning cell from ``cell_id_grid`` and
+    convert their row/col positions to model XY coordinates.  Group pixels
+    by owning cell so each cell's geometry is built only once.
+
+    *Per-cell geometry (done once per cell)*
+
+    For each wet cell, walk its ordered face ring (``cell_face_info`` /
+    ``cell_face_values``) to collect the cell's polygon vertices.  Each
+    face contributes one corner facepoint, selected by orientation:
+    ``fpA`` if ``orientation > 0``, else ``fpB``.  This gives an ordered
+    polygon of ``N`` facepoints (``N`` = number of faces = number of
+    corners).
+
+    *Per-cell value arrays (done once per cell)*
+
+    For sloping WSE / depth, two value arrays of length ``N`` are built:
+
+    - ``fp_local_wse[i]`` — facepoint WSE from :func:`compute_facepoint_wse`,
+      one per polygon corner.
+    - ``face_local_wse[i]`` — face-side WSE from :func:`compute_face_wss`,
+      selecting ``face_value_a`` or ``face_value_b`` based on whether this
+      cell is cellA or cellB of that face.
+
+    ``fp_local_wse`` is then adjusted toward the cell-average WSE
+    (``DownwardAdjustFPValues``, ``Renderer.cs:3267``) so corner values do
+    not drift above the cell mean.
+
+    If terrain elevations at facepoints are available (``fp_elev``), depth
+    weights are computed per facepoint and face midpoint — deeper locations
+    get higher weight in the final interpolation
+    (``ComputeDepthWeightedValuesPerCell``, ``WaterSurfaceRenderer.cs:2842``).
+
+    For speed / velocity, facepoint velocity arrays (``nb_fp_vx``,
+    ``nb_fp_vy``) and face-midpoint velocity arrays (``nb_face_vx``,
+    ``nb_face_vy``) of length ``N`` are built from ``replaced_face_vel``
+    and ``face_vel_A`` / ``face_vel_B``.
+
+    *Per-pixel interpolation (inner loop)*
+
+    For every pixel ``(px, py)`` owned by the cell:
+
+    1. **Barycentric weights** — compute generalised polygon barycentric
+       weights ``fw[0..N-1]`` for the pixel position relative to the ``N``
+       polygon corners (:func:`_barycentric_weights`,
+       ``RASGeometryMapPoints.cs:2956``).
+
+    2. **Donate redistribution** — redistribute weight from each corner
+       toward the midpoints of its two adjacent edges (:func:`_donate`).
+       This produces a ``2*N`` weight vector ``vel_w``:
+
+       - ``vel_w[0..N-1]`` — updated corner (facepoint) weights.
+       - ``vel_w[N..2N-1]`` — face-midpoint weights (one per face edge).
+
+       Using both corner and midpoint values gives an 8-sample stencil
+       per cell (for ``N=4``: 4 corners + 4 midpoints = 8 samples).
+
+    3. **Wet/dry check** — for sloping mode, the pixel WSE is first
+       estimated via :func:`_pixel_wse_sloped` and compared against the
+       terrain elevation.  If ``pixel_wse < terrain + depth_threshold``
+       the pixel is marked dry and skipped.  Without a terrain grid the
+       cell-centre WSE is used for the check instead.
+
+    4. **Value interpolation** — depends on ``variable``:
+
+       - ``"water_surface"`` — :func:`_pixel_wse_sloped` with
+         depth-weighted rebalancing if ``fp_elev`` is available, otherwise
+         plain donated barycentric blend of ``fp_local_wse`` and
+         ``face_local_wse``.
+       - ``"depth"`` — same WSE interpolation then subtract terrain
+         elevation; clamped to zero from below.
+       - ``"speed"`` / ``"velocity"`` — donated barycentric blend of
+         facepoint and face-midpoint velocity vectors::
+
+             Vx = sum(vel_w[i] * nb_fp_vx[i]) + sum(vel_w[N+j] * nb_face_vx[j])
+             Vy = sum(vel_w[i] * nb_fp_vy[i]) + sum(vel_w[N+j] * nb_face_vy[j])
+
+         Speed = ``sqrt(Vx**2 + Vy**2)``.  For ``"velocity"``, direction
+         in degrees is also stored as ``arctan2(Vx, Vy)`` measured from
+         North (``% 360``).
 
     Parameters
     ----------
