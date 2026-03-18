@@ -100,7 +100,7 @@ def compute_face_wss(
 
     For each face the function determines whether water is actively flowing
     across it (hydraulic connectivity) and assigns a WSE value to each side
-    (cellA side → ``face_value_a``, cellB side → ``face_value_b``).  These
+    (cellA side -> ``face_value_a``, cellB side -> ``face_value_b``).  These
     per-side values are later used by :func:`compute_facepoint_wse` to fit a
     sloped water surface across the mesh.
 
@@ -117,13 +117,13 @@ def compute_face_wss(
        HEC-RAS mesh construction convention, the virtual cell is always
        placed on the right (cellB) side of perimeter faces, so
        ``face_is_perimeter`` is determined solely by ``cell_b_virtual``.  If
-       either cell is dry (``wse ≤ min_elev + _MIN_WS_PLOT_TOLERANCE``) or
+       either cell is dry (``wse <= min_elev + _MIN_WS_PLOT_TOLERANCE``) or
        the face is a perimeter face, connectivity is ``False``.  The side
        belonging to a dry or virtual cell gets ``_NODATA``; a wet real cell
        keeps its WSE.
 
-    3. **Both cells below the face invert** (``wse_a ≤ min_elev_face`` and
-       ``wse_b ≤ min_elev_face``): water on both sides is ponded below the
+    3. **Both cells below the face invert** (``wse_a <= min_elev_face`` and
+       ``wse_b <= min_elev_face``): water on both sides is ponded below the
        face sill — no flow over the face.  Both sides take the cell WSE and
        connectivity is ``False``.
 
@@ -139,13 +139,13 @@ def compute_face_wss(
        (higher) side takes ``higher_wse`` and the downstream side keeps its
        own cell WSE.
 
-    5. **Backfill condition** (``(wse_b - wse_a) * (min_elev_b - min_elev_a) ≤ 0``):
+    5. **Backfill condition** (``(wse_b - wse_a) * (min_elev_b - min_elev_a) <= 0``):
        WSE gradient and bed-elevation gradient point in opposite directions —
        the lower cell sits on higher ground, which can occur when flow backs
        up into a depression.  Both sides take ``face_ws`` and connectivity is
        ``True``.
 
-    6. **Deep flow** (``depth_higher ≥ 2 × delta_min_elev``): the water depth
+    6. **Deep flow** (``depth_higher >= 2 * delta_min_elev``): the water depth
        in the higher cell is at least twice the bed-elevation difference
        between cells, so the slope effect is negligible.  Both sides take
        ``face_ws`` and connectivity is ``True``.
@@ -336,7 +336,7 @@ def compute_face_wss(
             #
             # The threshold 2*delta_min_elev is not arbitrary: it is exactly
             # the point where Logic 7's quadratic blend (step 7b) converges
-            # to face_ws (blend weight of face_ws → 1 as depth_higher →
+            # to face_ws (blend weight of face_ws -> 1 as depth_higher ->
             # 2*delta_min_elev).  This ensures a smooth, continuous transition
             # between Logic 6 and Logic 7 with no jump at the boundary.
             face_value_a[f] = face_ws
@@ -349,7 +349,7 @@ def compute_face_wss(
             # water surface) interpolates the WSE at the face.
             #
             # Step 7a — quadratic interpolation:
-            #   num9 = eff_lower + (depth_higher² - depth_ref_lower²)
+            #   num9 = eff_lower + (depth_higher**2 - depth_ref_lower**2)
             #                      / (2 * delta_min_elev)
             # This balances depths on both sides of the sloping bed.
             if delta_min_elev > 1e-12:
@@ -364,8 +364,8 @@ def compute_face_wss(
             # When depth_higher is between delta_min_elev and 2*delta_min_elev,
             # blend num9 with face_ws so the result transitions smoothly into
             # Logic 6 (deep flow) at the upper boundary.
-            #   weight of num9    = (2*Δz - d) / Δz  →  1 at d=Δz, 0 at d=2Δz
-            #   weight of face_ws = (d - Δz)  / Δz  →  0 at d=Δz, 1 at d=2Δz
+            #   weight of num9    = (2*dz - d) / dz  ->  1 at d=dz, 0 at d=2*dz
+            #   weight of face_ws = (d - dz)  / dz  ->  0 at d=dz, 1 at d=2*dz
             if depth_higher > delta_min_elev and delta_min_elev > 1e-12:
                 num9 = (
                     (2.0 * delta_min_elev - depth_higher) * num9
@@ -393,9 +393,50 @@ def compute_facepoint_wse(
 ) -> np.ndarray:
     """Step B — WSE at each facepoint by PlanarRegressionZ fitting.
 
-    Fits a weighted least-squares plane through the WSE values at adjacent
-    face midpoints for each facepoint.  Replicates ``ComputeFacePointWSs``
-    from ``RASMapper`` (``MeshFV2D.cs``).
+    Replicates ``ComputeFacePointWSs`` from ``RASMapper`` (``MeshFV2D.cs``).
+
+    **Algorithm**
+
+    For each facepoint the goal is to estimate the water-surface elevation
+    (WSE) at the facepoint coordinate from the WSE values available on the
+    surrounding faces.
+
+    *Sample points:* each adjacent face contributes two sample points — one
+    from the cellA side (``face_value_a``) and one from the cellB side
+    (``face_value_b``).  Dry samples (``-9999``) are skipped.  The XY
+    location assigned to both samples is the **midpoint** of the face's two
+    endpoint facepoints (i.e. the chord midpoint of the face).
+
+    *Planar fit:* a plane is fitted to the sample points by least squares.
+    Working in local coordinates ``dx = x - x_fp``, ``dy = y - y_fp``
+    (offsets from the facepoint), the plane is::
+
+        Z = a*dx + b*dy + c
+
+    Because the facepoint sits at the origin of this local system
+    (``dx = dy = 0``), evaluating the plane there gives ``Z = c``.
+    Therefore **``c`` is the water-surface elevation at the facepoint** —
+    the tilt parameters ``a`` and ``b`` are solved for but not used.
+
+    Least squares minimises ``S(a*dx_i + b*dy_i + c - z_i)**2``.  Taking
+    partial derivatives and setting them to zero gives three normal
+    equations (one per unknown ``a``, ``b``, ``c``)::
+
+        a*SX2 + b*SXY + c*SX  = SXZ    (d/da = 0)
+        a*SXY + b*SY2 + c*SY  = SYZ    (d/db = 0)
+        a*SX  + b*SY  + c*n   = SZ     (d/dc = 0)
+
+    ``c`` is extracted from this 3x3 system using Cramer's rule
+    (``c = det_c / det``) and stored directly as ``fp_wse[fp_idx]``.
+
+    *Degenerate cases:*
+
+    * ``n = 0`` — all adjacent faces are dry -> ``-9999`` (nodata).
+    * ``n = 1`` — single sample -> WSE = that sample value.
+    * ``n = 2`` — two samples -> WSE = simple average (plane is
+      underdetermined).
+    * ``det = 0`` with ``n >= 3`` — collinear samples, plane is
+      underdetermined -> WSE = simple average of samples.
 
     Parameters
     ----------
@@ -403,12 +444,16 @@ def compute_facepoint_wse(
         ``(n_fp, 2)`` — facepoint XY coordinates.
     fp_face_info:
         ``(n_fp, 2)`` int32 — ``[start, count]`` into ``fp_face_values``.
-        First element of :attr:`~raspy.hdf.FlowArea.facepoint_face_orientation`
+        From :attr:`~raspy.hdf.FlowArea.facepoint_face_orientation_info`
         (HDF: ``FacePoints Face and Orientation Info``).
+        Angular sort order is not required; faces may be in any order.
     fp_face_values:
         ``(total, 2)`` int32 — ``[face_idx, orientation]``.
-        Second element of :attr:`~raspy.hdf.FlowArea.facepoint_face_orientation`
+        From :attr:`~raspy.hdf.FlowArea.facepoint_face_orientation_values`
         (HDF: ``FacePoints Face and Orientation Values``).
+        Only ``face_idx`` (column 0) is used; the orientation column is ignored
+        because both ``face_value_a`` and ``face_value_b`` are accumulated
+        unconditionally into the least-squares sum.
     face_facepoint_indexes:
         ``(n_faces, 2)`` — ``[fpA, fpB]`` for each face.
     face_value_a:
@@ -484,7 +529,7 @@ def compute_facepoint_wse(
 
 
 class _FaceVelocityCoef:
-    """Symmetric 2×2 normal-equation matrix for the C-stencil WLS solve.
+    """Symmetric 2x2 normal-equation matrix for the C-stencil WLS solve.
 
     Mirrors ``FaceVelocityCoef`` in ``MeshFV2D.cs``.
     """
@@ -588,7 +633,7 @@ def reconstruct_face_velocities(
 
     Algorithm
     ---------
-    For every face *f* with unit normal ``n̂ = (fn_x, fn_y)`` and stored
+    For every face *f* with unit normal ``n_hat = (fn_x, fn_y)`` and stored
     face-normal velocity ``vn``, the reconstruction is performed **twice** —
     once from each adjacent cell's perspective (cellA and cellB):
 
@@ -600,31 +645,31 @@ def reconstruct_face_velocities(
 
        These three faces (cw, ccw, and *f* itself) form the "C-stencil".
 
-    2. **Normal-equation matrix** — accumulate the 2×2 symmetric WLS matrix
+    2. **Normal-equation matrix** — accumulate the 2x2 symmetric WLS matrix
        using the unit normals of the three C-stencil faces::
 
-           A = Σ  [nx²   nx·ny]     (sum over cw, ccw, and f)
-                  [nx·ny  ny²]
+           A = S  [nx*nx   nx*ny]     (sum over cw, ccw, and f)
+                  [nx*ny   ny*ny]
 
-       The inverse ``A⁻¹`` is computed analytically (Cramer's rule).  If
+       The inverse ``A_inv`` is computed analytically (Cramer's rule).  If
        ``det(A) == 0`` (degenerate geometry), the identity scaled by 1/count
        is substituted so the solve degrades gracefully.
 
     3. **RHS vector** — using only the *connected* (wet) CW and CCW neighbors,
        assemble::
 
-           B = n̂_cw * vn_cw  +  n̂_ccw * vn_ccw  +  n̂_f * vn_f
+           B = n_hat_cw * vn_cw  +  n_hat_ccw * vn_ccw  +  n_hat_f * vn_f
 
     4. **Least-squares solve** — recover the full velocity vector ``(sx, sy)``
-       as ``A⁻¹ · B``.  Project it onto the tangential direction
-       ``t̂ = (-fn_y, fn_x)`` to obtain the scalar tangential component::
+       as ``A_inv * B``.  Project it onto the tangential direction
+       ``t_hat = (-fn_y, fn_x)`` to obtain the scalar tangential component::
 
-           tangential = sx * t̂_x + sy * t̂_y
+           tangential = sx * t_hat_x + sy * t_hat_y
 
     5. **Compose face velocity**::
 
-           Vx = vn * fn_x + tangential * t̂_x
-           Vy = vn * fn_y + tangential * t̂_y
+           Vx = vn * fn_x + tangential * t_hat_x
+           Vy = vn * fn_y + tangential * t_hat_y
 
        The normal component is kept exactly as stored in the HDF; only the
        tangential component is estimated.
@@ -665,7 +710,7 @@ def reconstruct_face_velocities(
         Full ``[Vx, Vy]`` velocity at each face reconstructed from cellB's
         C-stencil (Item2 in RASMapper terminology).
         For connected faces both arrays hold the averaged value.
-        Boundary faces (no cellA or cellB) fall back to ``vn * n̂``.
+        Boundary faces (no cellA or cellB) fall back to ``vn * n_hat``.
     """
     n_faces = len(face_cell_indexes)
     face_vel_A = np.zeros((n_faces, 2), dtype=np.float64)
@@ -816,7 +861,7 @@ def compute_facepoint_velocities(
     cell_wse:
         ``(n_cells,)`` — water-surface elevation per cell.
     fp_face_info, fp_face_values:
-        Angle-sorted facepoint→face CSR arrays from
+        Angle-sorted facepoint-to-face CSR arrays from
         :attr:`~raspy.hdf.FlowArea.facepoint_face_orientation`.
     face_value_a, face_value_b:
         ``(n_faces,)`` — from :func:`compute_face_wss`.
@@ -1173,6 +1218,26 @@ def build_cell_id_raster(
     """Rasterize cell ownership: pixel value = cell_idx + 1, 0 = outside.
 
     Only wet cells (``wet_mask[c] == True``) are rasterized.
+
+    Mirrors ``RasterizePolygon.ComputeCells`` (``RasterizePolygon.cs``) called
+    from ``MeshFV2D.cs`` in RasMapperLib.
+
+    **Differences from RasMapperLib**
+
+    * *Algorithm:* RasMapperLib uses a custom scan-line fill that walks polygon
+      edges and collects X-intersections at each row's cell-center Y, then fills
+      between sorted intersection pairs.  This implementation delegates to
+      ``rasterio.features.rasterize`` (GDAL center-point test,
+      ``all_touched=False``).  Both apply the same owning rule — a pixel is
+      owned if its center falls inside the polygon — so results agree for the
+      vast majority of pixels.
+    * *Degenerate vertices:* RasMapperLib has explicit
+      ``IsVertexVerticallyBetweenNeighbors`` logic to handle the case where a
+      polygon vertex lies exactly on a row's center-Y line, preventing
+      double-counting at those edges.  GDAL's behavior at such positions may
+      differ slightly.
+    * *Invalid polygons:* this implementation calls ``Polygon.is_valid`` via
+      Shapely and skips degenerate geometries; RasMapperLib has no such check.
 
     Parameters
     ----------

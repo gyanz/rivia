@@ -756,7 +756,7 @@ class FlowArea:
 
         Shape ``(n_facepoints, 2)``, dtype ``int32``.  Each row is
         ``[start, count]`` — a slice into :attr:`facepoint_face_orientation_values`
-        for that facepoint.
+        for that facepoint. count = number of faces adjacent to that facepoint.
 
         HDF source: ``FacePoints Face and Orientation Info``.
 
@@ -851,6 +851,15 @@ class FlowArea:
 
         Examples
         --------
+        Terminology used in this example:
+
+        * **fp0 … fp4** — facepoint indices (mesh vertices, integer row numbers
+          in :attr:`facepoint_coordinates`).
+        * **fpA / fpB** — the two endpoint roles of a face.  Every face has
+          exactly two endpoint facepoints stored as ``[fpA_index, fpB_index]``
+          in :attr:`face_facepoint_indexes`.  fpA is the first column (index 0),
+          fpB is the second column (index 1).
+
         Five-facepoint mesh with fp0 at the centre and four faces created in
         arbitrary order::
 
@@ -864,10 +873,11 @@ class FlowArea:
                       |
                      fp4 (0,-1)
 
-            face 0: fp0→fp2  (North)
-            face 1: fp0→fp4  (South)
-            face 2: fp0→fp3  (West)
-            face 3: fp0→fp1  (East)
+            # face_facepoint_indexes — each face stores [fpA_index, fpB_index]
+            face 0: fpA=fp0, fpB=fp2  (North)
+            face 1: fpA=fp0, fpB=fp4  (South)
+            face 2: fpA=fp0, fpB=fp3  (West)
+            face 3: fpA=fp0, fpB=fp1  (East)
 
         Bearings from fp0 to the far endpoint of each adjacent face:
 
@@ -954,7 +964,7 @@ class FlowArea:
 
         # --- Angle-sort entries for each facepoint -------------------------
         # Required so that arc traversal in vertex-velocity computation
-        # visits faces in consistent clockwise angular order.
+        # visits faces in consistent counter-clockwise angular order.
         for fp in range(n_fp):
             start = int(fp_info[fp, 0])
             count = int(fp_info[fp, 1])

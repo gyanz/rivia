@@ -2528,6 +2528,47 @@ def rasmap_raster(
     See ``docs/export_raster2_plan.md`` for a full description of the
     algorithm steps.
 
+    Pipeline summary
+    ----------------
+    **water_surface / depth — flat** (``interp_mode="flat"``)
+
+    1. ``build_cell_id_raster`` — paint cell IDs into the pixel grid.
+    2. *(pixel loop)* — write ``cell_wse`` directly; every pixel in a cell
+       gets the same flat value.
+
+    **water_surface / depth — sloping** (``interp_mode="sloping"``)
+
+    A. ``compute_face_wss`` — hydraulic connectivity + per-face WSE values
+       (``face_value_a``, ``face_value_b``).
+    B. ``compute_facepoint_wse`` — planar regression fitting a plane through
+       the face midpoint WSE samples; the intercept ``c`` at each facepoint
+       is the corner WSE.
+    4a. ``build_cell_id_raster`` — paint cell IDs into the pixel grid.
+    4b. ``sample_terrain_at_facepoints`` — terrain elevation at facepoints
+        for depth rebalancing (only when a DEM is supplied).
+    4c. ``rasterize_rasmap`` — per-pixel barycentric interpolation of the
+        facepoint WSE values within each cell's triangles.
+
+    **speed / velocity — sloping only**
+
+    A. ``compute_face_wss`` — hydraulic connectivity (same as WSE pipeline).
+    2. ``reconstruct_face_velocities`` — C-stencil least-squares
+       reconstruction of full ``(Vx, Vy)`` at each face from the stored
+       face-normal velocity scalar.
+    3. ``compute_facepoint_velocities`` — inverse-face-length weighted
+       averaging of face velocity vectors to facepoints.
+    3.5. ``replace_face_velocities_sloped`` — replace each face velocity
+         with the average of its two endpoint facepoint velocities.
+    4a. ``build_cell_id_raster`` — paint cell IDs into the pixel grid.
+    4c. ``rasterize_rasmap`` — per-pixel barycentric interpolation of
+        facepoint velocity vectors; speed = ``sqrt(Vx**2 + Vy**2)``
+        computed per pixel.
+
+    **speed — flat** (``interp_mode="flat"``)
+
+    Area-weighted mean of ``|face_normal_velocity|`` over each cell's faces,
+    painted directly per pixel.  No facepoint reconstruction is performed.
+
     Parameters
     ----------
     variable:
