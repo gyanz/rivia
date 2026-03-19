@@ -213,9 +213,43 @@ var cmd = ctor.Invoke([rasMapFilename, resultFilename ?? ""]);
 var executeMethod = cmdType.GetMethod("Execute")
     ?? throw new InvalidOperationException("StoreAllMapsCommand.Execute() not found.");
 
+// ── Build a ConsoleProgressReporter so progress messages reach stdout ─────────
+//
+// StoreAllMapsCommand.Execute(null) uses ProgressReporter.None() — a no-op that
+// silently drops all ReportMessage / ReportProgress calls.  Passing a
+// ConsoleProgressReporter instead causes every message and percentage update to
+// be written to stdout, matching the behaviour callers expect from RasProcess.exe.
+//
+// ConsoleProgressReporter lives in Utility.Core.dll (Utility.Progress namespace).
+// The single constructor parameter:
+//   progressOverwritesLine=false → each update on its own line (correct for
+//   line-by-line stdout streaming; true would emit bare \r carriage returns).
+//
+// Reference: Utility.Core.dll — Utility.Progress.ConsoleProgressReporter
+
+object? progressReporter = null;
+var utilityCoreAsm = AppDomain.CurrentDomain.GetAssemblies()
+    .FirstOrDefault(a => a.GetName().Name == "Utility.Core");
+if (utilityCoreAsm is null)
+{
+    var utilityCoreLibPath = Path.Combine(libDir, "Utility.Core.dll");
+    if (File.Exists(utilityCoreLibPath))
+        utilityCoreAsm = Assembly.LoadFrom(utilityCoreLibPath);
+}
+if (utilityCoreAsm is not null)
+{
+    var cprType = utilityCoreAsm.GetType("Utility.Progress.ConsoleProgressReporter");
+    if (cprType is not null)
+    {
+        var cprCtor = cprType.GetConstructor([typeof(bool)]);
+        if (cprCtor is not null)
+            progressReporter = cprCtor.Invoke([false]);
+    }
+}
+
 try
 {
-    executeMethod.Invoke(cmd, [null]);
+    executeMethod.Invoke(cmd, [progressReporter]);
 }
 catch (TargetInvocationException tie) when (tie.InnerException is not null)
 {
