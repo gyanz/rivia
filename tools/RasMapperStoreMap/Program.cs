@@ -168,6 +168,11 @@ catch (Exception ex)
 var sharedDataType = asm.GetType("RasMapperLib.SharedData")
     ?? throw new InvalidOperationException("RasMapperLib.SharedData not found in assembly.");
 
+// Install the classifying writer now so the header line below and all
+// subsequent Console.WriteLine calls (including from RasMapperLib) are
+// prefixed with "DEBUG: " or "INFO: " for the Python caller.
+Console.SetOut(new ClassifyingWriter(Console.Out));
+
 Console.WriteLine($"RasMapperStoreMap: RenderMode={renderMode} " +
                   $"UseDepthWeightedFaces={useDepthWeightedFaces} " +
                   $"ReduceShallowToHorizontal={reduceShallowToHorizontal}");
@@ -194,6 +199,73 @@ switch (renderMode.ToLowerInvariant())
             $"RasMapperStoreMap: unknown RenderMode '{renderMode}'. " +
             "Use horizontal, sloping, or slopingPretty.");
         return 1;
+}
+
+// ── Ensure FacePoint Elevations (required for depth-weighted rendering) ────────
+//
+// UseDepthWeightedFaces=true requires a per-facepoint terrain elevation array
+// stored in <model_dir>/<PlanShortID>/PostProcessing.hdf at:
+//   Results/Unsteady/.../2D Flow Areas/<mesh>/Processed Data/
+//     Profile (Horizontal)/FacePoint Elevation
+//
+// RasMapper GUI triggers this computation via a UI popup on first use.  In
+// headless mode the popup is skipped, so WaterSurfaceRenderer finds the array
+// null and throws "Error loading facepoint elevations for precip rendering".
+//
+// Fix: call PostProcessor.EnsureFacepointElevations() directly before
+// StoreAllMapsCommand.  If PostProcessing.hdf already contains the data this
+// is a fast no-op; otherwise it reads terrain and computes the elevations.
+//
+// Reference:
+//   RasMapperLib.PostProcessor.EnsureFacepointElevations()  (PostProcessor.cs)
+//   RasMapperLib.Scripting.GeneratePostProcess.Execute()     (GeneratePostProcess.cs)
+
+if (useDepthWeightedFaces)
+{
+    if (resultFilename is null)
+    {
+        Console.Error.WriteLine(
+            "RasMapperStoreMap: -ResultFilename=<path> is required when " +
+            "-UseDepthWeightedFaces=true (needed to locate PostProcessing.hdf).");
+        return 1;
+    }
+
+    Console.WriteLine(
+        "RasMapperStoreMap: Ensuring FacePoint Elevations for depth-weighted rendering...");
+    try
+    {
+        var rasResultsType = asm.GetType("RasMapperLib.RASResults")
+            ?? throw new InvalidOperationException("RasMapperLib.RASResults not found.");
+        var rasResultsCtor = rasResultsType.GetConstructor([typeof(string)])
+            ?? throw new InvalidOperationException("RASResults(string) constructor not found.");
+        var rasResults = rasResultsCtor.Invoke([resultFilename]);
+
+        var getPostProcessorMethod = rasResultsType.GetMethod("GetPostProcessor")
+            ?? throw new InvalidOperationException("RASResults.GetPostProcessor() not found.");
+        var postProcessor = getPostProcessorMethod.Invoke(rasResults, null);
+
+        var ensureMethod = postProcessor.GetType()
+            .GetMethod("EnsureFacepointElevations",
+                       BindingFlags.Public | BindingFlags.Instance)
+            ?? throw new InvalidOperationException(
+                   "PostProcessor.EnsureFacepointElevations() not found.");
+
+        // Pass null → the method defaults to ProgressReporter.None() internally.
+        ensureMethod.Invoke(postProcessor, [null]);
+    }
+    catch (TargetInvocationException tie) when (tie.InnerException is not null)
+    {
+        Console.Error.WriteLine(
+            "RasMapperStoreMap: EnsureFacepointElevations failed — " +
+            tie.InnerException.Message);
+        return 1;
+    }
+    catch (Exception ex)
+    {
+        Console.Error.WriteLine(
+            $"RasMapperStoreMap: EnsureFacepointElevations error — {ex.Message}");
+        return 1;
+    }
 }
 
 // ── Instantiate and execute StoreAllMapsCommand ───────────────────────────────
@@ -249,20 +321,6 @@ if (utilityCoreAsm is not null)
     }
 }
 
-// ── Wrap Console.Out to classify stdout lines as DEBUG or INFO ────────────────
-//
-// ConsoleProgressReporter and GDAL both write directly to Console.Out.
-// By replacing Console.Out before Execute() we intercept every output line
-// and prefix it with "DEBUG: " or "INFO: " so the Python caller (_mapper.py)
-// can log fine-grained progress at DEBUG and milestones at INFO.
-//
-// Classification rules (INFO unless matched as DEBUG):
-//   DEBUG  "File N of M: N% processed (...)"  — per-terrain-file percentage
-//   DEBUG  "0...10...20...30...100 - done."    — GDAL GDALTermProgress bar
-//   DEBUG  "RasMapperStoreMap: RenderMode=..."  — our own header line
-//   INFO   everything else (Progress: N%, milestones, summaries)
-
-Console.SetOut(new ClassifyingWriter(Console.Out));
 
 try
 {
