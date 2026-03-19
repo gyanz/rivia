@@ -200,20 +200,155 @@ the `.rasmap` file contains.
 
 ---
 
+## Depth-Weighted Rendering Bug (UseDepthWeightedFaces=true)
+
+### Symptom
+
+Calling `store_map()` with `render_mode="hybrid"` and `use_depth_weights=True` produces:
+
+```
+Store-Map error from '...p17.hdf', Error loading facepoint elevations for precip rendering method.
+```
+
+No raster is generated. Return code is 0 (StoreAllMapsCommand considers it a non-fatal per-layer
+error), so the Python caller sees a "0 maps generated" result.
+
+### What Data Is Required
+
+Depth-weighted rendering requires a per-facepoint terrain elevation array in a separate file:
+
+```
+<model_dir>/<PlanShortID>/PostProcessing.hdf
+  └─ Results/Unsteady/Output/Output Blocks/Base Output/Summary Output/
+       2D Flow Areas/<mesh_name>/Processed Data/Profile (Horizontal)/FacePoint Elevation
+       (float32 array, one value per facepoint)
+```
+
+`PostProcessing.hdf` is **separate from the plan HDF** (`*.p*.hdf`). Its path is computed by
+`RASResults.OutputFolder`:
+
+```csharp
+// RASResults.cs
+public string OutputFolder => Path.GetDirectoryName(SourceFilename)
+                            + Path.DirectorySeparatorChar
+                            + PlanAttributes.PlanShortID;
+// e.g. D:\Models\Tulloch\p17\PostProcessing.hdf
+```
+
+If `PlanShortID` is empty, `OutputFolder` returns `""` and `PostProcessing.hdf` resolves to the
+current working directory — a silent misplacement. `PlanShortID` is read from the plan HDF's
+`Plan Data / Plan Information` group as attribute `"Plan ShortID"`.
+
+`PostProcessing.hdf` location is **independent of `OverwriteOutputFilename`** — it is always
+derived from the plan HDF location, never from the custom output folder.
+
+### Root Cause: In-Memory Cache Not Populated
+
+The exception is thrown at
+[`WaterSurfaceRenderer.GetComputer()`](../archive/DLLs/RasMapperLib/RasMapperLib.Render/WaterSurfaceRenderer.cs#L1979),
+line ~2055:
+
+```csharp
+float[][] perMeshFacepointElevations = _geometry.D2FlowArea.PerMeshFacepointElevations;
+if (perMeshFacepointElevations == null || perMeshFacepointElevations.Length != _geometry.D2FlowArea.MeshCount)
+    throw new Exception("Error loading facepoint elevations for precip rendering method.");
+```
+
+`PerMeshFacepointElevations` is a **per-instance field** on `RASD2FlowArea` — it is `null` by
+default on any freshly constructed `RASResults` object. It is populated only by
+[`RASD2FlowArea.EnsureGetPerMeshFacepointElevations()`](../archive/DLLs/RasMapperLib/RasMapperLib/RASD2FlowArea.cs#L3834),
+which:
+
+1. Calls `EnsureFacepointElevationsPopup()` → writes the array to `PostProcessing.hdf` if absent.
+2. Reads the array from `PostProcessing.hdf` into `PerMeshFacepointElevations` in memory.
+
+The only call site of `EnsureGetPerMeshFacepointElevations()` in the rendering pipeline is in
+[`WaterSurfaceRenderer.ComputeWaterSurfaceInternal2D()`](../archive/DLLs/RasMapperLib/RasMapperLib.Render/WaterSurfaceRenderer.cs#L2644)
+(line ~2644, the **horizontal** sub-path). However, `GetComputer()` runs **before**
+`ComputeWaterSurfaceInternal2D()` — the sloping preparation code reads the field first (line
+~2049–2060) without ensuring it is loaded. This is a latent RasMapperLib bug for headless use.
+
+**Why the GUI works:** In the GUI, the user is shown a popup
+(`EnsureFacepointElevationsPopup()`) before any rendering starts. The popup both writes to
+`PostProcessing.hdf` and (via the GUI's `RASD2FlowArea` object) sets `PerMeshFacepointElevations`
+on the object that is later used for rendering. In headless scripting, this popup is skipped and
+the field is never populated on the rendering object.
+
+**Why setting `SharedData.RasMapFilename` alone is insufficient:** `EnsureFacepointElevations()`
+checks `_geometry.Terrain == null` and returns silently (via `reporter.ReportError`) rather than
+throwing — so no exception propagates and the caller cannot detect the failure. Even with terrain
+set, `StoreAllMapsCommand` creates a **new** `RASResults` whose `PerMeshFacepointElevations` is
+always `null` regardless of any pre-computation on a different instance.
+
+### Fix in `RasMapperStoreMap.exe`
+
+For `UseDepthWeightedFaces=true`, `RasMapperStoreMap.exe` bypasses `StoreAllMapsCommand`
+entirely and implements the loop itself:
+
+```
+1. SharedData.RasMapFilename = rasMapFilename                       (mirrors StoreAllMapsCommand)
+2. Parse rasmap XML → terrain dict + result map layers
+3. new RASResults(resultFilename)                                    (our instance)
+4. Ensure Geometry.Terrain is set:
+     a. Try auto-resolve via RASGeometry.Terrain getter
+     b. If null: parse rasmap <Terrains>, create TerrainLayer(name, file, canEdit=false),
+        set Geometry.Terrain directly via reflection
+5. PostProcessor.EnsureFacepointElevations(null)
+     → writes FacePoint Elevation array to PostProcessing.hdf
+6. RASD2FlowArea.EnsureGetPerMeshFacepointElevations()             ← KEY FIX
+     → reads the array from PostProcessing.hdf into PerMeshFacepointElevations in memory
+     (same rasResults instance as step 3)
+7. For each RASResultsMap layer in the rasmap XML matching this result file:
+     new RASResultsMap(rasResults)                                   ← SAME rasResults
+     XMLLoad(mapLayerElement)
+     SetOverrideTerrainFilenamesDictionary(terrainDict)
+     StoreMap(progressReporter, showFinishedMessage: false)
+```
+
+By reusing the **same `rasResults`** object in steps 3–7, `WaterSurfaceRenderer._geometry` is
+the same `RASGeometry` where `D2FlowArea.PerMeshFacepointElevations` was already populated in
+step 6. The check in `GetComputer()` at line ~2055 passes, and rendering succeeds.
+
+### Terrain Resolution in Headless Mode
+
+`RASGeometry.Terrain` resolution order (headless, `SharedData.RasMapper == null`):
+
+```
+1. _terrain != null                  → cached, return immediately
+2. Paths.CanReadFile(_terrainFilename)→ new TerrainLayer(layerName, _terrainFilename)
+   _terrainFilename comes from plan HDF: Geometry attribute "Terrain Filename" (relative→absolute)
+3. SharedData.RasMapDoc != null      → RASMapperCom.GetTerrainFromXML(doc, _terrainLayername)
+   _terrainLayername: plan HDF Geometry attribute "Terrain Layername"
+   RasMapDoc set when SharedData.RasMapFilename is assigned (via RefreshXMLDoc)
+4. (fallback) RASMapperCom.TerrainFilesAvailable() → first valid terrain file found
+```
+
+If all four paths return `null`, `RasMapperStoreMap.exe` falls back to parsing the rasmap XML
+`<Terrains>` block directly and setting `Geometry.Terrain` via the property setter.
+
+---
+
 ## Recommendation
 
-When full render-mode fidelity is needed (especially `slopingPretty` with depth-weighted faces
-to match RasMapper's default display), use `rasterize_rasmap()` from `raspy.geo` directly
-instead of `store_map()` / `export_wse()`.
+**`store_map()` now supports all render modes including `slopingPretty` with depth-weighted
+faces** via `RasMapperStoreMap.exe` (the raspy stub that replaces `RasProcess.exe` for stored
+map generation).
 
-`rasterize_rasmap()` is also faster for single-variable exports because it avoids launching a
-subprocess and does not require a terrain HDF — it rasterizes directly from the HDF mesh
-geometry and result arrays.
+`RasMapperStoreMap.exe` selects the execution path based on `UseDepthWeightedFaces`:
 
-`store_map()` remains useful when:
-- You need a persistent VRT + GeoTIFF tile set on disk (native RasProcess format)
-- You need variables not yet supported by `rasterize_rasmap`
+| Condition | Execution path |
+|---|---|
+| `UseDepthWeightedFaces=false` | `StoreAllMapsCommand.Execute()` (standard) |
+| `UseDepthWeightedFaces=true` | Custom loop (reuses `rasResults`, populates in-memory cache first) |
+
+When full render-mode fidelity is needed and a stored GeoTIFF/VRT tile set is not required,
+`rasterize_rasmap()` from `raspy.geo` remains an alternative — it is faster for single-variable
+exports and does not require a terrain HDF.
+
+`store_map()` / `RasMapperStoreMap.exe` is preferred when:
+- You need a persistent VRT + GeoTIFF tile set on disk (native RasMapper format)
 - You need exact byte-for-byte parity with RasMapper's stored-map output files
+- The model has many terrain tiles (GDAL-parallelised tile writing is faster than `rasterize_rasmap`)
 
 ---
 
@@ -229,10 +364,15 @@ located in `archive/DLLs/RasMapperLib/`.
 | `RasMapperLib.Scripting/SetSRSHelper.cs` | Only sets coordinate reference system from rasmap |
 | `RasMapperLib/RASMapper.cs` (~line 12876) | GUI `XMLLoad` — only place `<RenderMode>` is read |
 | `RasMapperLib/SharedData.cs` (~line 1765) | `SetHorizontalRenderingMode`, `SetSlopingRenderingMode`, `SetSlopingPrettyRenderingMode` |
+| `RasMapperLib/RASResults.cs` (~line 551) | `OutputFolder` property — computes `PostProcessing.hdf` directory |
+| `RasMapperLib/RASGeometry.cs` (~line 2139) | `Terrain` property — headless resolution chain |
+| `RasMapperLib/PostProcessor.cs` (~line 532) | `EnsureFacepointElevations()` — writes terrain elevations to `PostProcessing.hdf` |
+| `RasMapperLib/RASD2FlowArea.cs` (~line 3834) | `EnsureGetPerMeshFacepointElevations()` — populates in-memory `PerMeshFacepointElevations` cache |
 | `RasMapperLib/MapperOptionWSRenderMode.cs` | GUI dialog — `LoadCellRenderMode` / `StoreCellRenderMode` |
-| `RasMapperLib.Render/WaterSurfaceRenderer.cs` | Branches on `SharedData.CellRenderMode` / `UseDepthWeightedFaces` |
+| `RasMapperLib.Render/WaterSurfaceRenderer.cs` (~line 2055, ~2644) | Reads `PerMeshFacepointElevations` in `GetComputer()`; calls `EnsureGetPerMeshFacepointElevations` only in `ComputeWaterSurfaceInternal2D` |
 | `RasMapperLib.Render/SlopingFactors.cs` | Computes face-point water surface factors for sloping modes |
 | `RasMapperLib/ManageResultsMaps.cs` | GUI entry point — `StoreMapPopup()` → `RASResultsMap.StoreMap()` |
 | `RasMapperLib/RASResultsMap.cs` (~line 5530) | `StoreMap()` — shared by GUI and scripting layer |
 | `RasMapperLib/MapProcessingEngine.cs` (~line 1320) | Core raster generation engine — called by both GUI and RasProcess |
 | `RasMapperLib.Render/Renderer.cs` (~line 1674) | `GetSimplifiedComputer()` — dispatches to variable-specific renderer |
+| `tools/RasMapperStoreMap/Program.cs` | raspy stub — implements depth-weighted workaround |

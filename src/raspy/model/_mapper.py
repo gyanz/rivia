@@ -826,29 +826,32 @@ class MapperExtension:
             # when processing terrain tiles that trigger GDAL native operations.
             _cwd = program_dir if _use_stub else None
 
-            # Retry the stub on soft errors (returncode=0 but RasMapperLib
-            # emitted a ReportError).  The root cause is concurrent HDF5
-            # access: HEC-RAS COM keeps the plan HDF file open while
-            # MapProcessingEngine.StoreMap() runs multi-threaded reads on the
-            # same file.  RasProcess.exe is never called while HEC-RAS holds
-            # the file, so it never hits this.  Retrying after a short pause
-            # lets the competing HDF5 operation finish.  Hard failures
-            # (non-zero returncode) are not retried.
+            # Retry the stub on transient .NET exceptions (returncode=0 but
+            # a NullReferenceException or similar appears in stderr).  The
+            # root cause is concurrent HDF5 access: HEC-RAS COM keeps the
+            # plan HDF file open while MapProcessingEngine.StoreMap() runs
+            # multi-threaded reads on the same file.  Retrying after a short
+            # pause lets the competing HDF5 operation finish.
+            #
+            # Permanent RasMapperLib errors (e.g. "Error loading facepoint
+            # elevations") do NOT contain "Exception" and are not retried.
+            # Hard failures (non-zero returncode) are never retried.
             _max_attempts = 3 if _use_stub else 1
             for _attempt in range(1, _max_attempts + 1):
-                logger.warning(
-                    "RasMapperStoreMap.exe attempt %d/%d",
-                    _attempt,
-                    _max_attempts,
-                )
+                if _use_stub:
+                    logger.debug(
+                        "RasMapperStoreMap.exe attempt %d/%d",
+                        _attempt,
+                        _max_attempts,
+                    )
                 result = _run_subprocess(cmd, _cwd, timeout, stream_output)
-                _soft_error = (
+                _is_transient = (
                     result.returncode == 0
-                    and "error" in result.stderr.lower()
+                    and "exception" in result.stderr.lower()
                 )
-                if _soft_error and _attempt < _max_attempts:
+                if _is_transient and _attempt < _max_attempts:
                     logger.warning(
-                        "RasMapperStoreMap.exe soft error on attempt %d/%d "
+                        "RasMapperStoreMap.exe transient error on attempt %d/%d "
                         "(likely concurrent HDF5 access) — retrying in 2 s...",
                         _attempt,
                         _max_attempts,

@@ -1,15 +1,29 @@
 /*
  * RasMapperStoreMap.exe
  *
- * Thin wrapper around RasMapperLib.Scripting.StoreAllMapsCommand that initialises
- * SharedData render-mode state before executing the command.  RasProcess.exe never
- * sets render mode (SharedData defaults to basic Sloping/JustFacepoints), so rasters
- * produced by RasProcess.exe always ignore the <RenderMode> settings in the .rasmap
- * file.  This stub fixes that by reading the render-mode arguments and calling the
- * appropriate SharedData setter before delegating to StoreAllMapsCommand.
+ * Headless stored-map generator for HEC-RAS that respects the <RenderMode>,
+ * <UseDepthWeightedFaces>, and <ReduceShallowToHorizontal> settings in the
+ * .rasmap file.  RasProcess.exe ignores these settings (SharedData defaults
+ * to basic Sloping/JustFacepoints); this stub reads them and calls the
+ * appropriate SharedData setter before rendering.
+ *
+ * Two execution paths depending on -UseDepthWeightedFaces:
+ *
+ *   false (default): delegates to StoreAllMapsCommand.Execute().
+ *
+ *   true: bypasses StoreAllMapsCommand and runs a custom loop that:
+ *     1. Creates RASResults and ensures terrain is set.
+ *     2. Writes FacePoint Elevation data to PostProcessing.hdf via
+ *        PostProcessor.EnsureFacepointElevations().
+ *     3. Loads that data into the in-memory RASD2FlowArea cache via
+ *        EnsureGetPerMeshFacepointElevations() on the same RASResults instance.
+ *     4. Constructs RASResultsMap with that SAME RASResults and calls StoreMap.
+ *     This is necessary because WaterSurfaceRenderer.GetComputer() reads
+ *     PerMeshFacepointElevations (an instance field) before the normal code
+ *     path that populates it runs.  See docs/rasprocess_render_mode_limitation.md.
  *
  * RasMapperLib.dll is loaded dynamically at runtime from the HEC-RAS installation
- * directory so this project has zero compile-time references to HEC-RAS assemblies.
+ * directory — this project has zero compile-time references to HEC-RAS assemblies.
  *
  * Usage:
  *   RasMapperStoreMap.exe
@@ -20,7 +34,7 @@
  *       [-ReduceShallowToHorizontal=true|false]          (default: true)
  *       [-RasMapperLibDir=<HEC-RAS install dir>]
  *
- * If -RasMapperLibDir is omitted the exe tries:
+ * If -RasMapperLibDir is omitted the exe searches:
  *   1. Environment variable HEC_RAS_LIB_DIR
  *   2. Common HEC-RAS installation paths (6.6 down to 6.1)
  *
@@ -28,6 +42,9 @@
  *   archive/DLLs/RasMapperLib/RasMapperLib.Scripting/StoreAllMapsCommand.cs
  *   archive/DLLs/RasMapperLib/RasMapperLib/SharedData.cs  (~line 1765, ~line 1926)
  *   archive/DLLs/RasMapperLib/RasMapperLib/RASMapper.cs   (~line 12876)
+ *   archive/DLLs/RasMapperLib/RasMapperLib/PostProcessor.cs (~line 532)
+ *   archive/DLLs/RasMapperLib/RasMapperLib/RASD2FlowArea.cs (~line 3834)
+ *   archive/DLLs/RasMapperLib/RasMapperLib.Render/WaterSurfaceRenderer.cs (~line 2055)
  *   docs/rasprocess_render_mode_limitation.md
  */
 
@@ -201,33 +218,36 @@ switch (renderMode.ToLowerInvariant())
         return 1;
 }
 
-// ── Ensure FacePoint Elevations (required for depth-weighted rendering) ────────
+// ── Depth-weighted rendering: ensure FacePoint Elevations then run StoreMap ────
 //
 // UseDepthWeightedFaces=true requires a per-facepoint terrain elevation array
 // stored in <model_dir>/<PlanShortID>/PostProcessing.hdf at:
 //   Results/Unsteady/.../2D Flow Areas/<mesh>/Processed Data/
 //     Profile (Horizontal)/FacePoint Elevation
 //
-// RasMapper GUI triggers this computation via a UI popup on first use.  In
-// headless mode the popup is skipped, so WaterSurfaceRenderer finds the array
-// null and throws "Error loading facepoint elevations for precip rendering".
+// Root cause of "Error loading facepoint elevations for precip rendering method":
+//   WaterSurfaceRenderer.GetComputer() (line ~2055) reads the in-memory field
+//   RASD2FlowArea.PerMeshFacepointElevations directly, before
+//   ComputeWaterSurfaceInternal2D (the only other code path that calls
+//   EnsureGetPerMeshFacepointElevations at line ~2644) has a chance to run.
+//   PerMeshFacepointElevations is a per-instance field — populated by
+//   EnsureGetPerMeshFacepointElevations — so it is always null on a freshly
+//   created RASResults object.
 //
-// Fix: call PostProcessor.EnsureFacepointElevations() directly before
-// StoreAllMapsCommand, mirroring RasMapper's own staleness logic:
-//   • PostProcessing.hdf missing / corrupt / older than result HDF → full
-//     rebuild via PostProcessor.NeedsBaseFileUpdate() + CreatePostProcessBase()
-//   • PostProcessing.hdf current but FacePoint Elevation dataset absent →
-//     compute and write just that dataset (fast)
-//   • PostProcessing.hdf current and dataset present → no-op (fastest)
-//
-// Critical: SharedData.RasMapFilename must be set before constructing
-// RASResults so that RASResults.Geometry.Terrain resolves via the rasmap.
-// StoreAllMapsCommand does this at line 62; we mirror that here.
+// Fix: for the depth-weighted case we bypass StoreAllMapsCommand and instead:
+//   1. Create RASResults ourselves and ensure terrain is set.
+//   2. Call PostProcessor.EnsureFacepointElevations() → writes PostProcessing.hdf.
+//   3. Call RASD2FlowArea.EnsureGetPerMeshFacepointElevations() → populates the
+//      in-memory PerMeshFacepointElevations field on THIS rasResults instance.
+//   4. Construct RASResultsMap(rasResults) — SAME rasResults — and call StoreMap.
+//      WaterSurfaceRenderer._geometry is rasResults.Geometry, so it sees the
+//      already-populated PerMeshFacepointElevations and no longer throws.
 //
 // Reference:
-//   RasMapperLib.PostProcessor.EnsureFacepointElevations()       (PostProcessor.cs)
-//   RasMapperLib.PostProcessor.NeedsBaseFileUpdate()              (PostProcessor.cs)
-//   RasMapperLib.Scripting.StoreAllMapsCommand.Execute() line 62  (StoreAllMapsCommand.cs)
+//   RasMapperLib.PostProcessor.EnsureFacepointElevations()       (PostProcessor.cs ~532)
+//   RasMapperLib.RASD2FlowArea.EnsureGetPerMeshFacepointElevations() (~3834)
+//   RasMapperLib.Render.WaterSurfaceRenderer.GetComputer()        (~1979, ~2055)
+//   RasMapperLib.Scripting.StoreAllMapsCommand.Execute()           (~60)
 
 if (useDepthWeightedFaces)
 {
@@ -239,47 +259,264 @@ if (useDepthWeightedFaces)
         return 1;
     }
 
-    Console.WriteLine(
-        "RasMapperStoreMap: Ensuring FacePoint Elevations for depth-weighted rendering...");
+    // ── Build ConsoleProgressReporter (same as non-depth-weighted path) ───────
+    object? progressReporterDW = null;
+    var utilityCoreAsmDW = AppDomain.CurrentDomain.GetAssemblies()
+        .FirstOrDefault(a => a.GetName().Name == "Utility.Core");
+    if (utilityCoreAsmDW is null)
+    {
+        var utilityCoreLibPathDW = Path.Combine(libDir, "Utility.Core.dll");
+        if (File.Exists(utilityCoreLibPathDW))
+            utilityCoreAsmDW = Assembly.LoadFrom(utilityCoreLibPathDW);
+    }
+    if (utilityCoreAsmDW is not null)
+    {
+        var cprTypeDW = utilityCoreAsmDW.GetType("Utility.Progress.ConsoleProgressReporter");
+        if (cprTypeDW is not null)
+        {
+            var cprCtorDW = cprTypeDW.GetConstructor([typeof(bool)]);
+            if (cprCtorDW is not null)
+                progressReporterDW = cprCtorDW.Invoke([false]);
+        }
+    }
+
     try
     {
-        // Set SharedData.RasMapFilename before constructing RASResults so the
-        // geometry can resolve the terrain layer — exactly what StoreAllMapsCommand
-        // does before its own new RASResults(value3) call.
+        // ── 1. Set SharedData.RasMapFilename (mirrors StoreAllMapsCommand line 62) ──
         var sharedDataRasMapFilenameProp = sharedDataType.GetProperty("RasMapFilename",
             BindingFlags.Public | BindingFlags.Static);
         sharedDataRasMapFilenameProp?.SetValue(null, rasMapFilename);
 
+        // ── 2. Parse rasmap XML for terrain dict + result map layers ──────────
+        string rasMapDir = Path.GetDirectoryName(rasMapFilename) ?? ".";
+        var xRoot = System.Xml.Linq.XElement.Load(rasMapFilename);
+
+        // Build terrain name → filename dict (mirrors StoreAllMapsCommand lines 77-95)
+        var terrainDict = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var terrainsEl = xRoot.Element("Terrains");
+        if (terrainsEl is not null)
+        {
+            foreach (var tLayer in terrainsEl.Elements("Layer"))
+            {
+                var tName = tLayer.Attribute("Name")?.Value;
+                var tFile = tLayer.Attribute("Filename")?.Value;
+                if (tName is null || tFile is null) continue;
+                if (!Path.IsPathRooted(tFile))
+                    tFile = Path.GetFullPath(Path.Combine(rasMapDir, tFile));
+                if (File.Exists(tFile) && !terrainDict.ContainsKey(tName))
+                    terrainDict.Add(tName, tFile);
+            }
+        }
+
+        // ── 3. Create RASResults ──────────────────────────────────────────────
         var rasResultsType = asm.GetType("RasMapperLib.RASResults")
             ?? throw new InvalidOperationException("RasMapperLib.RASResults not found.");
         var rasResultsCtor = rasResultsType.GetConstructor([typeof(string)])
             ?? throw new InvalidOperationException("RASResults(string) constructor not found.");
         var rasResults = rasResultsCtor.Invoke([resultFilename]);
 
+        // ── 4. Terrain resolution ─────────────────────────────────────────────
+        // EnsureFacepointElevations silently no-ops when Geometry.Terrain is
+        // null.  If automatic resolution fails (common in headless), parse the
+        // rasmap XML and set Geometry.Terrain directly.
+        var geometryProp = rasResultsType.GetProperty("Geometry",
+            BindingFlags.Public | BindingFlags.Instance);
+        var geometry = geometryProp?.GetValue(rasResults)
+            ?? throw new InvalidOperationException("RASResults.Geometry is null.");
+
+        var terrainProp = geometry.GetType().GetProperty("Terrain",
+            BindingFlags.Public | BindingFlags.Instance);
+        object? terrain = null;
+        try { terrain = terrainProp?.GetValue(geometry); }
+        catch { /* getter can throw if file missing */ }
+
+        if (terrain is null)
+        {
+            Console.WriteLine(
+                "RasMapperStoreMap: Terrain not auto-resolved; setting from rasmap XML...");
+
+            string? terrainFile = terrainDict.Count > 0
+                ? terrainDict.Values.First() : null;
+            string  terrainName = terrainDict.Count > 0
+                ? terrainDict.Keys.First() : "Terrain";
+
+            if (terrainFile is not null)
+            {
+                var terrainLayerType = asm.GetType("RasMapperLib.TerrainLayer");
+                var tlCtor = terrainLayerType?.GetConstructor(
+                    [typeof(string), typeof(string), typeof(bool)]);
+                if (tlCtor is not null)
+                {
+                    var terrainLayer = tlCtor.Invoke([terrainName, terrainFile, false]);
+                    terrainProp!.SetValue(geometry, terrainLayer);
+                    Console.WriteLine(
+                        $"RasMapperStoreMap: Terrain set to '{terrainName}' ({terrainFile})");
+                }
+                else
+                {
+                    Console.Error.WriteLine(
+                        "RasMapperStoreMap: warning — TerrainLayer ctor not found; " +
+                        "FacePoint Elevation computation may fail.");
+                }
+            }
+            else
+            {
+                Console.Error.WriteLine(
+                    "RasMapperStoreMap: warning — no terrain file found in rasmap XML; " +
+                    "FacePoint Elevation computation will fail.");
+            }
+        }
+
+        // ── 5. Write FacePoint Elevations to PostProcessing.hdf ──────────────
+        Console.WriteLine(
+            "RasMapperStoreMap: Ensuring FacePoint Elevations for depth-weighted rendering...");
+
         var getPostProcessorMethod = rasResultsType.GetMethod("GetPostProcessor")
             ?? throw new InvalidOperationException("RASResults.GetPostProcessor() not found.");
         var postProcessor = getPostProcessorMethod.Invoke(rasResults, null);
 
-        var ensureMethod = postProcessor.GetType()
-            .GetMethod("EnsureFacepointElevations",
-                       BindingFlags.Public | BindingFlags.Instance)
+        var ppFilenameProp = postProcessor!.GetType().GetProperty("Filename",
+            BindingFlags.Public | BindingFlags.Instance);
+        string ppFilename = ppFilenameProp?.GetValue(postProcessor) as string ?? "(unknown)";
+        Console.WriteLine($"RasMapperStoreMap: PostProcessing.hdf path: {ppFilename}");
+
+        var ensureFPEMethod = postProcessor.GetType()
+            .GetMethod("EnsureFacepointElevations", BindingFlags.Public | BindingFlags.Instance)
             ?? throw new InvalidOperationException(
                    "PostProcessor.EnsureFacepointElevations() not found.");
+        ensureFPEMethod.Invoke(postProcessor, [null]);
+        Console.WriteLine("RasMapperStoreMap: FacePoint Elevation data written to PostProcessing.hdf.");
 
-        // Pass null → the method defaults to ProgressReporter.None() internally.
-        ensureMethod.Invoke(postProcessor, [null]);
+        // ── 6. Populate in-memory PerMeshFacepointElevations cache ────────────
+        // KEY FIX: WaterSurfaceRenderer.GetComputer reads PerMeshFacepointElevations
+        // (an instance field on RASD2FlowArea) BEFORE ComputeWaterSurfaceInternal2D
+        // ever calls EnsureGetPerMeshFacepointElevations.  By calling it here on
+        // this rasResults, the field is populated BEFORE StoreMap/GetComputer runs.
+        // We pass this same rasResults to RASResultsMap below so that
+        // WaterSurfaceRenderer._geometry is THIS geometry with the populated cache.
+        var d2FlowAreaProp = geometry.GetType().GetProperty("D2FlowArea",
+            BindingFlags.Public | BindingFlags.Instance);
+        var d2FlowArea = d2FlowAreaProp?.GetValue(geometry);
+        if (d2FlowArea is not null)
+        {
+            var ensureGetMethod = d2FlowArea.GetType()
+                .GetMethod("EnsureGetPerMeshFacepointElevations",
+                           BindingFlags.Public | BindingFlags.Instance);
+            ensureGetMethod?.Invoke(d2FlowArea, null);
+            Console.WriteLine(
+                "RasMapperStoreMap: FacePoint Elevation in-memory cache populated.");
+        }
+
+        // ── 7. Run StoreMap for each matching layer, reusing THIS rasResults ──
+        // Mirrors StoreAllMapsCommand.Execute() but reuses the rasResults created
+        // above (so PerMeshFacepointElevations is shared with WaterSurfaceRenderer).
+        var resultsEl = xRoot.Element("Results");
+        if (resultsEl is null)
+            throw new InvalidOperationException(
+                "rasmap XML has no <Results> element.");
+
+        var rasResultsMapType = asm.GetType("RasMapperLib.RASResultsMap")
+            ?? throw new InvalidOperationException("RasMapperLib.RASResultsMap not found.");
+        var rasResultsMapCtor = rasResultsMapType.GetConstructor([rasResultsType])
+            ?? throw new InvalidOperationException(
+                   "RASResultsMap(RASResults) constructor not found.");
+
+        // XMLLoad may be on a base class — search through hierarchy.
+        var xmlLoadMethod = FindMethodInHierarchy(rasResultsMapType, "XMLLoad",
+            [typeof(System.Xml.XmlElement)]);
+
+        var outputModeIsStoredTypeProp = rasResultsMapType.GetProperty(
+            "OutputModeIsStoredType", BindingFlags.Public | BindingFlags.Instance);
+
+        var setOverrideDictMethod = rasResultsMapType.GetMethod(
+            "SetOverrideTerrainFilenamesDictionary",
+            BindingFlags.Public | BindingFlags.Instance);
+
+        // StoreMap(ProgressReporter reporter, bool showFinishedMessage) — 2 params
+        var storeMapMethod = rasResultsMapType.GetMethods(
+                BindingFlags.Public | BindingFlags.Instance)
+            .FirstOrDefault(m => m.Name == "StoreMap" &&
+                                 m.GetParameters().Length == 2 &&
+                                 m.GetParameters()[1].ParameterType == typeof(bool));
+
+        string resultFileFullPath = Path.GetFullPath(resultFilename);
+        int mapsGenerated = 0;
+
+        foreach (var resultLayer in resultsEl.Elements("Layer"))
+        {
+            var fileAttr = resultLayer.Attribute("Filename");
+            if (fileAttr is null) continue;
+
+            string rPath = fileAttr.Value;
+            if (!Path.IsPathRooted(rPath))
+                rPath = Path.GetFullPath(Path.Combine(rasMapDir, rPath));
+
+            // Only process the result file that matches our -ResultFilename arg
+            if (!string.Equals(Path.GetFullPath(rPath), resultFileFullPath,
+                    StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            // Re-check terrain (should be non-null since we set it above)
+            try { terrain = terrainProp?.GetValue(geometry); } catch { }
+            if (terrain is null)
+            {
+                Console.Error.WriteLine(
+                    $"RasMapperStoreMap: No terrain for '{Path.GetFileName(rPath)}' — skipping.");
+                continue;
+            }
+
+            foreach (var mapLayerEl in resultLayer.Elements("Layer")
+                         .Where(l => (string?)l.Attribute("Type") == "RASResultsMap"))
+            {
+                try
+                {
+                    // Construct RASResultsMap with the SAME rasResults (shares cache)
+                    var rasResultsMap = rasResultsMapCtor.Invoke([rasResults]);
+
+                    // Load layer settings from XML
+                    if (xmlLoadMethod is not null)
+                    {
+                        var xmlDoc = new System.Xml.XmlDocument();
+                        using var xmlReader = mapLayerEl.CreateReader();
+                        var xmlNode = xmlDoc.ReadNode(xmlReader);
+                        xmlLoadMethod.Invoke(rasResultsMap, [xmlNode as System.Xml.XmlElement]);
+                    }
+
+                    bool isStored = (bool)(outputModeIsStoredTypeProp?.GetValue(rasResultsMap)
+                                          ?? false);
+                    if (!isStored) continue;
+
+                    setOverrideDictMethod?.Invoke(rasResultsMap, [terrainDict]);
+
+                    if (storeMapMethod is not null)
+                        storeMapMethod.Invoke(rasResultsMap, [progressReporterDW, false]);
+
+                    mapsGenerated++;
+                }
+                catch (TargetInvocationException tie) when (tie.InnerException is not null)
+                {
+                    Console.Error.WriteLine(
+                        $"RasMapperStoreMap: StoreMap layer failed — {tie.InnerException.Message}");
+                    // Mirror StoreAllMapsCommand behaviour: log and continue to next layer
+                }
+            }
+        }
+
+        Console.WriteLine(
+            $"RasMapperStoreMap: {mapsGenerated} Maps generated " +
+            $"for '{Path.GetFileName(resultFilename)}'.");
+        return 0;   // ← early exit — skip the StoreAllMapsCommand block below
     }
     catch (TargetInvocationException tie) when (tie.InnerException is not null)
     {
         Console.Error.WriteLine(
-            "RasMapperStoreMap: EnsureFacepointElevations failed — " +
-            tie.InnerException.Message);
+            $"RasMapperStoreMap: depth-weighted setup failed — {tie.InnerException.Message}");
         return 1;
     }
     catch (Exception ex)
     {
         Console.Error.WriteLine(
-            $"RasMapperStoreMap: EnsureFacepointElevations error — {ex.Message}");
+            $"RasMapperStoreMap: depth-weighted setup error — {ex.Message}");
         return 1;
     }
 }
@@ -287,8 +524,8 @@ if (useDepthWeightedFaces)
 // ── Instantiate and execute StoreAllMapsCommand ───────────────────────────────
 //
 // Constructor: StoreAllMapsCommand(string rmFilename, string resFilename = "")
-// Execute(ProgressReporter prog = null) — null is handled internally via
-//   ProgressReporter.None(), so no Utility.dll reference is needed here.
+// Execute(ProgressReporter prog) — pass a real ConsoleProgressReporter so that
+//   progress messages reach stdout; see the ConsoleProgressReporter block below.
 
 var cmdType = asm.GetType("RasMapperLib.Scripting.StoreAllMapsCommand")
     ?? throw new InvalidOperationException(
@@ -304,11 +541,6 @@ var executeMethod = cmdType.GetMethod("Execute")
     ?? throw new InvalidOperationException("StoreAllMapsCommand.Execute() not found.");
 
 // ── Build a ConsoleProgressReporter so progress messages reach stdout ─────────
-//
-// StoreAllMapsCommand.Execute(null) uses ProgressReporter.None() — a no-op that
-// silently drops all ReportMessage / ReportProgress calls.  Passing a
-// ConsoleProgressReporter instead causes every message and percentage update to
-// be written to stdout, matching the behaviour callers expect from RasProcess.exe.
 //
 // ConsoleProgressReporter lives in Utility.Core.dll (Utility.Progress namespace).
 // The single constructor parameter:
@@ -366,6 +598,21 @@ static void InvokeStatic(Type type, string methodName, params object[] methodArg
     var method = type.GetMethod(methodName, BindingFlags.Public | BindingFlags.Static)
         ?? throw new InvalidOperationException($"{type.Name}.{methodName} not found.");
     method.Invoke(null, methodArgs.Length > 0 ? methodArgs : null);
+}
+
+// Walk the inheritance chain to find a method with the given parameter types.
+// GetMethod() with an explicit Type[] only searches the declared type, not base
+// classes, when BindingFlags are omitted on certain .NET versions.
+static MethodInfo? FindMethodInHierarchy(Type type, string name, Type[] paramTypes)
+{
+    for (var t = type; t is not null; t = t.BaseType)
+    {
+        var m = t.GetMethod(name,
+            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance,
+            null, paramTypes, null);
+        if (m is not null) return m;
+    }
+    return null;
 }
 
 static string? ResolveLibDir()
