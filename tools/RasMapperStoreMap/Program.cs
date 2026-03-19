@@ -41,7 +41,7 @@
  *       [-RenderMode=sloping|slopingPretty|horizontal]   (default: sloping)
  *       [-UseDepthWeightedFaces=true|false]              (default: false)
  *       [-ReduceShallowToHorizontal=true|false]          (default: true)
- *       [-TightExtent=true|false]                        (default: false)
+ *       [-TightExtent=true|false]                        (default: true)
  *       [-RasMapperLibDir=<HEC-RAS install dir>]
  *
  * If -RasMapperLibDir is omitted the exe searches:
@@ -70,7 +70,7 @@ string? resultFilename = null;
 string  renderMode               = "sloping";
 bool    useDepthWeightedFaces    = false;
 bool    reduceShallowToHorizontal = true;
-bool    tightExtent               = false;
+bool    tightExtent               = true;
 string? libDir = null;
 
 foreach (var arg in args)

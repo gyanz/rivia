@@ -505,7 +505,7 @@ class MapperExtension:
         render_mode: Literal["sloping", "hybrid", "horizontal"] | None = None,
         use_depth_weights: bool = False,
         shallow_to_flat: bool = False,
-        tight_extent: bool = False,
+        tight_extent: bool = True,
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> "VrtMap":
@@ -557,8 +557,8 @@ class MapperExtension:
             output tiles cover exactly the terrain pixels that overlap the
             model footprint.  Requires ``render_mode`` to be set (routes
             through ``RasMapperStoreMap.exe``).  Default ``False`` matches
-            the historical behaviour (terrain-extent tiles with NoData outside
-            the model).
+            the terrain-tile extent behaviour (NoData outside the model but
+            tiles as large as the terrain).  Default ``True``.
         stream_output:
             When ``True`` (default) subprocess stdout/stderr are logged
             line-by-line in real time.  When ``False`` output is captured
@@ -940,7 +940,7 @@ class MapperExtension:
         ) = "horizontal",
         use_depth_weights: bool = False,
         shallow_to_flat: bool = False,
-        tight_extent: bool = False,
+        tight_extent: bool = True,
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> Generator["rasterio.io.DatasetReader", None, None]:
@@ -1022,7 +1022,7 @@ class MapperExtension:
         ) = "horizontal",
         use_depth_weights: bool = False,
         shallow_to_flat: bool = False,
-        tight_extent: bool = False,
+        tight_extent: bool = True,
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> "VrtMap":
@@ -1114,7 +1114,7 @@ class MapperExtension:
         ) = "horizontal",
         use_depth_weights: bool = False,
         shallow_to_flat: bool = False,
-        tight_extent: bool = False,
+        tight_extent: bool = True,
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> "AbstractContextManager[rasterio.io.DatasetReader]":
@@ -1143,7 +1143,7 @@ class MapperExtension:
         ) = "horizontal",
         use_depth_weights: bool = False,
         shallow_to_flat: bool = False,
-        tight_extent: bool = False,
+        tight_extent: bool = True,
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> "VrtMap":
@@ -1235,7 +1235,7 @@ class MapperExtension:
         ) = "horizontal",
         use_depth_weights: bool = False,
         shallow_to_flat: bool = False,
-        tight_extent: bool = False,
+        tight_extent: bool = True,
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> "AbstractContextManager[rasterio.io.DatasetReader]":
@@ -1264,7 +1264,7 @@ class MapperExtension:
         ) = "horizontal",
         use_depth_weights: bool = False,
         shallow_to_flat: bool = False,
-        tight_extent: bool = False,
+        tight_extent: bool = True,
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> "VrtMap":
@@ -1356,7 +1356,7 @@ class MapperExtension:
         ) = "horizontal",
         use_depth_weights: bool = False,
         shallow_to_flat: bool = False,
-        tight_extent: bool = False,
+        tight_extent: bool = True,
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> "AbstractContextManager[rasterio.io.DatasetReader]":
@@ -1385,7 +1385,7 @@ class MapperExtension:
         ) = "horizontal",
         use_depth_weights: bool = False,
         shallow_to_flat: bool = False,
-        tight_extent: bool = False,
+        tight_extent: bool = True,
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> "VrtMap":
@@ -1477,7 +1477,7 @@ class MapperExtension:
         ) = "horizontal",
         use_depth_weights: bool = False,
         shallow_to_flat: bool = False,
-        tight_extent: bool = False,
+        tight_extent: bool = True,
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> "AbstractContextManager[rasterio.io.DatasetReader]":
@@ -1506,7 +1506,7 @@ class MapperExtension:
         ) = "horizontal",
         use_depth_weights: bool = False,
         shallow_to_flat: bool = False,
-        tight_extent: bool = False,
+        tight_extent: bool = True,
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> "VrtMap":
@@ -1598,7 +1598,7 @@ class MapperExtension:
         ) = "horizontal",
         use_depth_weights: bool = False,
         shallow_to_flat: bool = False,
-        tight_extent: bool = False,
+        tight_extent: bool = True,
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> "AbstractContextManager[rasterio.io.DatasetReader]":
@@ -1627,7 +1627,7 @@ class MapperExtension:
         ) = "horizontal",
         use_depth_weights: bool = False,
         shallow_to_flat: bool = False,
-        tight_extent: bool = False,
+        tight_extent: bool = True,
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> "VrtMap":
@@ -1719,7 +1719,7 @@ class MapperExtension:
         ) = "horizontal",
         use_depth_weights: bool = False,
         shallow_to_flat: bool = False,
-        tight_extent: bool = False,
+        tight_extent: bool = True,
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> "AbstractContextManager[rasterio.io.DatasetReader]":
@@ -1748,7 +1748,7 @@ class MapperExtension:
         ) = "horizontal",
         use_depth_weights: bool = False,
         shallow_to_flat: bool = False,
-        tight_extent: bool = False,
+        tight_extent: bool = True,
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> "VrtMap":
@@ -1840,7 +1840,7 @@ class MapperExtension:
         ) = "horizontal",
         use_depth_weights: bool = False,
         shallow_to_flat: bool = False,
-        tight_extent: bool = False,
+        tight_extent: bool = True,
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> "AbstractContextManager[rasterio.io.DatasetReader]":
