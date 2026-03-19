@@ -686,7 +686,8 @@ class MapperExtension:
             params.set("ProfileName", profile_name)
             params.set("OverwriteOutputFilename", str(abs_output_filename_wo_ext))
 
-            tree.write(temp_rasmap, encoding="utf-8", xml_declaration=True)
+            ET.indent(root, space="  ")
+            tree.write(temp_rasmap, encoding="utf-8", xml_declaration=False)
 
             logger.info("StoreAllMaps: output expected at %s", abs_output_filename_w_ext)
 
@@ -704,6 +705,7 @@ class MapperExtension:
             ]
             result = _run_rasprocess(cmd, None, timeout, stream_output)
         finally:
+            shutil.copy2(temp_rasmap,"gbrasmap.test.txt")
             temp_rasmap.unlink(missing_ok=True)
 
         # -- Common tail: error check and VrtMap validation --
