@@ -811,9 +811,14 @@ class MapperExtension:
                     f"-RasMapFilename={temp_rasmap}",
                     f"-ResultFilename={result_hdf}",
                 ]
-            result = _run_subprocess(cmd, None, timeout, stream_output)
+            # Run from the HEC-RAS install directory so Windows finds native
+            # GDAL DLLs via the default DLL search path — the same CWD that
+            # RasProcess.exe uses.  Without this, P/Invoke calls inside
+            # RASResultsMap.StoreMap() can fail with NullReferenceException
+            # when processing terrain tiles that trigger GDAL native operations.
+            _cwd = program_dir if _use_stub else None
+            result = _run_subprocess(cmd, _cwd, timeout, stream_output)
         finally:
-            shutil.copy2(temp_rasmap,"gbrasmap.test.txt")
             temp_rasmap.unlink(missing_ok=True)
 
         # -- Common tail: error check and VrtMap validation --
