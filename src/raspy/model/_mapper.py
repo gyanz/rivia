@@ -491,6 +491,9 @@ class MapperExtension:
         timestep: int | None = None,
         raster_name: str | None = None,
         output_path: "Path | str | None" = None,
+        render_mode: Literal["sloping", "slopingPretty", "horizontal"] | None = None,
+        use_depth_weights: bool = False,
+        shallow_to_flat: bool = False,
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> "VrtMap":
@@ -517,8 +520,26 @@ class MapperExtension:
             ``{project_dir}/{plan_short_id}/``; when provided, uses the
             **StoreMap XML** strategy and output goes directly into that
             directory.
+        render_mode:
+            Water-surface interpolation mode.  ``None`` (default) delegates to
+            ``RasProcess.exe`` directly with its built-in defaults (basic sloping,
+            cell-corner facepoints only).  Any explicit value — ``"sloping"``,
+            ``"slopingPretty"``, or ``"horizontal"`` — routes through
+            ``RasMapperStoreMap.exe``, which properly initialises the render-mode
+            state before executing the same underlying map-generation engine.
+            Use ``"slopingPretty"`` to match the RasMapper GUI display exactly.
+            Requires ``RasMapperStoreMap.exe`` in ``src/raspy/bin/`` when not
+            ``None``.
+        use_depth_weights:
+            When ``True``, face weights in the ``slopingPretty`` stencil are
+            proportional to the face's water depth (``UseDepthWeightedFaces``).
+            Only meaningful with ``render_mode="slopingPretty"``.
+        shallow_to_flat:
+            When ``True`` (default), shallow cells are rendered flat
+            (``ReduceShallowToHorizontal``).  Only meaningful with
+            ``render_mode="slopingPretty"``.
         stream_output:
-            When ``True`` (default) RasProcess.exe stdout/stderr are logged
+            When ``True`` (default) subprocess stdout/stderr are logged
             line-by-line in real time.  When ``False`` output is captured
             silently and only shown on error.
         timeout:
@@ -594,6 +615,25 @@ class MapperExtension:
         ras_process = Path(program_dir) / "RasProcess.exe"
         if not ras_process.exists():
             raise FileNotFoundError(f"RasProcess.exe not found: {ras_process}")
+
+        if render_mode is not None:
+            _VALID_RENDER_MODES = {"sloping", "slopingPretty", "horizontal"}
+            if render_mode not in _VALID_RENDER_MODES:
+                raise ValueError(
+                    f"render_mode must be one of {sorted(_VALID_RENDER_MODES)}, "
+                    f"got: {render_mode!r}"
+                )
+
+        # None  → RasProcess.exe (its built-in defaults, no SharedData init)
+        # str   → RasMapperStoreMap.exe (properly initialises SharedData first)
+        _use_stub = render_mode is not None
+        _stub_exe = Path(__file__).parent.parent / "bin" / "RasMapperStoreMap.exe"
+        if _use_stub and not _stub_exe.exists():
+            raise FileNotFoundError(
+                f"RasMapperStoreMap.exe not found at {_stub_exe}.\n"
+                "Build tools/RasMapperStoreMap with 'dotnet build -c Release' "
+                "and copy RasMapperStoreMap.exe to src/raspy/bin/."
+            )
 
         result_hdf = _resolve(self.plan_hdf_file)
         if not result_hdf.exists():
@@ -697,12 +737,25 @@ class MapperExtension:
                     f"{abs_output_filename_w_ext}\nClose the file before calling store_map."
                 )
 
-            cmd = [
-                str(ras_process),
-                "-Command=StoreAllMaps",
-                f"-RasMapFilename={temp_rasmap}",
-                f"-ResultFilename={result_hdf}",
-            ]
+            if _use_stub:
+                cmd = [
+                    str(_stub_exe),
+                    f"-RasMapFilename={temp_rasmap}",
+                    f"-ResultFilename={result_hdf}",
+                    f"-RenderMode={render_mode}",
+                    f"-UseDepthWeightedFaces="
+                    f"{'true' if use_depth_weights else 'false'}",
+                    f"-ReduceShallowToHorizontal="
+                    f"{'true' if shallow_to_flat else 'false'}",
+                    f"-RasMapperLibDir={program_dir}",
+                ]
+            else:
+                cmd = [
+                    str(ras_process),
+                    "-Command=StoreAllMaps",
+                    f"-RasMapFilename={temp_rasmap}",
+                    f"-ResultFilename={result_hdf}",
+                ]
             result = _run_rasprocess(cmd, None, timeout, stream_output)
         finally:
             shutil.copy2(temp_rasmap,"gbrasmap.test.txt")
@@ -761,6 +814,9 @@ class MapperExtension:
             "depth_x_velocity_sq",
         ],
         timestep: int | None,
+        render_mode: Literal["sloping", "slopingPretty", "horizontal"] = "sloping",
+        use_depth_weights: bool = False,
+        shallow_to_flat: bool = False,
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> Generator["rasterio.io.DatasetReader", None, None]:
@@ -777,6 +833,12 @@ class MapperExtension:
             Hydraulic variable — same accepted values as :meth:`store_map`.
         timestep:
             Zero-based timestep index.  ``None`` uses the maximum-value profile.
+        render_mode:
+            Passed through to :meth:`store_map`.  Defaults to ``"sloping"``.
+        use_depth_weights:
+            Passed through to :meth:`store_map`.
+        shallow_to_flat:
+            Passed through to :meth:`store_map`.
         stream_output:
             Passed through to :meth:`store_map`.
         timeout:
@@ -806,6 +868,9 @@ class MapperExtension:
                 timestep=timestep,
                 raster_name=raster_name,
                 output_path=out_dir,
+                render_mode=render_mode,
+                use_depth_weights=use_depth_weights,
+                shallow_to_flat=shallow_to_flat,
                 stream_output=stream_output,
                 timeout=timeout,
             )
@@ -825,6 +890,9 @@ class MapperExtension:
         self,
         timestep: int | None,
         output_vrt: "str | Path | None" = None,
+        render_mode: Literal["sloping", "slopingPretty", "horizontal"] = "sloping",
+        use_depth_weights: bool = False,
+        shallow_to_flat: bool = False,
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> "VrtMap":
@@ -840,8 +908,20 @@ class MapperExtension:
             StoreAllMaps strategy; an existing directory — written into that
             folder with an auto-generated name; a path ending with ``.vrt`` —
             written to that exact file.
+        render_mode:
+            Water-surface interpolation mode passed to :meth:`store_map`.
+            ``"sloping"`` (default) uses cell-corner facepoints and routes
+            through ``RasMapperStoreMap.exe``.  ``"slopingPretty"`` adds face
+            centroids and matches the RasMapper GUI display.  ``"horizontal"``
+            renders a flat per-cell water surface.
+        use_depth_weights:
+            When ``True``, face weights are depth-proportional.  Only
+            meaningful with ``render_mode="slopingPretty"``.
+        shallow_to_flat:
+            When ``True``, shallow cells are rendered flat.  Defaults to
+            ``False``.  Only meaningful with ``render_mode="slopingPretty"``.
         stream_output:
-            Stream RasProcess.exe output to the logger in real time.
+            Stream subprocess output to the logger in real time.
         timeout:
             Subprocess timeout in seconds.  ``None`` means no limit.
 
@@ -855,6 +935,9 @@ class MapperExtension:
             return self.store_map(
                 "wse",
                 timestep=timestep,
+                render_mode=render_mode,
+                use_depth_weights=use_depth_weights,
+                shallow_to_flat=shallow_to_flat,
                 stream_output=stream_output,
                 timeout=timeout,
             )
@@ -864,6 +947,9 @@ class MapperExtension:
                 "wse",
                 timestep=timestep,
                 output_path=output_vrt,
+                render_mode=render_mode,
+                use_depth_weights=use_depth_weights,
+                shallow_to_flat=shallow_to_flat,
                 stream_output=stream_output,
                 timeout=timeout,
             )
@@ -904,6 +990,9 @@ class MapperExtension:
         self,
         timestep: int | None,
         output_vrt: "str | Path | None" = None,
+        render_mode: Literal["sloping", "slopingPretty", "horizontal"] = "sloping",
+        use_depth_weights: bool = False,
+        shallow_to_flat: bool = False,
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> "VrtMap":
@@ -919,8 +1008,20 @@ class MapperExtension:
             StoreAllMaps strategy; an existing directory — written into that
             folder with an auto-generated name; a path ending with ``.vrt`` —
             written to that exact file.
+        render_mode:
+            Water-surface interpolation mode passed to :meth:`store_map`.
+            ``"sloping"`` (default) uses cell-corner facepoints and routes
+            through ``RasMapperStoreMap.exe``.  ``"slopingPretty"`` adds face
+            centroids and matches the RasMapper GUI display.  ``"horizontal"``
+            renders a flat per-cell water surface.
+        use_depth_weights:
+            When ``True``, face weights are depth-proportional.  Only
+            meaningful with ``render_mode="slopingPretty"``.
+        shallow_to_flat:
+            When ``True``, shallow cells are rendered flat.  Defaults to
+            ``False``.  Only meaningful with ``render_mode="slopingPretty"``.
         stream_output:
-            Stream RasProcess.exe output to the logger in real time.
+            Stream subprocess output to the logger in real time.
         timeout:
             Subprocess timeout in seconds.  ``None`` means no limit.
 
@@ -934,6 +1035,9 @@ class MapperExtension:
             return self.store_map(
                 "depth",
                 timestep=timestep,
+                render_mode=render_mode,
+                use_depth_weights=use_depth_weights,
+                shallow_to_flat=shallow_to_flat,
                 stream_output=stream_output,
                 timeout=timeout,
             )
@@ -943,6 +1047,9 @@ class MapperExtension:
                 "depth",
                 timestep=timestep,
                 output_path=output_vrt,
+                render_mode=render_mode,
+                use_depth_weights=use_depth_weights,
+                shallow_to_flat=shallow_to_flat,
                 stream_output=stream_output,
                 timeout=timeout,
             )
@@ -983,6 +1090,9 @@ class MapperExtension:
         self,
         timestep: int | None,
         output_vrt: "str | Path | None" = None,
+        render_mode: Literal["sloping", "slopingPretty", "horizontal"] = "sloping",
+        use_depth_weights: bool = False,
+        shallow_to_flat: bool = False,
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> "VrtMap":
@@ -998,8 +1108,20 @@ class MapperExtension:
             StoreAllMaps strategy; an existing directory — written into that
             folder with an auto-generated name; a path ending with ``.vrt`` —
             written to that exact file.
+        render_mode:
+            Water-surface interpolation mode passed to :meth:`store_map`.
+            ``"sloping"`` (default) uses cell-corner facepoints and routes
+            through ``RasMapperStoreMap.exe``.  ``"slopingPretty"`` adds face
+            centroids and matches the RasMapper GUI display.  ``"horizontal"``
+            renders a flat per-cell water surface.
+        use_depth_weights:
+            When ``True``, face weights are depth-proportional.  Only
+            meaningful with ``render_mode="slopingPretty"``.
+        shallow_to_flat:
+            When ``True``, shallow cells are rendered flat.  Defaults to
+            ``False``.  Only meaningful with ``render_mode="slopingPretty"``.
         stream_output:
-            Stream RasProcess.exe output to the logger in real time.
+            Stream subprocess output to the logger in real time.
         timeout:
             Subprocess timeout in seconds.  ``None`` means no limit.
 
@@ -1013,6 +1135,9 @@ class MapperExtension:
             return self.store_map(
                 "velocity",
                 timestep=timestep,
+                render_mode=render_mode,
+                use_depth_weights=use_depth_weights,
+                shallow_to_flat=shallow_to_flat,
                 stream_output=stream_output,
                 timeout=timeout,
             )
@@ -1022,6 +1147,9 @@ class MapperExtension:
                 "velocity",
                 timestep=timestep,
                 output_path=output_vrt,
+                render_mode=render_mode,
+                use_depth_weights=use_depth_weights,
+                shallow_to_flat=shallow_to_flat,
                 stream_output=stream_output,
                 timeout=timeout,
             )
@@ -1062,6 +1190,9 @@ class MapperExtension:
         self,
         timestep: int | None,
         output_vrt: "str | Path | None" = None,
+        render_mode: Literal["sloping", "slopingPretty", "horizontal"] = "sloping",
+        use_depth_weights: bool = False,
+        shallow_to_flat: bool = False,
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> "VrtMap":
@@ -1077,8 +1208,20 @@ class MapperExtension:
             StoreAllMaps strategy; an existing directory — written into that
             folder with an auto-generated name; a path ending with ``.vrt`` —
             written to that exact file.
+        render_mode:
+            Water-surface interpolation mode passed to :meth:`store_map`.
+            ``"sloping"`` (default) uses cell-corner facepoints and routes
+            through ``RasMapperStoreMap.exe``.  ``"slopingPretty"`` adds face
+            centroids and matches the RasMapper GUI display.  ``"horizontal"``
+            renders a flat per-cell water surface.
+        use_depth_weights:
+            When ``True``, face weights are depth-proportional.  Only
+            meaningful with ``render_mode="slopingPretty"``.
+        shallow_to_flat:
+            When ``True``, shallow cells are rendered flat.  Defaults to
+            ``False``.  Only meaningful with ``render_mode="slopingPretty"``.
         stream_output:
-            Stream RasProcess.exe output to the logger in real time.
+            Stream subprocess output to the logger in real time.
         timeout:
             Subprocess timeout in seconds.  ``None`` means no limit.
 
@@ -1092,6 +1235,9 @@ class MapperExtension:
             return self.store_map(
                 "froude",
                 timestep=timestep,
+                render_mode=render_mode,
+                use_depth_weights=use_depth_weights,
+                shallow_to_flat=shallow_to_flat,
                 stream_output=stream_output,
                 timeout=timeout,
             )
@@ -1101,6 +1247,9 @@ class MapperExtension:
                 "froude",
                 timestep=timestep,
                 output_path=output_vrt,
+                render_mode=render_mode,
+                use_depth_weights=use_depth_weights,
+                shallow_to_flat=shallow_to_flat,
                 stream_output=stream_output,
                 timeout=timeout,
             )
@@ -1141,6 +1290,9 @@ class MapperExtension:
         self,
         timestep: int | None,
         output_vrt: "str | Path | None" = None,
+        render_mode: Literal["sloping", "slopingPretty", "horizontal"] = "sloping",
+        use_depth_weights: bool = False,
+        shallow_to_flat: bool = False,
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> "VrtMap":
@@ -1156,8 +1308,20 @@ class MapperExtension:
             StoreAllMaps strategy; an existing directory — written into that
             folder with an auto-generated name; a path ending with ``.vrt`` —
             written to that exact file.
+        render_mode:
+            Water-surface interpolation mode passed to :meth:`store_map`.
+            ``"sloping"`` (default) uses cell-corner facepoints and routes
+            through ``RasMapperStoreMap.exe``.  ``"slopingPretty"`` adds face
+            centroids and matches the RasMapper GUI display.  ``"horizontal"``
+            renders a flat per-cell water surface.
+        use_depth_weights:
+            When ``True``, face weights are depth-proportional.  Only
+            meaningful with ``render_mode="slopingPretty"``.
+        shallow_to_flat:
+            When ``True``, shallow cells are rendered flat.  Defaults to
+            ``False``.  Only meaningful with ``render_mode="slopingPretty"``.
         stream_output:
-            Stream RasProcess.exe output to the logger in real time.
+            Stream subprocess output to the logger in real time.
         timeout:
             Subprocess timeout in seconds.  ``None`` means no limit.
 
@@ -1171,6 +1335,9 @@ class MapperExtension:
             return self.store_map(
                 "shear_stress",
                 timestep=timestep,
+                render_mode=render_mode,
+                use_depth_weights=use_depth_weights,
+                shallow_to_flat=shallow_to_flat,
                 stream_output=stream_output,
                 timeout=timeout,
             )
@@ -1180,6 +1347,9 @@ class MapperExtension:
                 "shear_stress",
                 timestep=timestep,
                 output_path=output_vrt,
+                render_mode=render_mode,
+                use_depth_weights=use_depth_weights,
+                shallow_to_flat=shallow_to_flat,
                 stream_output=stream_output,
                 timeout=timeout,
             )
@@ -1220,6 +1390,9 @@ class MapperExtension:
         self,
         timestep: int | None,
         output_vrt: "str | Path | None" = None,
+        render_mode: Literal["sloping", "slopingPretty", "horizontal"] = "sloping",
+        use_depth_weights: bool = False,
+        shallow_to_flat: bool = False,
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> "VrtMap":
@@ -1235,8 +1408,20 @@ class MapperExtension:
             StoreAllMaps strategy; an existing directory — written into that
             folder with an auto-generated name; a path ending with ``.vrt`` —
             written to that exact file.
+        render_mode:
+            Water-surface interpolation mode passed to :meth:`store_map`.
+            ``"sloping"`` (default) uses cell-corner facepoints and routes
+            through ``RasMapperStoreMap.exe``.  ``"slopingPretty"`` adds face
+            centroids and matches the RasMapper GUI display.  ``"horizontal"``
+            renders a flat per-cell water surface.
+        use_depth_weights:
+            When ``True``, face weights are depth-proportional.  Only
+            meaningful with ``render_mode="slopingPretty"``.
+        shallow_to_flat:
+            When ``True``, shallow cells are rendered flat.  Defaults to
+            ``False``.  Only meaningful with ``render_mode="slopingPretty"``.
         stream_output:
-            Stream RasProcess.exe output to the logger in real time.
+            Stream subprocess output to the logger in real time.
         timeout:
             Subprocess timeout in seconds.  ``None`` means no limit.
 
@@ -1250,6 +1435,9 @@ class MapperExtension:
             return self.store_map(
                 "dv",
                 timestep=timestep,
+                render_mode=render_mode,
+                use_depth_weights=use_depth_weights,
+                shallow_to_flat=shallow_to_flat,
                 stream_output=stream_output,
                 timeout=timeout,
             )
@@ -1259,6 +1447,9 @@ class MapperExtension:
                 "dv",
                 timestep=timestep,
                 output_path=output_vrt,
+                render_mode=render_mode,
+                use_depth_weights=use_depth_weights,
+                shallow_to_flat=shallow_to_flat,
                 stream_output=stream_output,
                 timeout=timeout,
             )
@@ -1299,6 +1490,9 @@ class MapperExtension:
         self,
         timestep: int | None,
         output_vrt: "str | Path | None" = None,
+        render_mode: Literal["sloping", "slopingPretty", "horizontal"] = "sloping",
+        use_depth_weights: bool = False,
+        shallow_to_flat: bool = False,
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> "VrtMap":
@@ -1314,8 +1508,20 @@ class MapperExtension:
             StoreAllMaps strategy; an existing directory — written into that
             folder with an auto-generated name; a path ending with ``.vrt`` —
             written to that exact file.
+        render_mode:
+            Water-surface interpolation mode passed to :meth:`store_map`.
+            ``"sloping"`` (default) uses cell-corner facepoints and routes
+            through ``RasMapperStoreMap.exe``.  ``"slopingPretty"`` adds face
+            centroids and matches the RasMapper GUI display.  ``"horizontal"``
+            renders a flat per-cell water surface.
+        use_depth_weights:
+            When ``True``, face weights are depth-proportional.  Only
+            meaningful with ``render_mode="slopingPretty"``.
+        shallow_to_flat:
+            When ``True``, shallow cells are rendered flat.  Defaults to
+            ``False``.  Only meaningful with ``render_mode="slopingPretty"``.
         stream_output:
-            Stream RasProcess.exe output to the logger in real time.
+            Stream subprocess output to the logger in real time.
         timeout:
             Subprocess timeout in seconds.  ``None`` means no limit.
 
@@ -1329,6 +1535,9 @@ class MapperExtension:
             return self.store_map(
                 "dv2",
                 timestep=timestep,
+                render_mode=render_mode,
+                use_depth_weights=use_depth_weights,
+                shallow_to_flat=shallow_to_flat,
                 stream_output=stream_output,
                 timeout=timeout,
             )
@@ -1338,6 +1547,9 @@ class MapperExtension:
                 "dv2",
                 timestep=timestep,
                 output_path=output_vrt,
+                render_mode=render_mode,
+                use_depth_weights=use_depth_weights,
+                shallow_to_flat=shallow_to_flat,
                 stream_output=stream_output,
                 timeout=timeout,
             )
