@@ -494,7 +494,7 @@ class MapperExtension:
         timestep: int | None = None,
         raster_name: str | None = None,
         output_path: "Path | str | None" = None,
-        render_mode: Literal["sloping", "slopingPretty", "horizontal"] | None = None,
+        render_mode: Literal["sloping", "hybrid", "horizontal"] | None = None,
         use_depth_weights: bool = False,
         shallow_to_flat: bool = False,
         stream_output: bool = True,
@@ -527,20 +527,20 @@ class MapperExtension:
             Water-surface interpolation mode.  ``None`` (default) delegates to
             ``RasProcess.exe`` directly with its built-in defaults (basic sloping,
             cell-corner facepoints only).  Any explicit value — ``"sloping"``,
-            ``"slopingPretty"``, or ``"horizontal"`` — routes through
+            ``"hybrid"``, or ``"horizontal"`` — routes through
             ``RasMapperStoreMap.exe``, which properly initialises the render-mode
             state before executing the same underlying map-generation engine.
-            Use ``"slopingPretty"`` to match the RasMapper GUI display exactly.
+            Use ``"hybrid"`` to match the RasMapper GUI display exactly.
             Requires ``RasMapperStoreMap.exe`` in ``src/raspy/bin/`` when not
             ``None``.
         use_depth_weights:
-            When ``True``, face weights in the ``slopingPretty`` stencil are
+            When ``True``, face weights in the ``hybrid`` stencil are
             proportional to the face's water depth (``UseDepthWeightedFaces``).
-            Only meaningful with ``render_mode="slopingPretty"``.
+            Only meaningful with ``render_mode="hybrid"``.
         shallow_to_flat:
             When ``True`` (default), shallow cells are rendered flat
             (``ReduceShallowToHorizontal``).  Only meaningful with
-            ``render_mode="slopingPretty"``.
+            ``render_mode="hybrid"``.
         stream_output:
             When ``True`` (default) subprocess stdout/stderr are logged
             line-by-line in real time.  When ``False`` output is captured
@@ -620,7 +620,7 @@ class MapperExtension:
             raise FileNotFoundError(f"RasProcess.exe not found: {ras_process}")
 
         if render_mode is not None:
-            _VALID_RENDER_MODES = {"sloping", "slopingPretty", "horizontal"}
+            _VALID_RENDER_MODES = {"sloping", "hybrid", "horizontal"}
             if render_mode not in _VALID_RENDER_MODES:
                 raise ValueError(
                     f"render_mode must be one of {sorted(_VALID_RENDER_MODES)}, "
@@ -629,6 +629,15 @@ class MapperExtension:
 
         # None  → RasProcess.exe (its built-in defaults, no SharedData init)
         # str   → RasMapperStoreMap.exe (properly initialises SharedData first)
+        if render_mode is None:
+            logger.warning(
+                "render_mode=None: using RasProcess.exe, which never initialises "
+                "SharedData render-mode state.  The output raster will use "
+                "RasMapperLib defaults (sloping/JustFacepoints) regardless of "
+                "the <RenderMode> setting in the .rasmap file.  Pass "
+                "render_mode='sloping', 'horizontal', or 'hybrid' to get "
+                "deterministic, fully-specified results."
+            )
         _use_stub = render_mode is not None
         _stub_exe = Path(__file__).parent.parent / "bin" / "RasMapperStoreMap.exe"
         if _use_stub and not _stub_exe.exists():
@@ -741,11 +750,54 @@ class MapperExtension:
                 )
 
             if _use_stub:
+                # ── Portability warnings ──────────────────────────────────────
+                # RasMapperStoreMap.exe requires HEC-RAS 6.1+.
+                #   • StoreAllMapsCommand lives in RasMapperLib.Scripting, a
+                #     namespace that did not exist before 6.x.
+                #   • The candidate auto-discovery paths only cover 6.1–6.6;
+                #     6.0 and 5.x must supply -RasMapperLibDir explicitly and
+                #     will still likely fail at the StoreAllMapsCommand lookup.
+                if self.version < 6100:
+                    logger.warning(
+                        "RasMapperStoreMap.exe requires HEC-RAS 6.1+. "
+                        "Version %s may not have StoreAllMapsCommand in "
+                        "RasMapperLib.Scripting — the stub is likely to fail.",
+                        self.version,
+                    )
+                # SetSlopingPrettyRenderingMode was added to SharedData in
+                # roughly HEC-RAS 6.3.  Earlier 6.x builds have
+                # SetSlopingRenderingMode and SetHorizontalRenderingMode but
+                # not the three-mode pretty variant.
+                if render_mode == "hybrid" and self.version < 6300:
+                    logger.warning(
+                        "render_mode='hybrid' calls "
+                        "SharedData.SetSlopingPrettyRenderingMode(), which may "
+                        "not exist in HEC-RAS %s (introduced ~6.3). "
+                        "The stub will raise InvalidOperationException if the "
+                        "method is absent.",
+                        self.version,
+                    )
+                # ConsoleProgressReporter lives in Utility.Core.dll.  In some
+                # older HEC-RAS installs the utility assembly is named
+                # differently, so the stub falls back to ProgressReporter.None()
+                # and progress messages will not appear on stdout.
+                utility_core = Path(program_dir) / "Utility.Core.dll"
+                if not utility_core.exists():
+                    logger.warning(
+                        "Utility.Core.dll not found in %s. "
+                        "Progress messages from RasMapperStoreMap.exe will not "
+                        "appear on stdout (stub falls back to no-op reporter).",
+                        program_dir,
+                    )
+                # Translate raspy's public name back to the RasMapperLib string.
+                _render_mode_arg = (
+                    "slopingPretty" if render_mode == "hybrid" else render_mode
+                )
                 cmd = [
                     str(_stub_exe),
                     f"-RasMapFilename={temp_rasmap}",
                     f"-ResultFilename={result_hdf}",
-                    f"-RenderMode={render_mode}",
+                    f"-RenderMode={_render_mode_arg}",
                     f"-UseDepthWeightedFaces="
                     f"{'true' if use_depth_weights else 'false'}",
                     f"-ReduceShallowToHorizontal="
@@ -818,7 +870,7 @@ class MapperExtension:
         ],
         timestep: int | None,
         render_mode: (
-            Literal["sloping", "slopingPretty", "horizontal"] | None
+            Literal["sloping", "hybrid", "horizontal"] | None
         ) = "horizontal",
         use_depth_weights: bool = False,
         shallow_to_flat: bool = False,
@@ -896,7 +948,7 @@ class MapperExtension:
         timestep: int | None,
         output_vrt: "str | Path | None" = None,
         render_mode: (
-            Literal["sloping", "slopingPretty", "horizontal"] | None
+            Literal["sloping", "hybrid", "horizontal"] | None
         ) = "horizontal",
         use_depth_weights: bool = False,
         shallow_to_flat: bool = False,
@@ -918,15 +970,15 @@ class MapperExtension:
         render_mode:
             Water-surface interpolation mode passed to :meth:`store_map`.
             ``"sloping"`` (default) uses cell-corner facepoints and routes
-            through ``RasMapperStoreMap.exe``.  ``"slopingPretty"`` adds face
+            through ``RasMapperStoreMap.exe``.  ``"hybrid"`` adds face
             centroids and matches the RasMapper GUI display.  ``"horizontal"``
             renders a flat per-cell water surface.
         use_depth_weights:
             When ``True``, face weights are depth-proportional.  Only
-            meaningful with ``render_mode="slopingPretty"``.
+            meaningful with ``render_mode="hybrid"``.
         shallow_to_flat:
             When ``True``, shallow cells are rendered flat.  Defaults to
-            ``False``.  Only meaningful with ``render_mode="slopingPretty"``.
+            ``False``.  Only meaningful with ``render_mode="hybrid"``.
         stream_output:
             Stream subprocess output to the logger in real time.
         timeout:
@@ -981,6 +1033,11 @@ class MapperExtension:
     def open_wse(
         self,
         timestep: int | None,
+        render_mode: (
+            Literal["sloping", "hybrid", "horizontal"] | None
+        ) = "horizontal",
+        use_depth_weights: bool = False,
+        shallow_to_flat: bool = False,
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> "AbstractContextManager[rasterio.io.DatasetReader]":
@@ -991,6 +1048,9 @@ class MapperExtension:
         return self.open_map(
             "wse",
             timestep,
+            render_mode=render_mode,
+            use_depth_weights=use_depth_weights,
+            shallow_to_flat=shallow_to_flat,
             stream_output=stream_output,
             timeout=timeout,
         )
@@ -1001,7 +1061,7 @@ class MapperExtension:
         timestep: int | None,
         output_vrt: "str | Path | None" = None,
         render_mode: (
-            Literal["sloping", "slopingPretty", "horizontal"] | None
+            Literal["sloping", "hybrid", "horizontal"] | None
         ) = "horizontal",
         use_depth_weights: bool = False,
         shallow_to_flat: bool = False,
@@ -1023,15 +1083,15 @@ class MapperExtension:
         render_mode:
             Water-surface interpolation mode passed to :meth:`store_map`.
             ``"sloping"`` (default) uses cell-corner facepoints and routes
-            through ``RasMapperStoreMap.exe``.  ``"slopingPretty"`` adds face
+            through ``RasMapperStoreMap.exe``.  ``"hybrid"`` adds face
             centroids and matches the RasMapper GUI display.  ``"horizontal"``
             renders a flat per-cell water surface.
         use_depth_weights:
             When ``True``, face weights are depth-proportional.  Only
-            meaningful with ``render_mode="slopingPretty"``.
+            meaningful with ``render_mode="hybrid"``.
         shallow_to_flat:
             When ``True``, shallow cells are rendered flat.  Defaults to
-            ``False``.  Only meaningful with ``render_mode="slopingPretty"``.
+            ``False``.  Only meaningful with ``render_mode="hybrid"``.
         stream_output:
             Stream subprocess output to the logger in real time.
         timeout:
@@ -1086,6 +1146,11 @@ class MapperExtension:
     def open_depth(
         self,
         timestep: int | None,
+        render_mode: (
+            Literal["sloping", "hybrid", "horizontal"] | None
+        ) = "horizontal",
+        use_depth_weights: bool = False,
+        shallow_to_flat: bool = False,
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> "AbstractContextManager[rasterio.io.DatasetReader]":
@@ -1096,6 +1161,9 @@ class MapperExtension:
         return self.open_map(
             "depth",
             timestep,
+            render_mode=render_mode,
+            use_depth_weights=use_depth_weights,
+            shallow_to_flat=shallow_to_flat,
             stream_output=stream_output,
             timeout=timeout,
         )
@@ -1106,7 +1174,7 @@ class MapperExtension:
         timestep: int | None,
         output_vrt: "str | Path | None" = None,
         render_mode: (
-            Literal["sloping", "slopingPretty", "horizontal"] | None
+            Literal["sloping", "hybrid", "horizontal"] | None
         ) = "horizontal",
         use_depth_weights: bool = False,
         shallow_to_flat: bool = False,
@@ -1128,15 +1196,15 @@ class MapperExtension:
         render_mode:
             Water-surface interpolation mode passed to :meth:`store_map`.
             ``"sloping"`` (default) uses cell-corner facepoints and routes
-            through ``RasMapperStoreMap.exe``.  ``"slopingPretty"`` adds face
+            through ``RasMapperStoreMap.exe``.  ``"hybrid"`` adds face
             centroids and matches the RasMapper GUI display.  ``"horizontal"``
             renders a flat per-cell water surface.
         use_depth_weights:
             When ``True``, face weights are depth-proportional.  Only
-            meaningful with ``render_mode="slopingPretty"``.
+            meaningful with ``render_mode="hybrid"``.
         shallow_to_flat:
             When ``True``, shallow cells are rendered flat.  Defaults to
-            ``False``.  Only meaningful with ``render_mode="slopingPretty"``.
+            ``False``.  Only meaningful with ``render_mode="hybrid"``.
         stream_output:
             Stream subprocess output to the logger in real time.
         timeout:
@@ -1191,6 +1259,11 @@ class MapperExtension:
     def open_velocity(
         self,
         timestep: int | None,
+        render_mode: (
+            Literal["sloping", "hybrid", "horizontal"] | None
+        ) = "horizontal",
+        use_depth_weights: bool = False,
+        shallow_to_flat: bool = False,
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> "AbstractContextManager[rasterio.io.DatasetReader]":
@@ -1201,6 +1274,9 @@ class MapperExtension:
         return self.open_map(
             "velocity",
             timestep,
+            render_mode=render_mode,
+            use_depth_weights=use_depth_weights,
+            shallow_to_flat=shallow_to_flat,
             stream_output=stream_output,
             timeout=timeout,
         )
@@ -1211,7 +1287,7 @@ class MapperExtension:
         timestep: int | None,
         output_vrt: "str | Path | None" = None,
         render_mode: (
-            Literal["sloping", "slopingPretty", "horizontal"] | None
+            Literal["sloping", "hybrid", "horizontal"] | None
         ) = "horizontal",
         use_depth_weights: bool = False,
         shallow_to_flat: bool = False,
@@ -1233,15 +1309,15 @@ class MapperExtension:
         render_mode:
             Water-surface interpolation mode passed to :meth:`store_map`.
             ``"sloping"`` (default) uses cell-corner facepoints and routes
-            through ``RasMapperStoreMap.exe``.  ``"slopingPretty"`` adds face
+            through ``RasMapperStoreMap.exe``.  ``"hybrid"`` adds face
             centroids and matches the RasMapper GUI display.  ``"horizontal"``
             renders a flat per-cell water surface.
         use_depth_weights:
             When ``True``, face weights are depth-proportional.  Only
-            meaningful with ``render_mode="slopingPretty"``.
+            meaningful with ``render_mode="hybrid"``.
         shallow_to_flat:
             When ``True``, shallow cells are rendered flat.  Defaults to
-            ``False``.  Only meaningful with ``render_mode="slopingPretty"``.
+            ``False``.  Only meaningful with ``render_mode="hybrid"``.
         stream_output:
             Stream subprocess output to the logger in real time.
         timeout:
@@ -1296,6 +1372,11 @@ class MapperExtension:
     def open_froude(
         self,
         timestep: int | None,
+        render_mode: (
+            Literal["sloping", "hybrid", "horizontal"] | None
+        ) = "horizontal",
+        use_depth_weights: bool = False,
+        shallow_to_flat: bool = False,
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> "AbstractContextManager[rasterio.io.DatasetReader]":
@@ -1306,6 +1387,9 @@ class MapperExtension:
         return self.open_map(
             "froude",
             timestep,
+            render_mode=render_mode,
+            use_depth_weights=use_depth_weights,
+            shallow_to_flat=shallow_to_flat,
             stream_output=stream_output,
             timeout=timeout,
         )
@@ -1316,7 +1400,7 @@ class MapperExtension:
         timestep: int | None,
         output_vrt: "str | Path | None" = None,
         render_mode: (
-            Literal["sloping", "slopingPretty", "horizontal"] | None
+            Literal["sloping", "hybrid", "horizontal"] | None
         ) = "horizontal",
         use_depth_weights: bool = False,
         shallow_to_flat: bool = False,
@@ -1338,15 +1422,15 @@ class MapperExtension:
         render_mode:
             Water-surface interpolation mode passed to :meth:`store_map`.
             ``"sloping"`` (default) uses cell-corner facepoints and routes
-            through ``RasMapperStoreMap.exe``.  ``"slopingPretty"`` adds face
+            through ``RasMapperStoreMap.exe``.  ``"hybrid"`` adds face
             centroids and matches the RasMapper GUI display.  ``"horizontal"``
             renders a flat per-cell water surface.
         use_depth_weights:
             When ``True``, face weights are depth-proportional.  Only
-            meaningful with ``render_mode="slopingPretty"``.
+            meaningful with ``render_mode="hybrid"``.
         shallow_to_flat:
             When ``True``, shallow cells are rendered flat.  Defaults to
-            ``False``.  Only meaningful with ``render_mode="slopingPretty"``.
+            ``False``.  Only meaningful with ``render_mode="hybrid"``.
         stream_output:
             Stream subprocess output to the logger in real time.
         timeout:
@@ -1401,6 +1485,11 @@ class MapperExtension:
     def open_shear_stress(
         self,
         timestep: int | None,
+        render_mode: (
+            Literal["sloping", "hybrid", "horizontal"] | None
+        ) = "horizontal",
+        use_depth_weights: bool = False,
+        shallow_to_flat: bool = False,
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> "AbstractContextManager[rasterio.io.DatasetReader]":
@@ -1411,6 +1500,9 @@ class MapperExtension:
         return self.open_map(
             "shear_stress",
             timestep,
+            render_mode=render_mode,
+            use_depth_weights=use_depth_weights,
+            shallow_to_flat=shallow_to_flat,
             stream_output=stream_output,
             timeout=timeout,
         )
@@ -1421,7 +1513,7 @@ class MapperExtension:
         timestep: int | None,
         output_vrt: "str | Path | None" = None,
         render_mode: (
-            Literal["sloping", "slopingPretty", "horizontal"] | None
+            Literal["sloping", "hybrid", "horizontal"] | None
         ) = "horizontal",
         use_depth_weights: bool = False,
         shallow_to_flat: bool = False,
@@ -1443,15 +1535,15 @@ class MapperExtension:
         render_mode:
             Water-surface interpolation mode passed to :meth:`store_map`.
             ``"sloping"`` (default) uses cell-corner facepoints and routes
-            through ``RasMapperStoreMap.exe``.  ``"slopingPretty"`` adds face
+            through ``RasMapperStoreMap.exe``.  ``"hybrid"`` adds face
             centroids and matches the RasMapper GUI display.  ``"horizontal"``
             renders a flat per-cell water surface.
         use_depth_weights:
             When ``True``, face weights are depth-proportional.  Only
-            meaningful with ``render_mode="slopingPretty"``.
+            meaningful with ``render_mode="hybrid"``.
         shallow_to_flat:
             When ``True``, shallow cells are rendered flat.  Defaults to
-            ``False``.  Only meaningful with ``render_mode="slopingPretty"``.
+            ``False``.  Only meaningful with ``render_mode="hybrid"``.
         stream_output:
             Stream subprocess output to the logger in real time.
         timeout:
@@ -1506,6 +1598,11 @@ class MapperExtension:
     def open_dv(
         self,
         timestep: int | None,
+        render_mode: (
+            Literal["sloping", "hybrid", "horizontal"] | None
+        ) = "horizontal",
+        use_depth_weights: bool = False,
+        shallow_to_flat: bool = False,
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> "AbstractContextManager[rasterio.io.DatasetReader]":
@@ -1516,6 +1613,9 @@ class MapperExtension:
         return self.open_map(
             "dv",
             timestep,
+            render_mode=render_mode,
+            use_depth_weights=use_depth_weights,
+            shallow_to_flat=shallow_to_flat,
             stream_output=stream_output,
             timeout=timeout,
         )
@@ -1526,7 +1626,7 @@ class MapperExtension:
         timestep: int | None,
         output_vrt: "str | Path | None" = None,
         render_mode: (
-            Literal["sloping", "slopingPretty", "horizontal"] | None
+            Literal["sloping", "hybrid", "horizontal"] | None
         ) = "horizontal",
         use_depth_weights: bool = False,
         shallow_to_flat: bool = False,
@@ -1548,15 +1648,15 @@ class MapperExtension:
         render_mode:
             Water-surface interpolation mode passed to :meth:`store_map`.
             ``"sloping"`` (default) uses cell-corner facepoints and routes
-            through ``RasMapperStoreMap.exe``.  ``"slopingPretty"`` adds face
+            through ``RasMapperStoreMap.exe``.  ``"hybrid"`` adds face
             centroids and matches the RasMapper GUI display.  ``"horizontal"``
             renders a flat per-cell water surface.
         use_depth_weights:
             When ``True``, face weights are depth-proportional.  Only
-            meaningful with ``render_mode="slopingPretty"``.
+            meaningful with ``render_mode="hybrid"``.
         shallow_to_flat:
             When ``True``, shallow cells are rendered flat.  Defaults to
-            ``False``.  Only meaningful with ``render_mode="slopingPretty"``.
+            ``False``.  Only meaningful with ``render_mode="hybrid"``.
         stream_output:
             Stream subprocess output to the logger in real time.
         timeout:
@@ -1611,6 +1711,11 @@ class MapperExtension:
     def open_dv2(
         self,
         timestep: int | None,
+        render_mode: (
+            Literal["sloping", "hybrid", "horizontal"] | None
+        ) = "horizontal",
+        use_depth_weights: bool = False,
+        shallow_to_flat: bool = False,
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> "AbstractContextManager[rasterio.io.DatasetReader]":
@@ -1621,6 +1726,9 @@ class MapperExtension:
         return self.open_map(
             "dv2",
             timestep,
+            render_mode=render_mode,
+            use_depth_weights=use_depth_weights,
+            shallow_to_flat=shallow_to_flat,
             stream_output=stream_output,
             timeout=timeout,
         )
