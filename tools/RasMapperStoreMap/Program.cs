@@ -32,7 +32,6 @@
  */
 
 using System.Reflection;
-using System.Runtime.Loader;
 
 // ── Argument parsing ──────────────────────────────────────────────────────────
 
@@ -90,16 +89,62 @@ if (!File.Exists(rasMapperLibPath))
 // ── Load RasMapperLib + resolve transitive dependencies ──────────────────────
 
 // All HEC-RAS assemblies (Utility.dll, etc.) live in the same directory.
-AssemblyLoadContext.Default.Resolving += (ctx, name) =>
+// Use AppDomain.AssemblyResolve — the .NET Framework equivalent of
+// AssemblyLoadContext.Default.Resolving — since RasMapperLib targets net4x.
+AppDomain.CurrentDomain.AssemblyResolve += (sender, e) =>
 {
-    var candidate = Path.Combine(libDir, name.Name + ".dll");
-    return File.Exists(candidate) ? ctx.LoadFromAssemblyPath(candidate) : null;
+    var assemblyName = new AssemblyName(e.Name);
+    var candidate = Path.Combine(libDir, assemblyName.Name + ".dll");
+    return File.Exists(candidate) ? Assembly.LoadFrom(candidate) : null;
 };
+
+// ── Initialise GDAL before loading RasMapperLib ───────────────────────────────
+//
+// RasMapperLib's static initialiser (and several command classes) calls
+// GDALSetup.InitializeMultiplatform() with a path derived from
+// Assembly.GetExecutingAssembly().Location.  When our stub runs, that location
+// is src/raspy/bin/ — nowhere near the HEC-RAS GDAL folder — so the library
+// emits "The 'GDAL' is not a sub folder to …" on stderr.
+//
+// Fix: load Geospatial.GDALAssist.dll ourselves and call
+// GDALSetup.InitializeMultiplatform(libDir\GDAL) before loading RasMapperLib,
+// mirroring exactly what GetProjection.cs and CreateTerrainCommand.cs do.
+// Reference: archive/DLLs/RasProcess/RasProcess/GetProjection.cs ~line 28
+
+var gdalDir = Path.Combine(libDir, "GDAL");
+if (Directory.Exists(gdalDir))
+{
+    var gdalAssistPath = Path.Combine(libDir, "Geospatial.GDALAssist.dll");
+    if (File.Exists(gdalAssistPath))
+    {
+        try
+        {
+            var gdalAsm = Assembly.LoadFrom(gdalAssistPath);
+            var gdalSetupType = gdalAsm.GetType("Geospatial.GDALAssist.GDALSetup");
+            if (gdalSetupType is not null)
+            {
+                var initMethod = gdalSetupType.GetMethod(
+                    "InitializeMultiplatform",
+                    BindingFlags.Public | BindingFlags.Static,
+                    null,
+                    [typeof(string)],
+                    null);
+                initMethod?.Invoke(null, [gdalDir]);
+            }
+        }
+        catch (Exception ex)
+        {
+            // Non-fatal: raster maps may still work without full GDAL init.
+            Console.Error.WriteLine(
+                $"RasMapperStoreMap: GDAL initialisation warning — {ex.Message}");
+        }
+    }
+}
 
 Assembly asm;
 try
 {
-    asm = AssemblyLoadContext.Default.LoadFromAssemblyPath(rasMapperLibPath);
+    asm = Assembly.LoadFrom(rasMapperLibPath);
 }
 catch (Exception ex)
 {
@@ -186,7 +231,7 @@ static bool   Starts(string arg, string prefix) =>
     arg.StartsWith(prefix, StringComparison.OrdinalIgnoreCase);
 
 static string Val(string arg) =>
-    arg[(arg.IndexOf('=') + 1)..];
+    arg.Substring(arg.IndexOf('=') + 1);
 
 static bool Bool(string arg) =>
     Val(arg).Equals("true", StringComparison.OrdinalIgnoreCase);

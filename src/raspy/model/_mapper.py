@@ -38,22 +38,24 @@ __all__ = [
 ]
 
 
-def _run_rasprocess(
+def _run_subprocess(
     cmd: list[str],
     cwd: "Path | None",
     timeout: "int | None",
     stream_output: bool,
 ) -> "subprocess.CompletedProcess[str]":
-    """Run a RasProcess.exe command and return a CompletedProcess.
+    """Run a subprocess command and return a CompletedProcess.
+
+    Used for both ``RasProcess.exe`` and ``RasMapperStoreMap.exe`` invocations.
+    ``cmd[0]`` is the executable; remaining elements are its arguments.
 
     Parameters
     ----------
     cmd:
-        Full command list, e.g. ``[str(ras_process), "-Command=..."]``.
+        Full command list, e.g. ``[str(exe), "-Arg=value", ...]``.
     cwd:
         Working directory passed to the subprocess, or ``None`` to
-        inherit the calling process's CWD (same behaviour as the
-        archive's ``RasProcess._run_rasprocess``).
+        inherit the calling process's CWD.
     timeout:
         Timeout in seconds, or ``None`` for no limit.
     stream_output:
@@ -61,7 +63,8 @@ def _run_rasprocess(
         ``subprocess.Popen``; stdout lines at INFO, stderr at WARNING.
         When ``False``, output is captured silently via ``subprocess.run``.
     """
-    logger.debug("RasProcess command: %s", " ".join(cmd))
+    exe_name = Path(cmd[0]).name
+    logger.debug("%s command: %s", exe_name, " ".join(cmd))
     if stream_output:
         stdout_lines: list[str] = []
         stderr_lines: list[str] = []
@@ -74,11 +77,11 @@ def _run_rasprocess(
         ) as proc:
             for line in proc.stdout:
                 line = line.rstrip()
-                logger.info("RasProcess stdout: %s", line)
+                logger.info("%s stdout: %s", exe_name, line)
                 stdout_lines.append(line)
             for line in proc.stderr:
                 line = line.rstrip()
-                logger.warning("RasProcess stderr: %s", line)
+                logger.warning("%s stderr: %s", exe_name, line)
                 stderr_lines.append(line)
             proc.wait(timeout=timeout)
         return subprocess.CompletedProcess(
@@ -756,7 +759,7 @@ class MapperExtension:
                     f"-RasMapFilename={temp_rasmap}",
                     f"-ResultFilename={result_hdf}",
                 ]
-            result = _run_rasprocess(cmd, None, timeout, stream_output)
+            result = _run_subprocess(cmd, None, timeout, stream_output)
         finally:
             shutil.copy2(temp_rasmap,"gbrasmap.test.txt")
             temp_rasmap.unlink(missing_ok=True)
@@ -814,7 +817,9 @@ class MapperExtension:
             "depth_x_velocity_sq",
         ],
         timestep: int | None,
-        render_mode: Literal["sloping", "slopingPretty", "horizontal"] = "sloping",
+        render_mode: (
+            Literal["sloping", "slopingPretty", "horizontal"] | None
+        ) = "horizontal",
         use_depth_weights: bool = False,
         shallow_to_flat: bool = False,
         stream_output: bool = True,
@@ -890,7 +895,9 @@ class MapperExtension:
         self,
         timestep: int | None,
         output_vrt: "str | Path | None" = None,
-        render_mode: Literal["sloping", "slopingPretty", "horizontal"] = "sloping",
+        render_mode: (
+            Literal["sloping", "slopingPretty", "horizontal"] | None
+        ) = "horizontal",
         use_depth_weights: bool = False,
         shallow_to_flat: bool = False,
         stream_output: bool = True,
@@ -963,6 +970,9 @@ class MapperExtension:
             timestep=timestep,
             raster_name=output_vrt.stem,
             output_path=output_vrt.parent,
+            render_mode=render_mode,
+            use_depth_weights=use_depth_weights,
+            shallow_to_flat=shallow_to_flat,
             stream_output=stream_output,
             timeout=timeout,
         )
@@ -990,7 +1000,9 @@ class MapperExtension:
         self,
         timestep: int | None,
         output_vrt: "str | Path | None" = None,
-        render_mode: Literal["sloping", "slopingPretty", "horizontal"] = "sloping",
+        render_mode: (
+            Literal["sloping", "slopingPretty", "horizontal"] | None
+        ) = "horizontal",
         use_depth_weights: bool = False,
         shallow_to_flat: bool = False,
         stream_output: bool = True,
@@ -1063,6 +1075,9 @@ class MapperExtension:
             timestep=timestep,
             raster_name=output_vrt.stem,
             output_path=output_vrt.parent,
+            render_mode=render_mode,
+            use_depth_weights=use_depth_weights,
+            shallow_to_flat=shallow_to_flat,
             stream_output=stream_output,
             timeout=timeout,
         )
@@ -1090,7 +1105,9 @@ class MapperExtension:
         self,
         timestep: int | None,
         output_vrt: "str | Path | None" = None,
-        render_mode: Literal["sloping", "slopingPretty", "horizontal"] = "sloping",
+        render_mode: (
+            Literal["sloping", "slopingPretty", "horizontal"] | None
+        ) = "horizontal",
         use_depth_weights: bool = False,
         shallow_to_flat: bool = False,
         stream_output: bool = True,
@@ -1163,6 +1180,9 @@ class MapperExtension:
             timestep=timestep,
             raster_name=output_vrt.stem,
             output_path=output_vrt.parent,
+            render_mode=render_mode,
+            use_depth_weights=use_depth_weights,
+            shallow_to_flat=shallow_to_flat,
             stream_output=stream_output,
             timeout=timeout,
         )
@@ -1190,7 +1210,9 @@ class MapperExtension:
         self,
         timestep: int | None,
         output_vrt: "str | Path | None" = None,
-        render_mode: Literal["sloping", "slopingPretty", "horizontal"] = "sloping",
+        render_mode: (
+            Literal["sloping", "slopingPretty", "horizontal"] | None
+        ) = "horizontal",
         use_depth_weights: bool = False,
         shallow_to_flat: bool = False,
         stream_output: bool = True,
@@ -1263,6 +1285,9 @@ class MapperExtension:
             timestep=timestep,
             raster_name=output_vrt.stem,
             output_path=output_vrt.parent,
+            render_mode=render_mode,
+            use_depth_weights=use_depth_weights,
+            shallow_to_flat=shallow_to_flat,
             stream_output=stream_output,
             timeout=timeout,
         )
@@ -1290,7 +1315,9 @@ class MapperExtension:
         self,
         timestep: int | None,
         output_vrt: "str | Path | None" = None,
-        render_mode: Literal["sloping", "slopingPretty", "horizontal"] = "sloping",
+        render_mode: (
+            Literal["sloping", "slopingPretty", "horizontal"] | None
+        ) = "horizontal",
         use_depth_weights: bool = False,
         shallow_to_flat: bool = False,
         stream_output: bool = True,
@@ -1363,6 +1390,9 @@ class MapperExtension:
             timestep=timestep,
             raster_name=output_vrt.stem,
             output_path=output_vrt.parent,
+            render_mode=render_mode,
+            use_depth_weights=use_depth_weights,
+            shallow_to_flat=shallow_to_flat,
             stream_output=stream_output,
             timeout=timeout,
         )
@@ -1390,7 +1420,9 @@ class MapperExtension:
         self,
         timestep: int | None,
         output_vrt: "str | Path | None" = None,
-        render_mode: Literal["sloping", "slopingPretty", "horizontal"] = "sloping",
+        render_mode: (
+            Literal["sloping", "slopingPretty", "horizontal"] | None
+        ) = "horizontal",
         use_depth_weights: bool = False,
         shallow_to_flat: bool = False,
         stream_output: bool = True,
@@ -1463,6 +1495,9 @@ class MapperExtension:
             timestep=timestep,
             raster_name=output_vrt.stem,
             output_path=output_vrt.parent,
+            render_mode=render_mode,
+            use_depth_weights=use_depth_weights,
+            shallow_to_flat=shallow_to_flat,
             stream_output=stream_output,
             timeout=timeout,
         )
@@ -1490,7 +1525,9 @@ class MapperExtension:
         self,
         timestep: int | None,
         output_vrt: "str | Path | None" = None,
-        render_mode: Literal["sloping", "slopingPretty", "horizontal"] = "sloping",
+        render_mode: (
+            Literal["sloping", "slopingPretty", "horizontal"] | None
+        ) = "horizontal",
         use_depth_weights: bool = False,
         shallow_to_flat: bool = False,
         stream_output: bool = True,
@@ -1563,6 +1600,9 @@ class MapperExtension:
             timestep=timestep,
             raster_name=output_vrt.stem,
             output_path=output_vrt.parent,
+            render_mode=render_mode,
+            use_depth_weights=use_depth_weights,
+            shallow_to_flat=shallow_to_flat,
             stream_output=stream_output,
             timeout=timeout,
         )
