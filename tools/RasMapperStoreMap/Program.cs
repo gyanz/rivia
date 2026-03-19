@@ -7,20 +7,29 @@
  * to basic Sloping/JustFacepoints); this stub reads them and calls the
  * appropriate SharedData setter before rendering.
  *
- * Two execution paths depending on -UseDepthWeightedFaces:
+ * Three execution paths:
  *
- *   false (default): delegates to StoreAllMapsCommand.Execute().
+ *   UseDepthWeightedFaces=false, TightExtent=false (default):
+ *     Delegates to StoreAllMapsCommand.Execute().
  *
- *   true: bypasses StoreAllMapsCommand and runs a custom loop that:
+ *   UseDepthWeightedFaces=true (with or without TightExtent):
+ *     Bypasses StoreAllMapsCommand; runs a custom loop that:
  *     1. Creates RASResults and ensures terrain is set.
  *     2. Writes FacePoint Elevation data to PostProcessing.hdf via
  *        PostProcessor.EnsureFacepointElevations().
  *     3. Loads that data into the in-memory RASD2FlowArea cache via
  *        EnsureGetPerMeshFacepointElevations() on the same RASResults instance.
- *     4. Constructs RASResultsMap with that SAME RASResults and calls StoreMap.
+ *     4. Constructs RASResultsMap with that SAME RASResults and calls StoreMap
+ *        or StoreMapTerrainResample depending on TightExtent.
  *     This is necessary because WaterSurfaceRenderer.GetComputer() reads
  *     PerMeshFacepointElevations (an instance field) before the normal code
  *     path that populates it runs.  See docs/rasprocess_render_mode_limitation.md.
+ *
+ *   TightExtent=true, UseDepthWeightedFaces=false:
+ *     Also bypasses StoreAllMapsCommand; same custom loop but calls
+ *     StoreMapTerrainResample instead of StoreMap to clip output tiles to the
+ *     model geometry extent (tight to D2FlowArea + XS + StorageArea bounds,
+ *     pixel-aligned with the terrain grid).
  *
  * RasMapperLib.dll is loaded dynamically at runtime from the HEC-RAS installation
  * directory — this project has zero compile-time references to HEC-RAS assemblies.
@@ -32,6 +41,7 @@
  *       [-RenderMode=sloping|slopingPretty|horizontal]   (default: sloping)
  *       [-UseDepthWeightedFaces=true|false]              (default: false)
  *       [-ReduceShallowToHorizontal=true|false]          (default: true)
+ *       [-TightExtent=true|false]                        (default: false)
  *       [-RasMapperLibDir=<HEC-RAS install dir>]
  *
  * If -RasMapperLibDir is omitted the exe searches:
@@ -48,6 +58,7 @@
  *   docs/rasprocess_render_mode_limitation.md
  */
 
+using System.Linq.Expressions;
 using System.Reflection;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -59,6 +70,7 @@ string? resultFilename = null;
 string  renderMode               = "sloping";
 bool    useDepthWeightedFaces    = false;
 bool    reduceShallowToHorizontal = true;
+bool    tightExtent               = false;
 string? libDir = null;
 
 foreach (var arg in args)
@@ -68,6 +80,7 @@ foreach (var arg in args)
     else if (Starts(arg, "-RenderMode="))                renderMode                = Val(arg);
     else if (Starts(arg, "-UseDepthWeightedFaces="))     useDepthWeightedFaces     = Bool(arg);
     else if (Starts(arg, "-ReduceShallowToHorizontal=")) reduceShallowToHorizontal = Bool(arg);
+    else if (Starts(arg, "-TightExtent="))               tightExtent               = Bool(arg);
     else if (Starts(arg, "-RasMapperLibDir="))           libDir                    = Val(arg);
 }
 
@@ -82,6 +95,7 @@ if (rasMapFilename is null)
         "                        [-RenderMode=sloping|slopingPretty|horizontal]\n" +
         "                        [-UseDepthWeightedFaces=true|false]\n" +
         "                        [-ReduceShallowToHorizontal=true|false]\n" +
+        "                        [-TightExtent=true|false]\n" +
         "                        [-RasMapperLibDir=<HEC-RAS install dir>]");
     return 1;
 }
@@ -249,13 +263,13 @@ switch (renderMode.ToLowerInvariant())
 //   RasMapperLib.Render.WaterSurfaceRenderer.GetComputer()        (~1979, ~2055)
 //   RasMapperLib.Scripting.StoreAllMapsCommand.Execute()           (~60)
 
-if (useDepthWeightedFaces)
+if (useDepthWeightedFaces || tightExtent)
 {
     if (resultFilename is null)
     {
         Console.Error.WriteLine(
             "RasMapperStoreMap: -ResultFilename=<path> is required when " +
-            "-UseDepthWeightedFaces=true (needed to locate PostProcessing.hdf).");
+            "-UseDepthWeightedFaces=true or -TightExtent=true.");
         return 1;
     }
 
@@ -367,7 +381,12 @@ if (useDepthWeightedFaces)
             }
         }
 
-        // ── 5. Write FacePoint Elevations to PostProcessing.hdf ──────────────
+        // ── 5 & 6. FacePoint Elevation pre-computation (depth-weighted only) ──
+        // Not needed for tight_extent-only; only required when
+        // UseDepthWeightedFaces=true to pre-populate PerMeshFacepointElevations
+        // before WaterSurfaceRenderer.GetComputer() reads it.
+        if (useDepthWeightedFaces)
+        {
         Console.WriteLine(
             "RasMapperStoreMap: Ensuring FacePoint Elevations for depth-weighted rendering...");
 
@@ -387,7 +406,6 @@ if (useDepthWeightedFaces)
         ensureFPEMethod.Invoke(postProcessor, [null]);
         Console.WriteLine("RasMapperStoreMap: FacePoint Elevation data written to PostProcessing.hdf.");
 
-        // ── 6. Populate in-memory PerMeshFacepointElevations cache ────────────
         // KEY FIX: WaterSurfaceRenderer.GetComputer reads PerMeshFacepointElevations
         // (an instance field on RASD2FlowArea) BEFORE ComputeWaterSurfaceInternal2D
         // ever calls EnsureGetPerMeshFacepointElevations.  By calling it here on
@@ -406,10 +424,12 @@ if (useDepthWeightedFaces)
             Console.WriteLine(
                 "RasMapperStoreMap: FacePoint Elevation in-memory cache populated.");
         }
+        } // end if (useDepthWeightedFaces)
 
-        // ── 7. Run StoreMap for each matching layer, reusing THIS rasResults ──
-        // Mirrors StoreAllMapsCommand.Execute() but reuses the rasResults created
-        // above (so PerMeshFacepointElevations is shared with WaterSurfaceRenderer).
+        // ── 7. Run StoreMap / StoreMapTerrainResample per layer ──────────────
+        // Mirrors StoreAllMapsCommand.Execute() but reuses the rasResults instance
+        // created above (so PerMeshFacepointElevations is shared with the renderer
+        // for depth-weighted, and StoreMapTerrainResample can be used for tight extent).
         var resultsEl = xRoot.Element("Results");
         if (resultsEl is null)
             throw new InvalidOperationException(
@@ -438,6 +458,60 @@ if (useDepthWeightedFaces)
             .FirstOrDefault(m => m.Name == "StoreMap" &&
                                  m.GetParameters().Length == 2 &&
                                  m.GetParameters()[1].ParameterType == typeof(bool));
+
+        // ── Tight-extent support: resolve types for StoreMapTerrainResample ──
+        //
+        // MapProcessingEngine.StoreMapTerrainResample(map, terrain, baseFilename,
+        //   extent, resampleCellSize, addItemsToSpIdx, reporter)
+        //
+        // addItemsToSpIdx is Action<SpatialIndex<int>> — populated in the per-layer
+        // loop below using Expression.Lambda so we avoid a compile-time dependency
+        // on the generic SpatialIndex<T> type.
+        //
+        // We mirror RasMapper's ViewExtent clip (InterpolatedLayer.cs ~2919):
+        //   addItemsToSpIdx = spIdx => spIdx.Add(modelExtent, 0)
+        // The spatial index then returns > 0 elements for every terrain tile cell
+        // overlapping the model's bounding box, giving a pixel-aligned tight output.
+        //
+        // Reference: RasMapperLib.MapProcessingEngine.StoreMapTerrainResample (~1346)
+        //            RasMapperLib.InterpolatedLayer.ExentToClipFromExportRasterOptions (~2843)
+        var extentType     = asm.GetType("RasMapperLib.Extent");
+        var spIdxOpenType  = asm.GetType("RasMapperLib.SpatialIndex`1");
+        var spIdxIntType   = spIdxOpenType?.MakeGenericType(typeof(int));
+        var mapProcEngType = asm.GetType("RasMapperLib.MapProcessingEngine");
+
+        // Add(Extent bounds, int key) on SpatialIndex<int>
+        var addSpIdxMethod = spIdxIntType is not null && extentType is not null
+            ? spIdxIntType.GetMethod("Add", [extentType, typeof(int)])
+            : null;
+
+        // StoreMapTerrainResample — static, 7 parameters
+        var storeMapTRMethod = mapProcEngType?.GetMethods(
+                BindingFlags.Public | BindingFlags.Static)
+            .FirstOrDefault(m => m.Name == "StoreMapTerrainResample" &&
+                                 m.GetParameters().Length == 7);
+
+        // StoredMapBaseFilename — the output tile base path (no extension)
+        var storedMapBaseFilenameProp = rasResultsMapType.GetProperty(
+            "StoredMapBaseFilename",
+            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+
+        // Extent property on RASResultsMap: union of D2FlowArea + XS + StorageArea extents
+        var extentPropRM = rasResultsMapType.GetProperty(
+            "Extent", BindingFlags.Public | BindingFlags.Instance);
+
+        bool tightExtentReady = tightExtent &&
+                                storeMapTRMethod is not null &&
+                                extentType      is not null &&
+                                spIdxIntType    is not null &&
+                                addSpIdxMethod  is not null &&
+                                storedMapBaseFilenameProp is not null &&
+                                extentPropRM    is not null;
+
+        if (tightExtent && !tightExtentReady)
+            Console.Error.WriteLine(
+                "RasMapperStoreMap: warning — tight extent setup incomplete " +
+                "(missing type or method); falling back to StoreMap.");
 
         string resultFileFullPath = Path.GetFullPath(resultFilename);
         int mapsGenerated = 0;
@@ -488,8 +562,42 @@ if (useDepthWeightedFaces)
 
                     setOverrideDictMethod?.Invoke(rasResultsMap, [terrainDict]);
 
-                    if (storeMapMethod is not null)
-                        storeMapMethod.Invoke(rasResultsMap, [progressReporterDW, false]);
+                    if (tightExtentReady)
+                    {
+                        // Build Action<SpatialIndex<int>>(spIdx => spIdx.Add(modelExtent, 0))
+                        // Mirrors RasMapper's ViewExtent clip: a single bounding-box item
+                        // causes ComputeRFIMetaDataAndIntersectingTiles to include all terrain
+                        // pixels overlapping the model extent (pixel-aligned tight output).
+                        var modelExtent    = extentPropRM!.GetValue(rasResultsMap);
+                        var smBaseFilename = storedMapBaseFilenameProp!.GetValue(rasResultsMap) as string;
+
+                        if (modelExtent is not null && smBaseFilename is not null)
+                        {
+                            var spIdxParam = Expression.Parameter(spIdxIntType!, "spIdx");
+                            var addCall    = Expression.Call(
+                                spIdxParam, addSpIdxMethod!,
+                                Expression.Constant(modelExtent, extentType!),
+                                Expression.Constant(0, typeof(int)));
+                            var addDelegate = Expression.Lambda(
+                                typeof(Action<>).MakeGenericType(spIdxIntType!),
+                                addCall, spIdxParam).Compile();
+
+                            storeMapTRMethod!.Invoke(null,
+                                [rasResultsMap, terrain, smBaseFilename,
+                                 modelExtent, -1.0, addDelegate, progressReporterDW]);
+                        }
+                        else
+                        {
+                            Console.Error.WriteLine(
+                                "RasMapperStoreMap: tight extent — could not resolve model " +
+                                "extent or output filename; falling back to StoreMap.");
+                            storeMapMethod?.Invoke(rasResultsMap, [progressReporterDW, false]);
+                        }
+                    }
+                    else
+                    {
+                        storeMapMethod?.Invoke(rasResultsMap, [progressReporterDW, false]);
+                    }
 
                     mapsGenerated++;
                 }

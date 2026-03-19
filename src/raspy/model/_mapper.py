@@ -505,6 +505,7 @@ class MapperExtension:
         render_mode: Literal["sloping", "hybrid", "horizontal"] | None = None,
         use_depth_weights: bool = False,
         shallow_to_flat: bool = False,
+        tight_extent: bool = False,
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> "VrtMap":
@@ -549,6 +550,15 @@ class MapperExtension:
             When ``True`` (default), shallow cells are rendered flat
             (``ReduceShallowToHorizontal``).  Only meaningful with
             ``render_mode="hybrid"``.
+        tight_extent:
+            When ``True``, the output raster extent is clipped to the model
+            geometry (2D flow area + cross sections + storage areas) rather
+            than the full terrain tile extent.  The clip is pixel-aligned —
+            output tiles cover exactly the terrain pixels that overlap the
+            model footprint.  Requires ``render_mode`` to be set (routes
+            through ``RasMapperStoreMap.exe``).  Default ``False`` matches
+            the historical behaviour (terrain-extent tiles with NoData outside
+            the model).
         stream_output:
             When ``True`` (default) subprocess stdout/stderr are logged
             line-by-line in real time.  When ``False`` output is captured
@@ -817,6 +827,8 @@ class MapperExtension:
                     f"{'true' if use_depth_weights else 'false'}",
                     f"-ReduceShallowToHorizontal="
                     f"{'true' if shallow_to_flat else 'false'}",
+                    f"-TightExtent="
+                    f"{'true' if tight_extent else 'false'}",
                     f"-RasMapperLibDir={program_dir}",
                 ]
             else:
@@ -928,6 +940,7 @@ class MapperExtension:
         ) = "horizontal",
         use_depth_weights: bool = False,
         shallow_to_flat: bool = False,
+        tight_extent: bool = False,
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> Generator["rasterio.io.DatasetReader", None, None]:
@@ -949,6 +962,8 @@ class MapperExtension:
         use_depth_weights:
             Passed through to :meth:`store_map`.
         shallow_to_flat:
+            Passed through to :meth:`store_map`.
+        tight_extent:
             Passed through to :meth:`store_map`.
         stream_output:
             Passed through to :meth:`store_map`.
@@ -982,6 +997,7 @@ class MapperExtension:
                 render_mode=render_mode,
                 use_depth_weights=use_depth_weights,
                 shallow_to_flat=shallow_to_flat,
+                tight_extent=tight_extent,
                 stream_output=stream_output,
                 timeout=timeout,
             )
@@ -1006,6 +1022,7 @@ class MapperExtension:
         ) = "horizontal",
         use_depth_weights: bool = False,
         shallow_to_flat: bool = False,
+        tight_extent: bool = False,
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> "VrtMap":
@@ -1033,6 +1050,8 @@ class MapperExtension:
         shallow_to_flat:
             When ``True``, shallow cells are rendered flat.  Defaults to
             ``False``.  Only meaningful with ``render_mode="hybrid"``.
+        tight_extent:
+            Passed through to :meth:`store_map`.
         stream_output:
             Stream subprocess output to the logger in real time.
         timeout:
@@ -1051,6 +1070,7 @@ class MapperExtension:
                 render_mode=render_mode,
                 use_depth_weights=use_depth_weights,
                 shallow_to_flat=shallow_to_flat,
+                tight_extent=tight_extent,
                 stream_output=stream_output,
                 timeout=timeout,
             )
@@ -1063,6 +1083,7 @@ class MapperExtension:
                 render_mode=render_mode,
                 use_depth_weights=use_depth_weights,
                 shallow_to_flat=shallow_to_flat,
+                tight_extent=tight_extent,
                 stream_output=stream_output,
                 timeout=timeout,
             )
@@ -1079,6 +1100,7 @@ class MapperExtension:
             render_mode=render_mode,
             use_depth_weights=use_depth_weights,
             shallow_to_flat=shallow_to_flat,
+            tight_extent=tight_extent,
             stream_output=stream_output,
             timeout=timeout,
         )
@@ -1092,6 +1114,7 @@ class MapperExtension:
         ) = "horizontal",
         use_depth_weights: bool = False,
         shallow_to_flat: bool = False,
+        tight_extent: bool = False,
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> "AbstractContextManager[rasterio.io.DatasetReader]":
@@ -1105,6 +1128,7 @@ class MapperExtension:
             render_mode=render_mode,
             use_depth_weights=use_depth_weights,
             shallow_to_flat=shallow_to_flat,
+            tight_extent=tight_extent,
             stream_output=stream_output,
             timeout=timeout,
         )
@@ -1119,6 +1143,7 @@ class MapperExtension:
         ) = "horizontal",
         use_depth_weights: bool = False,
         shallow_to_flat: bool = False,
+        tight_extent: bool = False,
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> "VrtMap":
@@ -1146,6 +1171,8 @@ class MapperExtension:
         shallow_to_flat:
             When ``True``, shallow cells are rendered flat.  Defaults to
             ``False``.  Only meaningful with ``render_mode="hybrid"``.
+        tight_extent:
+            Passed through to :meth:`store_map`.
         stream_output:
             Stream subprocess output to the logger in real time.
         timeout:
@@ -1164,6 +1191,7 @@ class MapperExtension:
                 render_mode=render_mode,
                 use_depth_weights=use_depth_weights,
                 shallow_to_flat=shallow_to_flat,
+                tight_extent=tight_extent,
                 stream_output=stream_output,
                 timeout=timeout,
             )
@@ -1176,6 +1204,7 @@ class MapperExtension:
                 render_mode=render_mode,
                 use_depth_weights=use_depth_weights,
                 shallow_to_flat=shallow_to_flat,
+                tight_extent=tight_extent,
                 stream_output=stream_output,
                 timeout=timeout,
             )
@@ -1192,6 +1221,7 @@ class MapperExtension:
             render_mode=render_mode,
             use_depth_weights=use_depth_weights,
             shallow_to_flat=shallow_to_flat,
+            tight_extent=tight_extent,
             stream_output=stream_output,
             timeout=timeout,
         )
@@ -1205,6 +1235,7 @@ class MapperExtension:
         ) = "horizontal",
         use_depth_weights: bool = False,
         shallow_to_flat: bool = False,
+        tight_extent: bool = False,
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> "AbstractContextManager[rasterio.io.DatasetReader]":
@@ -1218,6 +1249,7 @@ class MapperExtension:
             render_mode=render_mode,
             use_depth_weights=use_depth_weights,
             shallow_to_flat=shallow_to_flat,
+            tight_extent=tight_extent,
             stream_output=stream_output,
             timeout=timeout,
         )
@@ -1232,6 +1264,7 @@ class MapperExtension:
         ) = "horizontal",
         use_depth_weights: bool = False,
         shallow_to_flat: bool = False,
+        tight_extent: bool = False,
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> "VrtMap":
@@ -1259,6 +1292,8 @@ class MapperExtension:
         shallow_to_flat:
             When ``True``, shallow cells are rendered flat.  Defaults to
             ``False``.  Only meaningful with ``render_mode="hybrid"``.
+        tight_extent:
+            Passed through to :meth:`store_map`.
         stream_output:
             Stream subprocess output to the logger in real time.
         timeout:
@@ -1277,6 +1312,7 @@ class MapperExtension:
                 render_mode=render_mode,
                 use_depth_weights=use_depth_weights,
                 shallow_to_flat=shallow_to_flat,
+                tight_extent=tight_extent,
                 stream_output=stream_output,
                 timeout=timeout,
             )
@@ -1289,6 +1325,7 @@ class MapperExtension:
                 render_mode=render_mode,
                 use_depth_weights=use_depth_weights,
                 shallow_to_flat=shallow_to_flat,
+                tight_extent=tight_extent,
                 stream_output=stream_output,
                 timeout=timeout,
             )
@@ -1305,6 +1342,7 @@ class MapperExtension:
             render_mode=render_mode,
             use_depth_weights=use_depth_weights,
             shallow_to_flat=shallow_to_flat,
+            tight_extent=tight_extent,
             stream_output=stream_output,
             timeout=timeout,
         )
@@ -1318,6 +1356,7 @@ class MapperExtension:
         ) = "horizontal",
         use_depth_weights: bool = False,
         shallow_to_flat: bool = False,
+        tight_extent: bool = False,
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> "AbstractContextManager[rasterio.io.DatasetReader]":
@@ -1331,6 +1370,7 @@ class MapperExtension:
             render_mode=render_mode,
             use_depth_weights=use_depth_weights,
             shallow_to_flat=shallow_to_flat,
+            tight_extent=tight_extent,
             stream_output=stream_output,
             timeout=timeout,
         )
@@ -1345,6 +1385,7 @@ class MapperExtension:
         ) = "horizontal",
         use_depth_weights: bool = False,
         shallow_to_flat: bool = False,
+        tight_extent: bool = False,
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> "VrtMap":
@@ -1372,6 +1413,8 @@ class MapperExtension:
         shallow_to_flat:
             When ``True``, shallow cells are rendered flat.  Defaults to
             ``False``.  Only meaningful with ``render_mode="hybrid"``.
+        tight_extent:
+            Passed through to :meth:`store_map`.
         stream_output:
             Stream subprocess output to the logger in real time.
         timeout:
@@ -1390,6 +1433,7 @@ class MapperExtension:
                 render_mode=render_mode,
                 use_depth_weights=use_depth_weights,
                 shallow_to_flat=shallow_to_flat,
+                tight_extent=tight_extent,
                 stream_output=stream_output,
                 timeout=timeout,
             )
@@ -1402,6 +1446,7 @@ class MapperExtension:
                 render_mode=render_mode,
                 use_depth_weights=use_depth_weights,
                 shallow_to_flat=shallow_to_flat,
+                tight_extent=tight_extent,
                 stream_output=stream_output,
                 timeout=timeout,
             )
@@ -1418,6 +1463,7 @@ class MapperExtension:
             render_mode=render_mode,
             use_depth_weights=use_depth_weights,
             shallow_to_flat=shallow_to_flat,
+            tight_extent=tight_extent,
             stream_output=stream_output,
             timeout=timeout,
         )
@@ -1431,6 +1477,7 @@ class MapperExtension:
         ) = "horizontal",
         use_depth_weights: bool = False,
         shallow_to_flat: bool = False,
+        tight_extent: bool = False,
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> "AbstractContextManager[rasterio.io.DatasetReader]":
@@ -1444,6 +1491,7 @@ class MapperExtension:
             render_mode=render_mode,
             use_depth_weights=use_depth_weights,
             shallow_to_flat=shallow_to_flat,
+            tight_extent=tight_extent,
             stream_output=stream_output,
             timeout=timeout,
         )
@@ -1458,6 +1506,7 @@ class MapperExtension:
         ) = "horizontal",
         use_depth_weights: bool = False,
         shallow_to_flat: bool = False,
+        tight_extent: bool = False,
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> "VrtMap":
@@ -1485,6 +1534,8 @@ class MapperExtension:
         shallow_to_flat:
             When ``True``, shallow cells are rendered flat.  Defaults to
             ``False``.  Only meaningful with ``render_mode="hybrid"``.
+        tight_extent:
+            Passed through to :meth:`store_map`.
         stream_output:
             Stream subprocess output to the logger in real time.
         timeout:
@@ -1503,6 +1554,7 @@ class MapperExtension:
                 render_mode=render_mode,
                 use_depth_weights=use_depth_weights,
                 shallow_to_flat=shallow_to_flat,
+                tight_extent=tight_extent,
                 stream_output=stream_output,
                 timeout=timeout,
             )
@@ -1515,6 +1567,7 @@ class MapperExtension:
                 render_mode=render_mode,
                 use_depth_weights=use_depth_weights,
                 shallow_to_flat=shallow_to_flat,
+                tight_extent=tight_extent,
                 stream_output=stream_output,
                 timeout=timeout,
             )
@@ -1531,6 +1584,7 @@ class MapperExtension:
             render_mode=render_mode,
             use_depth_weights=use_depth_weights,
             shallow_to_flat=shallow_to_flat,
+            tight_extent=tight_extent,
             stream_output=stream_output,
             timeout=timeout,
         )
@@ -1544,6 +1598,7 @@ class MapperExtension:
         ) = "horizontal",
         use_depth_weights: bool = False,
         shallow_to_flat: bool = False,
+        tight_extent: bool = False,
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> "AbstractContextManager[rasterio.io.DatasetReader]":
@@ -1557,6 +1612,7 @@ class MapperExtension:
             render_mode=render_mode,
             use_depth_weights=use_depth_weights,
             shallow_to_flat=shallow_to_flat,
+            tight_extent=tight_extent,
             stream_output=stream_output,
             timeout=timeout,
         )
@@ -1571,6 +1627,7 @@ class MapperExtension:
         ) = "horizontal",
         use_depth_weights: bool = False,
         shallow_to_flat: bool = False,
+        tight_extent: bool = False,
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> "VrtMap":
@@ -1598,6 +1655,8 @@ class MapperExtension:
         shallow_to_flat:
             When ``True``, shallow cells are rendered flat.  Defaults to
             ``False``.  Only meaningful with ``render_mode="hybrid"``.
+        tight_extent:
+            Passed through to :meth:`store_map`.
         stream_output:
             Stream subprocess output to the logger in real time.
         timeout:
@@ -1616,6 +1675,7 @@ class MapperExtension:
                 render_mode=render_mode,
                 use_depth_weights=use_depth_weights,
                 shallow_to_flat=shallow_to_flat,
+                tight_extent=tight_extent,
                 stream_output=stream_output,
                 timeout=timeout,
             )
@@ -1628,6 +1688,7 @@ class MapperExtension:
                 render_mode=render_mode,
                 use_depth_weights=use_depth_weights,
                 shallow_to_flat=shallow_to_flat,
+                tight_extent=tight_extent,
                 stream_output=stream_output,
                 timeout=timeout,
             )
@@ -1644,6 +1705,7 @@ class MapperExtension:
             render_mode=render_mode,
             use_depth_weights=use_depth_weights,
             shallow_to_flat=shallow_to_flat,
+            tight_extent=tight_extent,
             stream_output=stream_output,
             timeout=timeout,
         )
@@ -1657,6 +1719,7 @@ class MapperExtension:
         ) = "horizontal",
         use_depth_weights: bool = False,
         shallow_to_flat: bool = False,
+        tight_extent: bool = False,
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> "AbstractContextManager[rasterio.io.DatasetReader]":
@@ -1670,6 +1733,7 @@ class MapperExtension:
             render_mode=render_mode,
             use_depth_weights=use_depth_weights,
             shallow_to_flat=shallow_to_flat,
+            tight_extent=tight_extent,
             stream_output=stream_output,
             timeout=timeout,
         )
@@ -1684,6 +1748,7 @@ class MapperExtension:
         ) = "horizontal",
         use_depth_weights: bool = False,
         shallow_to_flat: bool = False,
+        tight_extent: bool = False,
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> "VrtMap":
@@ -1711,6 +1776,8 @@ class MapperExtension:
         shallow_to_flat:
             When ``True``, shallow cells are rendered flat.  Defaults to
             ``False``.  Only meaningful with ``render_mode="hybrid"``.
+        tight_extent:
+            Passed through to :meth:`store_map`.
         stream_output:
             Stream subprocess output to the logger in real time.
         timeout:
@@ -1729,6 +1796,7 @@ class MapperExtension:
                 render_mode=render_mode,
                 use_depth_weights=use_depth_weights,
                 shallow_to_flat=shallow_to_flat,
+                tight_extent=tight_extent,
                 stream_output=stream_output,
                 timeout=timeout,
             )
@@ -1741,6 +1809,7 @@ class MapperExtension:
                 render_mode=render_mode,
                 use_depth_weights=use_depth_weights,
                 shallow_to_flat=shallow_to_flat,
+                tight_extent=tight_extent,
                 stream_output=stream_output,
                 timeout=timeout,
             )
@@ -1757,6 +1826,7 @@ class MapperExtension:
             render_mode=render_mode,
             use_depth_weights=use_depth_weights,
             shallow_to_flat=shallow_to_flat,
+            tight_extent=tight_extent,
             stream_output=stream_output,
             timeout=timeout,
         )
@@ -1770,6 +1840,7 @@ class MapperExtension:
         ) = "horizontal",
         use_depth_weights: bool = False,
         shallow_to_flat: bool = False,
+        tight_extent: bool = False,
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> "AbstractContextManager[rasterio.io.DatasetReader]":
@@ -1783,6 +1854,7 @@ class MapperExtension:
             render_mode=render_mode,
             use_depth_weights=use_depth_weights,
             shallow_to_flat=shallow_to_flat,
+            tight_extent=tight_extent,
             stream_output=stream_output,
             timeout=timeout,
         )
