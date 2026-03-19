@@ -2,34 +2,36 @@
  * RasMapperStoreMap.exe
  *
  * Headless stored-map generator for HEC-RAS that respects the <RenderMode>,
- * <UseDepthWeightedFaces>, and <ReduceShallowToHorizontal> settings in the
- * .rasmap file.  RasProcess.exe ignores these settings (SharedData defaults
- * to basic Sloping/JustFacepoints); this stub reads them and calls the
- * appropriate SharedData setter before rendering.
+ * <UseDepthWeightedFaces>, <ReduceShallowToHorizontal>, and <TightExtent>
+ * settings.  RasProcess.exe ignores render-mode state (SharedData defaults to
+ * basic Sloping/JustFacepoints); this stub reads them and calls the appropriate
+ * SharedData setter before rendering.
  *
- * Three execution paths:
+ * Two execution paths:
  *
- *   UseDepthWeightedFaces=false, TightExtent=false (default):
- *     Delegates to StoreAllMapsCommand.Execute().
+ *   UseDepthWeightedFaces=false, TightExtent=false:
+ *     Delegates to StoreAllMapsCommand.Execute() — the simplest path.
  *
- *   UseDepthWeightedFaces=true (with or without TightExtent):
- *     Bypasses StoreAllMapsCommand; runs a custom loop that:
+ *   UseDepthWeightedFaces=true OR TightExtent=true (default: both true):
+ *     Bypasses StoreAllMapsCommand; runs a custom loop over rasmap XML layers:
  *     1. Creates RASResults and ensures terrain is set.
- *     2. Writes FacePoint Elevation data to PostProcessing.hdf via
- *        PostProcessor.EnsureFacepointElevations().
- *     3. Loads that data into the in-memory RASD2FlowArea cache via
- *        EnsureGetPerMeshFacepointElevations() on the same RASResults instance.
- *     4. Constructs RASResultsMap with that SAME RASResults and calls StoreMap
- *        or StoreMapTerrainResample depending on TightExtent.
- *     This is necessary because WaterSurfaceRenderer.GetComputer() reads
- *     PerMeshFacepointElevations (an instance field) before the normal code
- *     path that populates it runs.  See docs/rasprocess_render_mode_limitation.md.
- *
- *   TightExtent=true, UseDepthWeightedFaces=false:
- *     Also bypasses StoreAllMapsCommand; same custom loop but calls
- *     StoreMapTerrainResample instead of StoreMap to clip output tiles to the
- *     model geometry extent (tight to D2FlowArea + XS + StorageArea bounds,
- *     pixel-aligned with the terrain grid).
+ *     2. If UseDepthWeightedFaces=true: writes FacePoint Elevation data to
+ *        PostProcessing.hdf via PostProcessor.EnsureFacepointElevations(), then
+ *        populates the in-memory RASD2FlowArea cache via
+ *        EnsureGetPerMeshFacepointElevations() on the SAME RASResults instance.
+ *        This is necessary because WaterSurfaceRenderer.GetComputer() reads
+ *        PerMeshFacepointElevations (a per-instance field) before the normal
+ *        code path that populates it runs.
+ *        See docs/rasprocess_render_mode_limitation.md.
+ *     3. Constructs RASResultsMap with that SAME RASResults (shares the cache).
+ *     4. If TightExtent=true: calls StoreMapTerrainResample with the model's
+ *        geometry extent (D2FlowArea + XS + StorageArea bounding box) so output
+ *        tiles are pixel-aligned and clipped to the model footprint — matching
+ *        RasMapper's "Original Extent" behaviour.
+ *        If TightExtent=false: calls StoreMap, which produces terrain-extent
+ *        tiles (NoData outside the model, but tiles as large as the terrain).
+ *     The two flags compose: UseDepthWeightedFaces and TightExtent each address
+ *     independent concerns and work correctly together or separately.
  *
  * RasMapperLib.dll is loaded dynamically at runtime from the HEC-RAS installation
  * directory — this project has zero compile-time references to HEC-RAS assemblies.
@@ -55,6 +57,8 @@
  *   archive/DLLs/RasMapperLib/RasMapperLib/PostProcessor.cs (~line 532)
  *   archive/DLLs/RasMapperLib/RasMapperLib/RASD2FlowArea.cs (~line 3834)
  *   archive/DLLs/RasMapperLib/RasMapperLib.Render/WaterSurfaceRenderer.cs (~line 2055)
+ *   archive/DLLs/RasMapperLib/RasMapperLib/MapProcessingEngine.cs (~line 1346)
+ *   archive/DLLs/RasMapperLib/RasMapperLib/InterpolatedLayer.cs (~line 2843)
  *   docs/rasprocess_render_mode_limitation.md
  */
 
@@ -723,6 +727,9 @@ static MethodInfo? FindMethodInHierarchy(Type type, string name, Type[] paramTyp
     return null;
 }
 
+// ResolveLibDir() is a fallback for ad-hoc/manual use of the exe.
+// When called from raspy's store_map(), -RasMapperLibDir is always passed
+// explicitly (resolved via installed_ras_directory()), so this is never invoked.
 static string? ResolveLibDir()
 {
     // 1. Environment variable
