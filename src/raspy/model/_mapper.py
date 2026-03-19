@@ -634,6 +634,13 @@ class MapperExtension:
                     f"render_mode must be one of {sorted(_VALID_RENDER_MODES)}, "
                     f"got: {render_mode!r}"
                 )
+            if render_mode != "hybrid":
+                # Program.cs passes these to SetHorizontalRenderingMode() or
+                # SetSlopingRenderingMode(), neither of which accepts parameters
+                # — RasMapperLib would silently ignore them.  Force False here
+                # so the raster name and logs accurately reflect what is rendered.
+                use_depth_weights = False
+                shallow_to_flat = False
 
         # None  → RasProcess.exe (its built-in defaults, no SharedData init)
         # str   → RasMapperStoreMap.exe (properly initialises SharedData first)
@@ -1016,10 +1023,10 @@ class MapperExtension:
             written to that exact file.
         render_mode:
             Water-surface interpolation mode passed to :meth:`store_map`.
-            ``"sloping"`` (default) uses cell-corner facepoints and routes
-            through ``RasMapperStoreMap.exe``.  ``"hybrid"`` adds face
-            centroids and matches the RasMapper GUI display.  ``"horizontal"``
-            renders a flat per-cell water surface.
+            ``"horizontal"`` (default) renders a flat per-cell water surface.
+            ``"sloping"`` uses cell-corner facepoints and routes through
+            ``RasMapperStoreMap.exe``.  ``"hybrid"`` adds face centroids and
+            matches the RasMapper GUI display.
         use_depth_weights:
             When ``True``, face weights are depth-proportional.  Only
             meaningful with ``render_mode="hybrid"``.
@@ -1129,10 +1136,10 @@ class MapperExtension:
             written to that exact file.
         render_mode:
             Water-surface interpolation mode passed to :meth:`store_map`.
-            ``"sloping"`` (default) uses cell-corner facepoints and routes
-            through ``RasMapperStoreMap.exe``.  ``"hybrid"`` adds face
-            centroids and matches the RasMapper GUI display.  ``"horizontal"``
-            renders a flat per-cell water surface.
+            ``"horizontal"`` (default) renders a flat per-cell water surface.
+            ``"sloping"`` uses cell-corner facepoints and routes through
+            ``RasMapperStoreMap.exe``.  ``"hybrid"`` adds face centroids and
+            matches the RasMapper GUI display.
         use_depth_weights:
             When ``True``, face weights are depth-proportional.  Only
             meaningful with ``render_mode="hybrid"``.
@@ -1242,10 +1249,10 @@ class MapperExtension:
             written to that exact file.
         render_mode:
             Water-surface interpolation mode passed to :meth:`store_map`.
-            ``"sloping"`` (default) uses cell-corner facepoints and routes
-            through ``RasMapperStoreMap.exe``.  ``"hybrid"`` adds face
-            centroids and matches the RasMapper GUI display.  ``"horizontal"``
-            renders a flat per-cell water surface.
+            ``"horizontal"`` (default) renders a flat per-cell water surface.
+            ``"sloping"`` uses cell-corner facepoints and routes through
+            ``RasMapperStoreMap.exe``.  ``"hybrid"`` adds face centroids and
+            matches the RasMapper GUI display.
         use_depth_weights:
             When ``True``, face weights are depth-proportional.  Only
             meaningful with ``render_mode="hybrid"``.
@@ -1355,10 +1362,10 @@ class MapperExtension:
             written to that exact file.
         render_mode:
             Water-surface interpolation mode passed to :meth:`store_map`.
-            ``"sloping"`` (default) uses cell-corner facepoints and routes
-            through ``RasMapperStoreMap.exe``.  ``"hybrid"`` adds face
-            centroids and matches the RasMapper GUI display.  ``"horizontal"``
-            renders a flat per-cell water surface.
+            ``"horizontal"`` (default) renders a flat per-cell water surface.
+            ``"sloping"`` uses cell-corner facepoints and routes through
+            ``RasMapperStoreMap.exe``.  ``"hybrid"`` adds face centroids and
+            matches the RasMapper GUI display.
         use_depth_weights:
             When ``True``, face weights are depth-proportional.  Only
             meaningful with ``render_mode="hybrid"``.
@@ -1468,10 +1475,10 @@ class MapperExtension:
             written to that exact file.
         render_mode:
             Water-surface interpolation mode passed to :meth:`store_map`.
-            ``"sloping"`` (default) uses cell-corner facepoints and routes
-            through ``RasMapperStoreMap.exe``.  ``"hybrid"`` adds face
-            centroids and matches the RasMapper GUI display.  ``"horizontal"``
-            renders a flat per-cell water surface.
+            ``"horizontal"`` (default) renders a flat per-cell water surface.
+            ``"sloping"`` uses cell-corner facepoints and routes through
+            ``RasMapperStoreMap.exe``.  ``"hybrid"`` adds face centroids and
+            matches the RasMapper GUI display.
         use_depth_weights:
             When ``True``, face weights are depth-proportional.  Only
             meaningful with ``render_mode="hybrid"``.
@@ -1581,10 +1588,10 @@ class MapperExtension:
             written to that exact file.
         render_mode:
             Water-surface interpolation mode passed to :meth:`store_map`.
-            ``"sloping"`` (default) uses cell-corner facepoints and routes
-            through ``RasMapperStoreMap.exe``.  ``"hybrid"`` adds face
-            centroids and matches the RasMapper GUI display.  ``"horizontal"``
-            renders a flat per-cell water surface.
+            ``"horizontal"`` (default) renders a flat per-cell water surface.
+            ``"sloping"`` uses cell-corner facepoints and routes through
+            ``RasMapperStoreMap.exe``.  ``"hybrid"`` adds face centroids and
+            matches the RasMapper GUI display.
         use_depth_weights:
             When ``True``, face weights are depth-proportional.  Only
             meaningful with ``render_mode="hybrid"``.
@@ -1694,10 +1701,10 @@ class MapperExtension:
             written to that exact file.
         render_mode:
             Water-surface interpolation mode passed to :meth:`store_map`.
-            ``"sloping"`` (default) uses cell-corner facepoints and routes
-            through ``RasMapperStoreMap.exe``.  ``"hybrid"`` adds face
-            centroids and matches the RasMapper GUI display.  ``"horizontal"``
-            renders a flat per-cell water surface.
+            ``"horizontal"`` (default) renders a flat per-cell water surface.
+            ``"sloping"`` uses cell-corner facepoints and routes through
+            ``RasMapperStoreMap.exe``.  ``"hybrid"`` adds face centroids and
+            matches the RasMapper GUI display.
         use_depth_weights:
             When ``True``, face weights are depth-proportional.  Only
             meaningful with ``render_mode="hybrid"``.
