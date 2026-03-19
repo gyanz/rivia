@@ -205,8 +205,38 @@ class FlowArea:
             Columns: ``[start_index, count]`` into *values*.
         values : ndarray, shape ``(total, 2)``
             Columns: ``[face_index, orientation]``.
-            Orientation ``+1`` means the stored face normal points outward
-            from this cell; ``-1`` means inward.
+
+            The orientation flag identifies which role this cell plays for
+            that face, using the RasMapper ``Face`` object convention
+            (``Face.cs``): every face stores ``cellA`` and ``cellB`` (columns
+            0 and 1 of :attr:`face_cell_indexes`) and ``fpA`` and ``fpB``
+            (columns 0 and 1 of :attr:`face_facepoint_indexes`).  RasMapper
+            guarantees the following **CCW traversal invariant**:
+
+            * Walking CCW around **cellA**, the face edge runs ``fpA → fpB``
+              (fpA is the entry facepoint, fpB is the exit facepoint).
+            * Walking CCW around **cellB**, the edge runs ``fpB → fpA``
+              (fpB is the entry facepoint, fpA is the exit facepoint).
+
+            The orientation flag encodes which role *this* cell plays:
+
+            * ``+1`` — this cell is ``cellA`` for that face.  The stored
+              face normal points **outward** (away from this cell toward
+              ``cellB``).  The entry facepoint for CCW traversal is ``fpA``
+              (column 0 of ``face_facepoint_indexes``).
+            * ``-1`` — this cell is ``cellB`` for that face.  The stored
+              face normal points **inward** (toward this cell from ``cellA``).
+              The entry facepoint for CCW traversal is ``fpB`` (column 1 of
+              ``face_facepoint_indexes``).
+
+            To pick the CCW-entry facepoint for a face given its
+            orientation flag *ori*::
+
+                fp = face_facepoint_indexes[fi, 0] if ori > 0 \
+                     else face_facepoint_indexes[fi, 1]
+
+            This is equivalent to ``Face.GetFPPrev(cellIdx)`` in
+            ``RasMapperLib/RasMapperLib.Mesh/Face.cs``.
 
         Example
         -------
