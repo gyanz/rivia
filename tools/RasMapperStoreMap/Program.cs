@@ -220,10 +220,14 @@ switch (renderMode.ToLowerInvariant())
 //     compute and write just that dataset (fast)
 //   • PostProcessing.hdf current and dataset present → no-op (fastest)
 //
+// Critical: SharedData.RasMapFilename must be set before constructing
+// RASResults so that RASResults.Geometry.Terrain resolves via the rasmap.
+// StoreAllMapsCommand does this at line 62; we mirror that here.
+//
 // Reference:
-//   RasMapperLib.PostProcessor.EnsureFacepointElevations()  (PostProcessor.cs)
-//   RasMapperLib.PostProcessor.NeedsBaseFileUpdate()         (PostProcessor.cs)
-//   RasMapperLib.Scripting.GeneratePostProcess.Execute()     (GeneratePostProcess.cs)
+//   RasMapperLib.PostProcessor.EnsureFacepointElevations()       (PostProcessor.cs)
+//   RasMapperLib.PostProcessor.NeedsBaseFileUpdate()              (PostProcessor.cs)
+//   RasMapperLib.Scripting.StoreAllMapsCommand.Execute() line 62  (StoreAllMapsCommand.cs)
 
 if (useDepthWeightedFaces)
 {
@@ -239,6 +243,13 @@ if (useDepthWeightedFaces)
         "RasMapperStoreMap: Ensuring FacePoint Elevations for depth-weighted rendering...");
     try
     {
+        // Set SharedData.RasMapFilename before constructing RASResults so the
+        // geometry can resolve the terrain layer — exactly what StoreAllMapsCommand
+        // does before its own new RASResults(value3) call.
+        var sharedDataRasMapFilenameProp = sharedDataType.GetProperty("RasMapFilename",
+            BindingFlags.Public | BindingFlags.Static);
+        sharedDataRasMapFilenameProp?.SetValue(null, rasMapFilename);
+
         var rasResultsType = asm.GetType("RasMapperLib.RASResults")
             ?? throw new InvalidOperationException("RasMapperLib.RASResults not found.");
         var rasResultsCtor = rasResultsType.GetConstructor([typeof(string)])
