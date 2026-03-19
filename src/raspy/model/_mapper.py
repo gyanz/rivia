@@ -15,6 +15,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 import xml.etree.ElementTree as ET
 from collections.abc import Generator
 from contextlib import AbstractContextManager, contextmanager, suppress
@@ -817,7 +818,38 @@ class MapperExtension:
             # RASResultsMap.StoreMap() can fail with NullReferenceException
             # when processing terrain tiles that trigger GDAL native operations.
             _cwd = program_dir if _use_stub else None
-            result = _run_subprocess(cmd, _cwd, timeout, stream_output)
+
+            # Retry the stub on soft errors (returncode=0 but RasMapperLib
+            # emitted a ReportError).  The root cause is concurrent HDF5
+            # access: HEC-RAS COM keeps the plan HDF file open while
+            # MapProcessingEngine.StoreMap() runs multi-threaded reads on the
+            # same file.  RasProcess.exe is never called while HEC-RAS holds
+            # the file, so it never hits this.  Retrying after a short pause
+            # lets the competing HDF5 operation finish.  Hard failures
+            # (non-zero returncode) are not retried.
+            _max_attempts = 3 if _use_stub else 1
+            for _attempt in range(1, _max_attempts + 1):
+                logger.warning(
+                    "RasMapperStoreMap.exe attempt %d/%d",
+                    _attempt,
+                    _max_attempts,
+                )
+                result = _run_subprocess(cmd, _cwd, timeout, stream_output)
+                _soft_error = (
+                    result.returncode == 0
+                    and "error" in result.stderr.lower()
+                )
+                if _soft_error and _attempt < _max_attempts:
+                    logger.warning(
+                        "RasMapperStoreMap.exe soft error on attempt %d/%d "
+                        "(likely concurrent HDF5 access) — retrying in 2 s...",
+                        _attempt,
+                        _max_attempts,
+                    )
+                    time.sleep(2)
+                    abs_output_filename_w_ext.unlink(missing_ok=True)
+                else:
+                    break
         finally:
             temp_rasmap.unlink(missing_ok=True)
 
