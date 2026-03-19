@@ -1209,11 +1209,62 @@ def _depth_weights_for_cell(
     face_value_b: np.ndarray,
     face_min_elev: np.ndarray,
 ) -> np.ndarray:
-    """Depth weights for PaintCell_8Stencil_RebalanceWeights.
+    """Compute per-sample depth weights for the 2N-point stencil of one cell.
 
-    C# ``WaterSurfaceRenderer.cs:2842 ComputeDepthWeightedValuesPerCell``.
-    Returns float64 array of length ``2*count`` (facepoints then face midpoints).
-    Minimum depth = 0.01 (matches C#).
+    Used by ``PaintCell_8Stencil_RebalanceWeights`` to bias the barycentric
+    blend toward deeper (wetter) sample points.  Shallow samples near the
+    wet/dry fringe receive less weight, so they cannot pull the interpolated
+    WSE below the surrounding terrain and create spurious dry pixels.
+
+    The stencil has ``2 * count`` samples, where ``count`` is the number of
+    faces (= polygon corners) of the cell:
+
+    * Indices ``0 .. count-1`` — one **corner facepoint** per face, selected
+      by orientation (``fpA`` for cellA, ``fpB`` for cellB).  The depth
+      weight is ``WSE_facepoint − elevation_facepoint``, clamped to 0.01.
+    * Indices ``count .. 2*count-1`` — one **face midpoint** per face.  The
+      depth weight is ``WSE_face − minimum_elevation_face``, clamped to 0.01.
+
+    All weights are initialised to the minimum value 0.01 so that every
+    sample contributes at least a token weight even when completely dry
+    (matches the C# minimum depth floor).
+
+    The returned array is passed directly to
+    :func:`_pixel_wse_sloped` as ``depth_weights``, where it element-wise
+    multiplies the donated barycentric weights before normalisation.
+
+    C# reference: ``WaterSurfaceRenderer.cs:2842
+    ComputeDepthWeightedValuesPerCell``.
+
+    Parameters
+    ----------
+    cell_idx:
+        0-based index of the cell being processed.
+    cell_face_info:
+        ``(n_cells, 2)`` CSR offsets — ``[start, count]`` into
+        ``cell_face_values`` for each cell.
+    cell_face_values:
+        ``(total, 2)`` CSR data — ``[face_index, orientation]`` for each
+        cell–face entry.
+    face_facepoint_indexes:
+        ``(n_faces, 2)`` — ``[fpA, fpB]`` endpoint facepoints of each face.
+    face_cell_indexes:
+        ``(n_faces, 2)`` — ``[cellA, cellB]`` for each face; used to select
+        the correct side (``face_value_a`` vs ``face_value_b``).
+    fp_wse:
+        ``(n_fp,)`` — water-surface elevation at each facepoint.
+    fp_elev:
+        ``(n_fp,)`` — terrain elevation at each facepoint.
+    face_value_a, face_value_b:
+        ``(n_faces,)`` — face-side WSE for cellA and cellB respectively.
+    face_min_elev:
+        ``(n_faces,)`` — minimum bed elevation along each face.
+
+    Returns
+    -------
+    dw : float64 ndarray, shape ``(2 * count,)``
+        Depth weights, minimum 0.01.  First ``count`` entries are facepoint
+        depths; last ``count`` entries are face-midpoint depths.
     """
     start = int(cell_face_info[cell_idx, 0])
     count = int(cell_face_info[cell_idx, 1])
@@ -1405,6 +1456,9 @@ def rasterize_rasmap(
     fp_elev: np.ndarray | None,
     nodata: float,
     depth_threshold: float = _MIN_WS_PLOT_TOLERANCE,
+    with_faces: bool = True,
+    use_depth_weights: bool = False,
+    shallow_to_flat: bool = False,
 ) -> np.ndarray:
     """Step 4 — pixel-level barycentric interpolation for all wet cells.
 
@@ -1534,6 +1588,30 @@ def rasterize_rasmap(
         Fill value for dry / out-of-domain pixels.
     depth_threshold:
         Minimum depth for a pixel to be considered wet (default 0.001).
+    with_faces:
+        When ``True`` (default), the sloped interpolation uses a 2N-point
+        stencil: N polygon corner facepoints **plus** N face-midpoint
+        values, blended via donated barycentric weights.  Matches
+        ``CellStencilMethod.WithFaces`` in ``WaterSurfaceRenderer.cs``.
+        When ``False``, only the N corner facepoints are used (plain
+        barycentric blend, no donation to face midpoints).  Matches
+        ``CellStencilMethod.JustFacepoints``.  Has no effect when
+        ``fp_wse`` is ``None`` (horizontal mode).
+    use_depth_weights:
+        When ``True``, each sample in the 2N-point stencil is weighted by
+        its water depth before the barycentric blend, so deeper (wetter)
+        locations dominate over shallow margins.  Matches
+        ``UseDepthWeightedFaces`` / ``PaintCell_8Stencil_RebalanceWeights``
+        in ``WaterSurfaceRenderer.cs``.  Requires ``fp_elev`` to be
+        provided; if ``fp_elev`` is ``None`` depth weighting is silently
+        skipped even when this flag is ``True``.  Default ``False``
+        (matches RasMapper default).
+    shallow_to_flat:
+        When ``True``, cells whose every bounding face is hydraulically
+        disconnected (all-shallow) are rendered with the flat cell-average
+        WSE and no barycentric interpolation.  Matches
+        ``ShallowBehavior.ReduceToHorizontal`` in ``Renderer.cs``.
+        Default ``False`` (matches RasMapper default).
 
     Returns
     -------
@@ -1607,38 +1685,63 @@ def rasterize_rasmap(
         if fp_wse is not None:
             # Corner WSEs: facepoint water-surface from Step 3.
             fp_local_wse = np.array([float(fp_wse[fp]) for fp in verts_fp], dtype=np.float64)
-            # Face-midpoint WSEs: select the side of the face that belongs to
-            # this cell.  face_value_a corresponds to cellA (column 0 of
-            # face_cell_indexes); face_value_b to cellB (column 1).
-            face_local_wse = np.array([
-                float(face_value_a[fi]) if cell_idx == int(face_cell_indexes[fi, 0])
-                else float(face_value_b[fi])
-                for fi in face_indices
-            ], dtype=np.float64)
+            if with_faces:
+                # Face-midpoint WSEs: select the side of the face that belongs
+                # to this cell.  face_value_a corresponds to cellA (column 0
+                # of face_cell_indexes); face_value_b to cellB (column 1).
+                face_local_wse = np.array([
+                    float(face_value_a[fi]) if cell_idx == int(face_cell_indexes[fi, 0])
+                    else float(face_value_b[fi])
+                    for fi in face_indices
+                ], dtype=np.float64)
+                # Valid when at least one corner OR face-midpoint has a real WSE.
+                has_valid_wse = (fp_local_wse != _NODATA).any() or (face_local_wse != _NODATA).any()
+            else:
+                # Corners-only mode (CellStencilMethod.JustFacepoints):
+                # face midpoint values are not used; validity is based on
+                # facepoint WSEs alone.
+                face_local_wse = None
+                has_valid_wse = (fp_local_wse != _NODATA).any()
             # Only use sloped mode when at least one sample is valid AND a
             # terrain grid is available (depth check requires terrain).
-            has_valid_wse = (fp_local_wse != _NODATA).any() or (face_local_wse != _NODATA).any()
             use_sloped = has_valid_wse and terrain_grid is not None
         else:
             fp_local_wse = None
             face_local_wse = None
             use_sloped = False
 
-        # DownwardAdjustFPValues (C# Renderer.cs:3267) — clamp facepoint WSEs
-        # so no corner value exceeds the cell-average WSE.  Skipped when all
-        # adjacent faces are shallow (no interpolation benefit in that case).
-        if use_sloped and not _all_shallow(cell_idx, cell_face_info, cell_face_values, face_value_a != _NODATA):
+        # ShallowBehavior.ReduceToHorizontal (C# Renderer.cs:3099 / 2226):
+        # A cell is "all-shallow" when every one of its bounding faces (the
+        # shared edges between this cell and each of its neighbours) is
+        # hydraulically disconnected (face WSE == _NODATA), meaning no
+        # active hydraulic connection exists across any edge of the cell.
+        # When shallow_to_flat=True, such cells are
+        # rendered with the flat cell-average WSE: skipping
+        # DownwardAdjustFPValues and the entire sloped paint path.  Nulling
+        # fp_local_wse_adj and face_local_wse here makes the pixel loop fall
+        # through to the flat branch (B/C) automatically, so no extra logic
+        # is needed inside the loop.
+        # When shallow_to_flat=False, the all-shallow condition is ignored and
+        # sloped interpolation continues as normal (C# non-ReduceToHorizontal).
+        face_connected = face_value_a != _NODATA
+        if use_sloped and shallow_to_flat and _all_shallow(cell_idx, cell_face_info, cell_face_values, face_connected):
+            use_sloped = False
+            fp_local_wse_adj = None
+            face_local_wse = None
+        elif use_sloped:
+            # DownwardAdjustFPValues (C# Renderer.cs:3267) — drag each
+            # facepoint WSE toward the cell-average so no corner value exceeds
+            # the mean (prevents uphill spikes at cell boundaries).
             fp_local_wse_adj = _downward_adjust_fp_wse(float(cell_wse[cell_idx]), fp_local_wse)
         else:
             fp_local_wse_adj = fp_local_wse.copy() if fp_local_wse is not None else None
 
         # Depth weights (C# UseDepthWeightedFaces, WaterSurfaceRenderer.cs:2842)
-        # Compute per-sample depth weights for the 2N-point stencil.  Deeper
-        # samples receive higher weight so wet areas dominate over shallow
-        # margins in the barycentric blend.  Requires terrain elevations at
-        # facepoints (fp_elev); skipped when unavailable (cell_dw stays None).
+        # Only computed when use_depth_weights=True (opt-in, default off).
+        # Requires fp_elev; silently skipped if unavailable (cell_dw=None
+        # causes _pixel_wse_sloped to use plain donated weights instead).
         cell_dw: np.ndarray | None = None
-        if use_sloped and fp_elev is not None:
+        if use_sloped and with_faces and use_depth_weights and fp_elev is not None:
             cell_dw = _depth_weights_for_cell(
                 cell_idx, cell_face_info, cell_face_values,
                 face_facepoint_indexes, face_cell_indexes,
@@ -1696,11 +1799,12 @@ def rasterize_rasmap(
             c  = int(pix_cols[pi])
 
             # ---- Wet/dry check + barycentric weights ---------------------
-            # Three branches depending on available data:
+            # Four branches depending on sloped mode and available data:
             #
-            # (A) Sloping mode: interpolate a per-pixel WSE using the full
-            #     2N-sample stencil, then compare against the terrain pixel.
-            #     This gives the most accurate wet/dry boundary.
+            # (A1) Sloped corners + faces (with_faces=True, default):
+            #      Interpolate per-pixel WSE from the full 2N-point stencil
+            #      (N corner facepoints + N face midpoints, donated weights).
+            #      Most accurate wet/dry boundary.
             if use_sloped and fp_local_wse_adj is not None and face_local_wse is not None:
                 fw = _barycentric_weights(px, py, verts_x, verts_y)
                 vel_w = _donate(fw)
@@ -1710,9 +1814,22 @@ def rasterize_rasmap(
                     continue
                 if pixel_wse < t_elev + depth_threshold:
                     continue
-            # (B) Terrain available but no per-fp WSE: use the uniform
-            #     cell-average WSE for the depth test.  Less precise at the
-            #     wet/dry edge but faster (no fp WSE computation needed).
+            # (A2) Sloped corners only (with_faces=False):
+            #      Interpolate per-pixel WSE using plain barycentric weights
+            #      over the N corner facepoints only — no donation to face
+            #      midpoints (CellStencilMethod.JustFacepoints in C#).
+            elif use_sloped and fp_local_wse_adj is not None:
+                fw = _barycentric_weights(px, py, verts_x, verts_y)
+                vel_w = _donate(fw)  # still donate for velocity interpolation
+                pixel_wse = float(np.dot(fw, fp_local_wse_adj))
+                t_elev = float(terrain_grid[r, c]) if terrain_grid is not None else float("nan")
+                if np.isnan(t_elev) or t_elev == _NODATA:
+                    continue
+                if pixel_wse < t_elev + depth_threshold:
+                    continue
+            # (B) Terrain available but no sloped WSE data: use the uniform
+            #     cell-average WSE for the depth test.  Applies when fp_wse
+            #     is None (horizontal mode) or cell reverted to flat.
             elif terrain_grid is not None:
                 t_elev = float(terrain_grid[r, c])
                 if np.isnan(t_elev) or t_elev == _NODATA:
@@ -1734,13 +1851,15 @@ def rasterize_rasmap(
 
             # ---- Value interpolation -------------------------------------
             if variable == "water_surface":
-                # Sloped: donated barycentric blend of corner + midpoint WSEs,
-                # optionally rebalanced by depth weights (cell_dw).
-                # Flat fallback: uniform cell-average WSE for every pixel.
                 if fp_local_wse_adj is not None and face_local_wse is not None:
+                    # Sloped corners + faces: donated blend, optional depth weights.
                     val = _pixel_wse_sloped(vel_w, fp_local_wse_adj, face_local_wse, cell_dw)
                     output[r, c] = np.float32(val) if val != _NODATA else nodata
+                elif fp_local_wse_adj is not None:
+                    # Sloped corners only: plain barycentric blend of N corners.
+                    output[r, c] = np.float32(np.dot(fw, fp_local_wse_adj))
                 else:
+                    # Horizontal: uniform cell-average WSE for every pixel.
                     output[r, c] = np.float32(cell_wse[cell_idx])
 
             elif variable == "depth":
@@ -1750,6 +1869,8 @@ def rasterize_rasmap(
                 # can produce a tiny negative after the subtract).
                 if fp_local_wse_adj is not None and face_local_wse is not None:
                     pix_wse = _pixel_wse_sloped(vel_w, fp_local_wse_adj, face_local_wse, cell_dw)
+                elif fp_local_wse_adj is not None:
+                    pix_wse = float(np.dot(fw, fp_local_wse_adj))
                 else:
                     pix_wse = float(cell_wse[cell_idx])
                 dep = pix_wse - t_elev
@@ -1759,7 +1880,8 @@ def rasterize_rasmap(
                 # Donated barycentric blend over the 2N-sample stencil:
                 #   vel_w[0..N-1]   × corner (facepoint) velocities
                 #   vel_w[N..2N-1]  × face-midpoint velocities
-                # This is PaintCell_8Stencil from Renderer.cs (for N=4 → 8 samples).
+                # vel_w always uses donated weights regardless of with_faces,
+                # since velocity always uses the full stencil in RasMapper.
                 if nb_fp_vx is None:
                     continue
                 Vx = 0.0;  Vy = 0.0
