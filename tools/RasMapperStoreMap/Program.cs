@@ -32,6 +32,8 @@
  */
 
 using System.Reflection;
+using System.Text;
+using System.Text.RegularExpressions;
 
 // ── Argument parsing ──────────────────────────────────────────────────────────
 
@@ -247,6 +249,21 @@ if (utilityCoreAsm is not null)
     }
 }
 
+// ── Wrap Console.Out to classify stdout lines as DEBUG or INFO ────────────────
+//
+// ConsoleProgressReporter and GDAL both write directly to Console.Out.
+// By replacing Console.Out before Execute() we intercept every output line
+// and prefix it with "DEBUG: " or "INFO: " so the Python caller (_mapper.py)
+// can log fine-grained progress at DEBUG and milestones at INFO.
+//
+// Classification rules (INFO unless matched as DEBUG):
+//   DEBUG  "File N of M: N% processed (...)"  — per-terrain-file percentage
+//   DEBUG  "0...10...20...30...100 - done."    — GDAL GDALTermProgress bar
+//   DEBUG  "RasMapperStoreMap: RenderMode=..."  — our own header line
+//   INFO   everything else (Progress: N%, milestones, summaries)
+
+Console.SetOut(new ClassifyingWriter(Console.Out));
+
 try
 {
     executeMethod.Invoke(cmd, [progressReporter]);
@@ -302,4 +319,64 @@ static string? ResolveLibDir()
     }
 
     return null;
+}
+
+// ── ClassifyingWriter ─────────────────────────────────────────────────────────
+//
+// Wraps Console.Out and prefixes every output line with "DEBUG: " or "INFO: "
+// so the Python caller (_mapper.py) can log fine-grained GDAL progress at DEBUG
+// and meaningful milestones at INFO.
+//
+// DEBUG patterns:
+//   "File N of M: N% processed (...)"  — per-terrain-file GDAL percentage
+//   "0...10...20...30...100 - done."   — GDAL GDALTermProgress bar
+//   "RasMapperStoreMap: RenderMode=..."— our own header line
+// INFO: everything else (Progress: N%, milestones, summaries)
+
+sealed class ClassifyingWriter : TextWriter
+{
+    private readonly TextWriter _inner;
+    private readonly StringBuilder _buf = new StringBuilder();
+
+    public ClassifyingWriter(TextWriter inner) { _inner = inner; }
+
+    public override Encoding Encoding => _inner.Encoding;
+
+    public override void Write(char value)
+    {
+        if (value == '\n') Flush();
+        else _buf.Append(value);
+    }
+
+    public override void WriteLine(string? value)
+    {
+        _buf.Append(value);
+        Flush();
+    }
+
+    public override void Flush()
+    {
+        if (_buf.Length == 0) return;
+        string line = _buf.ToString().TrimEnd('\r');
+        _buf.Clear();
+        string prefix = IsDebugLine(line) ? "DEBUG: " : "INFO: ";
+        _inner.WriteLine(prefix + line);
+        _inner.Flush();
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) Flush();
+        base.Dispose(disposing);
+    }
+
+    private static readonly Regex _reFilePct =
+        new Regex(@"^File \d+ of \d+: \d+% processed", RegexOptions.Compiled);
+    private static readonly Regex _reGdal =
+        new Regex(@"^\d+\.\.\.\d+.*done\.", RegexOptions.Compiled);
+
+    private static bool IsDebugLine(string line) =>
+        _reFilePct.IsMatch(line) ||
+        _reGdal.IsMatch(line) ||
+        line.StartsWith("RasMapperStoreMap: RenderMode=", StringComparison.Ordinal);
 }

@@ -61,7 +61,9 @@ def _run_subprocess(
         Timeout in seconds, or ``None`` for no limit.
     stream_output:
         When ``True``, lines are read and logged in real time via
-        ``subprocess.Popen``; stdout lines at INFO, stderr at WARNING.
+        ``subprocess.Popen``; stdout lines prefixed ``DEBUG:``/``INFO:`` by
+        the stub are logged at the matching level; unprefixed lines at INFO;
+        stderr at WARNING.
         When ``False``, output is captured silently via ``subprocess.run``.
     """
     exe_name = Path(cmd[0]).name
@@ -78,7 +80,12 @@ def _run_subprocess(
         ) as proc:
             for line in proc.stdout:
                 line = line.rstrip()
-                logger.info("%s stdout: %s", exe_name, line)
+                if line.startswith("DEBUG: "):
+                    logger.debug("%s: %s", exe_name, line[7:])
+                elif line.startswith("INFO: "):
+                    logger.info("%s: %s", exe_name, line[6:])
+                else:
+                    logger.info("%s stdout: %s", exe_name, line)
                 stdout_lines.append(line)
             for line in proc.stderr:
                 line = line.rstrip()
