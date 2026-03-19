@@ -213,11 +213,16 @@ switch (renderMode.ToLowerInvariant())
 // null and throws "Error loading facepoint elevations for precip rendering".
 //
 // Fix: call PostProcessor.EnsureFacepointElevations() directly before
-// StoreAllMapsCommand.  If PostProcessing.hdf already contains the data this
-// is a fast no-op; otherwise it reads terrain and computes the elevations.
+// StoreAllMapsCommand, mirroring RasMapper's own staleness logic:
+//   • PostProcessing.hdf missing / corrupt / older than result HDF → full
+//     rebuild via PostProcessor.NeedsBaseFileUpdate() + CreatePostProcessBase()
+//   • PostProcessing.hdf current but FacePoint Elevation dataset absent →
+//     compute and write just that dataset (fast)
+//   • PostProcessing.hdf current and dataset present → no-op (fastest)
 //
 // Reference:
 //   RasMapperLib.PostProcessor.EnsureFacepointElevations()  (PostProcessor.cs)
+//   RasMapperLib.PostProcessor.NeedsBaseFileUpdate()         (PostProcessor.cs)
 //   RasMapperLib.Scripting.GeneratePostProcess.Execute()     (GeneratePostProcess.cs)
 
 if (useDepthWeightedFaces)
@@ -231,7 +236,7 @@ if (useDepthWeightedFaces)
     }
 
     Console.WriteLine(
-        "RasMapperStoreMap: Computing FacePoint Elevations for depth-weighted rendering...");
+        "RasMapperStoreMap: Ensuring FacePoint Elevations for depth-weighted rendering...");
     try
     {
         var rasResultsType = asm.GetType("RasMapperLib.RASResults")
@@ -239,23 +244,6 @@ if (useDepthWeightedFaces)
         var rasResultsCtor = rasResultsType.GetConstructor([typeof(string)])
             ?? throw new InvalidOperationException("RASResults(string) constructor not found.");
         var rasResults = rasResultsCtor.Invoke([resultFilename]);
-
-        // Resolve the PostProcessing.hdf path via RASResults.OutputFolder so we
-        // use exactly the same path that PostProcessor will read from and write to.
-        var outputFolderProp = rasResultsType.GetProperty("OutputFolder")
-            ?? throw new InvalidOperationException("RASResults.OutputFolder not found.");
-        var outputFolder = (string)outputFolderProp.GetValue(rasResults);
-        var postProcessingPath = Path.Combine(outputFolder, "PostProcessing.hdf");
-
-        // Always delete any existing PostProcessing.hdf.  Terrain or geometry may
-        // have changed since it was last written, making the stored FacePoint
-        // Elevation data stale and potentially producing incorrect rasters.
-        if (File.Exists(postProcessingPath))
-        {
-            Console.WriteLine(
-                $"RasMapperStoreMap: Removing stale '{postProcessingPath}'...");
-            File.Delete(postProcessingPath);
-        }
 
         var getPostProcessorMethod = rasResultsType.GetMethod("GetPostProcessor")
             ?? throw new InvalidOperationException("RASResults.GetPostProcessor() not found.");
