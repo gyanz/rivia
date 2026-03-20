@@ -2508,6 +2508,7 @@ def rasmap_raster(
     face_normal_velocity: np.ndarray | None = None,
     output_path: str | Path | None = None,
     *,
+    cell_centers: np.ndarray | None = None,
     reference_raster: str | Path | None = None,
     cell_size: float | None = None,
     crs: Any | None = None,
@@ -2523,22 +2524,25 @@ def rasmap_raster(
     """Rasterize HEC-RAS 2D mesh results using the RASMapper-exact algorithm.
 
     Implements the pixel-perfect pipeline reverse-engineered from
-    ``RasMapperLib.dll`` (CLB Engineering, 2026).  Produces output that
-    matches RASMapper's ``"Sloping Cell Corners"`` (``interp_mode="sloping"``)
-    and ``"Horizontal"`` (``interp_mode="flat"``) render modes.
+    ``RasMapperLib.dll`` (CLB Engineering, 2026).  Produces output matching
+    RASMapper's ``"Horizontal"``, ``"Sloping Cell Corners"``, and
+    ``"Sloping Cell Corners + Face Centers"`` render modes.
 
     See ``docs/export_raster2_plan.md`` for a full description of the
     algorithm steps.
 
     Pipeline summary
     ----------------
-    **water_surface / depth — flat** (``interp_mode="flat"``)
+    **water_surface / depth — horizontal** (``render_mode="horizontal"``)
 
     1. ``build_cell_id_raster`` — paint cell IDs into the pixel grid.
     2. *(pixel loop)* — write ``cell_wse`` directly; every pixel in a cell
        gets the same flat value.
 
-    **water_surface / depth — sloping** (``interp_mode="sloping"``)
+    **water_surface / depth — sloping** (``render_mode="sloping"``)
+
+    Matches RasMapperLib ``JustFacepoints`` path with
+    ``ReduceToHorizontal=True`` hardcoded.
 
     A. ``compute_face_wss`` — hydraulic connectivity + per-face WSE values
        (``face_value_a``, ``face_value_b``).
@@ -2549,9 +2553,16 @@ def rasmap_raster(
     4b. ``sample_terrain_at_facepoints`` — terrain elevation at facepoints
         for depth rebalancing (only when a DEM is supplied).
     4c. ``rasterize_rasmap`` — per-pixel barycentric interpolation of the
-        facepoint WSE values within each cell's triangles.
+        facepoint WSE values within each cell's triangles (``with_faces=False``,
+        ``shallow_to_flat=True``).
 
-    **speed / velocity — sloping only**
+    **water_surface / depth — hybrid** (``render_mode="hybrid"``)
+
+    Matches RasMapperLib ``WithFaces`` path.  Same steps as ``sloping`` but
+    calls ``rasterize_rasmap`` with ``with_faces=True``; ``use_depth_weights``
+    and ``shallow_to_flat`` are user-configurable.
+
+    **velocity — sloping / hybrid**
 
     A. ``compute_face_wss`` — hydraulic connectivity (same as WSE pipeline).
     2. ``reconstruct_face_velocities`` — C-stencil least-squares
@@ -2563,10 +2574,10 @@ def rasmap_raster(
          with the average of its two endpoint facepoint velocities.
     4a. ``build_cell_id_raster`` — paint cell IDs into the pixel grid.
     4c. ``rasterize_rasmap`` — per-pixel barycentric interpolation of
-        facepoint velocity vectors; speed = ``sqrt(Vx**2 + Vy**2)``
+        facepoint velocity vectors; speed magnitude ``sqrt(Vx²+Vy²)``
         computed per pixel.
 
-    **speed — flat** (``interp_mode="flat"``)
+    **velocity — horizontal** (``render_mode="horizontal"``)
 
     Area-weighted mean of ``|face_normal_velocity|`` over each cell's faces,
     painted directly per pixel.  No facepoint reconstruction is performed.
@@ -2574,12 +2585,11 @@ def rasmap_raster(
     Parameters
     ----------
     variable:
-        ``"water_surface"`` — water-surface elevation.
-        ``"depth"``         — water depth; requires *reference_raster* (DEM).
-        ``"speed"``         — velocity magnitude ``sqrt(Vx²+Vy²)``; requires
-                              *face_normal_velocity*.
-        ``"velocity"``      — 4-band raster ``[Vx, Vy, speed, direction_deg]``;
-                              requires *face_normal_velocity*.
+        ``"wse"`` / ``"water_surface"`` — water-surface elevation (aliases).
+        ``"depth"``    — water depth (WSE minus terrain); requires
+                         *reference_raster* (DEM).
+        ``"velocity"`` — velocity magnitude ``sqrt(Vx²+Vy²)``; requires
+                         *face_normal_velocity*.
     cell_wse:
         ``(n_cells,)`` water-surface elevation per cell.
     cell_min_elevation:
@@ -2622,10 +2632,18 @@ def rasmap_raster(
         :attr:`~raspy.hdf.FlowArea.cell_polygons`.
     face_normal_velocity:
         ``(n_faces,)`` signed face-normal velocity scalars.  Required for
-        ``variable="speed"`` or ``"velocity"``.
+        ``variable="velocity"``.
     output_path:
         Destination ``.tif`` file path.  ``None`` returns an open in-memory
         ``rasterio.DatasetReader``; the caller must close it.
+    cell_centers:
+        ``(n_cells, 2)`` cell-centre XY coordinates
+        (:attr:`~raspy.hdf.FlowArea.cell_centers`).  When provided, face
+        application points for the PlanarRegressionZ in Step B are computed
+        as the intersection of the cell-centre-to-cell-centre line with each
+        face chord (the RASMapper-exact ``GetFaceMidSide`` algorithm).  When
+        ``None`` the chord midpoint of the two endpoint facepoints is used
+        instead, which is adequate for orthogonal meshes.
     reference_raster:
         Existing GeoTIFF whose transform and CRS are inherited.  Also used
         as the terrain DEM for depth computation and per-pixel wet/dry
@@ -2641,20 +2659,27 @@ def rasmap_raster(
     render_mode:
         ``"sloping"`` (default) — RASMapper "Sloping Cell Corners" pipeline;
         per-pixel WSE interpolation using corner facepoints only
-        (``with_faces=False``).  Matches ``store_map(render_mode="sloping")``.
+        (``with_faces=False``).  RasMapperLib hardcodes
+        ``shallow_to_flat=True`` for this mode; the user-supplied value is
+        overridden.  Matches ``store_map(render_mode="sloping")``.
         ``"hybrid"`` — RASMapper "Sloping Cell Corners + Face Centers"
-        (``with_faces=True``); more accurate near cell edges.  Matches
-        ``store_map(render_mode="hybrid")``.
-        ``"horizontal"`` — flat per-cell value painted over each owned pixel.
+        (``with_faces=True``); more accurate near cell edges.
+        ``use_depth_weights`` and ``shallow_to_flat`` are honoured as
+        supplied.  Matches ``store_map(render_mode="hybrid")``.
+        ``"horizontal"`` — flat per-cell value painted over each owned pixel;
+        facepoint interpolation is skipped entirely.
         Matches ``store_map(render_mode="horizontal")``.
     use_depth_weights:
         When ``True``, face weights in the ``hybrid`` stencil are
-        proportional to water depth at each face.  Only meaningful with
-        ``render_mode="hybrid"``; silently forced to ``False`` otherwise.
+        proportional to water depth at each face.  **Ignored** (forced
+        ``False``) for ``"sloping"`` and ``"horizontal"`` modes.
+        Requires *reference_raster* when ``True``.
     shallow_to_flat:
         When ``True``, cells with no hydraulically-connected faces are
-        rendered flat (horizontal).  Only meaningful with
-        ``render_mode="hybrid"``; silently forced to ``False`` otherwise.
+        rendered flat (horizontal).  **Ignored** for ``"horizontal"`` mode.
+        For ``"sloping"`` mode this is overridden to ``True`` per
+        RasMapperLib's hardcoded behaviour.  Only user-configurable for
+        ``"hybrid"`` mode.
     depth_threshold:
         Minimum depth for a pixel to be considered wet (default ``0.001``).
         Matches ``RASResults.MinWSPlotTolerance``.
@@ -2685,8 +2710,8 @@ def rasmap_raster(
         If ``rasterio`` or ``shapely`` are not installed.
     ValueError
         If ``variable="depth"`` and *reference_raster* is ``None``.
-        If ``variable`` is ``"speed"`` or ``"velocity"`` and
-        *face_normal_velocity* is ``None``.
+        If ``variable="velocity"`` and *face_normal_velocity* is ``None``.
+        If ``use_depth_weights=True`` and *reference_raster* is ``None``.
         If both *reference_raster* and *cell_size* are ``None``.
     """
     try:
@@ -2750,13 +2775,42 @@ def rasmap_raster(
     out_crs: Any
 
     if reference_raster is not None:
+        import rasterio.windows as _rwin
         with rasterio.open(reference_raster) as src:
-            out_transform = src.transform
-            out_width     = src.width
-            out_height    = src.height
-            out_crs       = crs if crs is not None else src.crs
-            raw = src.read(1).astype(np.float32)
-            nd  = src.nodata
+            out_crs = crs if crs is not None else src.crs
+            nd = src.nodata
+
+            if tight_extent and perimeter is not None and len(perimeter) >= 3:
+                # Derive a tight window snapped to the reference pixel grid.
+                # window_transform(win) stays pixel-aligned with the full
+                # reference raster, so terrain values are consistent.
+                px = abs(src.transform.a)   # pixel width  (model units)
+                py = abs(src.transform.e)   # pixel height (model units)
+                x_min = float(perimeter[:, 0].min()) - px
+                x_max = float(perimeter[:, 0].max()) + px
+                y_min = float(perimeter[:, 1].min()) - py
+                y_max = float(perimeter[:, 1].max()) + py
+                _win_f = _rwin.from_bounds(
+                    x_min, y_min, x_max, y_max, src.transform
+                )
+                # Floor offset, ceil size so we never clip the perimeter
+                _col_off = max(0, int(np.floor(_win_f.col_off)))
+                _row_off = max(0, int(np.floor(_win_f.row_off)))
+                _win_w   = min(src.width  - _col_off,
+                               int(np.ceil(_win_f.col_off + _win_f.width))  - _col_off)
+                _win_h   = min(src.height - _row_off,
+                               int(np.ceil(_win_f.row_off + _win_f.height)) - _row_off)
+                win = _rwin.Window(_col_off, _row_off, _win_w, _win_h)
+                out_transform = src.window_transform(win)
+                out_width  = _win_w
+                out_height = _win_h
+                raw = src.read(1, window=win).astype(np.float32)
+            else:
+                out_transform = src.transform
+                out_width     = src.width
+                out_height    = src.height
+                raw = src.read(1).astype(np.float32)
+
         if nd is not None:
             raw[raw == nd] = np.nan
         terrain_grid = raw.astype(np.float64)
@@ -2826,6 +2880,12 @@ def rasmap_raster(
             c = int(valid_cols[idx])
             ci = int(cell_id_grid[r, c]) - 1
             if variable == "water_surface":
+                if terrain_grid is not None:
+                    t = float(terrain_grid[r, c])
+                    if np.isnan(t) or t == nodata:
+                        continue
+                    if float(cell_wse[ci]) < t + depth_threshold:
+                        continue
                 out_arr[r, c] = np.float32(cell_wse[ci])
             elif variable == "depth":
                 t = float(terrain_grid[r, c]) if terrain_grid is not None else 0.0
@@ -2847,9 +2907,18 @@ def rasmap_raster(
         # Step B: facepoint WSE (for WSE/depth sloping render)
         fp_wse: np.ndarray | None = None
         if variable in ("water_surface", "depth"):
+            # Precompute face midsides (RASMapper-exact application points for
+            # PlanarRegressionZ) when cell centres are available.
+            face_midsides: np.ndarray | None = None
+            if cell_centers is not None:
+                face_midsides = _rasmap._compute_face_midsides(
+                    fp_coords, face_facepoint_indexes,
+                    face_cell_indexes, np.asarray(cell_centers, dtype=np.float64),
+                )
             fp_wse = _rasmap.compute_facepoint_wse(
                 fp_coords, fp_face_info, fp_face_values,
                 face_facepoint_indexes, face_value_a, face_value_b,
+                face_midsides=face_midsides,
             )
 
         # Steps 2 / 3 / 3.5: velocity reconstruction (velocity only)
@@ -2913,6 +2982,7 @@ def rasmap_raster(
             face_vel_A=face_vel_A,
             face_vel_B=face_vel_B,
             fp_elev=fp_elev,
+            face_connected=face_connected,
             nodata=nodata,
             depth_threshold=depth_threshold,
             with_faces=(render_mode == "hybrid"),

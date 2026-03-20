@@ -1080,7 +1080,7 @@ class FlowAreaResults(FlowArea):
         ``RasMapperLib.dll`` (CLB Engineering, 2026), validated against
         RASMapper VRT exports — median |diff| = 0.000000.  Replaces the
         older :meth:`export_raster` triangulation-based approach for
-        ``water_surface``, ``depth``, ``speed``, and ``velocity``.
+        ``water_surface``, ``depth``, and ``velocity``.
 
         Parameters
         ----------
@@ -1113,15 +1113,21 @@ class FlowAreaResults(FlowArea):
             Fill value for dry / out-of-domain pixels (default ``-9999``).
         render_mode:
             ``"sloping"`` (default) — RASMapper "Sloping Cell Corners";
-            matches ``store_map(render_mode="sloping")``.
+            uses corner facepoints only.  RasMapperLib hardcodes
+            ``shallow_to_flat=True`` for this mode; the user-supplied value
+            is overridden.  Matches ``store_map(render_mode="sloping")``.
             ``"hybrid"`` — "Sloping Cell Corners + Face Centers";
-            matches ``store_map(render_mode="hybrid")``.
-            ``"horizontal"`` — flat per-cell value;
-            matches ``store_map(render_mode="horizontal")``.
+            ``use_depth_weights`` and ``shallow_to_flat`` are honoured.
+            Matches ``store_map(render_mode="hybrid")``.
+            ``"horizontal"`` — flat per-cell value; facepoint interpolation
+            is skipped.  Matches ``store_map(render_mode="horizontal")``.
         use_depth_weights:
-            Weight face contributions by water depth (``hybrid`` only).
+            Weight face contributions by water depth.  **``hybrid`` only**;
+            forced ``False`` for other modes.  Requires *reference_raster*.
         shallow_to_flat:
-            Render disconnected shallow cells flat (``hybrid`` only).
+            Render cells with no hydraulically-connected faces flat.
+            **``hybrid`` only** (user-configurable); forced ``True`` for
+            ``"sloping"`` per RasMapperLib, ``False`` for ``"horizontal"``.
         depth_threshold:
             Minimum depth for a pixel to be considered wet (default
             ``0.001``).  Matches ``RASResults.MinWSPlotTolerance``.
@@ -1186,6 +1192,7 @@ class FlowAreaResults(FlowArea):
             cell_polygons=self.cell_polygons,
             face_normal_velocity=face_normal_velocity,
             output_path=output_path,
+            cell_centers=self.cell_centers,
             reference_raster=reference_raster,
             cell_size=cell_size,
             crs=crs,

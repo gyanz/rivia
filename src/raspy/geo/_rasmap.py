@@ -384,6 +384,103 @@ def compute_face_wss(
 # ---------------------------------------------------------------------------
 
 
+def _compute_face_midsides(
+    fp_coords: np.ndarray,
+    face_facepoint_indexes: np.ndarray,
+    face_cell_indexes: np.ndarray,
+    cell_centers: np.ndarray,
+) -> np.ndarray:
+    """Precompute face application points (midsides) for PlanarRegressionZ.
+
+    Replicates the non-cached ``GetFaceMidSide`` path from ``MeshFV2D.cs``
+    (``USE_FACE_MIDSIDE_CACHING = false``).
+
+    For **internal faces** (both cells real, i.e. cell index >= 0): finds the
+    intersection of the cell-centre-to-cell-centre infinite line with the face
+    chord.  The intersection is used if it lies within [5 %, 95 %] of the face
+    chord length; otherwise the chord midpoint is used as a fallback.
+
+    For **boundary faces** (either cell index < 0): always uses the chord
+    midpoint of the two endpoint facepoints.
+
+    Only straight faces (defined by two endpoint facepoints) are handled
+    exactly.  Curved faces with intermediate perimeter points are treated as
+    straight — the chord midpoint is used as the fallback in those cases.
+
+    Parameters
+    ----------
+    fp_coords:
+        ``(n_fp, 2)`` facepoint XY coordinates.
+    face_facepoint_indexes:
+        ``(n_faces, 2)`` — ``[fpA, fpB]`` endpoint facepoint indexes.
+    face_cell_indexes:
+        ``(n_faces, 2)`` — ``[cellA, cellB]``; ``-1`` for boundary faces.
+    cell_centers:
+        ``(n_cells, 2)`` cell-centre XY coordinates (real cells only).
+
+    Returns
+    -------
+    midsides : float64 ndarray, shape ``(n_faces, 2)``
+        Application point (x, y) for each face.
+    """
+    n_faces = len(face_facepoint_indexes)
+    n_cells = len(cell_centers)
+    midsides = np.empty((n_faces, 2), dtype=np.float64)
+
+    for fi in range(n_faces):
+        fpA = int(face_facepoint_indexes[fi, 0])
+        fpB = int(face_facepoint_indexes[fi, 1])
+        pAx = float(fp_coords[fpA, 0])
+        pAy = float(fp_coords[fpA, 1])
+        pBx = float(fp_coords[fpB, 0])
+        pBy = float(fp_coords[fpB, 1])
+        mid_x = (pAx + pBx) * 0.5
+        mid_y = (pAy + pBy) * 0.5
+
+        cA = int(face_cell_indexes[fi, 0])
+        cB = int(face_cell_indexes[fi, 1])
+        # Guard against boundary faces: -1 means no neighbour; indices >= n_cells
+        # are ghost (virtual boundary) cells inserted by HEC-RAS.  Both cases
+        # fall back to chord midpoint since no real cell centre is available.
+        if cA < 0 or cB < 0 or cA >= n_cells or cB >= n_cells:
+            midsides[fi, 0] = mid_x
+            midsides[fi, 1] = mid_y
+            continue
+
+        # Direction vectors
+        ccAx = float(cell_centers[cA, 0])
+        ccAy = float(cell_centers[cA, 1])
+        ccBx = float(cell_centers[cB, 0])
+        ccBy = float(cell_centers[cB, 1])
+        d1x = ccBx - ccAx  # cell-centre line direction
+        d1y = ccBy - ccAy
+        d2x = pBx - pAx  # face chord direction
+        d2y = pBy - pAy
+        rx = pAx - ccAx  # offset: fpA from cellA
+        ry = pAy - ccAy
+
+        # d1 × d2 (2-D cross product); zero means parallel
+        denom = d1x * d2y - d1y * d2x
+        if abs(denom) < 1e-12:
+            midsides[fi, 0] = mid_x
+            midsides[fi, 1] = mid_y
+            continue
+
+        # s = parameter along face chord where the cell-centre LINE intersects.
+        # Derived from: ccA + t*d1 = fpA + s*d2  →  s = (r × d1) / (d1 × d2)
+        # where (a × b) = ax*by - ay*bx, so r × d1 = rx*d1y - ry*d1x
+        s = (rx * d1y - ry * d1x) / denom
+
+        if 0.05 < s < 0.95:
+            midsides[fi, 0] = pAx + s * d2x
+            midsides[fi, 1] = pAy + s * d2y
+        else:
+            midsides[fi, 0] = mid_x
+            midsides[fi, 1] = mid_y
+
+    return midsides
+
+
 def compute_facepoint_wse(
     fp_coords: np.ndarray,
     fp_face_info: np.ndarray,
@@ -391,6 +488,7 @@ def compute_facepoint_wse(
     face_facepoint_indexes: np.ndarray,
     face_value_a: np.ndarray,
     face_value_b: np.ndarray,
+    face_midsides: np.ndarray | None = None,
 ) -> np.ndarray:
     """Step B — WSE at each facepoint by PlanarRegressionZ fitting.
 
@@ -402,11 +500,14 @@ def compute_facepoint_wse(
     (WSE) at the facepoint coordinate from the WSE values available on the
     surrounding faces.
 
-    *Sample points:* each adjacent face contributes two sample points — one
-    from the cellA side (``face_value_a``) and one from the cellB side
-    (``face_value_b``).  Dry samples (``-9999``) are skipped.  The XY
-    location assigned to both samples is the **midpoint** of the face's two
-    endpoint facepoints (i.e. the chord midpoint of the face).
+    *Sample points:* each adjacent face contributes **one** sample point —
+    the value from the side of the face that owns this facepoint
+    (``face_value_a`` when orientation ``-1`` i.e. this facepoint is ``fpA``,
+    ``face_value_b`` when orientation ``+1`` i.e. this facepoint is ``fpB``).
+    Dry samples (``-9999``) are skipped.  The XY location assigned to each
+    sample is the **face midside** (intersection of the cell-centre-to-cell-
+    centre line with the face chord, capped to [5 %, 95 %] of chord length)
+    when *face_midsides* is provided, or the chord midpoint otherwise.
 
     *Planar fit:* a plane is fitted to the sample points by least squares.
     Working in local coordinates ``dx = x - x_fp``, ``dy = y - y_fp``
@@ -452,15 +553,19 @@ def compute_facepoint_wse(
         ``(total, 2)`` int32 — ``[face_idx, orientation]``.
         From :attr:`~raspy.hdf.FlowArea.facepoint_face_orientation_values`
         (HDF: ``FacePoints Face and Orientation Values``).
-        Only ``face_idx`` (column 0) is used; the orientation column is ignored
-        because both ``face_value_a`` and ``face_value_b`` are accumulated
-        unconditionally into the least-squares sum.
+        ``orientation = -1`` means this facepoint is ``fpA`` of that face
+        (use ``face_value_a``); ``+1`` means ``fpB`` (use ``face_value_b``).
     face_facepoint_indexes:
         ``(n_faces, 2)`` — ``[fpA, fpB]`` for each face.
     face_value_a:
         ``(n_faces,)`` — WSE on the cellA side from :func:`compute_face_wss`.
     face_value_b:
         ``(n_faces,)`` — WSE on the cellB side from :func:`compute_face_wss`.
+    face_midsides:
+        ``(n_faces, 2)`` — precomputed face application points from
+        :func:`_compute_face_midsides`.  When ``None`` the chord midpoint of
+        the two endpoint facepoints is used (less accurate for non-orthogonal
+        meshes).
 
     Returns
     -------
@@ -483,22 +588,30 @@ def compute_facepoint_wse(
         n = 0
 
         for j in range(fp_count):
-            fi = int(fp_face_values[fp_start + j, 0])
-            fpA_idx = int(face_facepoint_indexes[fi, 0])
-            fpB_idx = int(face_facepoint_indexes[fi, 1])
-            # Application point = midpoint of the face's two endpoint facepoints
-            app_x = (float(fp_coords[fpA_idx, 0]) + float(fp_coords[fpB_idx, 0])) * 0.5
-            app_y = (float(fp_coords[fpA_idx, 1]) + float(fp_coords[fpB_idx, 1])) * 0.5
+            fi  = int(fp_face_values[fp_start + j, 0])
+            ori = int(fp_face_values[fp_start + j, 1])
+
+            # Application point: face midside if precomputed, else chord midpoint
+            if face_midsides is not None:
+                app_x = float(face_midsides[fi, 0])
+                app_y = float(face_midsides[fi, 1])
+            else:
+                fpA_idx = int(face_facepoint_indexes[fi, 0])
+                fpB_idx = int(face_facepoint_indexes[fi, 1])
+                app_x = (float(fp_coords[fpA_idx, 0]) + float(fp_coords[fpB_idx, 0])) * 0.5
+                app_y = (float(fp_coords[fpA_idx, 1]) + float(fp_coords[fpB_idx, 1])) * 0.5
             dx = app_x - base_x
             dy = app_y - base_y
 
-            for wse in (float(face_value_a[fi]), float(face_value_b[fi])):
-                if wse != _NODATA:
-                    sumX2 += dx * dx;  sumX  += dx
-                    sumY2 += dy * dy;  sumY  += dy
-                    sumZ  += wse;      sumXY += dx * dy
-                    sumYZ += dy * wse; sumXZ += dx * wse
-                    n += 1
+            # One value per face: side that owns this facepoint.
+            # orientation -1 → fpA side → face_value_a; +1 → fpB → face_value_b.
+            wse = float(face_value_a[fi]) if ori == -1 else float(face_value_b[fi])
+            if wse != _NODATA:
+                sumX2 += dx * dx;  sumX  += dx
+                sumY2 += dy * dy;  sumY  += dy
+                sumZ  += wse;      sumXY += dx * dy
+                sumYZ += dy * wse; sumXZ += dx * wse
+                n += 1
 
         if n == 0:
             continue
@@ -1529,6 +1642,7 @@ def rasterize_rasmap(
     face_vel_A: np.ndarray | None,
     face_vel_B: np.ndarray | None,
     fp_elev: np.ndarray | None,
+    face_connected: np.ndarray,
     nodata: float,
     depth_threshold: float = _MIN_WS_PLOT_TOLERANCE,
     with_faces: bool = True,
@@ -1614,27 +1728,31 @@ def rasterize_rasmap(
          ``face_local_wse``.
        - ``"depth"`` — same WSE interpolation then subtract terrain
          elevation; clamped to zero from below.
-       - ``"speed"`` / ``"velocity"`` — donated barycentric blend of
-         facepoint and face-midpoint velocity vectors::
+       - ``"speed"`` — donated barycentric blend of facepoint and
+         face-midpoint velocity vectors::
 
              Vx = sum(vel_w[i] * nb_fp_vx[i]) + sum(vel_w[N+j] * nb_face_vx[j])
              Vy = sum(vel_w[i] * nb_fp_vy[i]) + sum(vel_w[N+j] * nb_face_vy[j])
 
-         Speed = ``sqrt(Vx**2 + Vy**2)``.  For ``"velocity"``, direction
-         in degrees is also stored as ``arctan2(Vx, Vy)`` measured from
-         North (``% 360``).
+         Magnitude = ``sqrt(Vx**2 + Vy**2)``.  This is the internal name
+         for what the public API calls ``"velocity"``; the translation
+         ``"velocity"`` → ``"speed"`` is performed by :func:`rasmap_raster`
+         before this function is called.
 
     Parameters
     ----------
     variable:
-        ``"water_surface"``, ``"depth"``, ``"speed"``, or ``"velocity"``.
+        ``"water_surface"``, ``"depth"``, or ``"speed"`` (velocity magnitude).
+        ``"speed"`` is the internal name for what the public API exposes as
+        ``"velocity"``; callers should never pass ``"velocity"`` directly.
     cell_id_grid:
         ``(H, W)`` int32 — from :func:`build_cell_id_raster`.
     transform:
         Rasterio affine transform (pixel center coords).
     terrain_grid:
-        ``(H, W)`` float — terrain elevation; required for ``"depth"``,
-        ``"speed"``, ``"velocity"``; ``None`` skips per-pixel depth masking.
+        ``(H, W)`` float — terrain elevation; required for ``"depth"``;
+        optional for ``"speed"`` / ``"water_surface"`` (``None`` skips
+        per-pixel depth masking).
     cell_wse:
         ``(n_cells,)`` — water-surface elevation per cell.
     cell_face_info, cell_face_values:
@@ -1652,13 +1770,19 @@ def rasterize_rasmap(
     face_value_a, face_value_b:
         ``(n_faces,)`` from :func:`compute_face_wss`.
     fp_velocities, fp_face_local_map, replaced_face_vel:
-        From Steps 3 / 3.5; required for ``"speed"`` / ``"velocity"``.
+        From Steps 3 / 3.5; required for ``"speed"`` (velocity magnitude).
     face_vel_A, face_vel_B:
-        ``(n_faces, 2)`` from Step 2; required for ``"speed"`` / ``"velocity"``.
+        ``(n_faces, 2)`` from Step 2; required for ``"speed"``.
     fp_elev:
         ``(n_fp,)`` terrain elevation sampled at facepoints; enables
         depth-weighted rebalancing (``PaintCell_8Stencil_RebalanceWeights``).
         Pass ``None`` to skip rebalancing.
+    face_connected:
+        ``(n_faces,)`` bool — from :func:`compute_face_wss`.  Used by the
+        all-shallow check (``shallow_to_flat``) to detect cells where every
+        bounding face is hydraulically disconnected.  Must be the real
+        connectivity array, not the ``face_value_a != _NODATA`` proxy (which
+        misclassifies Logic 3/4 faces as connected).
     nodata:
         Fill value for dry / out-of-domain pixels.
     depth_threshold:
@@ -1801,7 +1925,6 @@ def rasterize_rasmap(
         # is needed inside the loop.
         # When shallow_to_flat=False, the all-shallow condition is ignored and
         # sloped interpolation continues as normal (C# non-ReduceToHorizontal).
-        face_connected = face_value_a != _NODATA
         if use_sloped and shallow_to_flat and _all_shallow(cell_idx, cell_face_info, cell_face_values, face_connected):
             use_sloped = False
             fp_local_wse_adj = None
