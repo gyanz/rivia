@@ -210,70 +210,30 @@ class TestCellVelocity:
 
 
 # ---------------------------------------------------------------------------
-# export_raster: no-geo guard
+# export_raster guard tests (no rasterio needed for ValueError path)
 # ---------------------------------------------------------------------------
 
 
-class TestExportRasterGeoGuard:
-    """export_raster must raise ImportError if geo deps are missing.
-
-    We patch the import to simulate missing rasterio.
-    """
-
-    def test_bad_variable_raises_value_error(self, synthetic_plan_hdf):
-        with PlanHdf(synthetic_plan_hdf) as hdf:
-            with pytest.raises(ValueError, match="Unknown variable"):
-                hdf.flow_areas[AREA].export_raster(
-                    "bad_variable", timestep=0, output_path="out.tif"
-                )
-
-    def test_max_for_velocity_raises_value_error(self, synthetic_plan_hdf):
-        with PlanHdf(synthetic_plan_hdf) as hdf:
-            with pytest.raises(ValueError, match="timestep=None"):
-                hdf.flow_areas[AREA].export_raster(
-                    "cell_speed", timestep=None, output_path="out.tif"
-                )
-
-    def test_invalid_vel_method_raises(self, synthetic_plan_hdf):
-        with PlanHdf(synthetic_plan_hdf) as hdf:
-            with pytest.raises(ValueError, match="method"):
-                hdf.flow_areas[AREA].export_raster(
-                    "cell_speed", timestep=0, output_path="out.tif", vel_weight_method="bad"
-                )
-
-    def test_invalid_wse_interp_raises(self, synthetic_plan_hdf):
-        with PlanHdf(synthetic_plan_hdf) as hdf:
-            with pytest.raises(ValueError, match="wse_interp"):
-                hdf.flow_areas[AREA].export_raster(
-                    "cell_velocity", timestep=0, output_path="out.tif", vel_wse_method="bad"
-                )
-
-
-# ---------------------------------------------------------------------------
-# export_raster2 guard tests (no rasterio needed for ValueError path)
-# ---------------------------------------------------------------------------
-
-
-class TestExportRaster2Guards:
-    """export_raster2 error guards — no geo dependencies needed."""
+class TestExportRasterGuards:
+    """export_raster error guards — no geo dependencies needed."""
 
     def test_velocity_requires_timestep(self, synthetic_plan_hdf):
         with PlanHdf(synthetic_plan_hdf) as hdf:
             with pytest.raises(ValueError, match="timestep=None"):
-                hdf.flow_areas[AREA].export_raster2("velocity", timestep=None)
+                hdf.flow_areas[AREA].export_raster("velocity", timestep=None)
 
 
 pytest.importorskip("rasterio", reason="rasterio not installed")
 pytest.importorskip("shapely", reason="shapely not installed")
 
 
-class TestExportRaster2:
-    """export_raster2 functional tests (require rasterio + shapely)."""
+class TestExportRaster:
+    """export_raster functional tests (require rasterio + shapely)."""
 
     def test_wse_flat_returns_dataset(self, synthetic_plan_hdf):
         with PlanHdf(synthetic_plan_hdf) as hdf:
             area = hdf.flow_areas[AREA]
-            ds = area.export_raster2(
+            ds = area.export_raster(
                 "water_surface", timestep=0, render_mode="horizontal",
                 cell_size=5.0, tight_extent=False,
             )
@@ -283,7 +243,7 @@ class TestExportRaster2:
     def test_wse_sloping_returns_dataset(self, synthetic_plan_hdf):
         with PlanHdf(synthetic_plan_hdf) as hdf:
             area = hdf.flow_areas[AREA]
-            ds = area.export_raster2(
+            ds = area.export_raster(
                 "water_surface", timestep=0, render_mode="sloping",
                 cell_size=5.0, tight_extent=False,
             )
@@ -294,7 +254,7 @@ class TestExportRaster2:
         """timestep=None uses max_water_surface."""
         with PlanHdf(synthetic_plan_hdf) as hdf:
             area = hdf.flow_areas[AREA]
-            ds = area.export_raster2(
+            ds = area.export_raster(
                 "water_surface", timestep=None, render_mode="horizontal",
                 cell_size=5.0, tight_extent=False,
             )
@@ -304,7 +264,7 @@ class TestExportRaster2:
     def test_velocity_flat_returns_dataset(self, synthetic_plan_hdf):
         with PlanHdf(synthetic_plan_hdf) as hdf:
             area = hdf.flow_areas[AREA]
-            ds = area.export_raster2(
+            ds = area.export_raster(
                 "velocity", timestep=0, render_mode="horizontal",
                 cell_size=5.0, tight_extent=False,
             )
@@ -314,7 +274,7 @@ class TestExportRaster2:
     def test_output_path_writes_file(self, synthetic_plan_hdf, tmp_path):
         out = tmp_path / "wse.tif"
         with PlanHdf(synthetic_plan_hdf) as hdf:
-            result = hdf.flow_areas[AREA].export_raster2(
+            result = hdf.flow_areas[AREA].export_raster(
                 "water_surface", timestep=0, output_path=str(out),
                 cell_size=5.0, tight_extent=False,
             )
@@ -325,7 +285,7 @@ class TestExportRaster2:
         """Neither reference_raster nor cell_size → auto cell_size from face lengths."""
         with PlanHdf(synthetic_plan_hdf) as hdf:
             area = hdf.flow_areas[AREA]
-            ds = area.export_raster2(
+            ds = area.export_raster(
                 "water_surface", timestep=0, render_mode="horizontal",
                 tight_extent=False,
             )
