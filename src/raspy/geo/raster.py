@@ -2723,10 +2723,24 @@ def rasmap_raster(
             "Specify either reference_raster or cell_size, not both."
         )
 
-    # Normalize render-mode flags — only meaningful for hybrid (matches store_map fix)
-    if render_mode != "hybrid":
+    # Map render_mode to internal pipeline flags per RasMapperLib SharedData defaults.
+    # shallow_to_flat and use_depth_weights are only user-controllable for hybrid;
+    # for other modes the values are dictated by the RasMapperLib implementation.
+    if render_mode == "sloping":
+        # CellStencilMethod.JustFacepoints + ShallowBehavior.ReduceToHorizontal
+        # Both are hardcoded in RasMapperLib for the "sloping" mode.
+        shallow_to_flat = True
         use_depth_weights = False
+    elif render_mode == "horizontal":
         shallow_to_flat = False
+        use_depth_weights = False
+    # render_mode == "hybrid": keep user-provided shallow_to_flat and use_depth_weights
+
+    if use_depth_weights and reference_raster is None:
+        raise ValueError(
+            "use_depth_weights=True requires reference_raster (terrain DEM) "
+            "to sample facepoint elevations.  Provide a terrain GeoTIFF."
+        )
 
     # -- 1. Resolve output grid and optionally load terrain -----------------
     terrain_grid: np.ndarray | None = None

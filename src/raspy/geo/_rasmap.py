@@ -27,6 +27,7 @@ reconstruct_face_velocities
 compute_facepoint_velocities
 replace_face_velocities_sloped
 build_cell_id_raster
+sample_terrain_at_facepoints
 rasterize_rasmap
 """
 
@@ -1429,6 +1430,80 @@ def build_cell_id_raster(
 
 
 # ---------------------------------------------------------------------------
+# Terrain sampling at facepoints
+# ---------------------------------------------------------------------------
+
+
+def sample_terrain_at_facepoints(
+    fp_coords: np.ndarray,
+    terrain_grid: np.ndarray,
+    transform: "rasterio.transform.Affine",
+) -> np.ndarray:
+    """Bilinear-sample terrain elevation at each facepoint coordinate.
+
+    Replicates the per-facepoint terrain lookup used by RasMapperLib when
+    computing depth-weighted stencil weights (``UseDepthWeightedFaces``).
+    In HEC-RAS this data is pre-computed and cached in ``PostProcessing.hdf``
+    as ``FacePoint Elevation``; here we derive it on-the-fly from the terrain
+    raster so no separate file is required.
+
+    Parameters
+    ----------
+    fp_coords:
+        ``(n_fp, 2)`` facepoint XY coordinates in the raster CRS.
+    terrain_grid:
+        ``(H, W)`` terrain elevation array (float64, NaN where nodata).
+    transform:
+        Rasterio affine transform for *terrain_grid*.
+
+    Returns
+    -------
+    fp_elev : ndarray, shape ``(n_fp,)``
+        Terrain elevation at each facepoint.  Facepoints outside the raster
+        extent or at NaN terrain pixels receive ``NaN``.
+    """
+    H, W = terrain_grid.shape
+    n_fp = len(fp_coords)
+    fp_elev = np.full(n_fp, np.nan, dtype=np.float64)
+
+    # Rasterio affine: x = c + a*col + e*row, y = f + b*col + d*row
+    # For north-up rasters: a > 0, d < 0, b=e=0
+    a, c = transform.a, transform.c
+    d, f = transform.e, transform.f  # note: rasterio uses .e for the y-scale
+
+    xs = fp_coords[:, 0]
+    ys = fp_coords[:, 1]
+
+    # Fractional pixel coordinates (0-based, pixel-centre at 0.5)
+    cols_f = (xs - c) / a - 0.5
+    rows_f = (ys - f) / d - 0.5
+
+    for i in range(n_fp):
+        c0 = int(np.floor(cols_f[i]))
+        r0 = int(np.floor(rows_f[i]))
+        c1 = c0 + 1
+        r1 = r0 + 1
+        if r0 < 0 or c0 < 0 or r1 >= H or c1 >= W:
+            continue
+        dc = cols_f[i] - c0
+        dr = rows_f[i] - r0
+        v00 = terrain_grid[r0, c0]
+        v01 = terrain_grid[r0, c1]
+        v10 = terrain_grid[r1, c0]
+        v11 = terrain_grid[r1, c1]
+        if np.isnan(v00) or np.isnan(v01) or np.isnan(v10) or np.isnan(v11):
+            continue
+        fp_elev[i] = (
+            v00 * (1 - dr) * (1 - dc)
+            + v01 * (1 - dr) * dc
+            + v10 * dr * (1 - dc)
+            + v11 * dr * dc
+        )
+
+    return fp_elev
+
+
+# ---------------------------------------------------------------------------
 # Step 4 — Main pixel rasterization loop
 # ---------------------------------------------------------------------------
 
@@ -1702,9 +1777,12 @@ def rasterize_rasmap(
                 # facepoint WSEs alone.
                 face_local_wse = None
                 has_valid_wse = (fp_local_wse != _NODATA).any()
-            # Only use sloped mode when at least one sample is valid AND a
-            # terrain grid is available (depth check requires terrain).
-            use_sloped = has_valid_wse and terrain_grid is not None
+            # Use sloped mode whenever at least one facepoint WSE is valid.
+            # Per-pixel terrain masking is applied in the pixel branches
+            # when terrain_grid is available; without terrain all cell
+            # pixels pass the wet/dry check (cell_id_raster already
+            # filtered dry cells via build_cell_id_raster).
+            use_sloped = has_valid_wse
         else:
             fp_local_wse = None
             face_local_wse = None
@@ -1809,11 +1887,16 @@ def rasterize_rasmap(
                 fw = _barycentric_weights(px, py, verts_x, verts_y)
                 vel_w = _donate(fw)
                 pixel_wse = _pixel_wse_sloped(vel_w, fp_local_wse_adj, face_local_wse, cell_dw)
-                t_elev = float(terrain_grid[r, c]) if terrain_grid is not None else float("nan")
-                if pixel_wse == _NODATA or np.isnan(t_elev) or t_elev == _NODATA:
+                if pixel_wse == _NODATA:
                     continue
-                if pixel_wse < t_elev + depth_threshold:
-                    continue
+                if terrain_grid is not None:
+                    t_elev = float(terrain_grid[r, c])
+                    if np.isnan(t_elev) or t_elev == _NODATA:
+                        continue
+                    if pixel_wse < t_elev + depth_threshold:
+                        continue
+                else:
+                    t_elev = 0.0
             # (A2) Sloped corners only (with_faces=False):
             #      Interpolate per-pixel WSE using plain barycentric weights
             #      over the N corner facepoints only — no donation to face
@@ -1822,11 +1905,16 @@ def rasterize_rasmap(
                 fw = _barycentric_weights(px, py, verts_x, verts_y)
                 vel_w = _donate(fw)  # still donate for velocity interpolation
                 pixel_wse = float(np.dot(fw, fp_local_wse_adj))
-                t_elev = float(terrain_grid[r, c]) if terrain_grid is not None else float("nan")
-                if np.isnan(t_elev) or t_elev == _NODATA:
+                if pixel_wse == _NODATA:
                     continue
-                if pixel_wse < t_elev + depth_threshold:
-                    continue
+                if terrain_grid is not None:
+                    t_elev = float(terrain_grid[r, c])
+                    if np.isnan(t_elev) or t_elev == _NODATA:
+                        continue
+                    if pixel_wse < t_elev + depth_threshold:
+                        continue
+                else:
+                    t_elev = 0.0
             # (B) Terrain available but no sloped WSE data: use the uniform
             #     cell-average WSE for the depth test.  Applies when fp_wse
             #     is None (horizontal mode) or cell reverted to flat.
