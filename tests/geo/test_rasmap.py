@@ -720,16 +720,32 @@ class TestRasmapRasterSloping:
         data = self._run(cell_wse_vals=(0.0, 0.0))
         assert (data == -9999.0).all()
 
-    def test_speed_variable_returns_2d(self):
+    def test_velocity_returns_4_bands(self):
+        """variable='velocity' must produce a 4-band dataset (Vx, Vy, speed, direction)."""
+        from raspy.geo.raster import rasmap_raster
         face_vel = np.ones(N_FACES, dtype=np.float64) * 0.5
-        data = self._run(variable="velocity", face_normal_velocity=face_vel)
-        assert data.ndim == 2
+        inputs = _make_rasmap_inputs()
+        inputs["variable"] = "velocity"
+        inputs["face_normal_velocity"] = face_vel
+        ds = rasmap_raster(**inputs, render_mode="sloping")
+        try:
+            assert ds.count == 4
+        finally:
+            ds.close()
 
     def test_speed_nonnegative(self):
-        """Speed (magnitude) must be ≥ 0 everywhere."""
+        """Speed band (band 3) must be ≥ 0 everywhere."""
+        from raspy.geo.raster import rasmap_raster
         face_vel = np.random.default_rng(99).uniform(-1, 1, N_FACES)
-        data = self._run(variable="velocity", face_normal_velocity=face_vel)
-        valid = data[data != -9999.0]
+        inputs = _make_rasmap_inputs()
+        inputs["variable"] = "velocity"
+        inputs["face_normal_velocity"] = face_vel
+        ds = rasmap_raster(**inputs, render_mode="sloping")
+        try:
+            speed = ds.read(3)  # band 3 = speed = sqrt(Vx²+Vy²)
+        finally:
+            ds.close()
+        valid = speed[speed != -9999.0]
         assert (valid >= 0.0).all()
 
     def test_output_path_creates_file(self, tmp_path):

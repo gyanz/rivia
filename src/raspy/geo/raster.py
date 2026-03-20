@@ -122,8 +122,10 @@ def rasmap_raster(
         ``"wse"`` / ``"water_surface"`` — water-surface elevation (aliases).
         ``"depth"``    — water depth (WSE minus terrain); requires
                          *reference_raster* (DEM).
-        ``"velocity"`` — velocity magnitude ``sqrt(Vx²+Vy²)``; requires
-                         *face_normal_velocity*.
+        ``"velocity"`` — 4-band velocity raster ``[Vx, Vy, speed, direction]``
+                         (bands 1–4 of the output dataset); requires
+                         *face_normal_velocity*.  ``speed = sqrt(Vx²+Vy²)``;
+                         ``direction`` is degrees clockwise from north.
     cell_wse:
         ``(n_cells,)`` water-surface elevation per cell.
     cell_min_elevation:
@@ -488,11 +490,11 @@ def rasmap_raster(
             )
 
         # Step 4b–4e: pixel loop
-        # Internal _rasmap uses "speed" for scalar magnitude; "velocity" is its 4-band.
-        # Our public API uses "velocity" for the magnitude scalar.
-        _internal_variable = "speed" if variable == "velocity" else variable
+        # rasterize_rasmap uses "speed" for 1-band magnitude, "velocity" for
+        # 4-band (Vx, Vy, speed, direction).  The public variable="velocity"
+        # returns the 4-band array so callers can access vector components.
         out_arr = _rasmap.rasterize_rasmap(
-            variable=_internal_variable,
+            variable=variable,
             cell_id_grid=cell_id_grid,
             transform=out_transform,
             terrain_grid=terrain_grid,
@@ -521,7 +523,8 @@ def rasmap_raster(
         )
 
     # -- 4. Write output ----------------------------------------------------
-    n_bands = 1
+    # velocity → 4-band (Vx, Vy, speed, direction); all others → 1-band.
+    n_bands = 4 if variable == "velocity" else 1
     profile: dict[str, Any] = dict(
         driver="GTiff",
         dtype="float32",
@@ -536,20 +539,32 @@ def rasmap_raster(
 
     # Apply perimeter mask if requested
     if tight_extent and perimeter is not None:
-        out_arr = _mask_outside_polygon_array(
-            out_arr, perimeter, out_transform, nodata
-        )
+        if n_bands == 1:
+            out_arr = _mask_outside_polygon_array(
+                out_arr, perimeter, out_transform, nodata
+            )
+        else:
+            for b in range(n_bands):
+                out_arr[b] = _mask_outside_polygon_array(
+                    out_arr[b], perimeter, out_transform, nodata
+                )
+
+    out_f32 = out_arr.astype(np.float32)
+    # rasterio.write(arr) requires shape (bands, H, W); 1-band arrays need
+    # an explicit band index or a leading dimension.
+    if n_bands == 1:
+        out_f32 = out_f32[np.newaxis, :, :]  # (1, H, W)
 
     if output_path is None:
         memfile = rasterio.MemoryFile()
         with memfile.open(**profile) as dst:
-            dst.write(out_arr.astype(np.float32), 1)
+            dst.write(out_f32)
         return memfile.open()
 
     out_path = Path(output_path).resolve()
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with rasterio.open(out_path, "w", **profile) as dst:
-        dst.write(out_arr.astype(np.float32), 1)
+        dst.write(out_f32)
     return out_path
 
 

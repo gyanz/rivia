@@ -490,7 +490,7 @@ class FlowAreaResults(FlowArea):
         face_vel_A, _ = _rasmap.reconstruct_face_velocities(
             face_normal_vel, self.face_normals[:, :2],
             face_connected, self.face_cell_indexes,
-            cell_face_info[: self.n_cells], cell_face_values,
+            cell_face_info, cell_face_values,
         )
         return face_vel_A
 
@@ -537,7 +537,7 @@ class FlowAreaResults(FlowArea):
         face_vel_A, face_vel_B = _rasmap.reconstruct_face_velocities(
             face_normal_vel, self.face_normals[:, :2],
             face_connected, self.face_cell_indexes,
-            cell_face_info[: self.n_cells], cell_face_values,
+            cell_face_info, cell_face_values,
         )
         fp_face_info, fp_face_values = self.facepoint_face_orientation
         fp_velocities, _ = _rasmap.compute_facepoint_velocities(
@@ -555,6 +555,325 @@ class FlowAreaResults(FlowArea):
             if len(vecs):
                 result[fp] = vecs.mean(axis=0)
         return result
+
+    def velocity_plot(
+        self,
+        timestep: int,
+        cell_index: int,
+        *,
+        render_mode: Literal["horizontal", "sloping", "hybrid"] = "sloping",
+        buffer: int = 1,
+        reference_raster: str | Path | None = None,
+        use_depth_weights: bool = False,
+        shallow_to_flat: bool = False,
+        pixel_size: float | None = None,
+        n_arrows: int = 200,
+        ax: Any | None = None,
+    ) -> Any:
+        """Quiver plot of rasterized velocity vectors around a target cell.
+
+        Rasterizes the neighbourhood of *cell_index* using the RASMapper-exact
+        pipeline (``rasmap_raster`` with ``variable="velocity"``), then draws
+        quiver arrows at the pixel centres of wet pixels.  Arrows show the
+        final, fully interpolated ``[Vx, Vy]`` value at each pixel — the same
+        values that appear in RASMapper's velocity map.
+
+        Mesh polygon outlines and cell index labels are drawn as context.
+
+        Requires ``matplotlib`` (``pip install matplotlib``).
+
+        Parameters
+        ----------
+        timestep:
+            0-based time index.
+        cell_index:
+            Target cell.  The neighbourhood is expanded by BFS from this cell.
+        render_mode:
+            ``"horizontal"``, ``"sloping"`` (default), or ``"hybrid"`` —
+            passed to :meth:`export_raster`.
+        buffer:
+            Number of face-adjacency hops to expand from *cell_index*.
+            ``1`` = immediate neighbours; ``2`` = two rings out.
+        reference_raster:
+            Optional path to a terrain DEM GeoTIFF.  When supplied, the
+            pixel size and CRS are inherited from the DEM and
+            ``use_depth_weights=True`` becomes available.  When ``None``
+            (default), the pixel size is auto-derived from the median face
+            length in the neighbourhood.
+        use_depth_weights:
+            Passed to :meth:`export_raster`.  ``hybrid`` mode only.
+            Requires *reference_raster*.
+        shallow_to_flat:
+            Passed to :meth:`export_raster`.  ``hybrid`` mode only.
+        pixel_size:
+            Raster pixel size in model coordinate units.  Smaller values
+            produce a finer grid and more potential arrow positions.
+            Ignored when *reference_raster* is supplied (the DEM pixel size
+            is used instead).  Defaults to ``local_cell_size / 3``, giving
+            ~9 pixels per face-length unit so *n_arrows* has room to work.
+        n_arrows:
+            Target number of quiver arrows.  Wet pixels are subsampled with
+            stride ``ceil(sqrt(n_wet / n_arrows))`` so the actual count is
+            approximately *n_arrows*.  Increase for denser plots (e.g.
+            ``n_arrows=800``); set to a very large number to show every
+            wet pixel.  Default ``200``.
+        ax:
+            Existing ``matplotlib.Axes`` to draw on.  If ``None`` a new
+            figure/axes is created.
+
+        Returns
+        -------
+        matplotlib.axes.Axes
+        """
+        try:
+            import matplotlib.pyplot as plt
+        except ImportError as exc:
+            raise ImportError(
+                "matplotlib is required for velocity_plot(). "
+                "Install it with:  pip install matplotlib"
+            ) from exc
+
+        from raspy.geo import raster as _raster
+
+        # -- 1. BFS neighbourhood (with ring tracking) -------------------
+        cell_face_info, cell_face_values = self.cell_face_info
+        face_cell_indexes = self.face_cell_indexes
+        n_cells = self.n_cells
+
+        # ring_of[c] = BFS hop distance from cell_index (0 = focus cell)
+        ring_of: dict[int, int] = {cell_index: 0}
+        neighbors: set[int] = {cell_index}
+        frontier: set[int] = {cell_index}
+        for hop in range(buffer):
+            next_frontier: set[int] = set()
+            for c in frontier:
+                start = int(cell_face_info[c, 0])
+                count = int(cell_face_info[c, 1])
+                for k in range(count):
+                    fi = int(cell_face_values[start + k, 0])
+                    for nb in (
+                        int(face_cell_indexes[fi, 0]),
+                        int(face_cell_indexes[fi, 1]),
+                    ):
+                        if 0 <= nb < n_cells and nb not in neighbors:
+                            ring_of[nb] = hop + 1
+                            next_frontier.add(nb)
+            neighbors |= next_frontier
+            frontier = next_frontier
+
+        # -- 2. Bounding box and auto cell_size --------------------------
+        cell_polys = self.cell_polygons
+        cell_centers = self.cell_centers
+
+        all_verts = np.vstack([
+            cell_polys[c] for c in neighbors if len(cell_polys[c]) > 0
+        ])
+        x_min = float(all_verts[:, 0].min())
+        x_max = float(all_verts[:, 0].max())
+        y_min = float(all_verts[:, 1].min())
+        y_max = float(all_verts[:, 1].max())
+
+        # Local cell size: median face length in the neighbourhood.
+        # Always computed — used for arrow sizing and (when no reference_raster)
+        # as the output pixel size.
+        nb_face_idx: list[int] = []
+        for c in neighbors:
+            start = int(cell_face_info[c, 0])
+            count = int(cell_face_info[c, 1])
+            for k in range(count):
+                nb_face_idx.append(int(cell_face_values[start + k, 0]))
+        face_lengths = self.face_normals[:, 2]
+        local_cell_size = float(np.median(face_lengths[sorted(set(nb_face_idx))]))
+
+        if reference_raster is None:
+            # pixel_size overrides the auto value; default is local_cell_size / 3
+            # so each cell contains ~9 pixels and n_arrows has room to work.
+            _cell_size: float | None = (
+                pixel_size if pixel_size is not None else local_cell_size / 3.0
+            )
+        else:
+            _cell_size = None  # reference_raster provides the pixel grid
+        _margin = local_cell_size
+
+        # Rectangular perimeter with a small margin
+        bbox_perim = np.array([
+            [x_min - _margin, y_min - _margin],
+            [x_max + _margin, y_min - _margin],
+            [x_max + _margin, y_max + _margin],
+            [x_min - _margin, y_max + _margin],
+        ])
+
+        # -- 3. Rasterize velocity via full rasmap pipeline ---------------
+        # reference_raster enables pixel-level dry masking (WSE < terrain →
+        # nodata) in addition to the coarser cell-level wet check.
+        fp_face_info, fp_face_values = self.facepoint_face_orientation
+        ds = _raster.rasmap_raster(
+            variable="velocity",
+            cell_wse=np.array(self.water_surface[timestep, :]),
+            cell_min_elevation=self._cell_min_elevation,
+            face_min_elevation=self.face_min_elevation,
+            face_cell_indexes=face_cell_indexes,
+            cell_face_info=cell_face_info,
+            cell_face_values=cell_face_values,
+            face_facepoint_indexes=self.face_facepoint_indexes,
+            fp_coords=self.facepoint_coordinates,
+            face_normals=self.face_normals,
+            fp_face_info=fp_face_info,
+            fp_face_values=fp_face_values,
+            cell_polygons=cell_polys,
+            face_normal_velocity=np.array(self.face_velocity[timestep, :]),
+            output_path=None,
+            cell_centers=cell_centers,
+            reference_raster=reference_raster,
+            cell_size=_cell_size,
+            render_mode=render_mode,
+            use_depth_weights=use_depth_weights,
+            shallow_to_flat=shallow_to_flat,
+            tight_extent=False,
+            perimeter=bbox_perim,
+        )
+
+        # -- 4. Read bands and pixel coordinates -------------------------
+        from matplotlib.colors import Normalize
+        from matplotlib.path import Path as _MPath
+
+        nodata_val = float(ds.nodata)
+        vx_grid = ds.read(1).astype(np.float64)
+        vy_grid = ds.read(2).astype(np.float64)
+        speed_grid = ds.read(3).astype(np.float64)
+        transform = ds.transform
+        ds.close()
+
+        height, width = vx_grid.shape
+        rows_idx, cols_idx = np.mgrid[0:height, 0:width]
+        qx_grid = transform.c + (cols_idx + 0.5) * transform.a
+        qy_grid = transform.f + (rows_idx + 0.5) * transform.e  # e < 0
+
+        wet = (speed_grid > 0) & (speed_grid != nodata_val)
+
+        # Assign each pixel to the innermost neighbourhood ring it belongs to.
+        # Pixels outside all neighbourhood cells are excluded from quiver.
+        pts = np.column_stack([qx_grid.ravel(), qy_grid.ravel()])
+        pixel_ring = np.full(height * width, buffer + 1, dtype=np.int32)
+        for c in neighbors:
+            poly = cell_polys[c]
+            if len(poly) < 3:
+                continue
+            ring = ring_of.get(c, buffer)
+            inside = _MPath(poly).contains_points(pts)
+            # Lower ring number = closer to focus cell → higher priority
+            pixel_ring = np.where(inside & (ring < pixel_ring), ring, pixel_ring)
+        pixel_ring = pixel_ring.reshape(height, width)
+
+        wet = wet & (pixel_ring <= buffer)
+
+        # -- 5. Arrow scaling and subsampling ----------------------------
+        # Arrow length is mapped linearly from [sp_min, sp_max] speed to
+        # [0.30, 0.85] × local_cell_size so every arrow is visible.
+        # Outer rings are scaled down slightly to emphasise the focus area.
+        wet_r, wet_c = np.where(wet)
+
+        if len(wet_r) == 0:
+            # No wet pixels in neighbourhood — draw polygons only
+            if ax is None:
+                _, ax = plt.subplots()
+        else:
+            speeds = speed_grid[wet_r, wet_c]
+            rings = pixel_ring[wet_r, wet_c]
+            sp_min, sp_max = float(speeds.min()), float(speeds.max())
+
+            arrow_min = local_cell_size * 0.30
+            arrow_max = local_cell_size * 0.85
+            if sp_max > sp_min + 1e-12:
+                t = (speeds - sp_min) / (sp_max - sp_min)
+                arrow_len = arrow_min + t * (arrow_max - arrow_min)
+            else:
+                arrow_len = np.full(len(speeds), arrow_max)
+
+            # Outer rings get 15 % shorter arrows per hop from the focus cell
+            ring_weight = np.maximum(0.55, 1.0 - rings * 0.15)
+            arrow_len *= ring_weight
+
+            # Unit direction × scaled length (data-coordinate arrows)
+            eps = 1e-12
+            u_norm = np.where(speeds > eps, vx_grid[wet_r, wet_c] / speeds, 0.0)
+            v_norm = np.where(speeds > eps, vy_grid[wet_r, wet_c] / speeds, 0.0)
+            u_draw = u_norm * arrow_len
+            v_draw = v_norm * arrow_len
+
+            # Subsample: target ~200 arrows (subsampled from neighbourhood only)
+            stride = max(1, int(np.ceil(np.sqrt(len(wet_r) / n_arrows))))
+            if stride > 1:
+                sel = np.arange(0, len(wet_r), stride)
+                wet_r, wet_c = wet_r[sel], wet_c[sel]
+                u_draw, v_draw, speeds = u_draw[sel], v_draw[sel], speeds[sel]
+
+            norm = Normalize(vmin=sp_min, vmax=sp_max)
+
+            # -- 6. Draw -------------------------------------------------
+            if ax is None:
+                fig, ax = plt.subplots()
+            else:
+                fig = ax.get_figure()
+
+            for c in neighbors:
+                poly = cell_polys[c]
+                if len(poly) == 0:
+                    continue
+                is_target = c == cell_index
+                ring_x = np.append(poly[:, 0], poly[0, 0])
+                ring_y = np.append(poly[:, 1], poly[0, 1])
+                fc = "steelblue" if is_target else "lightgray"
+                lw = 1.8 if is_target else 0.8
+                ax.fill(poly[:, 0], poly[:, 1], fc=fc, alpha=0.18, ec="none")
+                ax.plot(ring_x, ring_y, color="dimgray", lw=lw)
+                cx, cy = float(cell_centers[c, 0]), float(cell_centers[c, 1])
+                ax.text(cx, cy, str(c), ha="center", va="center",
+                        fontsize=7, color="black", clip_on=True)
+
+            Q = ax.quiver(
+                qx_grid[wet_r, wet_c], qy_grid[wet_r, wet_c],
+                u_draw, v_draw, speeds,
+                cmap="plasma", norm=norm,
+                scale=1.0, scale_units="xy", angles="xy",
+                pivot="middle",
+            )
+            fig.colorbar(Q, ax=ax, label="Speed")
+
+            ax.set_aspect("equal")
+            ax.set_title(
+                f"{self.name}  t={timestep}  cell={cell_index}  "
+                f"mode={render_mode}  buf={buffer}"
+            )
+            ax.set_xlabel("X")
+            ax.set_ylabel("Y")
+            return ax
+
+        # Fallback: no wet pixels — still draw polygons
+        if ax is None:
+            _, ax = plt.subplots()
+        for c in neighbors:
+            poly = cell_polys[c]
+            if len(poly) == 0:
+                continue
+            is_target = c == cell_index
+            ring_x = np.append(poly[:, 0], poly[0, 0])
+            ring_y = np.append(poly[:, 1], poly[0, 1])
+            fc = "steelblue" if is_target else "lightgray"
+            lw = 1.8 if is_target else 0.8
+            ax.fill(poly[:, 0], poly[:, 1], fc=fc, alpha=0.18, ec="none")
+            ax.plot(ring_x, ring_y, color="dimgray", lw=lw)
+            cx, cy = float(cell_centers[c, 0]), float(cell_centers[c, 1])
+            ax.text(cx, cy, str(c), ha="center", va="center",
+                    fontsize=7, color="black", clip_on=True)
+        ax.set_aspect("equal")
+        ax.set_title(
+            f"{self.name}  t={timestep}  cell={cell_index}  "
+            f"mode={render_mode}  buf={buffer}  [dry]"
+        )
+        ax.set_xlabel("X")
+        ax.set_ylabel("Y")
+        return ax
 
     # ------------------------------------------------------------------
     # Derived results helpers (computed from HDF result arrays)
