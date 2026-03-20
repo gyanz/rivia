@@ -57,6 +57,7 @@ _TS_SA_CONN = f"{_TS_ROOT}/SA 2D Area Conn"
 _TIME_DS = f"{_TS_ROOT}/Time"
 _TIME_STAMP_DS = f"{_TS_ROOT}/Time Date Stamp"
 
+
 # Timestamp format written by HEC-RAS (e.g. "03Jan2000 00:00:00")
 _RAS_TS_FMT = "%d%b%Y %H:%M:%S"
 
@@ -3534,6 +3535,54 @@ class PlanHdf(GeometryHdf):
         self._sa_connections: SA2DConnectionCollection | None = None
 
     # ------------------------------------------------------------------
+    # File metadata
+    # ------------------------------------------------------------------
+
+    @property
+    def ras_version(self) -> str:
+        """HEC-RAS version string from the plan HDF root attribute.
+
+        Returns the ``File Version`` root attribute, e.g.
+        ``'HEC-RAS 6.6 September 2024'``.
+        """
+        raw = self._hdf.attrs["File Version"]
+        return raw.decode() if isinstance(raw, (bytes, np.bytes_)) else str(raw)
+
+    @property
+    def time_step(self) -> float | None:
+        """Output time step in seconds, or ``None`` for steady-flow plans.
+
+        Derived from the difference between the first two time stamps.
+        Returns ``None`` when the time-stamp dataset is absent (steady plans
+        have no unsteady output block).
+        """
+        ds = self._hdf.get(_TIME_STAMP_DS)
+        if ds is None:
+            return None
+        raw = np.array(ds[:2]).astype(str)
+        ts = pd.to_datetime(raw, format=_RAS_TS_FMT)
+        return (ts[1] - ts[0]).total_seconds()
+
+    @property
+    def projection(self) -> str | None:
+        """WKT projection string stored in the plan HDF root, or ``None``.
+
+        HEC-RAS writes the model CRS as a WKT string in the root attribute
+        ``Projection``.  Returns ``None`` when the attribute is absent (older
+        files or models without a defined projection).
+
+        The raw WKT string can be converted to a ``pyproj.CRS`` or a
+        ``rasterio.crs.CRS`` object if needed::
+
+            import pyproj
+            crs = pyproj.CRS.from_wkt(hdf.projection)
+        """
+        raw = self._hdf.attrs.get("Projection")
+        if raw is None:
+            return None
+        return raw.decode() if isinstance(raw, (bytes, np.bytes_)) else str(raw)
+
+    # ------------------------------------------------------------------
     # Time stamps
     # ------------------------------------------------------------------
 
@@ -3552,6 +3601,14 @@ class PlanHdf(GeometryHdf):
             )
         raw = np.array(ds).astype(str)
         return pd.to_datetime(raw, format=_RAS_TS_FMT)
+
+    @property
+    def n_timesteps(self) -> int | None:
+        """Number of output time steps, or ``None`` for steady-flow plans."""
+        ds = self._hdf.get(_TIME_STAMP_DS)
+        if ds is None:
+            return None
+        return len(ds)
 
     # ------------------------------------------------------------------
     # Collections (override GeometryHdf.flow_areas)
