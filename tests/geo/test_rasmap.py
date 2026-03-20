@@ -210,7 +210,10 @@ class TestComputeFaceWss:
 # ---------------------------------------------------------------------------
 
 def _make_fp_face_orientation():
-    """Build fp_face_info / fp_face_values for our minimal mesh (no HDF)."""
+    """Build fp_face_info / fp_face_values for our minimal mesh (no HDF).
+
+    orientation = -1 → this facepoint is fpA; +1 → fpB.
+    """
     n_fp = N_FP
     n_faces = N_FACES
     fp_counts = np.zeros(n_fp, dtype=np.int32)
@@ -226,11 +229,14 @@ def _make_fp_face_orientation():
     fp_vals = np.zeros((offset, 2), dtype=np.int32)
     current = np.zeros(n_fp, dtype=np.int32)
     for fi in range(n_faces):
-        fpA = int(FACE_FP[fi, 0]);  fpB = int(FACE_FP[fi, 1])
+        fpA = int(FACE_FP[fi, 0])
+        fpB = int(FACE_FP[fi, 1])
         pos_a = fp_info[fpA, 0] + current[fpA]
-        fp_vals[pos_a] = [fi, 0];  current[fpA] += 1
+        fp_vals[pos_a] = [fi, -1]  # -1 = this fp is fpA
+        current[fpA] += 1
         pos_b = fp_info[fpB, 0] + current[fpB]
-        fp_vals[pos_b] = [fi, 1];  current[fpB] += 1
+        fp_vals[pos_b] = [fi, 1]   # +1 = this fp is fpB
+        current[fpB] += 1
     return fp_info, fp_vals
 
 
@@ -241,38 +247,36 @@ class TestComputeFacepointWse:
         )
         fp_info, fp_vals = _make_fp_face_orientation()
         return compute_facepoint_wse(
-            FP_COORDS, fp_info, fp_vals, FACE_FP, val_a, val_b
+            FP_COORDS, fp_info, fp_vals, FACE_FP, val_a, val_b, face_connected
         )
 
-    def test_interior_facepoints_have_valid_wse(self):
-        """Facepoints shared by two wet cells (fp1, fp4) should have valid WSE.
+    def test_interior_face_has_valid_wse(self):
+        """The shared interior face (face3, fp1-fp4) should have valid WSE on both sides.
 
-        Corner/boundary facepoints (fp0, fp2, fp3, fp5) are only adjacent to
-        boundary faces; compute_face_wss skips those (cellB=-1), so those
-        facepoints legitimately remain nodata.
+        Boundary faces only have one live cell; their second column stays nodata.
         """
         fp_wse = self._run(np.array([2.0, 2.0]))
-        # fp1 (idx=1) and fp4 (idx=4) are at the shared face endpoints
-        assert fp_wse[1] != -9999.0, "fp1 should have valid WSE"
-        assert fp_wse[4] != -9999.0, "fp4 should have valid WSE"
-        # At least some facepoints have valid WSE
+        # face3 is the shared interior face (fp1=fpA, fp4=fpB)
+        assert fp_wse[3, 0] != -9999.0, "face3 fpA side should have valid WSE"
+        assert fp_wse[3, 1] != -9999.0, "face3 fpB side should have valid WSE"
+        # At least two entries in fp_wse should be valid
         assert (fp_wse != -9999.0).sum() >= 2
 
     def test_facepoint_wse_close_to_cell_wse(self):
-        """In a uniform WSE field, all facepoint WSEs should equal that value."""
+        """In a uniform WSE field, all valid arc WSEs should equal that value."""
         wse_val = 3.5
         fp_wse = self._run(np.full(N_CELLS, wse_val))
         valid = fp_wse[fp_wse != -9999.0]
         assert valid == pytest.approx(wse_val, abs=0.5)  # allow small regression error
 
     def test_all_dry_returns_nodata(self):
-        """Dry mesh → all facepoints nodata."""
+        """Dry mesh → all fp_wse_at_face entries nodata."""
         fp_wse = self._run(np.zeros(N_CELLS))  # WSE=0 = cell_min_elev
         assert (fp_wse == -9999.0).all()
 
     def test_output_shape(self):
         fp_wse = self._run(np.array([2.0, 2.0]))
-        assert fp_wse.shape == (N_FP,)
+        assert fp_wse.shape == (N_FACES, 2)
         assert fp_wse.dtype == np.float64
 
 

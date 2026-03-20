@@ -2918,6 +2918,7 @@ def rasmap_raster(
             fp_wse = _rasmap.compute_facepoint_wse(
                 fp_coords, fp_face_info, fp_face_values,
                 face_facepoint_indexes, face_value_a, face_value_b,
+                face_connected,
                 face_midsides=face_midsides,
             )
 

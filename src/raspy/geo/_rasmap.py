@@ -481,6 +481,94 @@ def _compute_face_midsides(
     return midsides
 
 
+# ---------------------------------------------------------------------------
+# PlanarRegressionZ helpers
+# ---------------------------------------------------------------------------
+
+
+def _planar_z_intercept(
+    base_x: float,
+    base_y: float,
+    app_xs: list[float],
+    app_ys: list[float],
+    zs: list[float],
+) -> float:
+    """Fit a plane Z = a*dx + b*dy + c and return c at (base_x, base_y).
+
+    Matches ``PlanarRegressionZ`` in ``MeshFV2D.cs``.  Working in local
+    coordinates ``dx = x - base_x``, ``dy = y - base_y`` so that evaluating
+    the plane at the origin (the facepoint) gives Z = c directly.
+
+    Degenerate cases:
+
+    * n = 0 → return ``_NODATA``
+    * n = 1 → return ``zs[0]``
+    * n = 2 → return average
+    * det = 0 (collinear) → return average
+    """
+    n = len(zs)
+    if n == 0:
+        return _NODATA
+    if n == 1:
+        return zs[0]
+    if n == 2:
+        return (zs[0] + zs[1]) * 0.5
+
+    sumX2 = 0.0
+    sumX = 0.0
+    sumY2 = 0.0
+    sumY = 0.0
+    sumZ = 0.0
+    sumXY = 0.0
+    sumYZ = 0.0
+    sumXZ = 0.0
+    for i in range(n):
+        dx = app_xs[i] - base_x
+        dy = app_ys[i] - base_y
+        z = zs[i]
+        sumX2 += dx * dx
+        sumX += dx
+        sumY2 += dy * dy
+        sumY += dy
+        sumZ += z
+        sumXY += dx * dy
+        sumYZ += dy * z
+        sumXZ += dx * z
+
+    det = (
+        sumX2 * (sumY2 * n - sumY * sumY)
+        - sumXY * (sumXY * n - sumY * sumX)
+        + sumX * (sumXY * sumY - sumY2 * sumX)
+    )
+    if det == 0.0:
+        return sumZ / n
+    return (
+        sumX2 * (sumY2 * sumZ - sumYZ * sumY)
+        - sumXY * (sumXY * sumZ - sumYZ * sumX)
+        + sumXZ * (sumXY * sumY - sumY2 * sumX)
+    ) / det
+
+
+def _face_app_point(
+    fi: int,
+    fp_coords: np.ndarray,
+    face_facepoint_indexes: np.ndarray,
+    face_midsides: np.ndarray | None,
+) -> tuple[float, float]:
+    """Return the application point (x, y) for face *fi*.
+
+    Uses the precomputed midside when available; falls back to chord midpoint.
+    """
+    if face_midsides is not None:
+        return float(face_midsides[fi, 0]), float(face_midsides[fi, 1])
+    fpA = int(face_facepoint_indexes[fi, 0])
+    fpB = int(face_facepoint_indexes[fi, 1])
+    return (
+        (float(fp_coords[fpA, 0]) + float(fp_coords[fpB, 0])) * 0.5,
+        (float(fp_coords[fpA, 1]) + float(fp_coords[fpB, 1])) * 0.5,
+    )
+
+
 def compute_facepoint_wse(
     fp_coords: np.ndarray,
     fp_face_info: np.ndarray,
@@ -488,57 +576,33 @@ def compute_facepoint_wse(
     face_facepoint_indexes: np.ndarray,
     face_value_a: np.ndarray,
     face_value_b: np.ndarray,
+    face_connected: np.ndarray,
     face_midsides: np.ndarray | None = None,
 ) -> np.ndarray:
-    """Step B — WSE at each facepoint by PlanarRegressionZ fitting.
+    """Step B — arc-based per-facepoint WSE via PlanarRegressionZ.
 
-    Replicates ``ComputeFacePointWSs`` from ``RASMapper`` (``MeshFV2D.cs``).
+    Replicates ``ComputeFacePointWSs`` from ``MeshFV2D.cs`` exactly,
+    including the arc decomposition at wet/dry boundaries.
 
-    **Algorithm**
+    **Arc-based algorithm** (``MeshFV2D.cs:9483``)
 
-    For each facepoint the goal is to estimate the water-surface elevation
-    (WSE) at the facepoint coordinate from the WSE values available on the
-    surrounding faces.
+    Faces adjacent to each facepoint are angle-sorted CCW (from
+    ``fp_face_values``).  Hydraulically-connected faces form *arcs*; arcs
+    are separated by disconnected (shallow/dry) faces.
 
-    *Sample points:* each adjacent face contributes **one** sample point —
-    the value from the side of the face that owns this facepoint
-    (``face_value_a`` when orientation ``-1`` i.e. this facepoint is ``fpA``,
-    ``face_value_b`` when orientation ``+1`` i.e. this facepoint is ``fpB``).
-    Dry samples (``-9999``) are skipped.  The XY location assigned to each
-    sample is the **face midside** (intersection of the cell-centre-to-cell-
-    centre line with the face chord, capped to [5 %, 95 %] of chord length)
-    when *face_midsides* is provided, or the chord midpoint otherwise.
+    For each arc a separate ``PlanarRegressionZ`` is fitted:
 
-    *Planar fit:* a plane is fitted to the sample points by least squares.
-    Working in local coordinates ``dx = x - x_fp``, ``dy = y - y_fp``
-    (offsets from the facepoint), the plane is::
+    * **Arc faces** (connected): contribute their *own-side* WSE —
+      ``face_value_a`` when the facepoint is ``fpA`` (orientation ``-1``),
+      ``face_value_b`` when it is ``fpB`` (``+1``).
+    * **Terminal face** (the first disconnected face CCW past the arc):
+      contributes its *opposite-side* WSE as a boundary anchor.
+    * The regression intercept at the facepoint coordinate is assigned to
+      **all faces in the arc**.
 
-        Z = a*dx + b*dy + c
-
-    Because the facepoint sits at the origin of this local system
-    (``dx = dy = 0``), evaluating the plane there gives ``Z = c``.
-    Therefore **``c`` is the water-surface elevation at the facepoint** —
-    the tilt parameters ``a`` and ``b`` are solved for but not used.
-
-    Least squares minimises ``S(a*dx_i + b*dy_i + c - z_i)**2``.  Taking
-    partial derivatives and setting them to zero gives three normal
-    equations (one per unknown ``a``, ``b``, ``c``)::
-
-        a*SX2 + b*SXY + c*SX  = SXZ    (d/da = 0)
-        a*SXY + b*SY2 + c*SY  = SYZ    (d/db = 0)
-        a*SX  + b*SY  + c*n   = SZ     (d/dc = 0)
-
-    ``c`` is extracted from this 3x3 system using Cramer's rule
-    (``c = det_c / det``) and stored directly as ``fp_wse[fp_idx]``.
-
-    *Degenerate cases:*
-
-    * ``n = 0`` — all adjacent faces are dry -> ``-9999`` (nodata).
-    * ``n = 1`` — single sample -> WSE = that sample value.
-    * ``n = 2`` — two samples -> WSE = simple average (plane is
-      underdetermined).
-    * ``det = 0`` with ``n >= 3`` — collinear samples, plane is
-      underdetermined -> WSE = simple average of samples.
+    Different arcs around the same facepoint therefore produce different
+    WSE values for the faces in each arc; these per-arc values are stored
+    separately so the pixel loop can retrieve the correct one for each cell.
 
     Parameters
     ----------
@@ -546,95 +610,151 @@ def compute_facepoint_wse(
         ``(n_fp, 2)`` — facepoint XY coordinates.
     fp_face_info:
         ``(n_fp, 2)`` int32 — ``[start, count]`` into ``fp_face_values``.
-        From :attr:`~raspy.hdf.FlowArea.facepoint_face_orientation_info`
-        (HDF: ``FacePoints Face and Orientation Info``).
-        Angular sort order is not required; faces may be in any order.
+        From :attr:`~raspy.hdf.FlowArea.facepoint_face_orientation_info`.
+        **Faces must be in angle-sorted CCW order** (as stored in the HDF
+        ``FacePoints Face and Orientation`` datasets).
     fp_face_values:
         ``(total, 2)`` int32 — ``[face_idx, orientation]``.
-        From :attr:`~raspy.hdf.FlowArea.facepoint_face_orientation_values`
-        (HDF: ``FacePoints Face and Orientation Values``).
-        ``orientation = -1`` means this facepoint is ``fpA`` of that face
-        (use ``face_value_a``); ``+1`` means ``fpB`` (use ``face_value_b``).
+        ``orientation = -1`` → this facepoint is ``fpA``; ``+1`` → ``fpB``.
     face_facepoint_indexes:
         ``(n_faces, 2)`` — ``[fpA, fpB]`` for each face.
     face_value_a:
         ``(n_faces,)`` — WSE on the cellA side from :func:`compute_face_wss`.
     face_value_b:
         ``(n_faces,)`` — WSE on the cellB side from :func:`compute_face_wss`.
+    face_connected:
+        ``(n_faces,)`` bool — hydraulic connectivity from
+        :func:`compute_face_wss`.  Disconnected faces (``False``) separate arcs.
     face_midsides:
         ``(n_faces, 2)`` — precomputed face application points from
-        :func:`_compute_face_midsides`.  When ``None`` the chord midpoint of
-        the two endpoint facepoints is used (less accurate for non-orthogonal
-        meshes).
+        :func:`_compute_face_midsides`.  When ``None`` the chord midpoint is
+        used (adequate for orthogonal meshes).
 
     Returns
     -------
-    fp_wse : float64 ndarray, shape ``(n_fp,)``
-        WSE at each facepoint; ``-9999`` where all adjacent faces are dry.
-    """
-    n_fp = len(fp_coords)
-    fp_wse = np.full(n_fp, _NODATA, dtype=np.float64)
+    fp_wse_at_face : float64 ndarray, shape ``(n_faces, 2)``
+        Per-face arc WSE:
 
-    for fp_idx in range(n_fp):
+        * ``[fi, 0]`` — regression result at face ``fi`` from fpA's arc.
+        * ``[fi, 1]`` — regression result at face ``fi`` from fpB's arc.
+
+        ``-9999`` where the arc has no valid sample points.
+    """
+    n_faces = len(face_facepoint_indexes)
+    fp_wse_at_face = np.full((n_faces, 2), _NODATA, dtype=np.float64)
+
+    for fp_idx in range(len(fp_coords)):
         base_x = float(fp_coords[fp_idx, 0])
         base_y = float(fp_coords[fp_idx, 1])
         fp_start = int(fp_face_info[fp_idx, 0])
         fp_count = int(fp_face_info[fp_idx, 1])
 
-        sumX2 = 0.0; sumX = 0.0
-        sumY2 = 0.0; sumY = 0.0
-        sumZ = 0.0;  sumXY = 0.0
-        sumYZ = 0.0; sumXZ = 0.0
-        n = 0
-
+        # Early exit: skip facepoints where every adjacent face is completely dry
+        # (both sides -9999).  Matches C# flag=true early-return.
+        any_wet = False
         for j in range(fp_count):
-            fi  = int(fp_face_values[fp_start + j, 0])
-            ori = int(fp_face_values[fp_start + j, 1])
-
-            # Application point: face midside if precomputed, else chord midpoint
-            if face_midsides is not None:
-                app_x = float(face_midsides[fi, 0])
-                app_y = float(face_midsides[fi, 1])
-            else:
-                fpA_idx = int(face_facepoint_indexes[fi, 0])
-                fpB_idx = int(face_facepoint_indexes[fi, 1])
-                app_x = (float(fp_coords[fpA_idx, 0]) + float(fp_coords[fpB_idx, 0])) * 0.5
-                app_y = (float(fp_coords[fpA_idx, 1]) + float(fp_coords[fpB_idx, 1])) * 0.5
-            dx = app_x - base_x
-            dy = app_y - base_y
-
-            # One value per face: side that owns this facepoint.
-            # orientation -1 → fpA side → face_value_a; +1 → fpB → face_value_b.
-            wse = float(face_value_a[fi]) if ori == -1 else float(face_value_b[fi])
-            if wse != _NODATA:
-                sumX2 += dx * dx;  sumX  += dx
-                sumY2 += dy * dy;  sumY  += dy
-                sumZ  += wse;      sumXY += dx * dy
-                sumYZ += dy * wse; sumXZ += dx * wse
-                n += 1
-
-        if n == 0:
+            fi = int(fp_face_values[fp_start + j, 0])
+            if float(face_value_a[fi]) != _NODATA or float(face_value_b[fi]) != _NODATA:
+                any_wet = True
+                break
+        if not any_wet:
             continue
-        elif n == 1:
-            fp_wse[fp_idx] = sumZ
-        elif n == 2:
-            fp_wse[fp_idx] = sumZ / 2.0
-        else:
-            det = (
-                sumX2 * (sumY2 * n - sumY * sumY)
-                - sumXY * (sumXY * n - sumY * sumX)
-                + sumX * (sumXY * sumY - sumY2 * sumX)
-            )
-            if det == 0.0:
-                fp_wse[fp_idx] = sumZ / n
-            else:
-                fp_wse[fp_idx] = (
-                    sumX2 * (sumY2 * sumZ - sumYZ * sumY)
-                    - sumXY * (sumXY * sumZ - sumYZ * sumX)
-                    + sumXZ * (sumXY * sumY - sumY2 * sumX)
-                ) / det
 
-    return fp_wse
+        # processed[j] tracks which local face indices have been assigned
+        # by a completed arc.  Prevents double-processing.
+        processed = [False] * fp_count
+
+        # Outer loop: find the next unprocessed local face index j and
+        # process its arc.  Mirrors the C# for(j=0..num) with continue.
+        for j in range(fp_count):
+            if processed[j]:
+                continue
+
+            # --- Find num4: first disconnected face going CCW from j ---
+            # (or j itself if all faces are connected → full ring arc)
+            num4 = j
+            while True:
+                num4 = (num4 + 1) % fp_count
+                fi_num4 = int(fp_face_values[fp_start + num4, 0])
+                if not face_connected[fi_num4] or num4 == j:
+                    break
+
+            # --- Find num5: first disconnected face going CW from j ---
+            # If num5 == num4 (all connected), the whole ring is one arc.
+            num5 = j
+            if num5 != num4:
+                while face_connected[int(fp_face_values[fp_start + num5, 0])]:
+                    num5 = (num5 - 1 + fp_count) % fp_count
+
+            # --- Collect arc faces (num5 → num4, CCW exclusive) ---
+            app_xs: list[float] = []
+            app_ys: list[float] = []
+            zs: list[float] = []
+            raw: list[float] = []  # own-side raw values (one per arc face)
+
+            num6 = num5
+            while True:
+                fi_cur = int(fp_face_values[fp_start + num6, 0])
+                ori_cur = int(fp_face_values[fp_start + num6, 1])
+                # Own-side: fpA (ori=-1) → face_value_a; fpB (ori=+1) → face_value_b
+                if ori_cur == -1:
+                    wse = float(face_value_a[fi_cur])
+                else:
+                    wse = float(face_value_b[fi_cur])
+                if wse != _NODATA:
+                    ax, ay = _face_app_point(
+                        fi_cur, fp_coords, face_facepoint_indexes, face_midsides
+                    )
+                    app_xs.append(ax)
+                    app_ys.append(ay)
+                    zs.append(wse)
+                raw.append(wse)  # may be _NODATA; overridden by arc result below
+                num6 = (num6 + 1) % fp_count
+                if num6 == num4:
+                    break
+
+            # --- Add terminal face (num4, if disconnected) using OPPOSITE side ---
+            # Provides a slope anchor at the wet/dry boundary.
+            fi_term = int(fp_face_values[fp_start + num4, 0])
+            if not face_connected[fi_term]:
+                ori_term = int(fp_face_values[fp_start + num4, 1])
+                # Opposite: fpA (ori=-1) → face_value_b; fpB (ori=+1) → face_value_a
+                if ori_term == -1:
+                    wse_term = float(face_value_b[fi_term])
+                else:
+                    wse_term = float(face_value_a[fi_term])
+                if wse_term != _NODATA:
+                    ax, ay = _face_app_point(
+                        fi_term, fp_coords, face_facepoint_indexes, face_midsides
+                    )
+                    app_xs.append(ax)
+                    app_ys.append(ay)
+                    zs.append(wse_term)
+
+            # --- Solve regression and store result for arc faces ---
+            arc_result = _planar_z_intercept(base_x, base_y, app_xs, app_ys, zs)
+
+            num6 = num5
+            arc_idx = 0
+            while True:
+                fi_cur = int(fp_face_values[fp_start + num6, 0])
+                ori_cur = int(fp_face_values[fp_start + num6, 1])
+                # Store arc result (or raw value if regression had no points)
+                value = arc_result if arc_result != _NODATA else raw[arc_idx]
+                side = 0 if ori_cur == -1 else 1  # -1=fpA→col0; +1=fpB→col1
+                if value != _NODATA:
+                    fp_wse_at_face[fi_cur, side] = value
+                processed[num6] = True
+                arc_idx += 1
+                num6 = (num6 + 1) % fp_count
+                if num6 == num4:
+                    break
+
+            # All-connected ring: one arc covers everything → done.
+            if num5 == num4:
+                break
+
+    return fp_wse_at_face
 
 
 # ---------------------------------------------------------------------------
@@ -1317,7 +1437,7 @@ def _depth_weights_for_cell(
     cell_face_values: np.ndarray,
     face_facepoint_indexes: np.ndarray,
     face_cell_indexes: np.ndarray,
-    fp_wse: np.ndarray,
+    fp_wse_at_face: np.ndarray,
     fp_elev: np.ndarray,
     face_value_a: np.ndarray,
     face_value_b: np.ndarray,
@@ -1365,8 +1485,9 @@ def _depth_weights_for_cell(
     face_cell_indexes:
         ``(n_faces, 2)`` — ``[cellA, cellB]`` for each face; used to select
         the correct side (``face_value_a`` vs ``face_value_b``).
-    fp_wse:
-        ``(n_fp,)`` — water-surface elevation at each facepoint.
+    fp_wse_at_face:
+        ``(n_faces, 2)`` — arc-based WSE from :func:`compute_facepoint_wse`.
+        Column 0 is the fpA arc value; column 1 is the fpB arc value.
     fp_elev:
         ``(n_fp,)`` — terrain elevation at each facepoint.
     face_value_a, face_value_b:
@@ -1390,8 +1511,11 @@ def _depth_weights_for_cell(
         # Facepoint for this face edge (orientation-based selection)
         fp  = int(face_facepoint_indexes[fi, 0]) if ori > 0 else int(face_facepoint_indexes[fi, 1])
 
-        # Facepoint depth weight
-        fp_w = float(fp_wse[fp])  if fp < len(fp_wse)  else _NODATA
+        # Facepoint depth weight: look up from the arc-based table.
+        # ori > 0 → this cell is cellA → facepoint is fpA → column 0.
+        # ori < 0 → this cell is cellB → facepoint is fpB → column 1.
+        side = 0 if ori > 0 else 1
+        fp_w = float(fp_wse_at_face[fi, side])
         fp_e = float(fp_elev[fp]) if fp < len(fp_elev) else _NODATA
         if fp_w != _NODATA and fp_e != _NODATA and fp_w > fp_e:
             dw[k] = max(0.01, fp_w - fp_e)
@@ -1766,7 +1890,8 @@ def rasterize_rasmap(
     fp_coords:
         ``(n_fp, 2)``.
     fp_wse:
-        ``(n_fp,)`` from :func:`compute_facepoint_wse`; required for sloping.
+        ``(n_faces, 2)`` from :func:`compute_facepoint_wse`; required for
+        sloping.  Column 0 = fpA arc value; column 1 = fpB arc value.
     face_value_a, face_value_b:
         ``(n_faces,)`` from :func:`compute_face_wss`.
     fp_velocities, fp_face_local_map, replaced_face_vel:
@@ -1882,8 +2007,15 @@ def rasterize_rasmap(
         # (facepoint) and one per face midpoint.  Both arrays have length N
         # and are indexed in the same CCW order as verts_fp / face_indices.
         if fp_wse is not None:
-            # Corner WSEs: facepoint water-surface from Step 3.
-            fp_local_wse = np.array([float(fp_wse[fp]) for fp in verts_fp], dtype=np.float64)
+            # Corner WSEs: arc-based facepoint WSE from Step B.
+            # fp_wse shape is (n_faces, 2): col 0 = fpA arc, col 1 = fpB arc.
+            # ori > 0 → this cell is cellA → corner facepoint is fpA → col 0.
+            # ori < 0 → this cell is cellB → corner facepoint is fpB → col 1.
+            fp_local_wse = np.array(
+                [float(fp_wse[fi, 0 if ori > 0 else 1])
+                 for fi, ori in zip(face_indices, face_orients)],
+                dtype=np.float64,
+            )
             if with_faces:
                 # Face-midpoint WSEs: select the side of the face that belongs
                 # to this cell.  face_value_a corresponds to cellA (column 0
@@ -1947,7 +2079,7 @@ def rasterize_rasmap(
                 cell_idx, cell_face_info, cell_face_values,
                 face_facepoint_indexes, face_cell_indexes,
                 fp_wse, fp_elev, face_value_a, face_value_b, face_min_elev,
-            )
+            )  # fp_wse is (n_faces, 2) from compute_facepoint_wse
 
         # ---- Per-cell velocity arrays -------------------------------------
         # Build two N-length velocity arrays for the 8-sample stencil:
