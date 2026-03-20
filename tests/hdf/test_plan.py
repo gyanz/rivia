@@ -210,6 +210,35 @@ class TestCellVelocity:
 
 
 # ---------------------------------------------------------------------------
+# Computed: face / facepoint velocity
+# ---------------------------------------------------------------------------
+
+
+class TestFaceVelocity:
+    def test_face_velocity_vectors_shape(self, synthetic_plan_hdf):
+        with PlanHdf(synthetic_plan_hdf) as hdf:
+            vecs = hdf.flow_areas[AREA].face_velocity_vectors(0)
+        assert vecs.shape == (N_FACES, 2)
+
+    def test_face_velocity_vectors_finite(self, synthetic_plan_hdf):
+        with PlanHdf(synthetic_plan_hdf) as hdf:
+            vecs = hdf.flow_areas[AREA].face_velocity_vectors(0)
+        assert np.isfinite(vecs).all()
+
+    def test_facepoint_velocity_vectors_shape(self, synthetic_plan_hdf):
+        with PlanHdf(synthetic_plan_hdf) as hdf:
+            vecs = hdf.flow_areas[AREA].facepoint_velocity_vectors(0)
+        # synthetic fixture maps all facepoints to index 0 → 1 unique facepoint
+        assert vecs.ndim == 2
+        assert vecs.shape[1] == 2
+
+    def test_facepoint_velocity_vectors_finite(self, synthetic_plan_hdf):
+        with PlanHdf(synthetic_plan_hdf) as hdf:
+            vecs = hdf.flow_areas[AREA].facepoint_velocity_vectors(0)
+        assert np.isfinite(vecs).all()
+
+
+# ---------------------------------------------------------------------------
 # export_raster guard tests (no rasterio needed for ValueError path)
 # ---------------------------------------------------------------------------
 

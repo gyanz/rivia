@@ -448,58 +448,113 @@ class FlowAreaResults(FlowArea):
         angle[speed < 1e-10] = np.nan
         return angle
 
-    def face_velocity_vectors(
-        self,
-        timestep: int,
-        method: Literal[
-            "area_weighted", "length_weighted", "flow_ratio"
-        ] = "area_weighted",
-        wse_interp: Literal["average", "sloped", "max"] = "average",
-        face_velocity_location: Literal[
-            "centroid", "normal_intercept"
-        ] = "normal_intercept",
-    ) -> np.ndarray:
-        """Full 2D velocity ``[Vx, Vy]`` at each face midpoint via the double-C stencil.
+    def face_velocity_vectors(self, timestep: int) -> np.ndarray:
+        """Full 2D velocity ``[Vx, Vy]`` at each face midpoint.
 
-        HEC-RAS stores only the face-normal component.  The tangential
-        component is estimated by projecting the WLS cell-centre velocity
-        vectors of the two adjacent cells onto the face tangential direction
-        and averaging (double-C stencil, HEC-RAS 2D Technical Reference
-        Manual).
+        Implements the RASMapper-exact C-stencil least-squares reconstruction
+        (Step A + Step 2 from ``geo/_rasmap.py``):
+
+        * **Step A** — hydraulic connectivity: determines which faces are
+          actively conveying flow based on adjacent-cell WSE and bed elevation.
+        * **Step 2** — for each face, a 3-face C-stencil (the face itself plus
+          its clockwise and counter-clockwise neighbors within each adjacent
+          cell) solves a 2×2 WLS system to recover the full ``(Vx, Vy)``
+          vector from the stored face-normal scalar.  The result from each
+          adjacent cell is averaged to give a single face vector.
+
+        Replicates ``ReconstructFaceVelocitiesLeastSquares`` from
+        ``archive/DLLs/RasMapperLib/MeshFV2D.cs``.
 
         Parameters
         ----------
         timestep:
             0-based index into the time dimension.
-        method:
-            WLS weight scheme passed to :meth:`cell_velocity_vectors`.
-        wse_interp:
-            Face WSE interpolation method passed to :meth:`cell_velocity_vectors`.
-        face_velocity_location:
-            Passed to :meth:`cell_velocity_vectors`.
 
         Returns
         -------
         ndarray, shape ``(n_faces, 2)``
             ``[Vx, Vy]`` velocity at each face midpoint.
-            Faces where both adjacent cells are dry receive ``[0, 0]``.
+            Disconnected (dry) faces receive ``[0, 0]``.
         """
-        from ._velocity import compute_all_face_velocities
+        from raspy.geo import _rasmap
 
-        # cell_vel has shape (n_cells + n_ghost, 2); dry_mask matches.
-        cell_vel = self.cell_velocity_vectors(
-            timestep, method=method, wse_interp=wse_interp,
-            face_velocity_location=face_velocity_location,
+        cell_wse = np.array(self.water_surface[timestep, :])
+        face_normal_vel = np.array(self.face_velocity[timestep, :])
+        cell_face_info, cell_face_values = self.cell_face_info
+        _cell_face_count = cell_face_info[:, 1].astype(np.int32)
+
+        face_connected, _, _ = _rasmap.compute_face_wss(
+            cell_wse, self._cell_min_elevation, self.face_min_elevation,
+            self.face_cell_indexes, _cell_face_count,
         )
-        vel_mag = np.linalg.norm(cell_vel, axis=1)
-        dry_mask = (vel_mag == 0.0) | ~np.isfinite(vel_mag)
-        return compute_all_face_velocities(
-            face_normals=self.face_normals,
-            face_normal_velocity=np.array(self.face_velocity[timestep, :]),
-            face_cell_indexes=self.face_cell_indexes,
-            cell_velocity=cell_vel,
-            dry_mask=dry_mask,
+        face_vel_A, _ = _rasmap.reconstruct_face_velocities(
+            face_normal_vel, self.face_normals[:, :2],
+            face_connected, self.face_cell_indexes,
+            cell_face_info[: self.n_cells], cell_face_values,
         )
+        return face_vel_A
+
+    def facepoint_velocity_vectors(self, timestep: int) -> np.ndarray:
+        """Full 2D velocity ``[Vx, Vy]`` at each mesh facepoint (corner).
+
+        Implements the RASMapper-exact pipeline (Steps A + 2 + 3):
+
+        * **Step A** — hydraulic connectivity
+          (:func:`~raspy.geo._rasmap.compute_face_wss`).
+        * **Step 2** — C-stencil face velocity reconstruction
+          (:func:`~raspy.geo._rasmap.reconstruct_face_velocities`).
+        * **Step 3** — inverse-face-length weighted facepoint averaging
+          (:func:`~raspy.geo._rasmap.compute_facepoint_velocities`).
+          Each facepoint has one arc-context velocity vector per adjacent
+          face; these are averaged to produce a single ``[Vx, Vy]`` per
+          facepoint.
+
+        Replicates ``ComputeVertexVelocities`` from
+        ``archive/DLLs/RasMapperLib/MeshFV2D.cs``.
+
+        Parameters
+        ----------
+        timestep:
+            0-based index into the time dimension.
+
+        Returns
+        -------
+        ndarray, shape ``(n_facepoints, 2)``
+            ``[Vx, Vy]`` velocity at each mesh corner.
+            Facepoints adjacent only to dry faces receive ``[0, 0]``.
+        """
+        from raspy.geo import _rasmap
+
+        cell_wse = np.array(self.water_surface[timestep, :])
+        face_normal_vel = np.array(self.face_velocity[timestep, :])
+        cell_face_info, cell_face_values = self.cell_face_info
+        _cell_face_count = cell_face_info[:, 1].astype(np.int32)
+
+        face_connected, face_value_a, face_value_b = _rasmap.compute_face_wss(
+            cell_wse, self._cell_min_elevation, self.face_min_elevation,
+            self.face_cell_indexes, _cell_face_count,
+        )
+        face_vel_A, face_vel_B = _rasmap.reconstruct_face_velocities(
+            face_normal_vel, self.face_normals[:, :2],
+            face_connected, self.face_cell_indexes,
+            cell_face_info[: self.n_cells], cell_face_values,
+        )
+        fp_face_info, fp_face_values = self.facepoint_face_orientation
+        fp_velocities, _ = _rasmap.compute_facepoint_velocities(
+            face_vel_A, face_vel_B, face_connected,
+            self.face_lengths,
+            self.face_facepoint_indexes, self.face_cell_indexes,
+            cell_wse, fp_face_info, fp_face_values,
+            face_value_a, face_value_b,
+        )
+        # Collapse one vector per adjacent-face context → single vector per facepoint.
+        n_fp = len(fp_velocities)
+        result = np.zeros((n_fp, 2), dtype=np.float64)
+        for fp in range(n_fp):
+            vecs = fp_velocities[fp]
+            if len(vecs):
+                result[fp] = vecs.mean(axis=0)
+        return result
 
     # ------------------------------------------------------------------
     # Derived results helpers (computed from HDF result arrays)
@@ -575,38 +630,6 @@ class FlowAreaResults(FlowArea):
     # ------------------------------------------------------------------
     # Raster export - delegates to raspy.geo (deferred import)
     # ------------------------------------------------------------------
-
-    def _max_velocity(
-        self,
-        method: Literal[
-            "area_weighted", "length_weighted", "flow_ratio"
-        ] = "area_weighted",
-        wse_interp: Literal["average", "sloped", "max"] = "average",
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Per-cell maximum speed and corresponding velocity vector.
-
-        Iterates over every timestep, computing WLS velocity vectors and
-        tracking the element-wise maximum speed along with the vector at
-        that peak-speed timestep.
-
-        Returns
-        -------
-        max_speed : ndarray, shape ``(n_cells,)``
-        max_vecs  : ndarray, shape ``(n_cells, 2)``
-            ``[Vx, Vy]`` at the timestep of each cell's peak speed.
-        """
-        n_t = self.water_surface.shape[0]
-        max_speed = np.full(self.n_cells, -np.inf)
-        max_vecs = np.zeros((self.n_cells, 2))
-
-        for t in range(n_t):
-            vecs = self.cell_velocity_vectors(t, method=method, wse_interp=wse_interp)
-            speed = np.sqrt(vecs[:, 0] ** 2 + vecs[:, 1] ** 2)
-            faster = speed > max_speed
-            max_speed[faster] = speed[faster]
-            max_vecs[faster] = vecs[faster]
-
-        return max_speed, max_vecs
 
     @log_call(logging.INFO)
     @timed(logging.INFO)
