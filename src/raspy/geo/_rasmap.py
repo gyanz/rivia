@@ -2062,10 +2062,16 @@ def rasterize_rasmap(
             fp_local_wse_adj = None
             face_local_wse = None
         elif use_sloped:
-            # DownwardAdjustFPValues (C# Renderer.cs:3267) — drag each
-            # facepoint WSE toward the cell-average so no corner value exceeds
-            # the mean (prevents uphill spikes at cell boundaries).
-            fp_local_wse_adj = _downward_adjust_fp_wse(float(cell_wse[cell_idx]), fp_local_wse)
+            # FacepointAdjustmentMode = None in all C# render configurations
+            # (SharedData.cs:1768, 1781, 1807, 1929) — DownwardAdjustFPValues
+            # is never called.
+            # Substitute NODATA facepoints with the cell's own WSE: boundary
+            # facepoints (on mesh perimeter, adjacent only to boundary faces)
+            # have no arc information so their best estimate is the cell WSE.
+            _cws = float(cell_wse[cell_idx])
+            fp_local_wse_adj = np.where(fp_local_wse == _NODATA, _cws, fp_local_wse)
+            if face_local_wse is not None:
+                face_local_wse = np.where(face_local_wse == _NODATA, _cws, face_local_wse)
         else:
             fp_local_wse_adj = fp_local_wse.copy() if fp_local_wse is not None else None
 

@@ -105,15 +105,27 @@ FACE_CI = np.array([
 ], dtype=np.int32)
 
 # cell_face_info: [start, count] + cell_face_values [face_idx, orientation]
-# cell0 has faces: 0,1,2,3 — orientations all 1 for simplicity
-# cell1 has faces: 3,4,5,6 — orientations all 1
+# CCW face ordering and orientations for each cell.
+# Convention: ori=1 → entry facepoint = fpA (face goes fpA→fpB CCW around cell)
+#             ori=0 → entry facepoint = fpB (face goes fpB→fpA CCW around cell)
+#
+# cell0 CCW polygon: fp0(0,1)→fp3(0,0)→fp4(1,0)→fp1(1,1)
+#   face0 fpA=fp0 entry=fp0 → ori=1
+#   face1 fpA=fp3 entry=fp3 → ori=1
+#   face3 fpA=fp1,fpB=fp4 entry=fp4 → ori=0
+#   face2 fpA=fp0,fpB=fp1 entry=fp1 → ori=0
+# cell1 CCW polygon: fp1(1,1)→fp4(1,0)→fp5(2,0)→fp2(2,1)
+#   face3 fpA=fp1 entry=fp1 → ori=1
+#   face4 fpA=fp4 entry=fp4 → ori=1
+#   face6 fpA=fp2,fpB=fp5 entry=fp5 → ori=0
+#   face5 fpA=fp1,fpB=fp2 entry=fp2 → ori=0
 CELL_FACE_INFO = np.array([
     [0, 4],   # cell0: start=0, count=4
     [4, 4],   # cell1: start=4, count=4
 ], dtype=np.int32)
 CELL_FACE_VALS = np.array([
-    [0, 1], [1, 1], [2, 1], [3, 1],   # cell0
-    [3, 0], [4, 1], [5, 1], [6, 1],   # cell1 (face3 orientation=0 from cell1 side)
+    [0, 1], [1, 1], [3, 0], [2, 0],   # cell0: CCW fp0→fp3→fp4→fp1
+    [3, 1], [4, 1], [6, 0], [5, 0],   # cell1: CCW fp1→fp4→fp5→fp2
 ], dtype=np.int32)
 
 # cell_face_count (for virtual cell detection)
