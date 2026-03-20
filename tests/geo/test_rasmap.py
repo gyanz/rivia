@@ -54,7 +54,7 @@ from raspy.geo._rasmap import (
     compute_face_wss,
     compute_facepoint_wse,
     reconstruct_face_velocities,
-    compute_vertex_velocities,
+    compute_facepoint_velocities,
     replace_face_velocities_sloped,
     _barycentric_weights,
     _donate,
@@ -105,15 +105,27 @@ FACE_CI = np.array([
 ], dtype=np.int32)
 
 # cell_face_info: [start, count] + cell_face_values [face_idx, orientation]
-# cell0 has faces: 0,1,2,3 — orientations all 1 for simplicity
-# cell1 has faces: 3,4,5,6 — orientations all 1
+# CCW face ordering and orientations for each cell.
+# Convention: ori=1 → entry facepoint = fpA (face goes fpA→fpB CCW around cell)
+#             ori=0 → entry facepoint = fpB (face goes fpB→fpA CCW around cell)
+#
+# cell0 CCW polygon: fp0(0,1)→fp3(0,0)→fp4(1,0)→fp1(1,1)
+#   face0 fpA=fp0 entry=fp0 → ori=1
+#   face1 fpA=fp3 entry=fp3 → ori=1
+#   face3 fpA=fp1,fpB=fp4 entry=fp4 → ori=0
+#   face2 fpA=fp0,fpB=fp1 entry=fp1 → ori=0
+# cell1 CCW polygon: fp1(1,1)→fp4(1,0)→fp5(2,0)→fp2(2,1)
+#   face3 fpA=fp1 entry=fp1 → ori=1
+#   face4 fpA=fp4 entry=fp4 → ori=1
+#   face6 fpA=fp2,fpB=fp5 entry=fp5 → ori=0
+#   face5 fpA=fp1,fpB=fp2 entry=fp2 → ori=0
 CELL_FACE_INFO = np.array([
     [0, 4],   # cell0: start=0, count=4
     [4, 4],   # cell1: start=4, count=4
 ], dtype=np.int32)
 CELL_FACE_VALS = np.array([
-    [0, 1], [1, 1], [2, 1], [3, 1],   # cell0
-    [3, 0], [4, 1], [5, 1], [6, 1],   # cell1 (face3 orientation=0 from cell1 side)
+    [0, 1], [1, 1], [3, 0], [2, 0],   # cell0: CCW fp0→fp3→fp4→fp1
+    [3, 1], [4, 1], [6, 0], [5, 0],   # cell1: CCW fp1→fp4→fp5→fp2
 ], dtype=np.int32)
 
 # cell_face_count (for virtual cell detection)
@@ -210,7 +222,10 @@ class TestComputeFaceWss:
 # ---------------------------------------------------------------------------
 
 def _make_fp_face_orientation():
-    """Build fp_face_info / fp_face_values for our minimal mesh (no HDF)."""
+    """Build fp_face_info / fp_face_values for our minimal mesh (no HDF).
+
+    orientation = -1 → this facepoint is fpA; +1 → fpB.
+    """
     n_fp = N_FP
     n_faces = N_FACES
     fp_counts = np.zeros(n_fp, dtype=np.int32)
@@ -226,11 +241,14 @@ def _make_fp_face_orientation():
     fp_vals = np.zeros((offset, 2), dtype=np.int32)
     current = np.zeros(n_fp, dtype=np.int32)
     for fi in range(n_faces):
-        fpA = int(FACE_FP[fi, 0]);  fpB = int(FACE_FP[fi, 1])
+        fpA = int(FACE_FP[fi, 0])
+        fpB = int(FACE_FP[fi, 1])
         pos_a = fp_info[fpA, 0] + current[fpA]
-        fp_vals[pos_a] = [fi, 0];  current[fpA] += 1
+        fp_vals[pos_a] = [fi, -1]  # -1 = this fp is fpA
+        current[fpA] += 1
         pos_b = fp_info[fpB, 0] + current[fpB]
-        fp_vals[pos_b] = [fi, 1];  current[fpB] += 1
+        fp_vals[pos_b] = [fi, 1]   # +1 = this fp is fpB
+        current[fpB] += 1
     return fp_info, fp_vals
 
 
@@ -241,38 +259,36 @@ class TestComputeFacepointWse:
         )
         fp_info, fp_vals = _make_fp_face_orientation()
         return compute_facepoint_wse(
-            FP_COORDS, fp_info, fp_vals, FACE_FP, val_a, val_b
+            FP_COORDS, fp_info, fp_vals, FACE_FP, val_a, val_b, face_connected
         )
 
-    def test_interior_facepoints_have_valid_wse(self):
-        """Facepoints shared by two wet cells (fp1, fp4) should have valid WSE.
+    def test_interior_face_has_valid_wse(self):
+        """The shared interior face (face3, fp1-fp4) should have valid WSE on both sides.
 
-        Corner/boundary facepoints (fp0, fp2, fp3, fp5) are only adjacent to
-        boundary faces; compute_face_wss skips those (cellB=-1), so those
-        facepoints legitimately remain nodata.
+        Boundary faces only have one live cell; their second column stays nodata.
         """
         fp_wse = self._run(np.array([2.0, 2.0]))
-        # fp1 (idx=1) and fp4 (idx=4) are at the shared face endpoints
-        assert fp_wse[1] != -9999.0, "fp1 should have valid WSE"
-        assert fp_wse[4] != -9999.0, "fp4 should have valid WSE"
-        # At least some facepoints have valid WSE
+        # face3 is the shared interior face (fp1=fpA, fp4=fpB)
+        assert fp_wse[3, 0] != -9999.0, "face3 fpA side should have valid WSE"
+        assert fp_wse[3, 1] != -9999.0, "face3 fpB side should have valid WSE"
+        # At least two entries in fp_wse should be valid
         assert (fp_wse != -9999.0).sum() >= 2
 
     def test_facepoint_wse_close_to_cell_wse(self):
-        """In a uniform WSE field, all facepoint WSEs should equal that value."""
+        """In a uniform WSE field, all valid arc WSEs should equal that value."""
         wse_val = 3.5
         fp_wse = self._run(np.full(N_CELLS, wse_val))
         valid = fp_wse[fp_wse != -9999.0]
         assert valid == pytest.approx(wse_val, abs=0.5)  # allow small regression error
 
     def test_all_dry_returns_nodata(self):
-        """Dry mesh → all facepoints nodata."""
+        """Dry mesh → all fp_wse_at_face entries nodata."""
         fp_wse = self._run(np.zeros(N_CELLS))  # WSE=0 = cell_min_elev
         assert (fp_wse == -9999.0).all()
 
     def test_output_shape(self):
         fp_wse = self._run(np.array([2.0, 2.0]))
-        assert fp_wse.shape == (N_FP,)
+        assert fp_wse.shape == (N_FACES, 2)
         assert fp_wse.dtype == np.float64
 
 
@@ -324,7 +340,7 @@ class TestReconstructFaceVelocities:
 
 
 # ---------------------------------------------------------------------------
-# Step 3: compute_vertex_velocities
+# Step 3: compute_facepoint_velocities
 # ---------------------------------------------------------------------------
 
 
@@ -343,7 +359,7 @@ class TestComputeVertexVelocities:
             fv, FACE_NORMALS_2D, fc, FACE_CI, CELL_FACE_INFO, CELL_FACE_VALS
         )
         fp_info, fp_vals = _make_fp_face_orientation()
-        return compute_vertex_velocities(
+        return compute_facepoint_velocities(
             A, B, fc, FACE_LENGTHS, FACE_FP, FACE_CI,
             cell_wse, fp_info, fp_vals, val_a, val_b
         )
@@ -393,7 +409,7 @@ class TestReplaceFaceVelocitiesSloped:
             fv, FACE_NORMALS_2D, fc, FACE_CI, CELL_FACE_INFO, CELL_FACE_VALS
         )
         fp_info, fp_vals = _make_fp_face_orientation()
-        vels, fmap = compute_vertex_velocities(
+        vels, fmap = compute_facepoint_velocities(
             A, B, fc, FACE_LENGTHS, FACE_FP, FACE_CI,
             cell_wse, fp_info, fp_vals, val_a, val_b
         )
@@ -416,7 +432,7 @@ class TestReplaceFaceVelocitiesSloped:
             fv, FACE_NORMALS_2D, fc, FACE_CI, CELL_FACE_INFO, CELL_FACE_VALS
         )
         fp_info, fp_vals = _make_fp_face_orientation()
-        vels, fmap = compute_vertex_velocities(
+        vels, fmap = compute_facepoint_velocities(
             A, B, fc, FACE_LENGTHS, FACE_FP, FACE_CI,
             cell_wse, fp_info, fp_vals, val_a, val_b
         )
@@ -590,19 +606,19 @@ def _make_rasmap_inputs(cell_wse_vals=(2.0, 2.0), face_vel=None):
         output_path=None,
         cell_size=0.5,
         nodata=-9999.0,
-        clip_to_perimeter=False,
+        tight_extent=False,
     )
 
 
 class TestRasmapRasterFlat:
-    """Tests for rasmap_raster with interp_mode='flat'."""
+    """Tests for rasmap_raster with render_mode='horizontal'."""
 
     def _run(self, variable="water_surface", cell_wse_vals=(2.0, 2.0), **kwargs):
         from raspy.geo.raster import rasmap_raster
         inputs = _make_rasmap_inputs(cell_wse_vals=cell_wse_vals)
         inputs["variable"] = variable
         inputs.update(kwargs)
-        ds = rasmap_raster(**inputs, interp_mode="flat")
+        ds = rasmap_raster(**inputs, render_mode="horizontal")
         try:
             data = ds.read(1)
         finally:
@@ -612,7 +628,7 @@ class TestRasmapRasterFlat:
     def test_returns_dataset(self):
         from raspy.geo.raster import rasmap_raster
         inputs = _make_rasmap_inputs()
-        ds = rasmap_raster(**inputs, interp_mode="flat")
+        ds = rasmap_raster(**inputs, render_mode="horizontal")
         assert ds is not None
         ds.close()
 
@@ -637,10 +653,10 @@ class TestRasmapRasterFlat:
         """variable='speed' without face_normal_velocity raises ValueError."""
         from raspy.geo.raster import rasmap_raster
         inputs = _make_rasmap_inputs()
-        inputs["variable"] = "speed"
+        inputs["variable"] = "velocity"
         inputs["face_normal_velocity"] = None
         with pytest.raises(ValueError, match="face_normal_velocity"):
-            rasmap_raster(**inputs, interp_mode="flat")
+            rasmap_raster(**inputs, render_mode="horizontal")
 
     def test_depth_requires_reference_raster(self):
         """variable='depth' without reference_raster raises ValueError."""
@@ -648,7 +664,7 @@ class TestRasmapRasterFlat:
         inputs = _make_rasmap_inputs()
         inputs["variable"] = "depth"
         with pytest.raises(ValueError, match="reference_raster"):
-            rasmap_raster(**inputs, interp_mode="flat")
+            rasmap_raster(**inputs, render_mode="horizontal")
 
     def test_no_grid_spec_raises(self):
         """Neither reference_raster nor cell_size → ValueError."""
@@ -657,7 +673,7 @@ class TestRasmapRasterFlat:
         del inputs["cell_size"]
         inputs["output_path"] = None
         with pytest.raises(ValueError):
-            rasmap_raster(**inputs, interp_mode="flat")
+            rasmap_raster(**inputs, render_mode="horizontal")
 
     def test_both_grid_specs_raises(self):
         """Both reference_raster and cell_size → ValueError."""
@@ -666,18 +682,18 @@ class TestRasmapRasterFlat:
         inputs = _make_rasmap_inputs()
         inputs["reference_raster"] = "some_file.tif"  # value doesn't matter — raises before open
         with pytest.raises((ValueError, Exception)):
-            rasmap_raster(**inputs, interp_mode="flat")
+            rasmap_raster(**inputs, render_mode="horizontal")
 
 
 class TestRasmapRasterSloping:
-    """Tests for rasmap_raster with interp_mode='sloping' (default)."""
+    """Tests for rasmap_raster with render_mode='sloping' (default)."""
 
     def _run(self, variable="water_surface", cell_wse_vals=(2.0, 2.0), **kwargs):
         from raspy.geo.raster import rasmap_raster
         inputs = _make_rasmap_inputs(cell_wse_vals=cell_wse_vals)
         inputs["variable"] = variable
         inputs.update(kwargs)
-        ds = rasmap_raster(**inputs, interp_mode="sloping")
+        ds = rasmap_raster(**inputs, render_mode="sloping")
         try:
             data = ds.read(1)
         finally:
@@ -706,13 +722,13 @@ class TestRasmapRasterSloping:
 
     def test_speed_variable_returns_2d(self):
         face_vel = np.ones(N_FACES, dtype=np.float64) * 0.5
-        data = self._run(variable="speed", face_normal_velocity=face_vel)
+        data = self._run(variable="velocity", face_normal_velocity=face_vel)
         assert data.ndim == 2
 
     def test_speed_nonnegative(self):
         """Speed (magnitude) must be ≥ 0 everywhere."""
         face_vel = np.random.default_rng(99).uniform(-1, 1, N_FACES)
-        data = self._run(variable="speed", face_normal_velocity=face_vel)
+        data = self._run(variable="velocity", face_normal_velocity=face_vel)
         valid = data[data != -9999.0]
         assert (valid >= 0.0).all()
 
@@ -722,7 +738,7 @@ class TestRasmapRasterSloping:
         out = tmp_path / "out.tif"
         inputs = _make_rasmap_inputs()
         inputs["output_path"] = str(out)
-        result = rasmap_raster(**inputs, interp_mode="sloping")
+        result = rasmap_raster(**inputs, render_mode="sloping")
         assert out.exists()
         assert str(result) == str(out)
 
@@ -731,8 +747,8 @@ class TestRasmapRasterSloping:
         from raspy.geo.raster import rasmap_raster
         inputs_flat   = _make_rasmap_inputs(cell_wse_vals=(2.0, 2.0))
         inputs_slope  = _make_rasmap_inputs(cell_wse_vals=(2.0, 2.0))
-        ds_flat  = rasmap_raster(**inputs_flat,  interp_mode="flat")
-        ds_slope = rasmap_raster(**inputs_slope, interp_mode="sloping")
+        ds_flat  = rasmap_raster(**inputs_flat,  render_mode="horizontal")
+        ds_slope = rasmap_raster(**inputs_slope, render_mode="sloping")
         try:
             assert ds_flat.shape  == ds_slope.shape
         finally:

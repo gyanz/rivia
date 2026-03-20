@@ -1,12 +1,32 @@
 """RasMapper integration for exporting hydraulic result rasters.
 
-Provides :class:`VrtMap` — a handle to a VRT raster exported by RasProcess.exe —
-and :class:`MapperExtension`, a mixin that adds ``store_map`` / ``open_map`` and
-per-variable convenience wrappers (``export_wse``, ``open_wse``, etc.) to the
-Model class.
+Provides :class:`VrtMap` — a handle to a VRT raster exported by the map-store
+executables — and :class:`MapperExtension`, a mixin that adds ``store_map`` /
+``open_map`` and per-variable convenience wrappers (``export_wse``,
+``open_wse``, etc.) to the Model class.
 
-RasProcess.exe always writes output to ``{project_dir}/{plan_short_id}/``
-regardless of any path configured in the rasmap XML.
+Two executables are used depending on the ``render_mode`` argument:
+
+- ``RasMapperStoreMap.exe`` (``render_mode`` is ``"sloping"``, ``"hybrid"``, or
+  ``"horizontal"``): the primary map-store tool, shipped with ``raspy`` in
+  ``src/raspy/bin/``.  Properly initialises RasMapperLib ``SharedData``
+  render-mode state before rendering, enabling deterministic, fully-specified
+  output.  The render mode that matches RasMapper's output depends on the
+  ``<RenderMode>`` configured in the project's ``.rasmap`` file.  Also supports
+  ``tight_extent=True`` (default), which clips output tiles to the model
+  geometry footprint (2D flow areas + cross sections + storage areas), matching
+  RasMapper's "Original Extent" behaviour.
+
+- ``RasProcess.exe`` (``render_mode=None``): the legacy HEC-RAS tool, used only
+  as a fallback.  Always renders with its built-in defaults
+  (sloping/JustFacepoints) regardless of the ``<RenderMode>`` element in the
+  ``.rasmap`` file.  ``tight_extent`` is not supported in this mode.
+
+Both executables write output to ``{project_dir}/{plan_short_id}/`` by default;
+supply ``output_path`` to direct output to a different directory.
+
+Author: Gyan Basyal
+Year: 2026
 """
 
 import atexit
@@ -294,28 +314,22 @@ class VrtMap:
 class MapperExtension:
     """Mixin that adds RasMapper stored-map export to :class:`raspy.model.Model`.
 
-    All public methods invoke ``RasProcess.exe`` (shipped with HEC-RAS) to
-    render hydraulic result maps and return them as :class:`VrtMap` handles or
-    open ``rasterio`` datasets.
+    Renders hydraulic result maps via ``RasMapperStoreMap.exe`` (primary, when
+    ``render_mode`` is set) or ``RasProcess.exe`` (fallback, ``render_mode=None``),
+    returning results as :class:`VrtMap` handles or open ``rasterio`` datasets.
 
-    **Export workflow** — two modes:
+    **Export workflow** — two families:
 
     - :meth:`export_wse` / :meth:`export_depth` / … write a persistent VRT to
       a caller-supplied path and return a :class:`VrtMap`.
     - :meth:`open_wse` / :meth:`open_depth` / … are context managers that yield
       an open ``rasterio.DatasetReader`` and clean up on exit.
 
-    Both families delegate to :meth:`store_map`, which in turn chooses between
-    two RasProcess.exe invocation strategies:
-
-    - **StoreAllMaps** (``output_path=None``): injects a single map layer into a
-      temporary copy of the project ``.rasmap`` file and calls
-      ``RasProcess.exe -Command=StoreAllMaps``. Output lands in
-      ``{project_dir}/{plan_short_id}/``.
-    - **StoreMap XML** (``output_path`` supplied): builds a ``<Command
-      Type="StoreMap">`` XML file with an absolute ``OutputBaseFilename`` and
-      calls ``RasProcess.exe -CommandFile=…``. Output lands in the supplied
-      directory.
+    Both families delegate to :meth:`store_map`.  A temporary copy of the
+    project ``.rasmap`` file is created with the target map layer injected and
+    ``OverwriteOutputFilename`` set; the chosen executable is then invoked with
+    that file.  Output lands in ``{project_dir}/{plan_short_id}/`` by default,
+    or in ``output_path`` when supplied.
 
     Variables supported: ``wse``, ``depth``, ``velocity``, ``froude``,
     ``shear_stress``, ``dv`` (depth × velocity), ``dv2`` (depth × velocity²).
@@ -466,6 +480,17 @@ class MapperExtension:
         return export_terrain(terrain_layer.filename, raster_path, copy=copy)
 
     def _locate_project_rasmap(self) -> Path:
+        """Locate the ``.rasmap`` file for the current project.
+
+        Prefers ``{project_file}.rasmap``; falls back to any single ``.rasmap``
+        file found in the plan directory.
+
+        Raises
+        ------
+        FileNotFoundError
+            If no ``.rasmap`` file is found, or if multiple candidates exist
+            and the preferred name is absent.
+        """
         rasmap = self.project_file.with_suffix(".rasmap")
         if rasmap.exists():
             return rasmap
@@ -509,7 +534,7 @@ class MapperExtension:
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> "VrtMap":
-        """Store one hydraulic result map via RasProcess.exe.
+        """Store one hydraulic result map via RasMapperStoreMap.exe or RasProcess.exe.
 
         Returns a :class:`VrtMap` handle to the written VRT and source tiles.
 
@@ -539,7 +564,8 @@ class MapperExtension:
             ``"hybrid"``, or ``"horizontal"`` — routes through
             ``RasMapperStoreMap.exe``, which properly initialises the render-mode
             state before executing the same underlying map-generation engine.
-            Use ``"hybrid"`` to match the RasMapper GUI display exactly.
+            The mode that matches RasMapper's output depends on the
+            ``<RenderMode>`` configured in the project's ``.rasmap`` file.
             Requires ``RasMapperStoreMap.exe`` in ``src/raspy/bin/`` when not
             ``None``.
         use_depth_weights:
@@ -551,14 +577,12 @@ class MapperExtension:
             (``ReduceShallowToHorizontal``).  Only meaningful with
             ``render_mode="hybrid"``.
         tight_extent:
-            When ``True``, the output raster extent is clipped to the model
-            geometry (2D flow area + cross sections + storage areas) rather
-            than the full terrain tile extent.  The clip is pixel-aligned —
-            output tiles cover exactly the terrain pixels that overlap the
-            model footprint.  Requires ``render_mode`` to be set (routes
-            through ``RasMapperStoreMap.exe``).  Default ``False`` matches
-            the terrain-tile extent behaviour (NoData outside the model but
-            tiles as large as the terrain).  Default ``True``.
+            When ``True`` (default), the output raster extent is clipped to
+            the model geometry (2D flow area + cross sections + storage areas),
+            pixel-aligned to the terrain grid — matching RasMapper's "Original
+            Extent" behaviour.  When ``False``, output tiles cover the full
+            terrain tile extent; cells outside the model are NoData.  Requires
+            ``render_mode`` to be set (routes through ``RasMapperStoreMap.exe``).
         stream_output:
             When ``True`` (default) subprocess stdout/stderr are logged
             line-by-line in real time.  When ``False`` output is captured
@@ -958,7 +982,7 @@ class MapperExtension:
         timestep:
             Zero-based timestep index.  ``None`` uses the maximum-value profile.
         render_mode:
-            Passed through to :meth:`store_map`.  Defaults to ``"sloping"``.
+            Passed through to :meth:`store_map`.  Defaults to ``"horizontal"``.
         use_depth_weights:
             Passed through to :meth:`store_map`.
         shallow_to_flat:
@@ -1041,9 +1065,11 @@ class MapperExtension:
         render_mode:
             Water-surface interpolation mode passed to :meth:`store_map`.
             ``"horizontal"`` (default) renders a flat per-cell water surface.
-            ``"sloping"`` uses cell-corner facepoints and routes through
-            ``RasMapperStoreMap.exe``.  ``"hybrid"`` adds face centroids and
-            matches the RasMapper GUI display.
+            ``"sloping"`` uses cell-corner facepoints only.  ``"hybrid"`` adds
+            face centroids with optional depth-weighted interpolation.  Any
+            explicit value routes through ``RasMapperStoreMap.exe``; the mode
+            that matches RasMapper's output depends on the project's
+            ``.rasmap`` setting.
         use_depth_weights:
             When ``True``, face weights are depth-proportional.  Only
             meaningful with ``render_mode="hybrid"``.
@@ -1162,9 +1188,11 @@ class MapperExtension:
         render_mode:
             Water-surface interpolation mode passed to :meth:`store_map`.
             ``"horizontal"`` (default) renders a flat per-cell water surface.
-            ``"sloping"`` uses cell-corner facepoints and routes through
-            ``RasMapperStoreMap.exe``.  ``"hybrid"`` adds face centroids and
-            matches the RasMapper GUI display.
+            ``"sloping"`` uses cell-corner facepoints only.  ``"hybrid"`` adds
+            face centroids with optional depth-weighted interpolation.  Any
+            explicit value routes through ``RasMapperStoreMap.exe``; the mode
+            that matches RasMapper's output depends on the project's
+            ``.rasmap`` setting.
         use_depth_weights:
             When ``True``, face weights are depth-proportional.  Only
             meaningful with ``render_mode="hybrid"``.
@@ -1283,9 +1311,11 @@ class MapperExtension:
         render_mode:
             Water-surface interpolation mode passed to :meth:`store_map`.
             ``"horizontal"`` (default) renders a flat per-cell water surface.
-            ``"sloping"`` uses cell-corner facepoints and routes through
-            ``RasMapperStoreMap.exe``.  ``"hybrid"`` adds face centroids and
-            matches the RasMapper GUI display.
+            ``"sloping"`` uses cell-corner facepoints only.  ``"hybrid"`` adds
+            face centroids with optional depth-weighted interpolation.  Any
+            explicit value routes through ``RasMapperStoreMap.exe``; the mode
+            that matches RasMapper's output depends on the project's
+            ``.rasmap`` setting.
         use_depth_weights:
             When ``True``, face weights are depth-proportional.  Only
             meaningful with ``render_mode="hybrid"``.
@@ -1404,9 +1434,11 @@ class MapperExtension:
         render_mode:
             Water-surface interpolation mode passed to :meth:`store_map`.
             ``"horizontal"`` (default) renders a flat per-cell water surface.
-            ``"sloping"`` uses cell-corner facepoints and routes through
-            ``RasMapperStoreMap.exe``.  ``"hybrid"`` adds face centroids and
-            matches the RasMapper GUI display.
+            ``"sloping"`` uses cell-corner facepoints only.  ``"hybrid"`` adds
+            face centroids with optional depth-weighted interpolation.  Any
+            explicit value routes through ``RasMapperStoreMap.exe``; the mode
+            that matches RasMapper's output depends on the project's
+            ``.rasmap`` setting.
         use_depth_weights:
             When ``True``, face weights are depth-proportional.  Only
             meaningful with ``render_mode="hybrid"``.
@@ -1525,9 +1557,11 @@ class MapperExtension:
         render_mode:
             Water-surface interpolation mode passed to :meth:`store_map`.
             ``"horizontal"`` (default) renders a flat per-cell water surface.
-            ``"sloping"`` uses cell-corner facepoints and routes through
-            ``RasMapperStoreMap.exe``.  ``"hybrid"`` adds face centroids and
-            matches the RasMapper GUI display.
+            ``"sloping"`` uses cell-corner facepoints only.  ``"hybrid"`` adds
+            face centroids with optional depth-weighted interpolation.  Any
+            explicit value routes through ``RasMapperStoreMap.exe``; the mode
+            that matches RasMapper's output depends on the project's
+            ``.rasmap`` setting.
         use_depth_weights:
             When ``True``, face weights are depth-proportional.  Only
             meaningful with ``render_mode="hybrid"``.
@@ -1646,9 +1680,11 @@ class MapperExtension:
         render_mode:
             Water-surface interpolation mode passed to :meth:`store_map`.
             ``"horizontal"`` (default) renders a flat per-cell water surface.
-            ``"sloping"`` uses cell-corner facepoints and routes through
-            ``RasMapperStoreMap.exe``.  ``"hybrid"`` adds face centroids and
-            matches the RasMapper GUI display.
+            ``"sloping"`` uses cell-corner facepoints only.  ``"hybrid"`` adds
+            face centroids with optional depth-weighted interpolation.  Any
+            explicit value routes through ``RasMapperStoreMap.exe``; the mode
+            that matches RasMapper's output depends on the project's
+            ``.rasmap`` setting.
         use_depth_weights:
             When ``True``, face weights are depth-proportional.  Only
             meaningful with ``render_mode="hybrid"``.
@@ -1767,9 +1803,11 @@ class MapperExtension:
         render_mode:
             Water-surface interpolation mode passed to :meth:`store_map`.
             ``"horizontal"`` (default) renders a flat per-cell water surface.
-            ``"sloping"`` uses cell-corner facepoints and routes through
-            ``RasMapperStoreMap.exe``.  ``"hybrid"`` adds face centroids and
-            matches the RasMapper GUI display.
+            ``"sloping"`` uses cell-corner facepoints only.  ``"hybrid"`` adds
+            face centroids with optional depth-weighted interpolation.  Any
+            explicit value routes through ``RasMapperStoreMap.exe``; the mode
+            that matches RasMapper's output depends on the project's
+            ``.rasmap`` setting.
         use_depth_weights:
             When ``True``, face weights are depth-proportional.  Only
             meaningful with ``render_mode="hybrid"``.

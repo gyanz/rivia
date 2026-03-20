@@ -57,6 +57,7 @@ _TS_SA_CONN = f"{_TS_ROOT}/SA 2D Area Conn"
 _TIME_DS = f"{_TS_ROOT}/Time"
 _TIME_STAMP_DS = f"{_TS_ROOT}/Time Date Stamp"
 
+
 # Timestamp format written by HEC-RAS (e.g. "03Jan2000 00:00:00")
 _RAS_TS_FMT = "%d%b%Y %H:%M:%S"
 
@@ -1060,7 +1061,7 @@ class FlowAreaResults(FlowArea):
     @timed(logging.INFO)
     def export_raster2(
         self,
-        variable: Literal["water_surface", "depth", "speed", "velocity"],
+        variable: Literal["wse", "water_surface", "depth", "velocity"],
         timestep: int | None = None,
         output_path: str | Path | None = None,
         *,
@@ -1068,30 +1069,33 @@ class FlowAreaResults(FlowArea):
         cell_size: float | None = None,
         crs: Any | None = None,
         nodata: float = -9999.0,
-        interp_mode: Literal["flat", "sloping"] = "sloping",
+        render_mode: Literal["horizontal", "sloping", "hybrid"] = "sloping",
+        use_depth_weights: bool = False,
+        shallow_to_flat: bool = False,
         depth_threshold: float = 0.001,
-        clip_to_perimeter: bool = True,
+        tight_extent: bool = True,
     ) -> Path | rasterio.io.DatasetReader:
         """Rasterize a result variable using the RASMapper-exact algorithm.
 
         Implements the pixel-perfect pipeline reverse-engineered from
-        ``RasMapperLib.dll`` (CLB Engineering, 2026), validated against
-        RASMapper VRT exports — median |diff| = 0.000000.  Replaces the
+        ``archive/DLLs/RasMapperLib/`` (decompiled C# source, HEC-RAS 6.6),
+        validated against RASMapper VRT exports — median |diff| = 0.000000.
+        Replaces the
         older :meth:`export_raster` triangulation-based approach for
-        ``water_surface``, ``depth``, ``speed``, and ``velocity``.
+        ``water_surface``, ``depth``, and ``velocity``.
 
         Parameters
         ----------
         variable:
-            ``"water_surface"`` — water-surface elevation.
-            ``"depth"``         — water depth; requires *reference_raster*.
-            ``"speed"``         — velocity magnitude.
-            ``"velocity"``      — 4-band raster ``[Vx, Vy, speed, dir_deg]``.
+            ``"wse"`` / ``"water_surface"`` — water-surface elevation.
+            ``"depth"``    — water depth (WSE minus terrain); requires
+                             *reference_raster*.
+            ``"velocity"`` — velocity magnitude ``sqrt(Vx²+Vy²)``; requires
+                             an explicit *timestep*.
         timestep:
             0-based time index.  Pass ``None`` to use the time of maximum
-            water-surface elevation (supported for ``"water_surface"`` and
-            ``"depth"`` only; raises ``ValueError`` for ``"speed"`` /
-            ``"velocity"``).
+            water-surface elevation (``"wse"``/``"water_surface"`` and
+            ``"depth"`` only; raises ``ValueError`` for ``"velocity"``).
         output_path:
             Destination ``.tif`` file path.  ``None`` returns an open
             in-memory ``rasterio.DatasetReader``; the caller must close it.
@@ -1109,14 +1113,27 @@ class FlowAreaResults(FlowArea):
             Output CRS.  Inherited from *reference_raster* when ``None``.
         nodata:
             Fill value for dry / out-of-domain pixels (default ``-9999``).
-        interp_mode:
-            ``"sloping"`` (default) — full RASMapper pipeline with per-pixel
-            WSE interpolation and sloped wet/dry masking.
-            ``"flat"`` — cell value painted directly over each owned pixel.
+        render_mode:
+            ``"sloping"`` (default) — RASMapper "Sloping Cell Corners";
+            uses corner facepoints only.  RasMapperLib hardcodes
+            ``shallow_to_flat=True`` for this mode; the user-supplied value
+            is overridden.  Matches ``store_map(render_mode="sloping")``.
+            ``"hybrid"`` — "Sloping Cell Corners + Face Centers";
+            ``use_depth_weights`` and ``shallow_to_flat`` are honoured.
+            Matches ``store_map(render_mode="hybrid")``.
+            ``"horizontal"`` — flat per-cell value; facepoint interpolation
+            is skipped.  Matches ``store_map(render_mode="horizontal")``.
+        use_depth_weights:
+            Weight face contributions by water depth.  **``hybrid`` only**;
+            forced ``False`` for other modes.  Requires *reference_raster*.
+        shallow_to_flat:
+            Render cells with no hydraulically-connected faces flat.
+            **``hybrid`` only** (user-configurable); forced ``True`` for
+            ``"sloping"`` per RasMapperLib, ``False`` for ``"horizontal"``.
         depth_threshold:
             Minimum depth for a pixel to be considered wet (default
             ``0.001``).  Matches ``RASResults.MinWSPlotTolerance``.
-        clip_to_perimeter:
+        tight_extent:
             When ``True`` (default), pixels outside the flow-area boundary
             polygon are set to *nodata*.
 
@@ -1133,14 +1150,14 @@ class FlowAreaResults(FlowArea):
             If ``rasterio`` or ``shapely`` are not installed.
         ValueError
             If ``variable="depth"`` and *reference_raster* is not provided.
-            If ``variable="speed"`` or ``"velocity"`` and ``timestep=None``.
+            If ``variable="velocity"`` and ``timestep=None``.
             If neither *reference_raster* nor *cell_size* is provided.
         """
         from raspy.geo import raster as _raster
 
-        if variable in ("speed", "velocity") and timestep is None:
+        if variable == "velocity" and timestep is None:
             raise ValueError(
-                "timestep=None is not supported for speed / velocity. "
+                "timestep=None is not supported for velocity. "
                 "Provide an explicit timestep index."
             )
         if reference_raster is None and cell_size is None:
@@ -1154,7 +1171,7 @@ class FlowAreaResults(FlowArea):
             cell_wse = self._wse(timestep)
 
         face_normal_velocity: np.ndarray | None = None
-        if variable in ("speed", "velocity"):
+        if variable == "velocity":
             face_normal_velocity = np.array(self.face_velocity[timestep, :])
 
         cell_face_info, cell_face_values = self.cell_face_info
@@ -1177,13 +1194,16 @@ class FlowAreaResults(FlowArea):
             cell_polygons=self.cell_polygons,
             face_normal_velocity=face_normal_velocity,
             output_path=output_path,
+            cell_centers=self.cell_centers,
             reference_raster=reference_raster,
             cell_size=cell_size,
             crs=crs,
             nodata=nodata,
-            interp_mode=interp_mode,
+            render_mode=render_mode,
+            use_depth_weights=use_depth_weights,
+            shallow_to_flat=shallow_to_flat,
             depth_threshold=depth_threshold,
-            clip_to_perimeter=clip_to_perimeter,
+            tight_extent=tight_extent,
             perimeter=self.perimeter,
         )
 
@@ -3515,6 +3535,54 @@ class PlanHdf(GeometryHdf):
         self._sa_connections: SA2DConnectionCollection | None = None
 
     # ------------------------------------------------------------------
+    # File metadata
+    # ------------------------------------------------------------------
+
+    @property
+    def ras_version(self) -> str:
+        """HEC-RAS version string from the plan HDF root attribute.
+
+        Returns the ``File Version`` root attribute, e.g.
+        ``'HEC-RAS 6.6 September 2024'``.
+        """
+        raw = self._hdf.attrs["File Version"]
+        return raw.decode() if isinstance(raw, (bytes, np.bytes_)) else str(raw)
+
+    @property
+    def time_step(self) -> float | None:
+        """Output time step in seconds, or ``None`` for steady-flow plans.
+
+        Derived from the difference between the first two time stamps.
+        Returns ``None`` when the time-stamp dataset is absent (steady plans
+        have no unsteady output block).
+        """
+        ds = self._hdf.get(_TIME_STAMP_DS)
+        if ds is None:
+            return None
+        raw = np.array(ds[:2]).astype(str)
+        ts = pd.to_datetime(raw, format=_RAS_TS_FMT)
+        return (ts[1] - ts[0]).total_seconds()
+
+    @property
+    def projection(self) -> str | None:
+        """WKT projection string stored in the plan HDF root, or ``None``.
+
+        HEC-RAS writes the model CRS as a WKT string in the root attribute
+        ``Projection``.  Returns ``None`` when the attribute is absent (older
+        files or models without a defined projection).
+
+        The raw WKT string can be converted to a ``pyproj.CRS`` or a
+        ``rasterio.crs.CRS`` object if needed::
+
+            import pyproj
+            crs = pyproj.CRS.from_wkt(hdf.projection)
+        """
+        raw = self._hdf.attrs.get("Projection")
+        if raw is None:
+            return None
+        return raw.decode() if isinstance(raw, (bytes, np.bytes_)) else str(raw)
+
+    # ------------------------------------------------------------------
     # Time stamps
     # ------------------------------------------------------------------
 
@@ -3533,6 +3601,14 @@ class PlanHdf(GeometryHdf):
             )
         raw = np.array(ds).astype(str)
         return pd.to_datetime(raw, format=_RAS_TS_FMT)
+
+    @property
+    def n_timesteps(self) -> int | None:
+        """Number of output time steps, or ``None`` for steady-flow plans."""
+        ds = self._hdf.get(_TIME_STAMP_DS)
+        if ds is None:
+            return None
+        return len(ds)
 
     # ------------------------------------------------------------------
     # Collections (override GeometryHdf.flow_areas)

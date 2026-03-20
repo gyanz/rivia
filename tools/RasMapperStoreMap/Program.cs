@@ -1,6 +1,9 @@
 /*
  * RasMapperStoreMap.exe
  *
+ * Author: Gyan Basyal
+ * Year:   2026
+ *
  * Headless stored-map generator for HEC-RAS that respects the <RenderMode>,
  * <UseDepthWeightedFaces>, <ReduceShallowToHorizontal>, and <TightExtent>
  * settings.  RasProcess.exe ignores render-mode state (SharedData defaults to
