@@ -944,7 +944,7 @@ class FlowArea:
         -----
         Derived from ``_build_fp_face_connectivity`` and
         ``_sort_fp_faces_by_angle`` in
-        ``velocity_rasterizer_combined.py`` (CLB Engineering, 2026).
+        ``archive/DLLs/RasMapperLib/MeshFV2D.cs`` (HEC-RAS 6.6).
         """
         cache_key = "_facepoint_face_orientation"
         if cache_key in self._cache:

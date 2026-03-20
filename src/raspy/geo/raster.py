@@ -2524,7 +2524,8 @@ def rasmap_raster(
     """Rasterize HEC-RAS 2D mesh results using the RASMapper-exact algorithm.
 
     Implements the pixel-perfect pipeline reverse-engineered from
-    ``RasMapperLib.dll`` (CLB Engineering, 2026).  Produces output matching
+    ``archive/DLLs/RasMapperLib/`` (decompiled C# source, HEC-RAS 6.6).
+    Produces output matching
     RASMapper's ``"Horizontal"``, ``"Sloping Cell Corners"``, and
     ``"Sloping Cell Corners + Face Centers"`` render modes.
 
@@ -2579,8 +2580,14 @@ def rasmap_raster(
 
     **velocity — horizontal** (``render_mode="horizontal"``)
 
-    Area-weighted mean of ``|face_normal_velocity|`` over each cell's faces,
-    painted directly per pixel.  No facepoint reconstruction is performed.
+    RASMapper uses its stencil pipeline (``Render2D_8Stencil``) for velocity
+    even in horizontal mode whenever cells are large relative to the pixel
+    size (threshold = ``pixel_size² × 5``, ``MeshFV2D.cs`` line 1431).  For
+    typical HEC-RAS 2D meshes all cells exceed this threshold, so this
+    implementation routes horizontal-velocity requests through the same
+    sloping stencil pipeline (Steps A, 2, 3, 3.5, 4) as ``"sloping"``
+    mode.  ``shallow_to_flat`` is always ``False`` for this route.  WSE and
+    depth still use the flat per-cell paint path.
 
     Parameters
     ----------
@@ -2855,24 +2862,18 @@ def rasmap_raster(
     wet_mask = (cell_wse - cell_min_elevation[:n_cells]) > depth_threshold
 
     # -- 3a. Flat mode — paint cell values directly -------------------------
-    if render_mode == "horizontal":
+    # RASMapper uses the stencil pipeline for velocity even in "horizontal"
+    # mode whenever cells are large relative to the pixel size (threshold =
+    # pixel_size² × 5).  For typical HEC-RAS meshes all cells exceed this
+    # threshold, so horizontal velocity is rendered with the sloping stencil.
+    # We mirror this by directing velocity to the sloping pipeline below.
+    # WSE and depth keep their flat (per-cell) rendering.
+    _flat_velocity = render_mode == "horizontal" and variable == "velocity"
+    if render_mode == "horizontal" and not _flat_velocity:
         cell_id_grid = _rasmap.build_cell_id_raster(
             cell_polygons, wet_mask, out_transform, out_height, out_width
         )
         valid_rows, valid_cols = np.where(cell_id_grid > 0)
-        if variable == "velocity" and face_normal_velocity is not None:
-            # Flat velocity: area-weighted mean of |face_vel| over cell faces
-            face_areas = face_normals[:, 2]  # lengths used as area proxy
-            cell_speed_flat = np.zeros(n_cells, dtype=np.float32)
-            for ci in range(n_cells):
-                start = int(cell_face_info[ci, 0])
-                count = int(cell_face_info[ci, 1])
-                fids  = cell_face_values[start : start + count, 0]
-                lens  = face_areas[fids]
-                vels  = np.abs(face_normal_velocity[fids])
-                total = float(lens.sum())
-                val = float((vels * lens).sum() / total) if total > 0 else 0.0
-                cell_speed_flat[ci] = val
 
         out_arr: np.ndarray = np.full((out_height, out_width), nodata, dtype=np.float32)
         for idx in range(len(valid_rows)):
@@ -2893,11 +2894,10 @@ def rasmap_raster(
                     continue
                 dep = float(cell_wse[ci]) - t
                 out_arr[r, c] = np.float32(max(0.0, dep)) if dep > 0 else nodata
-            elif variable == "velocity":
-                out_arr[r, c] = cell_speed_flat[ci]
 
-    # -- 3b. Sloping mode — full RASMapper pipeline -------------------------
-    else:
+    # -- 3b. Sloping/hybrid mode — full RASMapper stencil pipeline ----------
+    # Also used for horizontal-mode velocity (see comment above).
+    if render_mode != "horizontal" or _flat_velocity:
         # Step A: hydraulic connectivity
         face_connected, face_value_a, face_value_b = _rasmap.compute_face_wss(
             cell_wse, cell_min_elevation, face_min_elevation,

@@ -1,14 +1,16 @@
 """RASMapper-exact 2D mesh rasterization pipeline.
 
-Implements the pixel-perfect algorithm reverse-engineered from RasMapperLib.dll
-(C#/.NET) by CLB Engineering Corporation (2026).  All functions are pure-numpy /
-pure-Python with an optional Numba JIT path for the hot pixel-interpolation loop.
+Implements the pixel-perfect algorithm reverse-engineered from the decompiled
+C#/.NET source of ``RasMapperLib.dll`` (HEC-RAS 6.6).  All functions are
+pure-numpy / pure-Python with an optional Numba JIT path for the hot
+pixel-interpolation loop.
 
 Reference
 ---------
-``archive/velocity_rasterizer_standalone/velocity_rasterizer_standalone/
-velocity_rasterizer_combined.py`` — validated pixel-perfect against RASMapper
-VRT exports (median |diff| = 0.000000 ft/s across all test plans).
+``archive/DLLs/RasMapperLib/`` — decompiled C# source of ``RasMapperLib.dll``
+(HEC-RAS 6.6).  Key files: ``MeshFV2D.cs``, ``Renderer.cs``,
+``RASGeometryMapPoints.cs``, ``FaceVelocityCoef.cs``.  Validated pixel-perfect
+against RASMapper VRT exports (median |diff| = 0.000000 across all test plans).
 
 Pipeline stages (see ``export_raster2_plan.md`` for full description)
 ----------------------------------------------------------------------
@@ -96,8 +98,8 @@ def compute_face_wss(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Step A — hydraulic connectivity and per-face WSE values.
 
-    Replicates ``compute_face_wss_new`` from ``velocity_rasterizer_combined.py``
-    which mirrors ``MeshFV2D.cs`` / ``RASResults.cs`` internal logic.
+    Replicates ``ComputeFaceWSS`` from ``archive/DLLs/RasMapperLib/MeshFV2D.cs``
+    (``RASResults.cs`` internal logic).
 
     For each face the function determines whether water is actively flowing
     across it (hydraulic connectivity) and assigns a WSE value to each side
@@ -392,7 +394,8 @@ def _compute_face_midsides(
 ) -> np.ndarray:
     """Precompute face application points (midsides) for PlanarRegressionZ.
 
-    Replicates the non-cached ``GetFaceMidSide`` path from ``MeshFV2D.cs``
+    Replicates the non-cached ``GetFaceMidSide`` path from
+    ``archive/DLLs/RasMapperLib/MeshFV2D.cs``
     (``USE_FACE_MIDSIDE_CACHING = false``).
 
     For **internal faces** (both cells real, i.e. cell index >= 0): finds the
@@ -495,7 +498,7 @@ def _planar_z_intercept(
 ) -> float:
     """Fit a plane Z = a*dx + b*dy + c and return c at (base_x, base_y).
 
-    Matches ``PlanarRegressionZ`` in ``MeshFV2D.cs``.  Working in local
+    Matches ``PlanarRegressionZ`` in ``archive/DLLs/RasMapperLib/MeshFV2D.cs``.  Working in local
     coordinates ``dx = x - base_x``, ``dy = y - base_y`` so that evaluating
     the plane at the origin (the facepoint) gives Z = c directly.
 
@@ -581,8 +584,9 @@ def compute_facepoint_wse(
 ) -> np.ndarray:
     """Step B — arc-based per-facepoint WSE via PlanarRegressionZ.
 
-    Replicates ``ComputeFacePointWSs`` from ``MeshFV2D.cs`` exactly,
-    including the arc decomposition at wet/dry boundaries.
+    Replicates ``ComputeFacePointWSs`` from
+    ``archive/DLLs/RasMapperLib/MeshFV2D.cs`` exactly, including the arc
+    decomposition at wet/dry boundaries.
 
     **Arc-based algorithm** (``MeshFV2D.cs:9483``)
 
@@ -765,7 +769,8 @@ def compute_facepoint_wse(
 class _FaceVelocityCoef:
     """Symmetric 2x2 normal-equation matrix for the C-stencil WLS solve.
 
-    Mirrors ``FaceVelocityCoef`` in ``MeshFV2D.cs``.
+    Mirrors ``FaceVelocityCoef`` in
+    ``archive/DLLs/RasMapperLib/MeshFV2D.cs``.
     """
     __slots__ = ("A11", "A22", "A12", "_ct")
 
@@ -831,8 +836,8 @@ def _solve_face_vector(
 ) -> tuple[float, float]:
     """Reconstruct 2D velocity vector at a face from a 3-face C-stencil.
 
-    Mirrors ``solve_face_vector_c`` in ``velocity_rasterizer_combined.py``
-    (``MeshFV2D.cs``).
+    Mirrors the C-stencil solve in
+    ``archive/DLLs/RasMapperLib/MeshFV2D.cs``.
     """
     tan_x = fn_y
     tan_y = -fn_x
@@ -862,8 +867,8 @@ def reconstruct_face_velocities(
     ``(Vx, Vy)`` velocity vector at every face by estimating the missing
     tangential component via a 3-face C-stencil.
 
-    Replicates ``reconstruct_face_velocities_least_squares`` from RASMapper's
-    ``MeshFV2D.cs`` (also exposed in ``velocity_rasterizer_combined.py``).
+    Replicates ``ReconstructFaceVelocitiesLeastSquares`` from
+    ``archive/DLLs/RasMapperLib/MeshFV2D.cs``.
 
     Algorithm
     ---------
@@ -1072,8 +1077,8 @@ def compute_facepoint_velocities(
 ) -> tuple[list[np.ndarray], dict[tuple[int, int], int]]:
     """Step 3 — inverse-face-length weighted facepoint velocity averaging.
 
-    Replicates ``compute_vertex_velocities`` from
-    ``velocity_rasterizer_combined.py`` (``MeshFV2D.cs``).
+    Replicates ``ComputeVertexVelocities`` from
+    ``archive/DLLs/RasMapperLib/MeshFV2D.cs``.
 
     **Goal**
 
@@ -1266,8 +1271,8 @@ def replace_face_velocities_sloped(
 ) -> np.ndarray:
     """Step 3.5 — replace face velocity with average of endpoint facepoint velocities.
 
-    Replicates ``replace_face_velocities_sloped`` from
-    ``velocity_rasterizer_combined.py`` (``MeshFV2D.cs``).
+    Replicates ``ReplaceFaceVelocitiesSloped`` from
+    ``archive/DLLs/RasMapperLib/MeshFV2D.cs``.
 
     **Context**
 
@@ -1346,7 +1351,7 @@ def replace_face_velocities_sloped(
 def _barycentric_weights(px: float, py: float, verts_x: np.ndarray, verts_y: np.ndarray) -> np.ndarray:
     """Generalised polygon barycentric coordinates, cast to float32.
 
-    Matches C# ``RASGeometryMapPoints.cs:2956``
+    Matches ``archive/DLLs/RasMapperLib/RASGeometryMapPoints.cs:2956``
     ``fpWeights[l] = (float)(array[l] / num3)``.
     """
     N = len(verts_x)
@@ -1391,7 +1396,7 @@ def _donate(fp_weights: np.ndarray) -> np.ndarray:
     updated facepoint weights; last N entries are face-midpoint weights.
 
     Matches ``redistribute_weights_to_edge_midpoints`` /
-    C# ``RASGeometryMapPoints.cs`` donate logic.
+    ``archive/DLLs/RasMapperLib/RASGeometryMapPoints.cs`` donate logic.
     """
     N = len(fp_weights)
     w = np.zeros(2 * N, dtype=np.float64)
@@ -1601,8 +1606,9 @@ def build_cell_id_raster(
 
     Only wet cells (``wet_mask[c] == True``) are rasterized.
 
-    Mirrors ``RasterizePolygon.ComputeCells`` (``RasterizePolygon.cs``) called
-    from ``MeshFV2D.cs`` in RasMapperLib.
+    Mirrors ``RasterizePolygon.ComputeCells``
+    (``archive/DLLs/RasMapperLib/RasterizePolygon.cs``) called from
+    ``MeshFV2D.cs``.
 
     **Differences from RasMapperLib**
 
@@ -1776,7 +1782,7 @@ def rasterize_rasmap(
     """Step 4 — pixel-level barycentric interpolation for all wet cells.
 
     Replicates ``PaintCell_8Stencil`` / ``PaintCell_8Stencil_RebalanceWeights``
-    from ``Renderer.cs`` in RasMapperLib.
+    from ``archive/DLLs/RasMapperLib/Renderer.cs``.
 
     **Algorithm**
 
@@ -2097,9 +2103,13 @@ def rasterize_rasmap(
         nb_face_vx: np.ndarray | None = None
         nb_face_vy: np.ndarray | None = None
         if variable in ("speed", "velocity") and fp_velocities is not None:
-            # Corner velocities: look up the (facepoint, face) pair in the
-            # local map from Step 3.  If replaced_face_vel is available
-            # (Step 3.5 rebalance) it overrides the raw facepoint value.
+            # Corner (facepoint) velocities: use the arc-context facepoint
+            # velocity from Step 3 — fp_velocities[fp_i][lj] is the weighted
+            # average of C-stencil face velocities in the hydraulically
+            # connected arc that includes face fi, viewed from facepoint fp_i.
+            # This matches C# GetLocalFacepointValues → fpVelocityRing[fPPrev]
+            # .Velocity[...].  Do NOT use replaced_face_vel (face-averaged
+            # facepoint velocity) — that was wrong for the pixel stencil.
             nb_fp_vx = np.zeros(N, dtype=np.float64)
             nb_fp_vy = np.zeros(N, dtype=np.float64)
             for i in range(N):
@@ -2108,8 +2118,8 @@ def rasterize_rasmap(
                 key  = (fp_i, fi)
                 if key in fp_face_local_map:
                     lj = fp_face_local_map[key]
-                    nb_fp_vx[i] = float(replaced_face_vel[fi, 0]) if replaced_face_vel is not None else float(fp_velocities[fp_i][lj, 0])
-                    nb_fp_vy[i] = float(replaced_face_vel[fi, 1]) if replaced_face_vel is not None else float(fp_velocities[fp_i][lj, 1])
+                    nb_fp_vx[i] = float(fp_velocities[fp_i][lj, 0])
+                    nb_fp_vy[i] = float(fp_velocities[fp_i][lj, 1])
             # Face-midpoint velocities: select the cell-side value from the
             # two face velocity arrays (face_vel_A for cellA, face_vel_B for
             # cellB), matching the same cellA/cellB logic as the WSE arrays.

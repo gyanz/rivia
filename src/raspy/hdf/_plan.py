@@ -1077,8 +1077,9 @@ class FlowAreaResults(FlowArea):
         """Rasterize a result variable using the RASMapper-exact algorithm.
 
         Implements the pixel-perfect pipeline reverse-engineered from
-        ``RasMapperLib.dll`` (CLB Engineering, 2026), validated against
-        RASMapper VRT exports — median |diff| = 0.000000.  Replaces the
+        ``archive/DLLs/RasMapperLib/`` (decompiled C# source, HEC-RAS 6.6),
+        validated against RASMapper VRT exports — median |diff| = 0.000000.
+        Replaces the
         older :meth:`export_raster` triangulation-based approach for
         ``water_surface``, ``depth``, and ``velocity``.
 
