@@ -54,7 +54,7 @@ from raspy.geo._rasmap import (
     compute_face_wss,
     compute_facepoint_wse,
     reconstruct_face_velocities,
-    compute_vertex_velocities,
+    compute_facepoint_velocities,
     replace_face_velocities_sloped,
     _barycentric_weights,
     _donate,
@@ -324,7 +324,7 @@ class TestReconstructFaceVelocities:
 
 
 # ---------------------------------------------------------------------------
-# Step 3: compute_vertex_velocities
+# Step 3: compute_facepoint_velocities
 # ---------------------------------------------------------------------------
 
 
@@ -343,7 +343,7 @@ class TestComputeVertexVelocities:
             fv, FACE_NORMALS_2D, fc, FACE_CI, CELL_FACE_INFO, CELL_FACE_VALS
         )
         fp_info, fp_vals = _make_fp_face_orientation()
-        return compute_vertex_velocities(
+        return compute_facepoint_velocities(
             A, B, fc, FACE_LENGTHS, FACE_FP, FACE_CI,
             cell_wse, fp_info, fp_vals, val_a, val_b
         )
@@ -393,7 +393,7 @@ class TestReplaceFaceVelocitiesSloped:
             fv, FACE_NORMALS_2D, fc, FACE_CI, CELL_FACE_INFO, CELL_FACE_VALS
         )
         fp_info, fp_vals = _make_fp_face_orientation()
-        vels, fmap = compute_vertex_velocities(
+        vels, fmap = compute_facepoint_velocities(
             A, B, fc, FACE_LENGTHS, FACE_FP, FACE_CI,
             cell_wse, fp_info, fp_vals, val_a, val_b
         )
@@ -416,7 +416,7 @@ class TestReplaceFaceVelocitiesSloped:
             fv, FACE_NORMALS_2D, fc, FACE_CI, CELL_FACE_INFO, CELL_FACE_VALS
         )
         fp_info, fp_vals = _make_fp_face_orientation()
-        vels, fmap = compute_vertex_velocities(
+        vels, fmap = compute_facepoint_velocities(
             A, B, fc, FACE_LENGTHS, FACE_FP, FACE_CI,
             cell_wse, fp_info, fp_vals, val_a, val_b
         )
@@ -590,19 +590,19 @@ def _make_rasmap_inputs(cell_wse_vals=(2.0, 2.0), face_vel=None):
         output_path=None,
         cell_size=0.5,
         nodata=-9999.0,
-        clip_to_perimeter=False,
+        tight_extent=False,
     )
 
 
 class TestRasmapRasterFlat:
-    """Tests for rasmap_raster with interp_mode='flat'."""
+    """Tests for rasmap_raster with render_mode='horizontal'."""
 
     def _run(self, variable="water_surface", cell_wse_vals=(2.0, 2.0), **kwargs):
         from raspy.geo.raster import rasmap_raster
         inputs = _make_rasmap_inputs(cell_wse_vals=cell_wse_vals)
         inputs["variable"] = variable
         inputs.update(kwargs)
-        ds = rasmap_raster(**inputs, interp_mode="flat")
+        ds = rasmap_raster(**inputs, render_mode="horizontal")
         try:
             data = ds.read(1)
         finally:
@@ -612,7 +612,7 @@ class TestRasmapRasterFlat:
     def test_returns_dataset(self):
         from raspy.geo.raster import rasmap_raster
         inputs = _make_rasmap_inputs()
-        ds = rasmap_raster(**inputs, interp_mode="flat")
+        ds = rasmap_raster(**inputs, render_mode="horizontal")
         assert ds is not None
         ds.close()
 
@@ -637,10 +637,10 @@ class TestRasmapRasterFlat:
         """variable='speed' without face_normal_velocity raises ValueError."""
         from raspy.geo.raster import rasmap_raster
         inputs = _make_rasmap_inputs()
-        inputs["variable"] = "speed"
+        inputs["variable"] = "velocity"
         inputs["face_normal_velocity"] = None
         with pytest.raises(ValueError, match="face_normal_velocity"):
-            rasmap_raster(**inputs, interp_mode="flat")
+            rasmap_raster(**inputs, render_mode="horizontal")
 
     def test_depth_requires_reference_raster(self):
         """variable='depth' without reference_raster raises ValueError."""
@@ -648,7 +648,7 @@ class TestRasmapRasterFlat:
         inputs = _make_rasmap_inputs()
         inputs["variable"] = "depth"
         with pytest.raises(ValueError, match="reference_raster"):
-            rasmap_raster(**inputs, interp_mode="flat")
+            rasmap_raster(**inputs, render_mode="horizontal")
 
     def test_no_grid_spec_raises(self):
         """Neither reference_raster nor cell_size → ValueError."""
@@ -657,7 +657,7 @@ class TestRasmapRasterFlat:
         del inputs["cell_size"]
         inputs["output_path"] = None
         with pytest.raises(ValueError):
-            rasmap_raster(**inputs, interp_mode="flat")
+            rasmap_raster(**inputs, render_mode="horizontal")
 
     def test_both_grid_specs_raises(self):
         """Both reference_raster and cell_size → ValueError."""
@@ -666,18 +666,18 @@ class TestRasmapRasterFlat:
         inputs = _make_rasmap_inputs()
         inputs["reference_raster"] = "some_file.tif"  # value doesn't matter — raises before open
         with pytest.raises((ValueError, Exception)):
-            rasmap_raster(**inputs, interp_mode="flat")
+            rasmap_raster(**inputs, render_mode="horizontal")
 
 
 class TestRasmapRasterSloping:
-    """Tests for rasmap_raster with interp_mode='sloping' (default)."""
+    """Tests for rasmap_raster with render_mode='sloping' (default)."""
 
     def _run(self, variable="water_surface", cell_wse_vals=(2.0, 2.0), **kwargs):
         from raspy.geo.raster import rasmap_raster
         inputs = _make_rasmap_inputs(cell_wse_vals=cell_wse_vals)
         inputs["variable"] = variable
         inputs.update(kwargs)
-        ds = rasmap_raster(**inputs, interp_mode="sloping")
+        ds = rasmap_raster(**inputs, render_mode="sloping")
         try:
             data = ds.read(1)
         finally:
@@ -706,13 +706,13 @@ class TestRasmapRasterSloping:
 
     def test_speed_variable_returns_2d(self):
         face_vel = np.ones(N_FACES, dtype=np.float64) * 0.5
-        data = self._run(variable="speed", face_normal_velocity=face_vel)
+        data = self._run(variable="velocity", face_normal_velocity=face_vel)
         assert data.ndim == 2
 
     def test_speed_nonnegative(self):
         """Speed (magnitude) must be ≥ 0 everywhere."""
         face_vel = np.random.default_rng(99).uniform(-1, 1, N_FACES)
-        data = self._run(variable="speed", face_normal_velocity=face_vel)
+        data = self._run(variable="velocity", face_normal_velocity=face_vel)
         valid = data[data != -9999.0]
         assert (valid >= 0.0).all()
 
@@ -722,7 +722,7 @@ class TestRasmapRasterSloping:
         out = tmp_path / "out.tif"
         inputs = _make_rasmap_inputs()
         inputs["output_path"] = str(out)
-        result = rasmap_raster(**inputs, interp_mode="sloping")
+        result = rasmap_raster(**inputs, render_mode="sloping")
         assert out.exists()
         assert str(result) == str(out)
 
@@ -731,8 +731,8 @@ class TestRasmapRasterSloping:
         from raspy.geo.raster import rasmap_raster
         inputs_flat   = _make_rasmap_inputs(cell_wse_vals=(2.0, 2.0))
         inputs_slope  = _make_rasmap_inputs(cell_wse_vals=(2.0, 2.0))
-        ds_flat  = rasmap_raster(**inputs_flat,  interp_mode="flat")
-        ds_slope = rasmap_raster(**inputs_slope, interp_mode="sloping")
+        ds_flat  = rasmap_raster(**inputs_flat,  render_mode="horizontal")
+        ds_slope = rasmap_raster(**inputs_slope, render_mode="sloping")
         try:
             assert ds_flat.shape  == ds_slope.shape
         finally:

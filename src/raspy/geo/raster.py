@@ -2492,7 +2492,7 @@ def _mask_outside_polygon(
 @log_call(logging.INFO)
 @timed(logging.INFO)
 def rasmap_raster(
-    variable: Literal["water_surface", "depth", "speed", "velocity"],
+    variable: Literal["wse", "water_surface", "depth", "velocity"],
     cell_wse: np.ndarray,
     cell_min_elevation: np.ndarray,
     face_min_elevation: np.ndarray,
@@ -2512,9 +2512,11 @@ def rasmap_raster(
     cell_size: float | None = None,
     crs: Any | None = None,
     nodata: float = -9999.0,
-    interp_mode: Literal["flat", "sloping"] = "sloping",
+    render_mode: Literal["horizontal", "sloping", "hybrid"] = "sloping",
+    use_depth_weights: bool = False,
+    shallow_to_flat: bool = False,
     depth_threshold: float = 0.001,
-    clip_to_perimeter: bool = True,
+    tight_extent: bool = True,
     perimeter: np.ndarray | None = None,
     use_numba: bool | None = None,
 ) -> Path | rasterio.io.DatasetReader:
@@ -2636,15 +2638,27 @@ def rasmap_raster(
         Output CRS.  Inherited from *reference_raster* when ``None``.
     nodata:
         Fill value for dry / out-of-domain pixels.
-    interp_mode:
-        ``"sloping"`` (default) — full RASMapper pipeline with per-pixel WSE
-        interpolation and sloped wet/dry masking.
-        ``"flat"`` — flat cell value painted over each owned pixel (no
-        spatial interpolation within cells).
+    render_mode:
+        ``"sloping"`` (default) — RASMapper "Sloping Cell Corners" pipeline;
+        per-pixel WSE interpolation using corner facepoints only
+        (``with_faces=False``).  Matches ``store_map(render_mode="sloping")``.
+        ``"hybrid"`` — RASMapper "Sloping Cell Corners + Face Centers"
+        (``with_faces=True``); more accurate near cell edges.  Matches
+        ``store_map(render_mode="hybrid")``.
+        ``"horizontal"`` — flat per-cell value painted over each owned pixel.
+        Matches ``store_map(render_mode="horizontal")``.
+    use_depth_weights:
+        When ``True``, face weights in the ``hybrid`` stencil are
+        proportional to water depth at each face.  Only meaningful with
+        ``render_mode="hybrid"``; silently forced to ``False`` otherwise.
+    shallow_to_flat:
+        When ``True``, cells with no hydraulically-connected faces are
+        rendered flat (horizontal).  Only meaningful with
+        ``render_mode="hybrid"``; silently forced to ``False`` otherwise.
     depth_threshold:
         Minimum depth for a pixel to be considered wet (default ``0.001``).
         Matches ``RASResults.MinWSPlotTolerance``.
-    clip_to_perimeter:
+    tight_extent:
         When ``True`` (default), pixels outside *perimeter* are set to
         *nodata*.  Has no effect when *perimeter* is ``None``.
     perimeter:
@@ -2688,14 +2702,17 @@ def rasmap_raster(
     from raspy.geo import _rasmap
 
     # -- 0. Guards ----------------------------------------------------------
+    if variable == "wse":
+        variable = "water_surface"
+
     if variable == "depth" and reference_raster is None:
         raise ValueError(
             "reference_raster is required when variable='depth'. "
             "Provide a path to a terrain DEM GeoTIFF."
         )
-    if variable in ("speed", "velocity") and face_normal_velocity is None:
+    if variable == "velocity" and face_normal_velocity is None:
         raise ValueError(
-            f"face_normal_velocity is required when variable={variable!r}."
+            "face_normal_velocity is required when variable='velocity'."
         )
     if reference_raster is None and cell_size is None:
         raise ValueError(
@@ -2705,6 +2722,11 @@ def rasmap_raster(
         raise ValueError(
             "Specify either reference_raster or cell_size, not both."
         )
+
+    # Normalize render-mode flags — only meaningful for hybrid (matches store_map fix)
+    if render_mode != "hybrid":
+        use_depth_weights = False
+        shallow_to_flat = False
 
     # -- 1. Resolve output grid and optionally load terrain -----------------
     terrain_grid: np.ndarray | None = None
@@ -2752,9 +2774,9 @@ def rasmap_raster(
     n_faces = len(face_cell_indexes)
 
     logger.info(
-        "rasmap_raster: variable=%r, interp_mode=%r, n_cells=%d, n_faces=%d, "
+        "rasmap_raster: variable=%r, render_mode=%r, n_cells=%d, n_faces=%d, "
         "grid=%dx%d, pixel_size=%.2f",
-        variable, interp_mode, n_cells, n_faces,
+        variable, render_mode, n_cells, n_faces,
         out_width, out_height, abs(out_transform.a),
     )
 
@@ -2765,13 +2787,13 @@ def rasmap_raster(
     wet_mask = (cell_wse - cell_min_elevation[:n_cells]) > depth_threshold
 
     # -- 3a. Flat mode — paint cell values directly -------------------------
-    if interp_mode == "flat":
+    if render_mode == "horizontal":
         cell_id_grid = _rasmap.build_cell_id_raster(
             cell_polygons, wet_mask, out_transform, out_height, out_width
         )
         valid_rows, valid_cols = np.where(cell_id_grid > 0)
-        if variable in ("speed", "velocity") and face_normal_velocity is not None:
-            # Flat speed: area-weighted mean of |face_vel| over cell faces
+        if variable == "velocity" and face_normal_velocity is not None:
+            # Flat velocity: area-weighted mean of |face_vel| over cell faces
             face_areas = face_normals[:, 2]  # lengths used as area proxy
             cell_speed_flat = np.zeros(n_cells, dtype=np.float32)
             for ci in range(n_cells):
@@ -2784,14 +2806,7 @@ def rasmap_raster(
                 val = float((vels * lens).sum() / total) if total > 0 else 0.0
                 cell_speed_flat[ci] = val
 
-        n_bands = 4 if variable == "velocity" else 1
-        if n_bands == 4:
-            out_arr: np.ndarray = np.full(
-                (4, out_height, out_width), nodata, dtype=np.float32
-            )
-        else:
-            out_arr = np.full((out_height, out_width), nodata, dtype=np.float32)
-
+        out_arr: np.ndarray = np.full((out_height, out_width), nodata, dtype=np.float32)
         for idx in range(len(valid_rows)):
             r = int(valid_rows[idx])
             c = int(valid_cols[idx])
@@ -2804,14 +2819,8 @@ def rasmap_raster(
                     continue
                 dep = float(cell_wse[ci]) - t
                 out_arr[r, c] = np.float32(max(0.0, dep)) if dep > 0 else nodata
-            elif variable == "speed":
-                out_arr[r, c] = cell_speed_flat[ci]
             elif variable == "velocity":
-                spd = float(cell_speed_flat[ci])
-                out_arr[0, r, c] = np.float32(spd)  # simplified: Vx=spd, Vy=0
-                out_arr[1, r, c] = np.float32(0.0)
-                out_arr[2, r, c] = np.float32(spd)
-                out_arr[3, r, c] = np.float32(0.0)
+                out_arr[r, c] = cell_speed_flat[ci]
 
     # -- 3b. Sloping mode — full RASMapper pipeline -------------------------
     else:
@@ -2829,13 +2838,13 @@ def rasmap_raster(
                 face_facepoint_indexes, face_value_a, face_value_b,
             )
 
-        # Steps 2 / 3 / 3.5: velocity reconstruction (speed/velocity only)
+        # Steps 2 / 3 / 3.5: velocity reconstruction (velocity only)
         fp_velocities = None
         fp_face_local_map: dict | None = None
         replaced_face_vel = None
         face_vel_A = None
         face_vel_B = None
-        if variable in ("speed", "velocity") and face_normal_velocity is not None:
+        if variable == "velocity" and face_normal_velocity is not None:
             face_normals_2d = face_normals[:, :2]
             face_vel_A, face_vel_B = _rasmap.reconstruct_face_velocities(
                 face_normal_velocity.astype(np.float64),
@@ -2866,8 +2875,11 @@ def rasmap_raster(
             )
 
         # Step 4b–4e: pixel loop
+        # Internal _rasmap uses "speed" for scalar magnitude; "velocity" is its 4-band.
+        # Our public API uses "velocity" for the magnitude scalar.
+        _internal_variable = "speed" if variable == "velocity" else variable
         out_arr = _rasmap.rasterize_rasmap(
-            variable=variable,
+            variable=_internal_variable,
             cell_id_grid=cell_id_grid,
             transform=out_transform,
             terrain_grid=terrain_grid,
@@ -2889,10 +2901,13 @@ def rasmap_raster(
             fp_elev=fp_elev,
             nodata=nodata,
             depth_threshold=depth_threshold,
+            with_faces=(render_mode == "hybrid"),
+            use_depth_weights=use_depth_weights,
+            shallow_to_flat=shallow_to_flat,
         )
 
     # -- 4. Write output ----------------------------------------------------
-    n_bands = 4 if variable == "velocity" else 1
+    n_bands = 1
     profile: dict[str, Any] = dict(
         driver="GTiff",
         dtype="float32",
@@ -2906,35 +2921,21 @@ def rasmap_raster(
         profile["crs"] = out_crs
 
     # Apply perimeter mask if requested
-    if clip_to_perimeter and perimeter is not None:
-        if n_bands == 1:
-            out_arr = _mask_outside_polygon_array(
-                out_arr, perimeter, out_transform, nodata
-            )
-        else:
-            for b in range(n_bands):
-                out_arr[b] = _mask_outside_polygon_array(
-                    out_arr[b], perimeter, out_transform, nodata
-                )
+    if tight_extent and perimeter is not None:
+        out_arr = _mask_outside_polygon_array(
+            out_arr, perimeter, out_transform, nodata
+        )
 
     if output_path is None:
         memfile = rasterio.MemoryFile()
         with memfile.open(**profile) as dst:
-            if n_bands == 1:
-                dst.write(out_arr.astype(np.float32), 1)
-            else:
-                for b in range(n_bands):
-                    dst.write(out_arr[b].astype(np.float32), b + 1)
+            dst.write(out_arr.astype(np.float32), 1)
         return memfile.open()
 
     out_path = Path(output_path).resolve()
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with rasterio.open(out_path, "w", **profile) as dst:
-        if n_bands == 1:
-            dst.write(out_arr.astype(np.float32), 1)
-        else:
-            for b in range(n_bands):
-                dst.write(out_arr[b].astype(np.float32), b + 1)
+        dst.write(out_arr.astype(np.float32), 1)
     return out_path
 
 
