@@ -2904,9 +2904,11 @@ def rasmap_raster(
             face_cell_indexes, _cell_face_count_arr,
         )
 
-        # Step B: facepoint WSE (for WSE/depth sloping render)
+        # Step B: facepoint WSE (for WSE/depth sloping render, and for
+        # velocity wet-pixel masking — velocity wet extent must match the
+        # sloped WSE wet extent, not the coarser horizontal cell-WSE check).
         fp_wse: np.ndarray | None = None
-        if variable in ("water_surface", "depth"):
+        if render_mode != "horizontal":
             # Precompute face midsides (RASMapper-exact application points for
             # PlanarRegressionZ) when cell centres are available.
             face_midsides: np.ndarray | None = None
