@@ -576,7 +576,7 @@ def _face_app_point(
     )
 
 
-@njit(cache=True)
+@njit(cache=True, parallel=True)
 def _compute_facepoint_wse_nb(
     fp_coords: np.ndarray,
     fp_face_info: np.ndarray,
@@ -654,20 +654,24 @@ def _compute_facepoint_wse_nb(
     fp_wse_at_face = np.full((n_faces, 2), _NODATA, dtype=np.float64)
 
     # Maximum arc buffer size: fp_count arc faces + 1 terminal face.
-    # We allocate once per facepoint to avoid Python list.append overhead.
-    # Sized to the global max (worst case = all faces around one facepoint).
+    # Computed once (serial reduction) so each parallel iteration can
+    # allocate thread-local buffers of the right size without dynamic growth.
     max_fp_count = 0
     for k in range(n_fp):
         c = fp_face_info[k, 1]
         if c > max_fp_count:
             max_fp_count = c
-    buf_xs = np.empty(max_fp_count + 1, dtype=np.float64)
-    buf_ys = np.empty(max_fp_count + 1, dtype=np.float64)
-    buf_zs = np.empty(max_fp_count + 1, dtype=np.float64)
-    buf_raw = np.empty(max_fp_count, dtype=np.float64)
-    processed = np.zeros(max_fp_count, dtype=np.bool_)
 
-    for fp_idx in range(n_fp):
+    for fp_idx in prange(n_fp):
+        # Thread-local buffers — allocated inside prange so each thread owns
+        # its own copy; size is bounded by max_fp_count (a few dozen entries
+        # for any real HEC-RAS mesh) so allocation overhead is negligible.
+        buf_xs = np.empty(max_fp_count + 1, dtype=np.float64)
+        buf_ys = np.empty(max_fp_count + 1, dtype=np.float64)
+        buf_zs = np.empty(max_fp_count + 1, dtype=np.float64)
+        buf_raw = np.empty(max_fp_count, dtype=np.float64)
+        processed = np.zeros(max_fp_count, dtype=np.bool_)
+
         base_x = fp_coords[fp_idx, 0]
         base_y = fp_coords[fp_idx, 1]
         fp_start = fp_face_info[fp_idx, 0]
@@ -1080,7 +1084,7 @@ def reconstruct_face_velocities(
 # ---------------------------------------------------------------------------
 
 
-@njit(cache=True)
+@njit(cache=True, parallel=True)
 def _build_face_fp_local_idx(
     face_facepoint_indexes: np.ndarray,
     fp_face_info: np.ndarray,
@@ -1102,7 +1106,10 @@ def _build_face_fp_local_idx(
     n_faces = len(face_facepoint_indexes)
     n_fp = len(fp_face_info)
     face_fp_local_idx = np.full((n_faces, 2), np.int32(-1), dtype=np.int32)
-    for fp in range(n_fp):
+    # Each fp writes to face_fp_local_idx[fi, 0] (fpA) or [fi, 1] (fpB).
+    # A face's fpA and fpB are distinct facepoints, so different threads
+    # write to different columns — no write conflict.
+    for fp in prange(n_fp):
         start = fp_face_info[fp, 0]
         count = fp_face_info[fp, 1]
         for j in range(count):
@@ -1114,7 +1121,7 @@ def _build_face_fp_local_idx(
     return face_fp_local_idx
 
 
-@njit(cache=True)
+@njit(cache=True, parallel=True)
 def _compute_facepoint_velocities_nb(
     fp_vel_data: np.ndarray,
     face_vel_A: np.ndarray,
@@ -1135,7 +1142,9 @@ def _compute_facepoint_velocities_nb(
     """
     n_fp = len(fp_face_info)
 
-    for fp in range(n_fp):
+    # Each fp owns a non-overlapping slice of fp_vel_data via the CSR layout,
+    # so prange writes are conflict-free across threads.
+    for fp in prange(n_fp):
         fp_start = fp_face_info[fp, 0]
         fp_count = fp_face_info[fp, 1]
         if fp_count == 0:
@@ -1742,7 +1751,7 @@ def _compute_cell_pixel_weights(
 # ---------------------------------------------------------------------------
 
 
-@njit(cache=True)
+@njit(cache=True, parallel=True)
 def _scanline_rasterize_nb(
     poly_xy: np.ndarray,       # (total_verts, 2) float64 — all polygons concatenated
     poly_offsets: np.ndarray,  # (n_polys + 1,) int32 — CSR: poly i → [offsets[i]:offsets[i+1]]
@@ -1782,14 +1791,17 @@ def _scanline_rasterize_nb(
     px =  tf_a   # positive pixel width
     x_raster_max = tf_c + W * px
 
-    # Per-polygon intersection buffer.  Max intersections per row = n_verts.
-    # 64 is sufficient for all HEC-RAS cell polygons (≤ 20 vertices typical).
-    xs_buf = np.empty(64, np.float64)
-
+    # HEC-RAS 2D mesh cells tile the domain without overlap, so no two
+    # polygons ever fill the same pixel — prange writes to out[r,c] are
+    # conflict-free across threads.
     n_polys = len(wet_mask)
-    for pi in range(n_polys):
+    for pi in prange(n_polys):
         if not wet_mask[pi]:
             continue
+
+        # Per-polygon intersection buffer — thread-local (inside prange).
+        # Max intersections per row = n_verts; 64 covers all HEC-RAS cells.
+        xs_buf = np.empty(64, np.float64)
 
         v_start = int(poly_offsets[pi])
         v_end   = int(poly_offsets[pi + 1])
