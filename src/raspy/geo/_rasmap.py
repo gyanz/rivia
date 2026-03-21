@@ -31,7 +31,7 @@ compute_facepoint_velocities
 replace_face_velocities_sloped
 build_cell_id_raster        (default: Numba scan-line; GDAL fallback via use_scanline=False)
 sample_terrain_at_facepoints
-rasterize_rasmap
+_rasterize_rasmap
 """
 
 from __future__ import annotations
@@ -118,7 +118,7 @@ def compute_face_wss(
     flowing across the face (``face_connected``), and the WSE to assign to
     each side (cellA → ``face_value_a``, cellB → ``face_value_b``).  The
     per-side values are used by :func:`compute_facepoint_wse` to fit a sloped
-    water surface; ``face_hconn`` is used by :func:`rasterize_rasmap` to
+    water surface; ``face_hconn`` is used by :func:`_rasterize_rasmap` to
     determine the all-shallow rendering fallback.
 
     Decision logic (applied in order)
@@ -2231,11 +2231,447 @@ def compute_cell_flat_velocities(
 
 
 # ---------------------------------------------------------------------------
+# Step 4 — Variable flags for Numba kernel dispatch
+# ---------------------------------------------------------------------------
+
+_VAR_WSE      = 0  # "water_surface"
+_VAR_DEPTH    = 1  # "depth"
+_VAR_SPEED    = 2  # "speed" (1-band magnitude)
+_VAR_VELOCITY = 3  # "velocity" (4-band: Vx, Vy, speed, direction)
+
+_VARIABLE_FLAGS: dict[str, int] = {
+    "water_surface": _VAR_WSE,
+    "depth":         _VAR_DEPTH,
+    "speed":         _VAR_SPEED,
+    "velocity":      _VAR_VELOCITY,
+}
+
+
+# ---------------------------------------------------------------------------
+# Step 4 — Numba parallel cell-rasterization kernel
+# ---------------------------------------------------------------------------
+
+
+@njit(cache=True, parallel=True)
+def _rasterize_cells_nb(
+    # Sorted pixel arrays (indexed in cell-sorted order)
+    pix_rows: np.ndarray,           # (n_valid,) int64
+    pix_cols: np.ndarray,           # (n_valid,) int64
+    pix_xs: np.ndarray,             # (n_valid,) float64
+    pix_ys: np.ndarray,             # (n_valid,) float64
+    # Cell groups (CSR over sorted pixels)
+    group_cell_idxs: np.ndarray,    # (n_groups,) int64 — 0-based cell index
+    group_starts: np.ndarray,       # (n_groups,) int64 — start in sorted arrays
+    group_ends: np.ndarray,         # (n_groups,) int64 — exclusive end
+    # Mesh geometry
+    cell_face_info: np.ndarray,     # (n_cells, 2) int64
+    cell_face_values: np.ndarray,   # (total_cf, 2) int64
+    face_facepoint_indexes: np.ndarray,  # (n_faces, 2) int64
+    face_cell_indexes: np.ndarray,  # (n_faces, 2) int64
+    face_min_elev: np.ndarray,      # (n_faces,) float64
+    fp_coords: np.ndarray,          # (n_fp, 2) float64
+    # WSE
+    cell_wse: np.ndarray,           # (n_cells,) float64
+    face_value_a: np.ndarray,       # (n_faces,) float64
+    face_value_b: np.ndarray,       # (n_faces,) float64
+    fp_wse: np.ndarray,             # (n_faces, 2) float64  or  (0, 2) sentinel
+    has_fp_wse: bool,
+    # Terrain
+    terrain_grid: np.ndarray,       # (H_t, W_t) float64  or  (1, 1) sentinel
+    has_terrain: bool,
+    # Velocity data
+    fp_vel_data: np.ndarray,        # (total, 2) float64  or  (0, 2) sentinel
+    fp_face_info_arr: np.ndarray,   # (n_fp, 2) int64  or  (0, 2) sentinel
+    face_fp_local_idx: np.ndarray,  # (n_faces, 2) int32  or  (0, 2) sentinel
+    face_vel_A: np.ndarray,         # (n_faces, 2) float64  or  (0, 2) sentinel
+    face_vel_B: np.ndarray,         # (n_faces, 2) float64  or  (0, 2) sentinel
+    has_vel_data: bool,
+    # Flat-cell velocity
+    flat_cell_vx: np.ndarray,       # (n_cells,) float64  or  (0,) sentinel
+    flat_cell_vy: np.ndarray,       # (n_cells,) float64  or  (0,) sentinel
+    has_flat_vel: bool,
+    # Facepoint terrain elevation (depth-weight rebalancing)
+    fp_elev: np.ndarray,            # (n_fp,) float64  or  (0,) sentinel
+    has_fp_elev: bool,
+    face_hconn: np.ndarray,         # (n_faces,) uint8
+    # Render options
+    variable_flag: int,             # _VAR_* constant
+    nodata: float,
+    depth_threshold: float,
+    with_faces: bool,
+    use_depth_weights: bool,
+    shallow_to_flat: bool,
+    # Output: always (n_bands, H, W) — n_bands=1 for scalar, 4 for velocity
+    output: np.ndarray,
+) -> None:
+    """Numba parallel kernel for Step 4 pixel rasterization.
+
+    Iterates over cell groups with ``prange``; each group owns a disjoint
+    slice of ``pix_rows/cols/xs/ys`` (built from the sort-based CSR in the
+    Python wrapper).  Because every pixel belongs to exactly one cell the
+    writes to ``output`` are conflict-free across threads.
+
+    Replicates the per-cell and per-pixel logic of ``_rasterize_rasmap``
+    inside a single ``@njit(parallel=True)`` function so the Python
+    interpreter overhead of the outer cell loop is eliminated entirely.
+
+    String inputs (``variable``) are replaced by integer flags
+    (``_VAR_*`` constants); ``None`` inputs are replaced by sentinel empty
+    arrays accompanied by companion ``bool`` flags.
+    """
+    n_groups = len(group_cell_idxs)
+
+    for gi in prange(n_groups):
+        cell_idx = int(group_cell_idxs[gi])
+        g_start  = int(group_starts[gi])
+        g_end    = int(group_ends[gi])
+
+        # ---- Build ordered facepoint polygon --------------------------------
+        cf_start = int(cell_face_info[cell_idx, 0])
+        count    = int(cell_face_info[cell_idx, 1])
+        if count < 3:
+            continue
+
+        N = count
+        face_indices = np.empty(N, dtype=np.int64)
+        face_orients = np.empty(N, dtype=np.int64)
+        verts_fp     = np.empty(N, dtype=np.int64)
+        verts_x      = np.empty(N, dtype=np.float64)
+        verts_y      = np.empty(N, dtype=np.float64)
+
+        for k in range(N):
+            fi  = int(cell_face_values[cf_start + k, 0])
+            ori = int(cell_face_values[cf_start + k, 1])
+            face_indices[k] = fi
+            face_orients[k] = ori
+            fp_col = 0 if ori > 0 else 1
+            fp_i   = int(face_facepoint_indexes[fi, fp_col])
+            verts_fp[k] = fp_i
+            verts_x[k]  = fp_coords[fp_i, 0]
+            verts_y[k]  = fp_coords[fp_i, 1]
+
+        # ---- Per-cell WSE arrays --------------------------------------------
+        fp_local_wse     = np.full(N, _NODATA, dtype=np.float64)
+        fp_local_wse_adj = np.full(N, _NODATA, dtype=np.float64)
+        face_local_wse   = np.full(N, _NODATA, dtype=np.float64)
+        use_sloped  = False
+        has_face_wse = False
+
+        if has_fp_wse:
+            for k in range(N):
+                fi  = face_indices[k]
+                col = 0 if face_orients[k] > 0 else 1
+                fp_local_wse[k] = fp_wse[fi, col]
+
+            has_valid = False
+            for k in range(N):
+                if fp_local_wse[k] != _NODATA:
+                    has_valid = True
+                    break
+
+            if with_faces:
+                for k in range(N):
+                    fi = face_indices[k]
+                    is_cellA = cell_idx == int(face_cell_indexes[fi, 0])
+                    face_local_wse[k] = face_value_a[fi] if is_cellA else face_value_b[fi]
+                has_face_wse = True
+                if not has_valid:
+                    for k in range(N):
+                        if face_local_wse[k] != _NODATA:
+                            has_valid = True
+                            break
+
+            use_sloped = has_valid
+
+        # ---- Shallow-to-flat ------------------------------------------------
+        if use_sloped and shallow_to_flat:
+            if _all_shallow(cell_idx, cell_face_info, cell_face_values, face_hconn):
+                use_sloped   = False
+                has_face_wse = False
+
+        # ---- Substitute NODATA facepoints with cell WSE ---------------------
+        if use_sloped:
+            cws = float(cell_wse[cell_idx])
+            for k in range(N):
+                fp_local_wse_adj[k] = cws if fp_local_wse[k] == _NODATA else fp_local_wse[k]
+            if has_face_wse:
+                for k in range(N):
+                    if face_local_wse[k] == _NODATA:
+                        face_local_wse[k] = cws
+
+        # ---- Depth weights --------------------------------------------------
+        cell_dw = np.empty(0, dtype=np.float64)
+        if use_sloped and with_faces and use_depth_weights and has_fp_elev:
+            cell_dw = _depth_weights_for_cell(
+                cell_idx, cell_face_info, cell_face_values,
+                face_facepoint_indexes, face_cell_indexes,
+                fp_wse, fp_elev, face_value_a, face_value_b, face_min_elev,
+            )
+
+        # ---- Per-cell velocity arrays ---------------------------------------
+        nb_fp_vx   = np.empty(0, dtype=np.float64)
+        nb_fp_vy   = np.empty(0, dtype=np.float64)
+        nb_face_vx = np.empty(0, dtype=np.float64)
+        nb_face_vy = np.empty(0, dtype=np.float64)
+        has_vel_arrays = False
+
+        if (variable_flag == _VAR_SPEED or variable_flag == _VAR_VELOCITY) and has_vel_data:
+            nb_fp_vx = np.zeros(N, dtype=np.float64)
+            nb_fp_vy = np.zeros(N, dtype=np.float64)
+            for i in range(N):
+                fp_i = verts_fp[i]
+                fi   = face_indices[i]
+                fpA  = int(face_facepoint_indexes[fi, 0])
+                j_local = int(face_fp_local_idx[fi, 0]) if fp_i == fpA else int(face_fp_local_idx[fi, 1])
+                if j_local >= 0:
+                    offset = int(fp_face_info_arr[fp_i, 0]) + j_local
+                    nb_fp_vx[i] = fp_vel_data[offset, 0]
+                    nb_fp_vy[i] = fp_vel_data[offset, 1]
+
+            nb_face_vx = np.zeros(N, dtype=np.float64)
+            nb_face_vy = np.zeros(N, dtype=np.float64)
+            for j in range(N):
+                fi  = face_indices[j]
+                ori = face_orients[j]
+                if ori > 0:
+                    nb_face_vx[j] = face_vel_A[fi, 0]
+                    nb_face_vy[j] = face_vel_A[fi, 1]
+                else:
+                    nb_face_vx[j] = face_vel_B[fi, 0]
+                    nb_face_vy[j] = face_vel_B[fi, 1]
+            has_vel_arrays = True
+
+        # ---- Batch pixel weights --------------------------------------------
+        fw_batch, vel_w_batch = _compute_cell_pixel_weights(
+            pix_xs[g_start:g_end], pix_ys[g_start:g_end], verts_x, verts_y,
+        )
+
+        # ---- Per-pixel loop -------------------------------------------------
+        for pi in range(g_end - g_start):
+            r = int(pix_rows[g_start + pi])
+            c = int(pix_cols[g_start + pi])
+            fw    = fw_batch[pi]
+            vel_w = vel_w_batch[pi]
+
+            # Terrain elevation for this pixel
+            t_elev = 0.0
+            if has_terrain:
+                t_elev = terrain_grid[r, c]
+                if np.isnan(t_elev) or t_elev == _NODATA:
+                    continue
+
+            # WSE / wet-dry check
+            pixel_wse = _NODATA
+            if use_sloped and has_face_wse:
+                pixel_wse = _pixel_wse_sloped(vel_w, fp_local_wse_adj, face_local_wse, cell_dw)
+                if pixel_wse == _NODATA:
+                    continue
+                if has_terrain and pixel_wse < t_elev + depth_threshold:
+                    continue
+            elif use_sloped:
+                # JustFacepoints: plain barycentric blend of N corners
+                pixel_wse = 0.0
+                for k in range(N):
+                    pixel_wse += float(fw[k]) * fp_local_wse_adj[k]
+                if pixel_wse == _NODATA:
+                    continue
+                if has_terrain and pixel_wse < t_elev + depth_threshold:
+                    continue
+            elif has_terrain:
+                cws = float(cell_wse[cell_idx])
+                if cws < t_elev + depth_threshold:
+                    continue
+                pixel_wse = cws
+            else:
+                pixel_wse = float(cell_wse[cell_idx])
+
+            # Value interpolation
+            if variable_flag == _VAR_WSE:
+                if use_sloped and has_face_wse:
+                    val = _pixel_wse_sloped(vel_w, fp_local_wse_adj, face_local_wse, cell_dw)
+                    output[0, r, c] = np.float32(val) if val != _NODATA else np.float32(nodata)
+                else:
+                    output[0, r, c] = np.float32(pixel_wse)
+
+            elif variable_flag == _VAR_DEPTH:
+                if use_sloped and has_face_wse:
+                    pix_wse = _pixel_wse_sloped(vel_w, fp_local_wse_adj, face_local_wse, cell_dw)
+                else:
+                    pix_wse = pixel_wse
+                dep = pix_wse - t_elev
+                output[0, r, c] = np.float32(max(0.0, dep)) if dep > 0.0 else np.float32(nodata)
+
+            elif variable_flag == _VAR_SPEED or variable_flag == _VAR_VELOCITY:
+                if has_flat_vel and not np.isnan(flat_cell_vx[cell_idx]):
+                    Vx = float(flat_cell_vx[cell_idx])
+                    Vy = float(flat_cell_vy[cell_idx])
+                elif has_vel_arrays:
+                    Vx = 0.0
+                    Vy = 0.0
+                    for k in range(N):
+                        Vx += vel_w[k] * nb_fp_vx[k]
+                        Vy += vel_w[k] * nb_fp_vy[k]
+                    for k in range(N):
+                        Vx += vel_w[N + k] * nb_face_vx[k]
+                        Vy += vel_w[N + k] * nb_face_vy[k]
+                else:
+                    continue
+                spd = np.sqrt(Vx * Vx + Vy * Vy)
+                if variable_flag == _VAR_SPEED:
+                    output[0, r, c] = np.float32(spd)
+                else:
+                    direction = np.degrees(np.arctan2(Vx, Vy)) % 360.0
+                    output[0, r, c] = np.float32(Vx)
+                    output[1, r, c] = np.float32(Vy)
+                    output[2, r, c] = np.float32(spd)
+                    output[3, r, c] = np.float32(direction)
+
+
+# ---------------------------------------------------------------------------
 # Step 4 — Main pixel rasterization loop
 # ---------------------------------------------------------------------------
 
 
 def rasterize_rasmap(
+    variable: str,
+    cell_id_grid: np.ndarray,
+    transform: "rasterio.transform.Affine",
+    terrain_grid: np.ndarray | None,
+    cell_wse: np.ndarray,
+    cell_face_info: np.ndarray,
+    cell_face_values: np.ndarray,
+    face_facepoint_indexes: np.ndarray,
+    face_cell_indexes: np.ndarray,
+    face_min_elev: np.ndarray,
+    fp_coords: np.ndarray,
+    fp_wse: np.ndarray | None,
+    face_value_a: np.ndarray,
+    face_value_b: np.ndarray,
+    fp_vel_data: np.ndarray | None,
+    fp_face_info: np.ndarray | None,
+    face_fp_local_idx: np.ndarray | None,
+    replaced_face_vel: np.ndarray | None,
+    face_vel_A: np.ndarray | None,
+    face_vel_B: np.ndarray | None,
+    fp_elev: np.ndarray | None,
+    face_hconn: np.ndarray,
+    nodata: float,
+    depth_threshold: float = _MIN_WS_PLOT_TOLERANCE,
+    with_faces: bool = True,
+    use_depth_weights: bool = False,
+    shallow_to_flat: bool = False,
+    flat_cell_vx: np.ndarray | None = None,
+    flat_cell_vy: np.ndarray | None = None,
+) -> np.ndarray:
+    """Step 4 — pixel-level barycentric interpolation for all wet cells.
+
+    Public wrapper that delegates to :func:`_rasterize_cells_nb`, a
+    ``@njit(parallel=True)`` Numba kernel that processes cells in parallel
+    via ``prange``.  Pixel ownership is conflict-free because each pixel
+    in ``cell_id_grid`` belongs to exactly one cell.
+
+    For the full algorithm description and parameter documentation see
+    :func:`_rasterize_rasmap` (the serial reference implementation).
+    """
+    import rasterio.transform as _rt
+
+    _log.info(
+        "rasterize_rasmap: %d/%d cores available for parallel kernels "
+        "(NUMBA_NUM_THREADS=%s)",
+        _numba.get_num_threads(),
+        os.cpu_count() or 1,
+        os.environ.get("NUMBA_NUM_THREADS", "unset"),
+    )
+
+    variable_flag    = _VARIABLE_FLAGS[variable]
+    is_velocity_4band = variable == "velocity"
+    n_bands = 4 if is_velocity_4band else 1
+
+    H, W = cell_id_grid.shape
+    output_nb = np.full((n_bands, H, W), nodata, dtype=np.float32)
+
+    valid_mask = cell_id_grid > 0
+    valid_rows, valid_cols = np.where(valid_mask)
+    if len(valid_rows) == 0:
+        return output_nb[0] if not is_velocity_4band else output_nb
+
+    xs, ys = _rt.xy(transform, valid_rows, valid_cols)
+    xs = np.asarray(xs, dtype=np.float64)
+    ys = np.asarray(ys, dtype=np.float64)
+    cell_ids = cell_id_grid[valid_rows, valid_cols]
+
+    # Sort pixels by cell_id → CSR grouping (same logic as _rasterize_rasmap)
+    sort_order    = np.argsort(cell_ids, kind="stable")
+    sorted_cids   = cell_ids[sort_order]
+    unique_cids, grp_starts = np.unique(sorted_cids, return_index=True)
+    grp_ends          = np.empty(len(unique_cids), dtype=np.int64)
+    grp_ends[:-1]     = grp_starts[1:]
+    grp_ends[-1]      = len(sorted_cids)
+    group_cell_idxs   = (unique_cids - 1).astype(np.int64)  # 0-based
+
+    pix_rows = valid_rows[sort_order].astype(np.int64)
+    pix_cols = valid_cols[sort_order].astype(np.int64)
+    pix_xs   = xs[sort_order]
+    pix_ys   = ys[sort_order]
+
+    # Sentinel arrays for optional inputs (Numba requires consistent types)
+    _e2f  = np.empty((0, 2), dtype=np.float64)   # (0,2) float64 sentinel
+    _e2i  = np.empty((0, 2), dtype=np.int64)      # (0,2) int64 sentinel
+    _e2i32= np.empty((0, 2), dtype=np.int32)      # (0,2) int32 sentinel
+    _e1f  = np.empty(0,      dtype=np.float64)    # (0,)  float64 sentinel
+    _terr = np.empty((1, 1), dtype=np.float64)    # terrain sentinel (non-zero shape)
+
+    _rasterize_cells_nb(
+        pix_rows, pix_cols, pix_xs, pix_ys,
+        group_cell_idxs,
+        grp_starts.astype(np.int64),
+        grp_ends,
+        # Mesh geometry
+        np.asarray(cell_face_info,          dtype=np.int64),
+        np.asarray(cell_face_values,        dtype=np.int64),
+        np.asarray(face_facepoint_indexes,  dtype=np.int64),
+        np.asarray(face_cell_indexes,       dtype=np.int64),
+        np.asarray(face_min_elev,           dtype=np.float64),
+        np.asarray(fp_coords,               dtype=np.float64),
+        # WSE
+        np.asarray(cell_wse,     dtype=np.float64),
+        np.asarray(face_value_a, dtype=np.float64),
+        np.asarray(face_value_b, dtype=np.float64),
+        np.asarray(fp_wse,       dtype=np.float64) if fp_wse is not None else _e2f,
+        fp_wse is not None,
+        # Terrain
+        np.asarray(terrain_grid, dtype=np.float64) if terrain_grid is not None else _terr,
+        terrain_grid is not None,
+        # Velocity
+        np.asarray(fp_vel_data,       dtype=np.float64) if fp_vel_data       is not None else _e2f,
+        np.asarray(fp_face_info,      dtype=np.int64)   if fp_face_info      is not None else _e2i,
+        np.asarray(face_fp_local_idx, dtype=np.int32)   if face_fp_local_idx is not None else _e2i32,
+        np.asarray(face_vel_A,        dtype=np.float64) if face_vel_A        is not None else _e2f,
+        np.asarray(face_vel_B,        dtype=np.float64) if face_vel_B        is not None else _e2f,
+        fp_vel_data is not None,
+        # Flat-cell velocity
+        np.asarray(flat_cell_vx, dtype=np.float64) if flat_cell_vx is not None else _e1f,
+        np.asarray(flat_cell_vy, dtype=np.float64) if flat_cell_vy is not None else _e1f,
+        flat_cell_vx is not None,
+        # Facepoint elevation
+        np.asarray(fp_elev, dtype=np.float64) if fp_elev is not None else _e1f,
+        fp_elev is not None,
+        np.asarray(face_hconn, dtype=np.uint8),
+        # Options
+        variable_flag,
+        float(nodata),
+        float(depth_threshold),
+        with_faces,
+        use_depth_weights,
+        shallow_to_flat,
+        # Output
+        output_nb,
+    )
+
+    return output_nb if is_velocity_4band else output_nb[0]
+
+
+def _rasterize_rasmap(
     variable: str,
     cell_id_grid: np.ndarray,
     transform: "rasterio.transform.Affine",
@@ -2451,7 +2887,7 @@ def rasterize_rasmap(
     import rasterio.transform as _rt
 
     _log.info(
-        "rasterize_rasmap: %d/%d cores available for parallel kernels "
+        "_rasterize_rasmap: %d/%d cores available for parallel kernels "
         "(NUMBA_NUM_THREADS=%s)",
         _numba.get_num_threads(),
         os.cpu_count() or 1,
