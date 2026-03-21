@@ -2573,7 +2573,7 @@ def rasterize_rasmap(
     For the full algorithm description and parameter documentation see
     :func:`_rasterize_rasmap` (the serial reference implementation).
 
-    **Performance** (1 414-cell mesh, median cell area ≈ 48 ft²,
+    **Performance** (1 414-cell mesh, median cell area ~48 sq ft,
     4 logical cores, Numba ``prange`` parallel kernel vs serial loop):
 
     .. list-table::
@@ -2589,27 +2589,27 @@ def rasterize_rasmap(
          - sloping
          - 599 ms
          - 10 878 ms
-         - 18×
+         - 18x
        * - wse
          - hybrid (s2f + dw)
          - 738 ms
          - 8 375 ms
-         - 11×
+         - 11x
        * - depth
          - hybrid
          - 733 ms
          - 9 109 ms
-         - 12×
+         - 12x
        * - velocity
          - horizontal
          - 684 ms
          - 8 188 ms
-         - 12×
+         - 12x
        * - velocity
          - hybrid
          - 399 ms
          - 7 892 ms
-         - 20×
+         - 20x
 
     Thread count is controlled by ``NUMBA_NUM_THREADS`` or
     :func:`numba.set_num_threads` at runtime.
