@@ -47,6 +47,7 @@ if TYPE_CHECKING:
     import rasterio.io
 
 from ..com.ras import installed_ras_directory
+from ..utils.fs import assert_path_writable
 from ..utils.helpers import log_call, timed
 
 logger = logging.getLogger("raspy.model")
@@ -293,8 +294,7 @@ class VrtMap:
                 candidates.extend(src for src in self.source_files if src.exists())
         for path in candidates:
             try:
-                with open(path, "r+b"):
-                    pass
+                assert_path_writable(path)
             except PermissionError:
                 return True
         return False

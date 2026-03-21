@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 
-from raspy.utils import log_call, timed
+from raspy.utils import assert_path_writable, log_call, timed
 
 logger = logging.getLogger("raspy.geo")
 
@@ -416,6 +416,9 @@ def rasmap_raster(
 
     logger.info("raster_map: output_path=%r", str(Path(output_path).resolve()) if output_path is not None else None)
 
+    if output_path is not None:
+        assert_path_writable(output_path)
+
     # -- 2. Wet-cell mask (common to flat and sloping) ----------------------
     # Number of faces per cell (needed for virtual-cell detection in Step A)
     _cell_face_count_arr = cell_face_info[:, 1].astype(np.int32)
@@ -634,8 +637,17 @@ def rasmap_raster(
 
     out_path = Path(output_path).resolve()
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    with rasterio.open(out_path, "w", **profile) as dst:
-        dst.write(out_f32)
+    try:
+        with rasterio.open(out_path, "w", **profile) as dst:
+            dst.write(out_f32)
+    except Exception as err:
+        msg = str(err).lower()
+        if "permission denied" in msg or "sharing violation" in msg:
+            raise PermissionError(
+                f"Output raster is locked by another application: {out_path}\n"
+                "Close the file (e.g. in ArcGIS, QGIS, or RASMapper) and retry."
+            ) from err
+        raise
     return out_path
 
 
