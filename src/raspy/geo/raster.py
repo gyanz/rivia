@@ -293,6 +293,13 @@ def rasmap_raster(
     elif variable == "velocity_vector":
         variable = "velocity"
 
+    _valid_render_modes = ("horizontal", "sloping", "hybrid")
+    if render_mode not in _valid_render_modes:
+        raise ValueError(
+            f"render_mode={render_mode!r} is not valid. "
+            f"Must be one of {_valid_render_modes}."
+        )
+
     if variable == "depth" and reference_raster is None:
         raise ValueError(
             "reference_raster is required when variable='depth'. "
