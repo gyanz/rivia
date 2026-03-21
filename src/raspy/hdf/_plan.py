@@ -483,10 +483,11 @@ class FlowAreaResults(FlowArea):
         cell_face_info, cell_face_values = self.cell_face_info
         _cell_face_count = cell_face_info[:, 1].astype(np.int32)
 
-        face_connected, _, _, _ = _rasmap.compute_face_wss(
+        _, _, face_hconn = _rasmap.compute_face_wss(
             cell_wse, self._cell_min_elevation, self.face_min_elevation,
             self.face_cell_indexes, _cell_face_count,
         )
+        face_connected = (face_hconn >= _rasmap.HC_BACKFILL) & (face_hconn <= _rasmap.HC_DOWNHILL_SHALLOW)
         face_vel_A, _ = _rasmap.reconstruct_face_velocities(
             face_normal_vel, self.face_normals[:, :2],
             face_connected, self.face_cell_indexes,
@@ -530,10 +531,11 @@ class FlowAreaResults(FlowArea):
         cell_face_info, cell_face_values = self.cell_face_info
         _cell_face_count = cell_face_info[:, 1].astype(np.int32)
 
-        face_connected, face_value_a, face_value_b, _ = _rasmap.compute_face_wss(
+        face_value_a, face_value_b, face_hconn = _rasmap.compute_face_wss(
             cell_wse, self._cell_min_elevation, self.face_min_elevation,
             self.face_cell_indexes, _cell_face_count,
         )
+        face_connected = (face_hconn >= _rasmap.HC_BACKFILL) & (face_hconn <= _rasmap.HC_DOWNHILL_SHALLOW)
         face_vel_A, face_vel_B = _rasmap.reconstruct_face_velocities(
             face_normal_vel, self.face_normals[:, :2],
             face_connected, self.face_cell_indexes,

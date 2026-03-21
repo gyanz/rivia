@@ -161,34 +161,33 @@ class TestComputeFaceWss:
     def test_both_cells_wet_shared_face_connected(self):
         """Interior face is connected when both cells have WSE well above invert."""
         cell_wse = np.array([2.0, 2.0], dtype=np.float64)
-        face_connected, val_a, val_b, hconn = compute_face_wss(
+        val_a, val_b, hconn = compute_face_wss(
             cell_wse, CELL_MIN_ELEV, FACE_MIN_ELEV, FACE_CI, CELL_FACE_COUNT
         )
-        assert face_connected[3], "shared face should be connected"
+        assert hconn[3] in (1, 2, 3, 4), "shared face should be connected"
 
     def test_one_cell_dry_shared_face_disconnected(self):
         """Interior face is disconnected when one cell is dry."""
         cell_wse = np.array([0.0, 2.0], dtype=np.float64)  # cell0 dry
-        face_connected, _, _, hconn = compute_face_wss(
+        _, _, hconn = compute_face_wss(
             cell_wse, CELL_MIN_ELEV, FACE_MIN_ELEV, FACE_CI, CELL_FACE_COUNT
         )
-        assert not face_connected[3]
         assert hconn[3] == 0  # HC_NONE
 
     def test_boundary_faces_never_connected(self):
         """Boundary faces (cellB=-1) are always marked disconnected."""
         cell_wse = np.array([5.0, 5.0], dtype=np.float64)
-        face_connected, _, _, _ = compute_face_wss(
+        _, _, hconn = compute_face_wss(
             cell_wse, CELL_MIN_ELEV, FACE_MIN_ELEV, FACE_CI, CELL_FACE_COUNT
         )
         # faces 0,1,2 are boundary for cell0; faces 4,5,6 for cell1
         for bdry_f in [0, 1, 2, 4, 5, 6]:
-            assert not face_connected[bdry_f], f"face {bdry_f} should not be connected"
+            assert hconn[bdry_f] in (0, 5), f"face {bdry_f} should not be connected"
 
     def test_face_value_a_nodata_on_dry_cell(self):
         """face_value_a is -9999 for the dry side."""
         cell_wse = np.array([0.0, 3.0], dtype=np.float64)
-        _, val_a, val_b, _ = compute_face_wss(
+        val_a, val_b, _ = compute_face_wss(
             cell_wse, CELL_MIN_ELEV, FACE_MIN_ELEV, FACE_CI, CELL_FACE_COUNT
         )
         assert val_a[3] == -9999.0  # cell0 is dry → face3 cellA side nodata
@@ -201,20 +200,18 @@ class TestComputeFaceWss:
         cell_min = np.full(N_CELLS, -2.0, dtype=np.float64)  # cells well below
         cell_wse2 = np.array([0.5, 0.5])  # above cell_min but below face_invert=1
         face_min2 = np.full(N_FACES, 1.0, dtype=np.float64)
-        face_connected, val_a, val_b, hconn = compute_face_wss(
+        val_a, val_b, hconn = compute_face_wss(
             cell_wse2, cell_min, face_min2, FACE_CI, CELL_FACE_COUNT
         )
-        assert not face_connected[3]
         assert hconn[3] == 0  # HC_NONE — both below face sill
         assert val_a[3] == pytest.approx(0.5)
         assert val_b[3] == pytest.approx(0.5)
 
     def test_returns_correct_dtypes(self):
         cell_wse = np.array([2.0, 2.0])
-        fc, va, vb, hconn = compute_face_wss(
+        va, vb, hconn = compute_face_wss(
             cell_wse, CELL_MIN_ELEV, FACE_MIN_ELEV, FACE_CI, CELL_FACE_COUNT
         )
-        assert fc.dtype == bool
         assert va.dtype == np.float64
         assert vb.dtype == np.float64
         assert hconn.dtype == np.uint8
@@ -228,7 +225,7 @@ class TestComputeFaceWss:
         """
         c_min = np.array([0.0, 0.4], dtype=np.float64)
         c_wse = np.array([0.3, 0.42], dtype=np.float64)
-        _, _, _, hconn = compute_face_wss(
+        _, _, hconn = compute_face_wss(
             c_wse, c_min, np.zeros(N_FACES, dtype=np.float64), FACE_CI, CELL_FACE_COUNT
         )
         assert hconn[3] == 4, f"expected HC_DOWNHILL_SHALLOW(4), got {hconn[3]}"
@@ -238,7 +235,7 @@ class TestComputeFaceWss:
     def test_hconn_clears_all_shallow(self):
         """Backfill / DownhillDeep / DownhillIntermediate all clear the all-shallow flag."""
         cell_wse = np.array([2.0, 2.0], dtype=np.float64)
-        _, _, _, hconn = compute_face_wss(
+        _, _, hconn = compute_face_wss(
             cell_wse, CELL_MIN_ELEV, FACE_MIN_ELEV, FACE_CI, CELL_FACE_COUNT
         )
         # Equal WSE + zero bed elevations: flag_backfill fires (product=0 ≤ 0) → HC_BACKFILL
@@ -283,9 +280,11 @@ def _make_fp_face_orientation():
 
 class TestComputeFacepointWse:
     def _run(self, cell_wse):
-        face_connected, val_a, val_b, _ = compute_face_wss(
+        from raspy.geo._rasmap import HC_BACKFILL, HC_DOWNHILL_SHALLOW
+        val_a, val_b, hconn = compute_face_wss(
             cell_wse, CELL_MIN_ELEV, FACE_MIN_ELEV, FACE_CI, CELL_FACE_COUNT
         )
+        face_connected = (hconn >= HC_BACKFILL) & (hconn <= HC_DOWNHILL_SHALLOW)
         fp_info, fp_vals = _make_fp_face_orientation()
         return compute_facepoint_wse(
             FP_COORDS, fp_info, fp_vals, FACE_FP, val_a, val_b, face_connected
@@ -381,7 +380,7 @@ class TestComputeVertexVelocities:
             fc = np.zeros(N_FACES, dtype=bool)
             fc[3] = True
         cell_wse = np.array([2.0, 2.0])
-        _, val_a, val_b, _ = compute_face_wss(
+        val_a, val_b, _ = compute_face_wss(
             cell_wse, CELL_MIN_ELEV, FACE_MIN_ELEV, FACE_CI, CELL_FACE_COUNT
         )
         A, B = reconstruct_face_velocities(
@@ -434,7 +433,7 @@ class TestReplaceFaceVelocitiesSloped:
         fc = np.zeros(N_FACES, dtype=bool)
         fc[3] = True
         cell_wse = np.array([2.0, 2.0])
-        _, val_a, val_b, _ = compute_face_wss(
+        val_a, val_b, _ = compute_face_wss(
             cell_wse, CELL_MIN_ELEV, FACE_MIN_ELEV, FACE_CI, CELL_FACE_COUNT
         )
         A, B = reconstruct_face_velocities(
@@ -460,7 +459,7 @@ class TestReplaceFaceVelocitiesSloped:
         fc = np.zeros(N_FACES, dtype=bool)
         fc[3] = True
         cell_wse = np.array([2.0, 2.0])
-        _, val_a, val_b, _ = compute_face_wss(
+        val_a, val_b, _ = compute_face_wss(
             cell_wse, CELL_MIN_ELEV, FACE_MIN_ELEV, FACE_CI, CELL_FACE_COUNT
         )
         A, B = reconstruct_face_velocities(

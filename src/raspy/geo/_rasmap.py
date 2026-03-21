@@ -102,7 +102,7 @@ def compute_face_wss(
     face_min_elev: np.ndarray,
     face_cell_indexes: np.ndarray,
     cell_face_count: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Step A — hydraulic connectivity and per-face WSE values.
 
     Replicates ``ComputeFaceWaterSurfaces`` → ``ComputeFaceWSsNew`` from
@@ -178,21 +178,18 @@ def compute_face_wss(
 
     Returns
     -------
-    face_connected : bool ndarray, shape ``(n_faces,)``
-        True for hydraulically connected faces (water actively flowing).
-        Equivalent to ``face_hconn not in {HC_NONE, HC_LEVEE}``.
     face_value_a : float64 ndarray, shape ``(n_faces,)``
         WSE on the cellA side of each face; ``-9999`` where nodata.
     face_value_b : float64 ndarray, shape ``(n_faces,)``
         WSE on the cellB side of each face; ``-9999`` where nodata.
     face_hconn : uint8 ndarray, shape ``(n_faces,)``
-        Full hydraulic-connection classification per face.  Values are the
-        ``HC_*`` module constants (``HC_NONE``, ``HC_BACKFILL``,
-        ``HC_DOWNHILL_DEEP``, ``HC_DOWNHILL_INTERMEDIATE``,
-        ``HC_DOWNHILL_SHALLOW``, ``HC_LEVEE``).
+        Hydraulic-connection classification per face (``HC_*`` constants).
+        Mirrors C# ``FaceValues.HydraulicConnection``.  Connectedness is a
+        derived property: ``face_connected = (face_hconn >= HC_BACKFILL) &
+        (face_hconn <= HC_DOWNHILL_SHALLOW)``, matching C#
+        ``FaceValues.IsHydraulicallyConnected``.
     """
     n_faces = len(face_cell_indexes)
-    face_connected = np.zeros(n_faces, dtype=np.bool_)
     face_value_a = np.full(n_faces, _NODATA, dtype=np.float64)
     face_value_b = np.full(n_faces, _NODATA, dtype=np.float64)
     face_hconn = np.zeros(n_faces, dtype=np.uint8)  # HC_NONE by default
@@ -228,14 +225,14 @@ def compute_face_wss(
         if flag_a_dry or flag_b_dry or face_is_perimeter:
             face_value_a[f] = _NODATA if (flag_a_dry or cell_a_virtual) else wse_a
             face_value_b[f] = _NODATA if (flag_b_dry or cell_b_virtual) else wse_b
-            # face_connected[f] and face_hconn[f] stay False / HC_NONE (default)
+            # face_hconn[f] stays HC_NONE (default)
             continue
 
         # Logic 3 → HC_NONE: both cells below face invert
         if wse_a <= min_elev_face and wse_b <= min_elev_face:
             face_value_a[f] = wse_a
             face_value_b[f] = wse_b
-            # face_connected[f] and face_hconn[f] stay False / HC_NONE (default)
+            # face_hconn[f] stays HC_NONE (default)
             continue
 
         # Strict `>` mirrors C# MeshFV2D.cs — when wse_a == wse_b, cellB is
@@ -327,25 +324,20 @@ def compute_face_wss(
                 # hydraulically separated at the crest — face_connected = False.
                 face_value_a[f] = wse_a
                 face_value_b[f] = wse_b
-                face_connected[f] = False
                 face_hconn[f] = HC_LEVEE
             else:
                 # Logic 5 → HC_BACKFILL: WSE and bed gradients oppose each
-                # other — water backs into a depression.  Both sides share
-                # face_ws; face_connected = True.
+                # other — water backs into a depression.  Both sides share face_ws.
                 face_value_a[f] = face_ws
                 face_value_b[f] = face_ws
-                face_connected[f] = True
                 face_hconn[f] = HC_BACKFILL
         elif depth_higher >= 2.0 * delta_min_elev:
             # Logic 6 → HC_DOWNHILL_DEEP: higher cell is deep enough that the
-            # bed step is negligible (submerged bump).  Both sides share
-            # face_ws; face_connected = True.
+            # bed step is negligible (submerged bump).  Both sides share face_ws.
             # The 2× threshold is where Logic 7's blend weight for face_ws
             # reaches 1, ensuring a smooth, jump-free transition.
             face_value_a[f] = face_ws
             face_value_b[f] = face_ws
-            face_connected[f] = True
             face_hconn[f] = HC_DOWNHILL_DEEP
         else:
             # Logic 7: transitional flow — bed-elevation difference is
@@ -378,11 +370,10 @@ def compute_face_wss(
                 face_hconn[f] = HC_DOWNHILL_INTERMEDIATE
             else:
                 face_hconn[f] = HC_DOWNHILL_SHALLOW
-            face_connected[f] = True
             face_value_a[f] = num9
             face_value_b[f] = num9
 
-    return face_connected, face_value_a, face_value_b, face_hconn
+    return face_value_a, face_value_b, face_hconn
 
 
 # ---------------------------------------------------------------------------

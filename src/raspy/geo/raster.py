@@ -444,10 +444,11 @@ def rasmap_raster(
     # Also used for horizontal-mode velocity (see comment above).
     if render_mode != "horizontal" or _flat_velocity:
         # Step A: hydraulic connectivity
-        face_connected, face_value_a, face_value_b, face_hconn = _rasmap.compute_face_wss(
+        face_value_a, face_value_b, face_hconn = _rasmap.compute_face_wss(
             cell_wse, cell_min_elevation, face_min_elevation,
             face_cell_indexes, _cell_face_count_arr,
         )
+        face_connected = (face_hconn >= _rasmap.HC_BACKFILL) & (face_hconn <= _rasmap.HC_DOWNHILL_SHALLOW)
 
         # Step B: facepoint WSE (for WSE/depth sloping render, and for
         # velocity wet-pixel masking — velocity wet extent must match the
