@@ -2573,7 +2573,7 @@ def rasterize_rasmap(
     For the full algorithm description and parameter documentation see
     :func:`_rasterize_rasmap` (the serial reference implementation).
 
-    **Performance** (1 414-cell mesh, median cell area ≈ 48 m²,
+    **Performance** (1 414-cell mesh, median cell area ≈ 48 ft²,
     4 logical cores, Numba ``prange`` parallel kernel vs serial loop):
 
     .. list-table::
