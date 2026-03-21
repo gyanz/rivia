@@ -47,7 +47,7 @@ if TYPE_CHECKING:
 # Optional Numba JIT
 # ---------------------------------------------------------------------------
 
-from numba import njit
+from numba import njit, prange
 
 
 # ---------------------------------------------------------------------------
@@ -95,7 +95,7 @@ def _avg_wse_with_crit_check(
     return (avg, False) if avg > crit else (crit, True)
 
 
-@njit(cache=True)
+@njit(cache=True, parallel=True)
 def compute_face_wss(
     cell_wse: np.ndarray,
     cell_min_elev: np.ndarray,
@@ -194,7 +194,7 @@ def compute_face_wss(
     face_value_b = np.full(n_faces, _NODATA, dtype=np.float64)
     face_hconn = np.zeros(n_faces, dtype=np.uint8)  # HC_NONE by default
 
-    for f in range(n_faces):
+    for f in prange(n_faces):
         cellA = int(face_cell_indexes[f, 0])
         cellB = int(face_cell_indexes[f, 1])
 
@@ -381,7 +381,7 @@ def compute_face_wss(
 # ---------------------------------------------------------------------------
 
 
-@njit(cache=True)
+@njit(cache=True, parallel=True)
 def _compute_face_midsides(
     fp_coords: np.ndarray,
     face_facepoint_indexes: np.ndarray,
@@ -426,7 +426,7 @@ def _compute_face_midsides(
     n_cells = len(cell_centers)
     midsides = np.empty((n_faces, 2), dtype=np.float64)
 
-    for fi in range(n_faces):
+    for fi in prange(n_faces):
         fpA = int(face_facepoint_indexes[fi, 0])
         fpB = int(face_facepoint_indexes[fi, 1])
         pAx = float(fp_coords[fpA, 0])
@@ -840,7 +840,7 @@ def _cw_ccw_neighbors(
     return cell_face_values[start + cw_pos, 0], cell_face_values[start + ccw_pos, 0]
 
 
-@njit(cache=True)
+@njit(cache=True, parallel=True)
 def reconstruct_face_velocities(
     face_normal_vel: np.ndarray,
     face_normals_2d: np.ndarray,
@@ -944,7 +944,7 @@ def reconstruct_face_velocities(
     face_vel_A = np.zeros((n_faces, 2), dtype=np.float64)
     face_vel_B = np.zeros((n_faces, 2), dtype=np.float64)
 
-    for fidx in range(n_faces):
+    for fidx in prange(n_faces):
         cellA = face_cell_indexes[fidx, 0]
         cellB = face_cell_indexes[fidx, 1]
         fv = face_normal_vel[fidx]
@@ -1367,7 +1367,7 @@ def compute_facepoint_velocities(
 # ---------------------------------------------------------------------------
 
 
-@njit(cache=True)
+@njit(cache=True, parallel=True)
 def replace_face_velocities_sloped(
     fp_vel_data: np.ndarray,
     fp_face_info: np.ndarray,
@@ -1408,7 +1408,7 @@ def replace_face_velocities_sloped(
     """
     n_faces = len(face_facepoint_indexes)
     replaced = np.zeros((n_faces, 2), dtype=np.float64)
-    for f in range(n_faces):
+    for f in prange(n_faces):
         fpA = face_facepoint_indexes[f, 0]
         fpB = face_facepoint_indexes[f, 1]
         jA = face_fp_local_idx[f, 0]
@@ -2026,7 +2026,7 @@ def build_cell_id_raster(
 # ---------------------------------------------------------------------------
 
 
-@njit(cache=True)
+@njit(cache=True, parallel=True)
 def _sample_terrain_nb(
     fp_coords: np.ndarray,
     terrain_grid: np.ndarray,
@@ -2042,7 +2042,7 @@ def _sample_terrain_nb(
     n_fp = len(fp_coords)
     fp_elev = np.full(n_fp, np.nan)
 
-    for i in range(n_fp):
+    for i in prange(n_fp):
         col_f = (fp_coords[i, 0] - c) / a - 0.5
         row_f = (fp_coords[i, 1] - f) / d - 0.5
         c0 = int(np.floor(col_f))
@@ -2114,7 +2114,7 @@ def sample_terrain_at_facepoints(
 # ---------------------------------------------------------------------------
 
 
-@njit(cache=True)
+@njit(cache=True, parallel=True)
 def compute_cell_flat_velocities(
     cell_face_info: np.ndarray,
     cell_face_values: np.ndarray,
@@ -2166,7 +2166,7 @@ def compute_cell_flat_velocities(
     vx = np.zeros(n_cells, dtype=np.float64)
     vy = np.zeros(n_cells, dtype=np.float64)
 
-    for ci in range(n_cells):
+    for ci in prange(n_cells):
         if not flat_wet_mask[ci]:
             continue
         start = int(cell_face_info[ci, 0])
