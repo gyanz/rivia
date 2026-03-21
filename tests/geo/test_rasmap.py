@@ -364,32 +364,33 @@ class TestComputeVertexVelocities:
             cell_wse, fp_info, fp_vals, val_a, val_b
         )
 
-    def test_returns_list_and_dict(self):
-        vels, fmap = self._run()
-        assert isinstance(vels, list) and len(vels) == N_FP
-        assert isinstance(fmap, dict)
+    def test_returns_csr_arrays(self):
+        fp_vel_data, face_fp_local_idx = self._run()
+        assert isinstance(fp_vel_data, np.ndarray)
+        assert fp_vel_data.ndim == 2 and fp_vel_data.shape[1] == 2
+        assert isinstance(face_fp_local_idx, np.ndarray)
+        assert face_fp_local_idx.shape == (N_FACES, 2)
 
-    def test_each_element_shape(self):
-        vels, _ = self._run()
-        for fp in range(N_FP):
-            assert vels[fp].ndim == 2
-            assert vels[fp].shape[1] == 2
-
-    def test_zero_input_gives_zero_output(self):
-        vels, _ = self._run(fv=np.zeros(N_FACES))
-        for v in vels:
-            np.testing.assert_array_almost_equal(v, 0.0)
-
-    def test_local_map_covers_all_facepoint_face_pairs(self):
-        """Every (fp, face) pair from the mesh should appear in the map."""
-        _, fmap = self._run()
-        fp_info, fp_vals = _make_fp_face_orientation()
+    def test_each_fp_slice_has_two_columns(self):
+        fp_vel_data, _ = self._run()
+        fp_info, _ = _make_fp_face_orientation()
         for fp in range(N_FP):
             start = int(fp_info[fp, 0])
             count = int(fp_info[fp, 1])
-            for j in range(count):
-                fi = int(fp_vals[start + j, 0])
-                assert (fp, fi) in fmap
+            assert fp_vel_data[start:start + count].shape == (count, 2)
+
+    def test_zero_input_gives_zero_output(self):
+        fp_vel_data, _ = self._run(fv=np.zeros(N_FACES))
+        np.testing.assert_array_almost_equal(fp_vel_data, 0.0)
+
+    def test_local_idx_covers_all_facepoint_face_pairs(self):
+        """face_fp_local_idx must have valid (>=0) entries for all faces."""
+        _, face_fp_local_idx = self._run()
+        fp_info, fp_vals = _make_fp_face_orientation()
+        for f in range(N_FACES):
+            # Both local indices must be non-negative (face appears in ring)
+            assert face_fp_local_idx[f, 0] >= 0
+            assert face_fp_local_idx[f, 1] >= 0
 
 
 # ---------------------------------------------------------------------------
@@ -398,9 +399,11 @@ class TestComputeVertexVelocities:
 
 
 class TestReplaceFaceVelocitiesSloped:
-    def _run(self):
-        fv = np.ones(N_FACES, dtype=np.float64)
-        fc = np.zeros(N_FACES, dtype=bool);  fc[3] = True
+    def _run(self, fv=None):
+        if fv is None:
+            fv = np.ones(N_FACES, dtype=np.float64)
+        fc = np.zeros(N_FACES, dtype=bool)
+        fc[3] = True
         cell_wse = np.array([2.0, 2.0])
         _, val_a, val_b = compute_face_wss(
             cell_wse, CELL_MIN_ELEV, FACE_MIN_ELEV, FACE_CI, CELL_FACE_COUNT
@@ -409,11 +412,13 @@ class TestReplaceFaceVelocitiesSloped:
             fv, FACE_NORMALS_2D, fc, FACE_CI, CELL_FACE_INFO, CELL_FACE_VALS
         )
         fp_info, fp_vals = _make_fp_face_orientation()
-        vels, fmap = compute_facepoint_velocities(
+        fp_vel_data, face_fp_local_idx = compute_facepoint_velocities(
             A, B, fc, FACE_LENGTHS, FACE_FP, FACE_CI,
             cell_wse, fp_info, fp_vals, val_a, val_b
         )
-        return replace_face_velocities_sloped(vels, fmap, FACE_FP)
+        return replace_face_velocities_sloped(
+            fp_vel_data, fp_info, face_fp_local_idx, FACE_FP
+        )
 
     def test_output_shape(self):
         rv = self._run()
@@ -423,7 +428,8 @@ class TestReplaceFaceVelocitiesSloped:
     def test_equals_average_of_endpoint_fp_velocities(self):
         """Each face's replaced velocity must be the mean of its two fp velocities."""
         fv = np.random.default_rng(7).uniform(-2, 2, N_FACES)
-        fc = np.zeros(N_FACES, dtype=bool);  fc[3] = True
+        fc = np.zeros(N_FACES, dtype=bool)
+        fc[3] = True
         cell_wse = np.array([2.0, 2.0])
         _, val_a, val_b = compute_face_wss(
             cell_wse, CELL_MIN_ELEV, FACE_MIN_ELEV, FACE_CI, CELL_FACE_COUNT
@@ -432,18 +438,21 @@ class TestReplaceFaceVelocitiesSloped:
             fv, FACE_NORMALS_2D, fc, FACE_CI, CELL_FACE_INFO, CELL_FACE_VALS
         )
         fp_info, fp_vals = _make_fp_face_orientation()
-        vels, fmap = compute_facepoint_velocities(
+        fp_vel_data, face_fp_local_idx = compute_facepoint_velocities(
             A, B, fc, FACE_LENGTHS, FACE_FP, FACE_CI,
             cell_wse, fp_info, fp_vals, val_a, val_b
         )
-        rv = replace_face_velocities_sloped(vels, fmap, FACE_FP)
+        rv = replace_face_velocities_sloped(
+            fp_vel_data, fp_info, face_fp_local_idx, FACE_FP
+        )
         for f in range(N_FACES):
             fpA = int(FACE_FP[f, 0])
             fpB = int(FACE_FP[f, 1])
-            key_A = (fpA, f);  key_B = (fpB, f)
-            if key_A in fmap and key_B in fmap:
-                vel_A = vels[fpA][fmap[key_A]]
-                vel_B = vels[fpB][fmap[key_B]]
+            jA = int(face_fp_local_idx[f, 0])
+            jB = int(face_fp_local_idx[f, 1])
+            if jA >= 0 and jB >= 0:
+                vel_A = fp_vel_data[int(fp_info[fpA, 0]) + jA]
+                vel_B = fp_vel_data[int(fp_info[fpB, 0]) + jB]
                 expected = (vel_A + vel_B) / 2.0
                 np.testing.assert_array_almost_equal(rv[f], expected)
 
@@ -539,7 +548,7 @@ class TestPixelWseSloped:
         vw = _donate(fw)
         fp_wse  = np.full(N, wse_val, dtype=np.float64)
         face_ws = np.full(N, wse_val, dtype=np.float64)
-        result  = _pixel_wse_sloped(vw, fp_wse, face_ws, None)
+        result  = _pixel_wse_sloped(vw, fp_wse, face_ws, np.empty(0))
         assert result == pytest.approx(wse_val, abs=1e-6)
 
     def test_nodata_base_returns_nodata_like(self):
@@ -549,7 +558,7 @@ class TestPixelWseSloped:
                                    np.array([0., 0., 1., 1.]))
         vw = _donate(fw)
         # N=0 path
-        result = _pixel_wse_sloped(vw, np.array([]), np.array([]), None)
+        result = _pixel_wse_sloped(vw, np.array([]), np.array([]), np.empty(0))
         assert result == -9999.0
 
 

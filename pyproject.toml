@@ -39,6 +39,7 @@ geo = [
     "geopandas",
     "rasterio",
     "matplotlib",
+    "numba",
 ]
 dev = [
     "pytest>=7.0",

@@ -384,6 +384,8 @@ def rasmap_raster(
         out_width, out_height, abs(out_transform.a),
     )
 
+    logger.info("raster_map: output_path=%r", str(Path(output_path).resolve()) if output_path is not None else None)
+
     # -- 2. Wet-cell mask (common to flat and sloping) ----------------------
     # Number of faces per cell (needed for virtual-cell detection in Step A)
     _cell_face_count_arr = cell_face_info[:, 1].astype(np.int32)
@@ -439,13 +441,16 @@ def rasmap_raster(
         fp_wse: np.ndarray | None = None
         if render_mode != "horizontal":
             # Precompute face midsides (RASMapper-exact application points for
-            # PlanarRegressionZ) when cell centres are available.
-            face_midsides: np.ndarray | None = None
+            # PlanarRegressionZ) when cell centres are available.  Pass an
+            # empty (0, 2) array when not available — compute_facepoint_wse
+            # uses shape[0] > 0 as the "available" sentinel.
             if cell_centers is not None:
                 face_midsides = _rasmap._compute_face_midsides(
                     fp_coords, face_facepoint_indexes,
                     face_cell_indexes, np.asarray(cell_centers, dtype=np.float64),
                 )
+            else:
+                face_midsides = np.empty((0, 2), dtype=np.float64)
             fp_wse = _rasmap.compute_facepoint_wse(
                 fp_coords, fp_face_info, fp_face_values,
                 face_facepoint_indexes, face_value_a, face_value_b,
@@ -454,8 +459,8 @@ def rasmap_raster(
             )
 
         # Steps 2 / 3 / 3.5: velocity reconstruction (velocity only)
-        fp_velocities = None
-        fp_face_local_map: dict | None = None
+        fp_vel_data: np.ndarray | None = None
+        face_fp_local_idx: np.ndarray | None = None
         replaced_face_vel = None
         face_vel_A = None
         face_vel_B = None
@@ -466,7 +471,7 @@ def rasmap_raster(
                 face_normals_2d, face_connected,
                 face_cell_indexes, cell_face_info[:n_cells], cell_face_values,
             )
-            fp_velocities, fp_face_local_map = _rasmap.compute_facepoint_velocities(
+            fp_vel_data, face_fp_local_idx = _rasmap.compute_facepoint_velocities(
                 face_vel_A, face_vel_B, face_connected,
                 face_normals[:, 2],  # face lengths
                 face_facepoint_indexes, face_cell_indexes,
@@ -474,7 +479,7 @@ def rasmap_raster(
                 face_value_a, face_value_b,
             )
             replaced_face_vel = _rasmap.replace_face_velocities_sloped(
-                fp_velocities, fp_face_local_map, face_facepoint_indexes,
+                fp_vel_data, fp_face_info, face_fp_local_idx, face_facepoint_indexes,
             )
 
         # Step 4a: cell-ID raster
@@ -508,8 +513,9 @@ def rasmap_raster(
             fp_wse=fp_wse,
             face_value_a=face_value_a,
             face_value_b=face_value_b,
-            fp_velocities=fp_velocities,
-            fp_face_local_map=fp_face_local_map,
+            fp_vel_data=fp_vel_data,
+            fp_face_info=fp_face_info,
+            face_fp_local_idx=face_fp_local_idx,
             replaced_face_vel=replaced_face_vel,
             face_vel_A=face_vel_A,
             face_vel_B=face_vel_B,

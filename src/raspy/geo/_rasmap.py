@@ -47,11 +47,7 @@ if TYPE_CHECKING:
 # Optional Numba JIT
 # ---------------------------------------------------------------------------
 
-try:
-    from numba import njit as _njit
-    _HAS_NUMBA = True
-except ImportError:  # pragma: no cover
-    _HAS_NUMBA = False
+from numba import njit
 
 
 # ---------------------------------------------------------------------------
@@ -62,6 +58,7 @@ _MIN_WS_PLOT_TOLERANCE = 0.001  # matches C# RASResults.MinWSPlotTolerance
 _NODATA = -9999.0
 
 
+@njit(cache=True)
 def _avg_wse_with_crit_check(
     wse_a: float, wse_b: float, max_wse: float, min_z_face: float
 ) -> tuple[float, bool]:
@@ -89,6 +86,7 @@ def _avg_wse_with_crit_check(
     return (avg, False) if avg > crit else (crit, True)
 
 
+@njit(cache=True)
 def compute_face_wss(
     cell_wse: np.ndarray,
     cell_min_elev: np.ndarray,
@@ -184,7 +182,7 @@ def compute_face_wss(
         WSE on the cellB side of each face; ``-9999`` where nodata.
     """
     n_faces = len(face_cell_indexes)
-    face_connected = np.zeros(n_faces, dtype=bool)
+    face_connected = np.zeros(n_faces, dtype=np.bool_)
     face_value_a = np.full(n_faces, _NODATA, dtype=np.float64)
     face_value_b = np.full(n_faces, _NODATA, dtype=np.float64)
 
@@ -386,6 +384,7 @@ def compute_face_wss(
 # ---------------------------------------------------------------------------
 
 
+@njit(cache=True)
 def _compute_face_midsides(
     fp_coords: np.ndarray,
     face_facepoint_indexes: np.ndarray,
@@ -489,18 +488,24 @@ def _compute_face_midsides(
 # ---------------------------------------------------------------------------
 
 
+@njit(cache=True)
 def _planar_z_intercept(
     base_x: float,
     base_y: float,
-    app_xs: list[float],
-    app_ys: list[float],
-    zs: list[float],
+    app_xs: np.ndarray,
+    app_ys: np.ndarray,
+    zs: np.ndarray,
+    n: int,
 ) -> float:
     """Fit a plane Z = a*dx + b*dy + c and return c at (base_x, base_y).
 
-    Matches ``PlanarRegressionZ`` in ``archive/DLLs/RasMapperLib/MeshFV2D.cs``.  Working in local
-    coordinates ``dx = x - base_x``, ``dy = y - base_y`` so that evaluating
-    the plane at the origin (the facepoint) gives Z = c directly.
+    Matches ``PlanarRegressionZ`` in ``archive/DLLs/RasMapperLib/MeshFV2D.cs``.
+    Working in local coordinates ``dx = x - base_x``, ``dy = y - base_y`` so
+    that evaluating the plane at the origin (the facepoint) gives Z = c directly.
+
+    Takes pre-allocated numpy arrays and an explicit count ``n`` (the first
+    ``n`` elements are used) so the function can be compiled with Numba
+    ``@njit``.
 
     Degenerate cases:
 
@@ -509,7 +514,6 @@ def _planar_z_intercept(
     * n = 2 → return average
     * det = 0 (collinear) → return average
     """
-    n = len(zs)
     if n == 0:
         return _NODATA
     if n == 1:
@@ -538,13 +542,14 @@ def _planar_z_intercept(
         sumYZ += dy * z
         sumXZ += dx * z
 
+    fn = float(n)
     det = (
-        sumX2 * (sumY2 * n - sumY * sumY)
-        - sumXY * (sumXY * n - sumY * sumX)
+        sumX2 * (sumY2 * fn - sumY * sumY)
+        - sumXY * (sumXY * fn - sumY * sumX)
         + sumX * (sumXY * sumY - sumY2 * sumX)
     )
     if det == 0.0:
-        return sumZ / n
+        return sumZ / fn
     return (
         sumX2 * (sumY2 * sumZ - sumYZ * sumY)
         - sumXY * (sumXY * sumZ - sumYZ * sumX)
@@ -552,27 +557,30 @@ def _planar_z_intercept(
     ) / det
 
 
+@njit(cache=True)
 def _face_app_point(
     fi: int,
     fp_coords: np.ndarray,
     face_facepoint_indexes: np.ndarray,
-    face_midsides: np.ndarray | None,
+    face_midsides: np.ndarray,
 ) -> tuple[float, float]:
     """Return the application point (x, y) for face *fi*.
 
-    Uses the precomputed midside when available; falls back to chord midpoint.
+    Uses the precomputed midside when available (``face_midsides.shape[0] > 0``);
+    falls back to chord midpoint of the two endpoint facepoints.
     """
-    if face_midsides is not None:
-        return float(face_midsides[fi, 0]), float(face_midsides[fi, 1])
-    fpA = int(face_facepoint_indexes[fi, 0])
-    fpB = int(face_facepoint_indexes[fi, 1])
+    if face_midsides.shape[0] > 0:
+        return face_midsides[fi, 0], face_midsides[fi, 1]
+    fpA = face_facepoint_indexes[fi, 0]
+    fpB = face_facepoint_indexes[fi, 1]
     return (
-        (float(fp_coords[fpA, 0]) + float(fp_coords[fpB, 0])) * 0.5,
-        (float(fp_coords[fpA, 1]) + float(fp_coords[fpB, 1])) * 0.5,
+        (fp_coords[fpA, 0] + fp_coords[fpB, 0]) * 0.5,
+        (fp_coords[fpA, 1] + fp_coords[fpB, 1]) * 0.5,
     )
 
 
-def compute_facepoint_wse(
+@njit(cache=True)
+def _compute_facepoint_wse_nb(
     fp_coords: np.ndarray,
     fp_face_info: np.ndarray,
     fp_face_values: np.ndarray,
@@ -580,7 +588,7 @@ def compute_facepoint_wse(
     face_value_a: np.ndarray,
     face_value_b: np.ndarray,
     face_connected: np.ndarray,
-    face_midsides: np.ndarray | None = None,
+    face_midsides: np.ndarray,
 ) -> np.ndarray:
     """Step B — arc-based per-facepoint WSE via PlanarRegressionZ.
 
@@ -645,20 +653,35 @@ def compute_facepoint_wse(
         ``-9999`` where the arc has no valid sample points.
     """
     n_faces = len(face_facepoint_indexes)
+    n_fp = len(fp_coords)
     fp_wse_at_face = np.full((n_faces, 2), _NODATA, dtype=np.float64)
 
-    for fp_idx in range(len(fp_coords)):
-        base_x = float(fp_coords[fp_idx, 0])
-        base_y = float(fp_coords[fp_idx, 1])
-        fp_start = int(fp_face_info[fp_idx, 0])
-        fp_count = int(fp_face_info[fp_idx, 1])
+    # Maximum arc buffer size: fp_count arc faces + 1 terminal face.
+    # We allocate once per facepoint to avoid Python list.append overhead.
+    # Sized to the global max (worst case = all faces around one facepoint).
+    max_fp_count = 0
+    for k in range(n_fp):
+        c = fp_face_info[k, 1]
+        if c > max_fp_count:
+            max_fp_count = c
+    buf_xs = np.empty(max_fp_count + 1, dtype=np.float64)
+    buf_ys = np.empty(max_fp_count + 1, dtype=np.float64)
+    buf_zs = np.empty(max_fp_count + 1, dtype=np.float64)
+    buf_raw = np.empty(max_fp_count, dtype=np.float64)
+    processed = np.zeros(max_fp_count, dtype=np.bool_)
+
+    for fp_idx in range(n_fp):
+        base_x = fp_coords[fp_idx, 0]
+        base_y = fp_coords[fp_idx, 1]
+        fp_start = fp_face_info[fp_idx, 0]
+        fp_count = fp_face_info[fp_idx, 1]
 
         # Early exit: skip facepoints where every adjacent face is completely dry
         # (both sides -9999).  Matches C# flag=true early-return.
         any_wet = False
         for j in range(fp_count):
-            fi = int(fp_face_values[fp_start + j, 0])
-            if float(face_value_a[fi]) != _NODATA or float(face_value_b[fi]) != _NODATA:
+            fi = fp_face_values[fp_start + j, 0]
+            if face_value_a[fi] != _NODATA or face_value_b[fi] != _NODATA:
                 any_wet = True
                 break
         if not any_wet:
@@ -666,7 +689,8 @@ def compute_facepoint_wse(
 
         # processed[j] tracks which local face indices have been assigned
         # by a completed arc.  Prevents double-processing.
-        processed = [False] * fp_count
+        for j in range(fp_count):
+            processed[j] = False
 
         # Outer loop: find the next unprocessed local face index j and
         # process its arc.  Mirrors the C# for(j=0..num) with continue.
@@ -679,7 +703,7 @@ def compute_facepoint_wse(
             num4 = j
             while True:
                 num4 = (num4 + 1) % fp_count
-                fi_num4 = int(fp_face_values[fp_start + num4, 0])
+                fi_num4 = fp_face_values[fp_start + num4, 0]
                 if not face_connected[fi_num4] or num4 == j:
                     break
 
@@ -687,64 +711,66 @@ def compute_facepoint_wse(
             # If num5 == num4 (all connected), the whole ring is one arc.
             num5 = j
             if num5 != num4:
-                while face_connected[int(fp_face_values[fp_start + num5, 0])]:
+                while face_connected[fp_face_values[fp_start + num5, 0]]:
                     num5 = (num5 - 1 + fp_count) % fp_count
 
             # --- Collect arc faces (num5 → num4, CCW exclusive) ---
-            app_xs: list[float] = []
-            app_ys: list[float] = []
-            zs: list[float] = []
-            raw: list[float] = []  # own-side raw values (one per arc face)
+            # Use pre-allocated buffers instead of Python lists.
+            n_buf = 0   # count of regression sample points
+            n_raw = 0   # count of raw (own-side) values for arc faces
 
             num6 = num5
             while True:
-                fi_cur = int(fp_face_values[fp_start + num6, 0])
-                ori_cur = int(fp_face_values[fp_start + num6, 1])
+                fi_cur = fp_face_values[fp_start + num6, 0]
+                ori_cur = fp_face_values[fp_start + num6, 1]
                 # Own-side: fpA (ori=-1) → face_value_a; fpB (ori=+1) → face_value_b
                 if ori_cur == -1:
-                    wse = float(face_value_a[fi_cur])
+                    wse = face_value_a[fi_cur]
                 else:
-                    wse = float(face_value_b[fi_cur])
+                    wse = face_value_b[fi_cur]
                 if wse != _NODATA:
                     ax, ay = _face_app_point(
                         fi_cur, fp_coords, face_facepoint_indexes, face_midsides
                     )
-                    app_xs.append(ax)
-                    app_ys.append(ay)
-                    zs.append(wse)
-                raw.append(wse)  # may be _NODATA; overridden by arc result below
+                    buf_xs[n_buf] = ax
+                    buf_ys[n_buf] = ay
+                    buf_zs[n_buf] = wse
+                    n_buf += 1
+                buf_raw[n_raw] = wse  # may be _NODATA; overridden by arc result below
+                n_raw += 1
                 num6 = (num6 + 1) % fp_count
                 if num6 == num4:
                     break
 
             # --- Add terminal face (num4, if disconnected) using OPPOSITE side ---
             # Provides a slope anchor at the wet/dry boundary.
-            fi_term = int(fp_face_values[fp_start + num4, 0])
+            fi_term = fp_face_values[fp_start + num4, 0]
             if not face_connected[fi_term]:
-                ori_term = int(fp_face_values[fp_start + num4, 1])
+                ori_term = fp_face_values[fp_start + num4, 1]
                 # Opposite: fpA (ori=-1) → face_value_b; fpB (ori=+1) → face_value_a
                 if ori_term == -1:
-                    wse_term = float(face_value_b[fi_term])
+                    wse_term = face_value_b[fi_term]
                 else:
-                    wse_term = float(face_value_a[fi_term])
+                    wse_term = face_value_a[fi_term]
                 if wse_term != _NODATA:
                     ax, ay = _face_app_point(
                         fi_term, fp_coords, face_facepoint_indexes, face_midsides
                     )
-                    app_xs.append(ax)
-                    app_ys.append(ay)
-                    zs.append(wse_term)
+                    buf_xs[n_buf] = ax
+                    buf_ys[n_buf] = ay
+                    buf_zs[n_buf] = wse_term
+                    n_buf += 1
 
             # --- Solve regression and store result for arc faces ---
-            arc_result = _planar_z_intercept(base_x, base_y, app_xs, app_ys, zs)
+            arc_result = _planar_z_intercept(base_x, base_y, buf_xs, buf_ys, buf_zs, n_buf)
 
             num6 = num5
             arc_idx = 0
             while True:
-                fi_cur = int(fp_face_values[fp_start + num6, 0])
-                ori_cur = int(fp_face_values[fp_start + num6, 1])
+                fi_cur = fp_face_values[fp_start + num6, 0]
+                ori_cur = fp_face_values[fp_start + num6, 1]
                 # Store arc result (or raw value if regression had no points)
-                value = arc_result if arc_result != _NODATA else raw[arc_idx]
+                value = arc_result if arc_result != _NODATA else buf_raw[arc_idx]
                 side = 0 if ori_cur == -1 else 1  # -1=fpA→col0; +1=fpB→col1
                 if value != _NODATA:
                     fp_wse_at_face[fi_cur, side] = value
@@ -761,48 +787,36 @@ def compute_facepoint_wse(
     return fp_wse_at_face
 
 
+def compute_facepoint_wse(
+    fp_coords: np.ndarray,
+    fp_face_info: np.ndarray,
+    fp_face_values: np.ndarray,
+    face_facepoint_indexes: np.ndarray,
+    face_value_a: np.ndarray,
+    face_value_b: np.ndarray,
+    face_connected: np.ndarray,
+    face_midsides: np.ndarray | None = None,
+) -> np.ndarray:
+    """Step B — arc-based per-facepoint WSE via PlanarRegressionZ.
+
+    Public wrapper around the ``@njit`` kernel :func:`_compute_facepoint_wse_nb`.
+    ``face_midsides`` may be omitted or ``None``; an empty ``(0, 2)`` sentinel
+    is passed to the kernel in that case so that the midpoint branch is skipped.
+    """
+    ms = face_midsides if face_midsides is not None else np.empty((0, 2), dtype=np.float64)
+    return _compute_facepoint_wse_nb(
+        fp_coords, fp_face_info, fp_face_values,
+        face_facepoint_indexes, face_value_a, face_value_b,
+        face_connected, ms,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Step 2 — C-stencil tangential velocity reconstruction
 # ---------------------------------------------------------------------------
 
 
-class _FaceVelocityCoef:
-    """Symmetric 2x2 normal-equation matrix for the C-stencil WLS solve.
-
-    Mirrors ``FaceVelocityCoef`` in
-    ``archive/DLLs/RasMapperLib/MeshFV2D.cs``.
-    """
-    __slots__ = ("A11", "A22", "A12", "_ct")
-
-    def __init__(self) -> None:
-        self.A11 = 0.0
-        self.A22 = 0.0
-        self.A12 = 0.0
-        self._ct = 0
-
-    def add_face_normal(self, nx: float, ny: float) -> None:
-        self.A11 += nx * nx
-        self.A22 += ny * ny
-        self.A12 += nx * ny
-        self._ct += 1
-
-    def complete(self) -> None:
-        det = self.A11 * self.A22 - self.A12 * self.A12
-        if det == 0.0:
-            inv_ct = 1.0 / self._ct if self._ct > 0 else 1.0
-            self.A11 = inv_ct
-            self.A12 = 0.0
-            self.A22 = inv_ct
-        else:
-            inv_det = 1.0 / det
-            self.A11 *= inv_det
-            self.A22 *= inv_det
-            self.A12 *= inv_det
-
-    def solve(self, B1: float, B2: float) -> tuple[float, float]:
-        return (self.A22 * B1 - self.A12 * B2, -self.A12 * B1 + self.A11 * B2)
-
-
+@njit(cache=True)
 def _cw_ccw_neighbors(
     target_face: int,
     cell_idx: int,
@@ -812,46 +826,24 @@ def _cw_ccw_neighbors(
     """Return (CW neighbor face, CCW neighbor face) of *target_face* within *cell_idx*.
 
     Returns -1 for a neighbor that doesn't exist.
+    Mirrors ``FaceVelocityCoef`` helper in
+    ``archive/DLLs/RasMapperLib/MeshFV2D.cs``.
     """
-    start = int(cell_face_info[cell_idx, 0])
-    count = int(cell_face_info[cell_idx, 1])
+    start = cell_face_info[cell_idx, 0]
+    count = cell_face_info[cell_idx, 1]
     target_pos = -1
     for k in range(count):
-        if int(cell_face_values[start + k, 0]) == target_face:
+        if cell_face_values[start + k, 0] == target_face:
             target_pos = k
             break
     if target_pos < 0:
         return -1, -1
     cw_pos  = (target_pos + 1) % count
     ccw_pos = (target_pos - 1 + count) % count
-    return int(cell_face_values[start + cw_pos, 0]), int(cell_face_values[start + ccw_pos, 0])
+    return cell_face_values[start + cw_pos, 0], cell_face_values[start + ccw_pos, 0]
 
 
-def _solve_face_vector(
-    coef: _FaceVelocityCoef,
-    fn_x: float, fn_y: float,
-    face_vel: float,
-    cw_normal: np.ndarray, cw_vel: float, cw_connected: bool,
-    ccw_normal: np.ndarray, ccw_vel: float, ccw_connected: bool,
-) -> tuple[float, float]:
-    """Reconstruct 2D velocity vector at a face from a 3-face C-stencil.
-
-    Mirrors the C-stencil solve in
-    ``archive/DLLs/RasMapperLib/MeshFV2D.cs``.
-    """
-    tan_x = fn_y
-    tan_y = -fn_x
-    tangential = 0.0
-    if cw_connected or ccw_connected:
-        B1 = cw_normal[0] * cw_vel + ccw_normal[0] * ccw_vel + fn_x * face_vel
-        B2 = cw_normal[1] * cw_vel + ccw_normal[1] * ccw_vel + fn_y * face_vel
-        sx, sy = coef.solve(B1, B2)
-        tangential = sx * tan_x + sy * tan_y
-    Vx = face_vel * fn_x + tangential * tan_x
-    Vy = face_vel * fn_y + tangential * tan_y
-    return Vx, Vy
-
-
+@njit(cache=True)
 def reconstruct_face_velocities(
     face_normal_vel: np.ndarray,
     face_normals_2d: np.ndarray,
@@ -954,73 +946,134 @@ def reconstruct_face_velocities(
     n_faces = len(face_cell_indexes)
     face_vel_A = np.zeros((n_faces, 2), dtype=np.float64)
     face_vel_B = np.zeros((n_faces, 2), dtype=np.float64)
-    _zeros2 = np.zeros(2, dtype=np.float64)
 
     for fidx in range(n_faces):
-        cellA = int(face_cell_indexes[fidx, 0])
-        cellB = int(face_cell_indexes[fidx, 1])
-        fv = float(face_normal_vel[fidx])
-        fn = face_normals_2d[fidx]  # view, no copy
-        fn_x = float(fn[0])
-        fn_y = float(fn[1])
+        cellA = face_cell_indexes[fidx, 0]
+        cellB = face_cell_indexes[fidx, 1]
+        fv = face_normal_vel[fidx]
+        fn_x = face_normals_2d[fidx, 0]
+        fn_y = face_normals_2d[fidx, 1]
+        tan_x = fn_y
+        tan_y = -fn_x
 
         # ---- cellA stencil (Item1) ----------------------------------------
+        # Inline _FaceVelocityCoef: accumulate 2×2 symmetric WLS matrix,
+        # invert via Cramer's rule, reconstruct the tangential component.
         if cellA >= 0:
             cw_a, ccw_a = _cw_ccw_neighbors(fidx, cellA, cell_face_info, cell_face_values)
-            s = _FaceVelocityCoef()
+            A11 = fn_x * fn_x
+            A22 = fn_y * fn_y
+            A12 = fn_x * fn_y
+            ct = 1
             if cw_a >= 0:
-                s.add_face_normal(float(face_normals_2d[cw_a, 0]), float(face_normals_2d[cw_a, 1]))
+                nx = face_normals_2d[cw_a, 0]
+                ny = face_normals_2d[cw_a, 1]
+                A11 += nx * nx
+                A22 += ny * ny
+                A12 += nx * ny
+                ct += 1
             if ccw_a >= 0:
-                s.add_face_normal(float(face_normals_2d[ccw_a, 0]), float(face_normals_2d[ccw_a, 1]))
-            s.add_face_normal(fn_x, fn_y)
-            s.complete()
-            vx, vy = _solve_face_vector(
-                s, fn_x, fn_y, fv,
-                face_normals_2d[cw_a]  if cw_a  >= 0 else _zeros2,
-                float(face_normal_vel[cw_a])  if cw_a  >= 0 else 0.0,
-                bool(face_connected[cw_a])    if cw_a  >= 0 else False,
-                face_normals_2d[ccw_a] if ccw_a >= 0 else _zeros2,
-                float(face_normal_vel[ccw_a]) if ccw_a >= 0 else 0.0,
-                bool(face_connected[ccw_a])   if ccw_a >= 0 else False,
-            )
-            face_vel_A[fidx, 0] = vx
-            face_vel_A[fidx, 1] = vy
+                nx = face_normals_2d[ccw_a, 0]
+                ny = face_normals_2d[ccw_a, 1]
+                A11 += nx * nx
+                A22 += ny * ny
+                A12 += nx * ny
+                ct += 1
+            det = A11 * A22 - A12 * A12
+            if det == 0.0:
+                inv_ct = 1.0 / ct
+                A11 = inv_ct
+                A22 = inv_ct
+                A12 = 0.0
+            else:
+                inv_det = 1.0 / det
+                A11 *= inv_det
+                A22 *= inv_det
+                A12 *= inv_det
+
+            tangential = 0.0
+            cw_conn  = face_connected[cw_a]  if cw_a  >= 0 else False
+            ccw_conn = face_connected[ccw_a] if ccw_a >= 0 else False
+            if cw_conn or ccw_conn:
+                cw_vn  = face_normal_vel[cw_a]       if cw_a  >= 0 else 0.0
+                cw_nx  = face_normals_2d[cw_a,  0]   if cw_a  >= 0 else 0.0
+                cw_ny  = face_normals_2d[cw_a,  1]   if cw_a  >= 0 else 0.0
+                ccw_vn = face_normal_vel[ccw_a]      if ccw_a >= 0 else 0.0
+                ccw_nx = face_normals_2d[ccw_a, 0]   if ccw_a >= 0 else 0.0
+                ccw_ny = face_normals_2d[ccw_a, 1]   if ccw_a >= 0 else 0.0
+                B1 = cw_nx * cw_vn + ccw_nx * ccw_vn + fn_x * fv
+                B2 = cw_ny * cw_vn + ccw_ny * ccw_vn + fn_y * fv
+                sx = A22 * B1 - A12 * B2
+                sy = -A12 * B1 + A11 * B2
+                tangential = sx * tan_x + sy * tan_y
+            face_vel_A[fidx, 0] = fv * fn_x + tangential * tan_x
+            face_vel_A[fidx, 1] = fv * fn_y + tangential * tan_y
         else:
-            # Boundary: degenerate stencil
             face_vel_A[fidx, 0] = fv * fn_x
             face_vel_A[fidx, 1] = fv * fn_y
 
         # ---- cellB stencil (Item2) ----------------------------------------
         if cellB >= 0:
             cw_b, ccw_b = _cw_ccw_neighbors(fidx, cellB, cell_face_info, cell_face_values)
-            s = _FaceVelocityCoef()
+            A11 = fn_x * fn_x
+            A22 = fn_y * fn_y
+            A12 = fn_x * fn_y
+            ct = 1
             if cw_b >= 0:
-                s.add_face_normal(float(face_normals_2d[cw_b, 0]), float(face_normals_2d[cw_b, 1]))
+                nx = face_normals_2d[cw_b, 0]
+                ny = face_normals_2d[cw_b, 1]
+                A11 += nx * nx
+                A22 += ny * ny
+                A12 += nx * ny
+                ct += 1
             if ccw_b >= 0:
-                s.add_face_normal(float(face_normals_2d[ccw_b, 0]), float(face_normals_2d[ccw_b, 1]))
-            s.add_face_normal(fn_x, fn_y)
-            s.complete()
-            vx, vy = _solve_face_vector(
-                s, fn_x, fn_y, fv,
-                face_normals_2d[cw_b]  if cw_b  >= 0 else _zeros2,
-                float(face_normal_vel[cw_b])  if cw_b  >= 0 else 0.0,
-                bool(face_connected[cw_b])    if cw_b  >= 0 else False,
-                face_normals_2d[ccw_b] if ccw_b >= 0 else _zeros2,
-                float(face_normal_vel[ccw_b]) if ccw_b >= 0 else 0.0,
-                bool(face_connected[ccw_b])   if ccw_b >= 0 else False,
-            )
-            face_vel_B[fidx, 0] = vx
-            face_vel_B[fidx, 1] = vy
+                nx = face_normals_2d[ccw_b, 0]
+                ny = face_normals_2d[ccw_b, 1]
+                A11 += nx * nx
+                A22 += ny * ny
+                A12 += nx * ny
+                ct += 1
+            det = A11 * A22 - A12 * A12
+            if det == 0.0:
+                inv_ct = 1.0 / ct
+                A11 = inv_ct
+                A22 = inv_ct
+                A12 = 0.0
+            else:
+                inv_det = 1.0 / det
+                A11 *= inv_det
+                A22 *= inv_det
+                A12 *= inv_det
+
+            tangential = 0.0
+            cw_conn  = face_connected[cw_b]  if cw_b  >= 0 else False
+            ccw_conn = face_connected[ccw_b] if ccw_b >= 0 else False
+            if cw_conn or ccw_conn:
+                cw_vn  = face_normal_vel[cw_b]       if cw_b  >= 0 else 0.0
+                cw_nx  = face_normals_2d[cw_b,  0]   if cw_b  >= 0 else 0.0
+                cw_ny  = face_normals_2d[cw_b,  1]   if cw_b  >= 0 else 0.0
+                ccw_vn = face_normal_vel[ccw_b]      if ccw_b >= 0 else 0.0
+                ccw_nx = face_normals_2d[ccw_b, 0]   if ccw_b >= 0 else 0.0
+                ccw_ny = face_normals_2d[ccw_b, 1]   if ccw_b >= 0 else 0.0
+                B1 = cw_nx * cw_vn + ccw_nx * ccw_vn + fn_x * fv
+                B2 = cw_ny * cw_vn + ccw_ny * ccw_vn + fn_y * fv
+                sx = A22 * B1 - A12 * B2
+                sy = -A12 * B1 + A11 * B2
+                tangential = sx * tan_x + sy * tan_y
+            face_vel_B[fidx, 0] = fv * fn_x + tangential * tan_x
+            face_vel_B[fidx, 1] = fv * fn_y + tangential * tan_y
         else:
             face_vel_B[fidx, 0] = fv * fn_x
             face_vel_B[fidx, 1] = fv * fn_y
 
         # Connected faces: average Item1 and Item2 (C# MeshFV2D.cs)
-        if bool(face_connected[fidx]) and cellA >= 0 and cellB >= 0:
+        if face_connected[fidx] and cellA >= 0 and cellB >= 0:
             avg_x = (face_vel_A[fidx, 0] + face_vel_B[fidx, 0]) / 2.0
             avg_y = (face_vel_A[fidx, 1] + face_vel_B[fidx, 1]) / 2.0
-            face_vel_A[fidx, 0] = avg_x;  face_vel_A[fidx, 1] = avg_y
-            face_vel_B[fidx, 0] = avg_x;  face_vel_B[fidx, 1] = avg_y
+            face_vel_A[fidx, 0] = avg_x
+            face_vel_A[fidx, 1] = avg_y
+            face_vel_B[fidx, 0] = avg_x
+            face_vel_B[fidx, 1] = avg_y
 
     return face_vel_A, face_vel_B
 
@@ -1030,36 +1083,152 @@ def reconstruct_face_velocities(
 # ---------------------------------------------------------------------------
 
 
-def _connected_arc(
-    local_start: int,
-    fp_faces: list[tuple[int, int]],
-    face_connected: np.ndarray,
-) -> tuple[int, int]:
-    """Find the hydraulically-connected arc starting at *local_start*.
+@njit(cache=True)
+def _build_face_fp_local_idx(
+    face_facepoint_indexes: np.ndarray,
+    fp_face_info: np.ndarray,
+    fp_face_values: np.ndarray,
+) -> np.ndarray:
+    """Precompute local ring index of each face within its two endpoint facepoints.
 
-    Returns ``(arc_start, arc_end)`` as inclusive/exclusive local indices into
-    the angle-sorted ``fp_faces`` list for this facepoint.
+    Returns ``face_fp_local_idx`` shape ``(n_faces, 2)`` where:
+
+    * ``[fi, 0]`` — position *j* of face *fi* in fpA's angle-sorted ring
+      (``fp_face_values[fp_face_info[fpA, 0] + j, 0] == fi``).
+    * ``[fi, 1]`` — same for fpB.
+
+    ``-1`` if a mapping entry is not found (should not occur for valid meshes).
+
+    This replaces the ``fp_face_local_map`` dict so that Step 3 / 3.5 / 4
+    lookups are Numba-compatible array accesses.
     """
-    n = len(fp_faces)
-    if n == 0:
-        return local_start, local_start
+    n_faces = len(face_facepoint_indexes)
+    n_fp = len(fp_face_info)
+    face_fp_local_idx = np.full((n_faces, 2), np.int32(-1), dtype=np.int32)
+    for fp in range(n_fp):
+        start = fp_face_info[fp, 0]
+        count = fp_face_info[fp, 1]
+        for j in range(count):
+            fi = fp_face_values[start + j, 0]
+            if face_facepoint_indexes[fi, 0] == fp:
+                face_fp_local_idx[fi, 0] = np.int32(j)
+            else:
+                face_fp_local_idx[fi, 1] = np.int32(j)
+    return face_fp_local_idx
 
-    # Walk forward to find arc end (first disconnected face after arc)
-    end_idx = (local_start + 1) % n
-    while end_idx != local_start:
-        if not face_connected[fp_faces[end_idx][0]]:
-            break
-        end_idx = (end_idx + 1) % n
 
-    # Walk backward from start to find actual arc start
-    start_idx = local_start
-    if start_idx != end_idx:
-        while face_connected[fp_faces[start_idx][0]]:
-            start_idx = (start_idx - 1 + n) % n
-            if face_connected[fp_faces[start_idx][0]] is False:
+@njit(cache=True)
+def _compute_facepoint_velocities_nb(
+    fp_vel_data: np.ndarray,
+    face_vel_A: np.ndarray,
+    face_vel_B: np.ndarray,
+    face_connected: np.ndarray,
+    face_inv_lengths: np.ndarray,
+    face_facepoint_indexes: np.ndarray,
+    fp_face_info: np.ndarray,
+    fp_face_values: np.ndarray,
+    face_value_a: np.ndarray,
+    face_value_b: np.ndarray,
+) -> None:
+    """Inner @njit kernel for :func:`compute_facepoint_velocities`.
+
+    Writes directly into ``fp_vel_data`` (shape ``(total_fp_face_entries, 2)``,
+    pre-zeroed).  Mirrors ``ComputeVertexVelocities`` in
+    ``archive/DLLs/RasMapperLib/MeshFV2D.cs``.
+    """
+    n_fp = len(fp_face_info)
+
+    for fp in range(n_fp):
+        fp_start = fp_face_info[fp, 0]
+        fp_count = fp_face_info[fp, 1]
+        if fp_count == 0:
+            continue
+
+        # Dry check: skip if all adjacent faces have no wet WSE
+        all_dry = True
+        for j in range(fp_count):
+            fi = fp_face_values[fp_start + j, 0]
+            if face_value_a[fi] != _NODATA or face_value_b[fi] != _NODATA:
+                all_dry = False
                 break
+        if all_dry:
+            continue  # fp_vel_data already zero-initialised
 
-    return start_idx, end_idx
+        for j in range(fp_count):
+            n = fp_count
+
+            # --- Find connected arc starting from local index j ---
+            # Walk forward to find arc end (first disconnected face CCW from j+1)
+            end_idx = (j + 1) % n
+            while end_idx != j:
+                fi_e = fp_face_values[fp_start + end_idx, 0]
+                if not face_connected[fi_e]:
+                    break
+                end_idx = (end_idx + 1) % n
+
+            # Walk backward from j to find arc start
+            start_idx = j
+            if start_idx != end_idx:
+                fi_s = fp_face_values[fp_start + start_idx, 0]
+                while face_connected[fi_s]:
+                    start_idx = (start_idx - 1 + n) % n
+                    fi_s = fp_face_values[fp_start + start_idx, 0]
+
+            arc_start = start_idx
+            arc_end = end_idx
+
+            # --- Weighted sum over arc faces (float32 matches C# MeshFV2D.cs:8677) ---
+            sum_vx = np.float32(0.0)
+            sum_vy = np.float32(0.0)
+            total_w = np.float32(0.0)
+
+            current = arc_start
+            while True:
+                fi = fp_face_values[fp_start + current, 0]
+                inv_len = np.float32(face_inv_lengths[fi])
+
+                if current == arc_start:
+                    # Start face: Item1 if fpA == fp, else Item2
+                    if face_facepoint_indexes[fi, 0] == fp:
+                        vx = face_vel_A[fi, 0]
+                        vy = face_vel_A[fi, 1]
+                    else:
+                        vx = face_vel_B[fi, 0]
+                        vy = face_vel_B[fi, 1]
+                else:
+                    # Interior connected faces: always Item1
+                    vx = face_vel_A[fi, 0]
+                    vy = face_vel_A[fi, 1]
+
+                sum_vx += np.float32(vx) * inv_len
+                sum_vy += np.float32(vy) * inv_len
+                total_w += inv_len
+
+                current = (current + 1) % n
+                if current == arc_end:
+                    break
+
+            # --- Terminal disconnected face (boundary anchor) ---
+            fi_end = fp_face_values[fp_start + arc_end, 0]
+            if arc_end != arc_start or not face_connected[fi_end]:
+                if not face_connected[fi_end]:
+                    inv_len = np.float32(face_inv_lengths[fi_end])
+                    # Opposite selection from start face
+                    if face_facepoint_indexes[fi_end, 0] == fp:
+                        vx = face_vel_B[fi_end, 0]
+                        vy = face_vel_B[fi_end, 1]
+                    else:
+                        vx = face_vel_A[fi_end, 0]
+                        vy = face_vel_A[fi_end, 1]
+                    sum_vx += np.float32(vx) * inv_len
+                    sum_vy += np.float32(vy) * inv_len
+                    total_w += inv_len
+
+            gj = fp_start + j
+            if total_w > np.float32(1e-12):
+                # Explicit float32 division — matches C# MeshFV2D.cs result type
+                fp_vel_data[gj, 0] = float(np.float32(sum_vx / total_w))
+                fp_vel_data[gj, 1] = float(np.float32(sum_vy / total_w))
 
 
 def compute_facepoint_velocities(
@@ -1074,7 +1243,7 @@ def compute_facepoint_velocities(
     fp_face_values: np.ndarray,
     face_value_a: np.ndarray,
     face_value_b: np.ndarray,
-) -> tuple[list[np.ndarray], dict[tuple[int, int], int]]:
+) -> tuple[np.ndarray, np.ndarray]:
     """Step 3 — inverse-face-length weighted facepoint velocity averaging.
 
     Replicates ``ComputeVertexVelocities`` from
@@ -1160,103 +1329,41 @@ def compute_facepoint_velocities(
 
     Returns
     -------
-    fp_velocities : list of ndarray, length ``n_fp``
-        ``fp_velocities[fp]`` is shape ``(n_adj_faces, 2)`` — one
-        ``[Vx, Vy]`` vector per adjacent face of facepoint ``fp``,
-        in the same order as the angle-sorted face ring.
-    fp_face_local_map : dict ``(fp_idx, face_idx) -> local_j``
-        Maps a ``(facepoint, face)`` pair to the row index ``local_j``
-        in ``fp_velocities[fp]``.  Used by :func:`replace_face_velocities_sloped`
-        and Step 4 to look up the arc-context velocity for a given face.
+    fp_vel_data : float64 ndarray, shape ``(total_fp_face_entries, 2)``
+        Flat CSR velocity store.  ``fp_vel_data[fp_face_info[fp, 0] + j]``
+        gives the ``[Vx, Vy]`` arc-context velocity for facepoint ``fp``,
+        local face index ``j`` (same order as the angle-sorted face ring).
+    face_fp_local_idx : int32 ndarray, shape ``(n_faces, 2)``
+        For each face *fi*:
+
+        * ``[fi, 0]`` — local ring index of *fi* in fpA's face ring.
+        * ``[fi, 1]`` — local ring index of *fi* in fpB's face ring.
+
+        ``-1`` if not found.  Replaces the ``fp_face_local_map`` dict so
+        Step 3.5 and Step 4 lookups are Numba-compatible.
     """
-    n_fp = len(fp_face_info)
     face_inv_lengths = 1.0 / np.maximum(face_lengths, 1e-12)
 
-    fp_velocities: list[np.ndarray] = []
-    fp_face_local_map: dict[tuple[int, int], int] = {}
+    total = int(fp_face_info[:, 1].sum())
+    fp_vel_data = np.zeros((total, 2), dtype=np.float64)
 
-    for fp in range(n_fp):
-        fp_start = int(fp_face_info[fp, 0])
-        fp_count = int(fp_face_info[fp, 1])
+    face_fp_local_idx = _build_face_fp_local_idx(
+        face_facepoint_indexes.astype(np.int64),
+        fp_face_info.astype(np.int64),
+        fp_face_values.astype(np.int64),
+    )
 
-        # Build local face list: list of (face_idx, orientation)
-        fp_faces: list[tuple[int, int]] = [
-            (int(fp_face_values[fp_start + j, 0]), int(fp_face_values[fp_start + j, 1]))
-            for j in range(fp_count)
-        ]
+    _compute_facepoint_velocities_nb(
+        fp_vel_data,
+        face_vel_A, face_vel_B, face_connected,
+        face_inv_lengths,
+        face_facepoint_indexes.astype(np.int64),
+        fp_face_info.astype(np.int64),
+        fp_face_values.astype(np.int64),
+        face_value_a, face_value_b,
+    )
 
-        # Register local index map for Step 3.5 and Step 4 lookups
-        for j, (fi, _) in enumerate(fp_faces):
-            fp_face_local_map[(fp, fi)] = j
-
-        if fp_count == 0:
-            fp_velocities.append(np.zeros((0, 2), dtype=np.float64))
-            continue
-
-        # Dry check: skip if all adjacent cells have no wet WSE
-        all_dry = True
-        for fi, _ in fp_faces:
-            va = float(face_value_a[fi])
-            vb = float(face_value_b[fi])
-            if va != _NODATA or vb != _NODATA:
-                all_dry = False
-                break
-
-        if all_dry:
-            fp_velocities.append(np.zeros((fp_count, 2), dtype=np.float64))
-            continue
-
-        vels = np.zeros((fp_count, 2), dtype=np.float64)
-
-        for j in range(fp_count):
-            arc_start, arc_end = _connected_arc(j, fp_faces, face_connected)
-
-            # float32 accumulators — critical to match C# MeshFV2D.cs:8677
-            sum_vx = np.float32(0.0)
-            sum_vy = np.float32(0.0)
-            total_w = np.float32(0.0)
-
-            current = arc_start
-            while True:
-                fi = fp_faces[current][0]
-                inv_len = np.float32(face_inv_lengths[fi])
-
-                if current == arc_start:
-                    # Start face: Item1 if fpA == fp, else Item2
-                    fpA = int(face_facepoint_indexes[fi, 0])
-                    vel = face_vel_A[fi] if fpA == fp else face_vel_B[fi]
-                else:
-                    # Interior connected faces: always Item1
-                    vel = face_vel_A[fi]
-
-                sum_vx += np.float32(vel[0]) * inv_len
-                sum_vy += np.float32(vel[1]) * inv_len
-                total_w += inv_len
-
-                current = (current + 1) % fp_count
-                if current == arc_end:
-                    break
-
-            # Terminal disconnected face (arc end boundary)
-            if arc_end != arc_start or not face_connected[fp_faces[arc_end][0]]:
-                end_fi = fp_faces[arc_end][0]
-                if not face_connected[end_fi]:
-                    inv_len = np.float32(face_inv_lengths[end_fi])
-                    fpA = int(face_facepoint_indexes[end_fi, 0])
-                    # Opposite selection from start face
-                    vel = face_vel_B[end_fi] if fpA == fp else face_vel_A[end_fi]
-                    sum_vx += np.float32(vel[0]) * inv_len
-                    sum_vy += np.float32(vel[1]) * inv_len
-                    total_w += inv_len
-
-            if float(total_w) > 1e-12:
-                # Explicit float32 division — matches C# MeshFV2D.cs result type
-                vels[j, 0] = float(np.float32(sum_vx / total_w))
-                vels[j, 1] = float(np.float32(sum_vy / total_w))
-
-        fp_velocities.append(vels)
-
-    return fp_velocities, fp_face_local_map
+    return fp_vel_data, face_fp_local_idx
 
 
 # ---------------------------------------------------------------------------
@@ -1264,9 +1371,11 @@ def compute_facepoint_velocities(
 # ---------------------------------------------------------------------------
 
 
+@njit(cache=True)
 def replace_face_velocities_sloped(
-    fp_velocities: list[np.ndarray],
-    fp_face_local_map: dict[tuple[int, int], int],
+    fp_vel_data: np.ndarray,
+    fp_face_info: np.ndarray,
+    face_fp_local_idx: np.ndarray,
     face_facepoint_indexes: np.ndarray,
 ) -> np.ndarray:
     """Step 3.5 — replace face velocity with average of endpoint facepoint velocities.
@@ -1274,55 +1383,27 @@ def replace_face_velocities_sloped(
     Replicates ``ReplaceFaceVelocitiesSloped`` from
     ``archive/DLLs/RasMapperLib/MeshFV2D.cs``.
 
-    **Context**
-
-    Step 3 (:func:`compute_facepoint_velocities`) produces, for every
-    facepoint ``fp``, an array ``fp_velocities[fp]`` of one velocity vector
-    per adjacent face.  These are *arc-context* velocities: each entry
-    reflects the weighted average of the connected-face arc that includes
-    that particular adjacent face, so the velocity at a facepoint can vary
-    depending on which face's arc is being considered.
-
-    **What this step does**
-
     For every face ``f`` with endpoint facepoints ``fpA`` and ``fpB``:
 
-    1. Look up the arc-context velocity that Step 3 assigned to ``fpA``
-       while processing face ``f``:
-       ``vel_A = fp_velocities[fpA][fp_face_local_map[(fpA, f)]]``
-    2. Do the same for ``fpB``:
-       ``vel_B = fp_velocities[fpB][fp_face_local_map[(fpB, f)]]``
-    3. Replace the face velocity with the component-wise average:
-       ``replaced[f] = (vel_A + vel_B) / 2``
+    1. Look up the arc-context velocity for ``fpA`` at face ``f`` via the
+       CSR table: ``fp_vel_data[fp_face_info[fpA, 0] + face_fp_local_idx[f, 0]]``
+    2. Same for ``fpB``.
+    3. Replace the face velocity with ``(vel_A + vel_B) / 2``.
 
-    If either facepoint has no entry for face ``f`` in the map (e.g. a
-    boundary facepoint not covered by the arc), the missing velocity
-    defaults to ``(0, 0)``.
-
-    **Why**
-
-    The sloped-cell render mode needs a velocity that is spatially smooth
-    across each cell polygon, not just at face midpoints.  By averaging the
-    two endpoint facepoint velocities, this step produces a face-centre
-    value that is consistent with the corner values used for barycentric
-    interpolation in Step 4.  In Step 4 this ``replaced_face_vel`` is used
-    for face-midpoint sample contributions; corner (facepoint) contributions
-    use ``fp_velocities`` directly.
+    Missing entries (``face_fp_local_idx == -1``) default to ``(0, 0)``.
 
     Parameters
     ----------
-    fp_velocities:
-        ``list[ndarray]``, length ``n_fp`` — from
-        :func:`compute_facepoint_velocities`.  ``fp_velocities[fp]`` has
-        shape ``(n_adj_faces, 2)``, one row per adjacent face of that
-        facepoint.
-    fp_face_local_map:
-        ``dict[(fp_idx, face_idx) -> local_j]`` — from
-        :func:`compute_facepoint_velocities`.  Maps a ``(facepoint, face)``
-        pair to the row index in ``fp_velocities[fp]``.
+    fp_vel_data:
+        ``(total_fp_face_entries, 2)`` CSR velocity data from
+        :func:`compute_facepoint_velocities`.
+    fp_face_info:
+        ``(n_fp, 2)`` — ``[start, count]`` into ``fp_vel_data``.
+    face_fp_local_idx:
+        ``(n_faces, 2)`` int32 — local ring indices from
+        :func:`compute_facepoint_velocities`.  ``-1`` = not found.
     face_facepoint_indexes:
-        ``(n_faces, 2)`` — ``[fpA, fpB]`` endpoint facepoint indices for
-        each face.
+        ``(n_faces, 2)`` — ``[fpA, fpB]``.
 
     Returns
     -------
@@ -1332,14 +1413,16 @@ def replace_face_velocities_sloped(
     n_faces = len(face_facepoint_indexes)
     replaced = np.zeros((n_faces, 2), dtype=np.float64)
     for f in range(n_faces):
-        fpA = int(face_facepoint_indexes[f, 0])
-        fpB = int(face_facepoint_indexes[f, 1])
-        key_A = (fpA, f)
-        key_B = (fpB, f)
-        vel_A = fp_velocities[fpA][fp_face_local_map[key_A]] if key_A in fp_face_local_map else np.zeros(2)
-        vel_B = fp_velocities[fpB][fp_face_local_map[key_B]] if key_B in fp_face_local_map else np.zeros(2)
-        replaced[f, 0] = (vel_A[0] + vel_B[0]) / 2.0
-        replaced[f, 1] = (vel_A[1] + vel_B[1]) / 2.0
+        fpA = face_facepoint_indexes[f, 0]
+        fpB = face_facepoint_indexes[f, 1]
+        jA = face_fp_local_idx[f, 0]
+        jB = face_fp_local_idx[f, 1]
+        vx_A = fp_vel_data[fp_face_info[fpA, 0] + jA, 0] if jA >= 0 else 0.0
+        vy_A = fp_vel_data[fp_face_info[fpA, 0] + jA, 1] if jA >= 0 else 0.0
+        vx_B = fp_vel_data[fp_face_info[fpB, 0] + jB, 0] if jB >= 0 else 0.0
+        vy_B = fp_vel_data[fp_face_info[fpB, 0] + jB, 1] if jB >= 0 else 0.0
+        replaced[f, 0] = (vx_A + vx_B) / 2.0
+        replaced[f, 1] = (vy_A + vy_B) / 2.0
     return replaced
 
 
@@ -1348,6 +1431,7 @@ def replace_face_velocities_sloped(
 # ---------------------------------------------------------------------------
 
 
+@njit(cache=True)
 def _barycentric_weights(px: float, py: float, verts_x: np.ndarray, verts_y: np.ndarray) -> np.ndarray:
     """Generalised polygon barycentric coordinates, cast to float32.
 
@@ -1356,14 +1440,18 @@ def _barycentric_weights(px: float, py: float, verts_x: np.ndarray, verts_y: np.
     """
     N = len(verts_x)
     if N < 3:
-        return np.ones(N, dtype=np.float32) / max(N, 1)
+        out = np.empty(N, dtype=np.float32)
+        v = 1.0 / float(max(N, 1))
+        for i in range(N):
+            out[i] = np.float32(v)
+        return out
 
     xp = np.empty(N, dtype=np.float64)
     for i in range(N):
         ax = verts_x[i];  ay = verts_y[i]
         bx = verts_x[(i + 1) % N];  by = verts_y[(i + 1) % N]
-        xp[i] = (ax - px) * (by - py) - (ay - py) * (bx - px)
-    xp[xp == 0.0] = 1e-5
+        val = (ax - px) * (by - py) - (ay - py) * (bx - px)
+        xp[i] = val if val != 0.0 else 1e-5
 
     weights = np.empty(N, dtype=np.float64)
     for j in range(N):
@@ -1378,17 +1466,29 @@ def _barycentric_weights(px: float, py: float, verts_x: np.ndarray, verts_y: np.
         cp = (p2x - p1x) * (p3y - p1y) - (p2y - p1y) * (p3x - p1x)
         weights[j] = product * cp
 
-    total = weights.sum()
+    total = 0.0
+    for i in range(N):
+        total += weights[i]
     if abs(total) > 1e-20:
-        weights /= total
-    weights[weights < 0.0] = 0.0
-    total = weights.sum()
+        for i in range(N):
+            weights[i] /= total
+    for i in range(N):
+        if weights[i] < 0.0:
+            weights[i] = 0.0
+    total = 0.0
+    for i in range(N):
+        total += weights[i]
     if total > 1e-20:
-        weights /= total
+        for i in range(N):
+            weights[i] /= total
 
-    return weights.astype(np.float32)
+    out = np.empty(N, dtype=np.float32)
+    for i in range(N):
+        out[i] = np.float32(weights[i])
+    return out
 
 
+@njit(cache=True)
 def _donate(fp_weights: np.ndarray) -> np.ndarray:
     """Redistribute facepoint weights to edge midpoints.
 
@@ -1423,6 +1523,7 @@ def _donate(fp_weights: np.ndarray) -> np.ndarray:
     return w
 
 
+@njit(cache=True)
 def _downward_adjust_fp_wse(cell_wse: float, fp_local_wse: np.ndarray) -> np.ndarray:
     """Drag facepoint WSE values toward cell-average WSE.
 
@@ -1436,6 +1537,7 @@ def _downward_adjust_fp_wse(cell_wse: float, fp_local_wse: np.ndarray) -> np.nda
     return fp_local_wse + (cell_wse - avg) / n
 
 
+@njit(cache=True)
 def _depth_weights_for_cell(
     cell_idx: int,
     cell_face_info: np.ndarray,
@@ -1535,6 +1637,7 @@ def _depth_weights_for_cell(
     return dw
 
 
+@njit(cache=True)
 def _all_shallow(
     cell_idx: int,
     cell_face_info: np.ndarray,
@@ -1554,32 +1657,37 @@ def _all_shallow(
     return True
 
 
+@njit(cache=True)
 def _pixel_wse_sloped(
     vel_weights: np.ndarray,
     fp_local_wse: np.ndarray,
     face_local_wse: np.ndarray,
-    depth_weights: np.ndarray | None,
+    depth_weights: np.ndarray,
 ) -> float:
     """Interpolate WSE at a pixel using donated barycentric weights.
 
     C# ``Renderer.cs:3139 PaintCell_8Stencil`` or
     ``Renderer.cs:3166 PaintCell_8Stencil_RebalanceWeights``.
+
+    Pass ``depth_weights`` as a length-0 array to skip depth-weighted
+    rebalancing (plain donated-barycentric blend).
     """
     N = len(fp_local_wse)
     if N == 0:
         return _NODATA
     base_val = float(face_local_wse[0])
 
-    if depth_weights is not None:
-        eff_w = vel_weights * depth_weights
-        w_sum = float(eff_w.sum())
+    if depth_weights.shape[0] > 0:
+        w_sum = 0.0
+        for i in range(2 * N):
+            w_sum += vel_weights[i] * depth_weights[i]
         if w_sum < 1e-20:
             return _NODATA
         result = 0.0
         for i in range(N):
-            result += (float(fp_local_wse[i]) - base_val) * eff_w[i]
+            result += (float(fp_local_wse[i]) - base_val) * vel_weights[i] * depth_weights[i]
         for j in range(N):
-            result += (float(face_local_wse[j]) - base_val) * eff_w[N + j]
+            result += (float(face_local_wse[j]) - base_val) * vel_weights[N + j] * depth_weights[N + j]
         return result / w_sum + base_val
     else:
         result = 0.0
@@ -1677,6 +1785,49 @@ def build_cell_id_raster(
 # ---------------------------------------------------------------------------
 
 
+@njit(cache=True)
+def _sample_terrain_nb(
+    fp_coords: np.ndarray,
+    terrain_grid: np.ndarray,
+    a: float, c: float,
+    d: float, f: float,
+) -> np.ndarray:
+    """Numba kernel: bilinear terrain sampling at facepoint coordinates.
+
+    ``a, c`` are the x-scale and x-origin from the rasterio affine transform;
+    ``d, f`` are the y-scale (negative for north-up) and y-origin.
+    """
+    H, W = terrain_grid.shape
+    n_fp = len(fp_coords)
+    fp_elev = np.full(n_fp, np.nan)
+
+    for i in range(n_fp):
+        col_f = (fp_coords[i, 0] - c) / a - 0.5
+        row_f = (fp_coords[i, 1] - f) / d - 0.5
+        c0 = int(np.floor(col_f))
+        r0 = int(np.floor(row_f))
+        c1 = c0 + 1
+        r1 = r0 + 1
+        if r0 < 0 or c0 < 0 or r1 >= H or c1 >= W:
+            continue
+        dc = col_f - c0
+        dr = row_f - r0
+        v00 = terrain_grid[r0, c0]
+        v01 = terrain_grid[r0, c1]
+        v10 = terrain_grid[r1, c0]
+        v11 = terrain_grid[r1, c1]
+        if np.isnan(v00) or np.isnan(v01) or np.isnan(v10) or np.isnan(v11):
+            continue
+        fp_elev[i] = (
+            v00 * (1.0 - dr) * (1.0 - dc)
+            + v01 * (1.0 - dr) * dc
+            + v10 * dr * (1.0 - dc)
+            + v11 * dr * dc
+        )
+
+    return fp_elev
+
+
 def sample_terrain_at_facepoints(
     fp_coords: np.ndarray,
     terrain_grid: np.ndarray,
@@ -1705,45 +1856,16 @@ def sample_terrain_at_facepoints(
         Terrain elevation at each facepoint.  Facepoints outside the raster
         extent or at NaN terrain pixels receive ``NaN``.
     """
-    H, W = terrain_grid.shape
-    n_fp = len(fp_coords)
-    fp_elev = np.full(n_fp, np.nan, dtype=np.float64)
-
-    # Rasterio affine: x = c + a*col + e*row, y = f + b*col + d*row
-    # For north-up rasters: a > 0, d < 0, b=e=0
-    a, c = transform.a, transform.c
-    d, f = transform.e, transform.f  # note: rasterio uses .e for the y-scale
-
-    xs = fp_coords[:, 0]
-    ys = fp_coords[:, 1]
-
-    # Fractional pixel coordinates (0-based, pixel-centre at 0.5)
-    cols_f = (xs - c) / a - 0.5
-    rows_f = (ys - f) / d - 0.5
-
-    for i in range(n_fp):
-        c0 = int(np.floor(cols_f[i]))
-        r0 = int(np.floor(rows_f[i]))
-        c1 = c0 + 1
-        r1 = r0 + 1
-        if r0 < 0 or c0 < 0 or r1 >= H or c1 >= W:
-            continue
-        dc = cols_f[i] - c0
-        dr = rows_f[i] - r0
-        v00 = terrain_grid[r0, c0]
-        v01 = terrain_grid[r0, c1]
-        v10 = terrain_grid[r1, c0]
-        v11 = terrain_grid[r1, c1]
-        if np.isnan(v00) or np.isnan(v01) or np.isnan(v10) or np.isnan(v11):
-            continue
-        fp_elev[i] = (
-            v00 * (1 - dr) * (1 - dc)
-            + v01 * (1 - dr) * dc
-            + v10 * dr * (1 - dc)
-            + v11 * dr * dc
-        )
-
-    return fp_elev
+    # Extract scalar affine coefficients — rasterio Affine objects cannot be
+    # passed into Numba @njit functions.
+    # Rasterio affine: x = c + a*col, y = f + d*row  (north-up: a>0, d<0)
+    a_coef = transform.a
+    c_coef = transform.c
+    d_coef = transform.e  # rasterio uses .e for the y-scale
+    f_coef = transform.f
+    grid = np.asarray(terrain_grid, dtype=np.float64)
+    coords = np.asarray(fp_coords, dtype=np.float64)
+    return _sample_terrain_nb(coords, grid, a_coef, c_coef, d_coef, f_coef)
 
 
 # ---------------------------------------------------------------------------
@@ -1766,8 +1888,9 @@ def rasterize_rasmap(
     fp_wse: np.ndarray | None,
     face_value_a: np.ndarray,
     face_value_b: np.ndarray,
-    fp_velocities: list[np.ndarray] | None,
-    fp_face_local_map: dict[tuple[int, int], int] | None,
+    fp_vel_data: np.ndarray | None,
+    fp_face_info: np.ndarray | None,
+    face_fp_local_idx: np.ndarray | None,
     replaced_face_vel: np.ndarray | None,
     face_vel_A: np.ndarray | None,
     face_vel_B: np.ndarray | None,
@@ -1900,8 +2023,12 @@ def rasterize_rasmap(
         sloping.  Column 0 = fpA arc value; column 1 = fpB arc value.
     face_value_a, face_value_b:
         ``(n_faces,)`` from :func:`compute_face_wss`.
-    fp_velocities, fp_face_local_map, replaced_face_vel:
+    fp_vel_data, fp_face_info, face_fp_local_idx, replaced_face_vel:
         From Steps 3 / 3.5; required for ``"speed"`` (velocity magnitude).
+        ``fp_vel_data`` shape ``(total_fp_face_entries, 2)`` — CSR flat array
+        indexed via ``fp_face_info[fp, 0] + j``; ``face_fp_local_idx`` shape
+        ``(n_faces, 2)`` int32 — local ring index of face ``fi`` in fpA (col 0)
+        and fpB (col 1) rings.
     face_vel_A, face_vel_B:
         ``(n_faces, 2)`` from Step 2; required for ``"speed"``.
     fp_elev:
@@ -2083,9 +2210,9 @@ def rasterize_rasmap(
 
         # Depth weights (C# UseDepthWeightedFaces, WaterSurfaceRenderer.cs:2842)
         # Only computed when use_depth_weights=True (opt-in, default off).
-        # Requires fp_elev; silently skipped if unavailable (cell_dw=None
+        # Requires fp_elev; silently skipped if unavailable (cell_dw length-0
         # causes _pixel_wse_sloped to use plain donated weights instead).
-        cell_dw: np.ndarray | None = None
+        cell_dw: np.ndarray = np.empty(0, dtype=np.float64)
         if use_sloped and with_faces and use_depth_weights and fp_elev is not None:
             cell_dw = _depth_weights_for_cell(
                 cell_idx, cell_face_info, cell_face_values,
@@ -2102,12 +2229,12 @@ def rasterize_rasmap(
         nb_fp_vy: np.ndarray | None = None
         nb_face_vx: np.ndarray | None = None
         nb_face_vy: np.ndarray | None = None
-        if variable in ("speed", "velocity") and fp_velocities is not None:
+        if variable in ("speed", "velocity") and fp_vel_data is not None:
             # Corner (facepoint) velocities: use the arc-context facepoint
-            # velocity from Step 3 — fp_velocities[fp_i][lj] is the weighted
-            # average of C-stencil face velocities in the hydraulically
-            # connected arc that includes face fi, viewed from facepoint fp_i.
-            # This matches C# GetLocalFacepointValues → fpVelocityRing[fPPrev]
+            # velocity from Step 3.  fp_vel_data is a CSR flat array indexed
+            # via fp_face_info[fp, 0] + j_local, where j_local is the local
+            # ring index of face fi in fp's ring (face_fp_local_idx[fi, 0/1]).
+            # Matches C# GetLocalFacepointValues → fpVelocityRing[fPPrev]
             # .Velocity[...].  Do NOT use replaced_face_vel (face-averaged
             # facepoint velocity) — that was wrong for the pixel stencil.
             nb_fp_vx = np.zeros(N, dtype=np.float64)
@@ -2115,11 +2242,16 @@ def rasterize_rasmap(
             for i in range(N):
                 fp_i = verts_fp[i]
                 fi   = face_indices[i]
-                key  = (fp_i, fi)
-                if key in fp_face_local_map:
-                    lj = fp_face_local_map[key]
-                    nb_fp_vx[i] = float(fp_velocities[fp_i][lj, 0])
-                    nb_fp_vy[i] = float(fp_velocities[fp_i][lj, 1])
+                fpA = int(face_facepoint_indexes[fi, 0])
+                fpB = int(face_facepoint_indexes[fi, 1])
+                if fp_i == fpA:
+                    j_local = int(face_fp_local_idx[fi, 0])
+                else:
+                    j_local = int(face_fp_local_idx[fi, 1])
+                if j_local >= 0:
+                    offset = int(fp_face_info[fp_i, 0]) + j_local
+                    nb_fp_vx[i] = float(fp_vel_data[offset, 0])
+                    nb_fp_vy[i] = float(fp_vel_data[offset, 1])
             # Face-midpoint velocities: select the cell-side value from the
             # two face velocity arrays (face_vel_A for cellA, face_vel_B for
             # cellB), matching the same cellA/cellB logic as the WSE arrays.
