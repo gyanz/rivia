@@ -75,8 +75,10 @@ def rasmap_raster(
     Horizontal" checkbox is a sub-option of WithFaces only and does not
     apply to this mode.
 
-    A. ``compute_face_wss`` — hydraulic connectivity + per-face WSE values
-       (``face_value_a``, ``face_value_b``).
+    A. ``compute_face_wss`` — hydraulic connectivity (``face_connected``),
+       per-face WSE values (``face_value_a``, ``face_value_b``), and full
+       connection classification (``face_hconn``, one of the ``HC_*``
+       constants).
     B. ``compute_facepoint_wse`` — planar regression fitting a plane through
        the face midpoint WSE samples; the intercept ``c`` at each facepoint
        is the corner WSE.
@@ -95,7 +97,7 @@ def rasmap_raster(
 
     **velocity — sloping / hybrid**
 
-    A. ``compute_face_wss`` — hydraulic connectivity (same as WSE pipeline).
+    A. ``compute_face_wss`` — hydraulic connectivity + ``face_hconn`` (same as WSE pipeline).
     2. ``reconstruct_face_velocities`` — C-stencil least-squares
        reconstruction of full ``(Vx, Vy)`` at each face from the stored
        face-normal velocity scalar.

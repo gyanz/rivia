@@ -23,6 +23,7 @@ Step 4  — Polygon barycentric weights + donate + pixel interpolation
 
 Public API
 ----------
+HC_NONE, HC_BACKFILL, HC_DOWNHILL_DEEP, HC_DOWNHILL_INTERMEDIATE, HC_DOWNHILL_SHALLOW, HC_LEVEE
 compute_face_wss
 compute_facepoint_wse
 reconstruct_face_velocities
@@ -101,69 +102,64 @@ def compute_face_wss(
     face_min_elev: np.ndarray,
     face_cell_indexes: np.ndarray,
     cell_face_count: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Step A — hydraulic connectivity and per-face WSE values.
 
-    Replicates ``ComputeFaceWSS`` from ``archive/DLLs/RasMapperLib/MeshFV2D.cs``
-    (``RASResults.cs`` internal logic).
+    Replicates ``ComputeFaceWaterSurfaces`` → ``ComputeFaceWSsNew`` from
+    ``archive/DLLs/RasMapperLib/RasMapperLib/MeshFV2D.cs``.
 
-    For each face the function determines whether water is actively flowing
-    across it (hydraulic connectivity) and assigns a WSE value to each side
-    (cellA side -> ``face_value_a``, cellB side -> ``face_value_b``).  These
-    per-side values are later used by :func:`compute_facepoint_wse` to fit a
-    sloped water surface across the mesh.
+    For each face the function determines the hydraulic-connection type
+    (``face_hconn``, one of the ``HC_*`` constants), whether water is actively
+    flowing across the face (``face_connected``), and the WSE to assign to
+    each side (cellA → ``face_value_a``, cellB → ``face_value_b``).  The
+    per-side values are used by :func:`compute_facepoint_wse` to fit a sloped
+    water surface; ``face_hconn`` is used by :func:`rasterize_rasmap` to
+    determine the all-shallow rendering fallback.
 
     Decision logic (applied in order)
     ----------------------------------
     1. **No real neighbour** (``cellA < 0`` or ``cellB < 0``): face sits on
        the outer mesh boundary with only one real cell.  Skip entirely —
-       outputs remain at ``_NODATA`` / ``False``.
+       outputs remain at ``_NODATA`` / ``False`` / ``HC_NONE``.
 
-    2. **Virtual cell or dry cell**: cells with ``face_count == 1`` are
-       virtual boundary cells inserted by HEC-RAS as computational
-       placeholders.  cellA and cellB are the left and right cells of the
-       face respectively (relative to the face normal orientation).  By
-       HEC-RAS mesh construction convention, the virtual cell is always
-       placed on the right (cellB) side of perimeter faces, so
-       ``face_is_perimeter`` is determined solely by ``cell_b_virtual``.  If
-       either cell is dry (``wse <= min_elev + _MIN_WS_PLOT_TOLERANCE``) or
-       the face is a perimeter face, connectivity is ``False``.  The side
-       belonging to a dry or virtual cell gets ``_NODATA``; a wet real cell
-       keeps its WSE.
+    2. **Virtual cell or dry cell** → ``HC_NONE``: cells with
+       ``face_count == 1`` are virtual boundary cells inserted by HEC-RAS as
+       computational placeholders.  By HEC-RAS convention the virtual cell is
+       always cellB, so ``face_is_perimeter = cell_b_virtual``.  If either
+       cell is dry (``wse <= min_elev + _MIN_WS_PLOT_TOLERANCE``) or the face
+       is a perimeter face, ``face_connected = False``.  The dry/virtual side
+       gets ``_NODATA``; a wet real cell keeps its own WSE.
 
-    3. **Both cells below the face invert** (``wse_a <= min_elev_face`` and
-       ``wse_b <= min_elev_face``): water on both sides is ponded below the
-       face sill — no flow over the face.  Both sides take the cell WSE and
-       connectivity is ``False``.
+    3. **Both cells below the face invert** → ``HC_NONE``: both WSEs are
+       at or below ``face_min_elev`` — water is ponded on both sides without
+       reaching the sill.  Both sides take the cell WSE; ``face_connected =
+       False``.
 
-    4. **Overtopping / weir-crest condition** (``was_crit_cap_used`` and
-       depth ratio ``depth_higher / depth_above_face > 2``): the face is
-       acting as a crested structure (levee, weir, or high sill) where water
-       overtops with critical flow.  ``was_crit_cap_used`` indicates the
-       average WSE fell below the critical-depth threshold (2/3 of head above
-       the sill), and the depth ratio confirms the upstream cell is a deep
-       pool with only a small head driving flow over the crest.  Both a levee
-       and a weir satisfy these same two criteria — they are the same
-       hydraulic condition.  Connectivity is ``False``; the upstream
-       (higher) side takes ``higher_wse`` and the downstream side keeps its
-       own cell WSE.
+    4. **Overtopping / weir-crest** → ``HC_LEVEE``: ``was_crit_cap_used``
+       (average WSE < 2/3 of head above sill) AND
+       ``depth_higher / depth_above_face > 2`` (upstream pool is deep relative
+       to the driving head).  The face acts as a crested structure.
+       ``face_connected = False``; each side keeps its own cell WSE.
 
-    5. **Backfill condition** (``(wse_b - wse_a) * (min_elev_b - min_elev_a) <= 0``):
-       WSE gradient and bed-elevation gradient point in opposite directions —
-       the lower cell sits on higher ground, which can occur when flow backs
-       up into a depression.  Both sides take ``face_ws`` and connectivity is
-       ``True``.
+    5. **Backfill** → ``HC_BACKFILL``, ``face_connected = True``:
+       ``(wse_b - wse_a) * (bed_b - bed_a) <= 0`` — WSE and bed gradients
+       oppose each other (water backs up into a depression).  Both sides take
+       ``face_ws`` (the higher cell WSE).
 
-    6. **Deep flow** (``depth_higher >= 2 * delta_min_elev``): the water depth
-       in the higher cell is at least twice the bed-elevation difference
-       between cells, so the slope effect is negligible.  Both sides take
-       ``face_ws`` and connectivity is ``True``.
+    6. **Deep flow** → ``HC_DOWNHILL_DEEP``, ``face_connected = True``:
+       ``depth_higher >= 2 * delta_bed`` — the higher cell is deep enough
+       that the bed step is negligible (submerged bump).  Both sides take
+       ``face_ws``.
 
-    7. **Transitional flow** (everything else): the bed-elevation difference
-       is significant relative to depth.  A quadratic interpolation blends
-       between a depth-based estimate and ``face_ws``, giving a smoothly
-       varying WSE that accounts for the sloping bed.  Both sides take this
-       interpolated value and connectivity is ``True``.
+    7. **Transitional flow** — quadratic interpolation; ``face_connected =
+       True``:
+
+       * ``depth_higher > delta_bed`` → ``HC_DOWNHILL_INTERMEDIATE``: blends
+         the quadratic estimate with ``face_ws`` for a smooth transition into
+         the deep-flow regime.
+       * ``depth_higher <= delta_bed`` → ``HC_DOWNHILL_SHALLOW``: pure
+         quadratic estimate; the higher cell is too shallow for blending.
+         Does **not** clear the all-shallow rendering flag.
 
     Parameters
     ----------
@@ -228,18 +224,18 @@ def compute_face_wss(
             else wse_b <= min_elev_b + _MIN_WS_PLOT_TOLERANCE
         )
 
-        # Logic 2: virtual cell or dry cell
+        # Logic 2 → HC_NONE: virtual cell or dry cell
         if flag_a_dry or flag_b_dry or face_is_perimeter:
             face_value_a[f] = _NODATA if (flag_a_dry or cell_a_virtual) else wse_a
             face_value_b[f] = _NODATA if (flag_b_dry or cell_b_virtual) else wse_b
-            # face_connected[f] and face_hconn[f] stay False / HC_NONE
+            # face_connected[f] and face_hconn[f] stay False / HC_NONE (default)
             continue
 
-        # Logic 3: both cells below face invert
+        # Logic 3 → HC_NONE: both cells below face invert
         if wse_a <= min_elev_face and wse_b <= min_elev_face:
             face_value_a[f] = wse_a
             face_value_b[f] = wse_b
-            # face_connected[f] and face_hconn[f] stay False / HC_NONE
+            # face_connected[f] and face_hconn[f] stay False / HC_NONE (default)
             continue
 
         # Strict `>` mirrors C# MeshFV2D.cs — when wse_a == wse_b, cellB is
@@ -326,65 +322,54 @@ def compute_face_wss(
 
         if flag_levee or flag_backfill:
             if flag_levee:
-                # Logic 4: overtopping / weir-crest
-                # Each side keeps its own cell WSE (the higher side's WSE ==
-                # face_ws by definition, so the if/else in the C# source is
-                # redundant).  Connectivity is False — the two pools are
-                # hydraulically separated at the crest.
+                # Logic 4 → HC_LEVEE: overtopping / weir-crest.
+                # Each side keeps its own cell WSE.  The two pools are
+                # hydraulically separated at the crest — face_connected = False.
                 face_value_a[f] = wse_a
                 face_value_b[f] = wse_b
                 face_connected[f] = False
                 face_hconn[f] = HC_LEVEE
             else:
-                # Logic 5: backfill
-                # WSE and bed gradients oppose — water backs into a depression.
-                # Both sides share face_ws and the face is connected.
+                # Logic 5 → HC_BACKFILL: WSE and bed gradients oppose each
+                # other — water backs into a depression.  Both sides share
+                # face_ws; face_connected = True.
                 face_value_a[f] = face_ws
                 face_value_b[f] = face_ws
                 face_connected[f] = True
                 face_hconn[f] = HC_BACKFILL
         elif depth_higher >= 2.0 * delta_min_elev:
-            # Logic 6: deep flow
-            # The water depth in the higher cell is at least twice the
-            # bed-elevation step between the two cells.  The step is
-            # effectively submerged — like a small bump at the bottom of a
-            # deep pool — and has negligible influence on the water surface.
-            # The two cells behave as a single connected pool with a nearly
-            # horizontal WSE, so both sides of the face are assigned face_ws.
-            #
-            # The threshold 2*delta_min_elev is not arbitrary: it is exactly
-            # the point where Logic 7's quadratic blend (step 7b) converges
-            # to face_ws (blend weight of face_ws -> 1 as depth_higher ->
-            # 2*delta_min_elev).  This ensures a smooth, continuous transition
-            # between Logic 6 and Logic 7 with no jump at the boundary.
+            # Logic 6 → HC_DOWNHILL_DEEP: higher cell is deep enough that the
+            # bed step is negligible (submerged bump).  Both sides share
+            # face_ws; face_connected = True.
+            # The 2× threshold is where Logic 7's blend weight for face_ws
+            # reaches 1, ensuring a smooth, jump-free transition.
             face_value_a[f] = face_ws
             face_value_b[f] = face_ws
             face_connected[f] = True
             face_hconn[f] = HC_DOWNHILL_DEEP
         else:
-            # Logic 7: transitional flow
-            # The bed-elevation difference is significant relative to depth.
-            # A quadratic formula (derived from assuming a linearly sloping
-            # water surface) interpolates the WSE at the face.
+            # Logic 7: transitional flow — bed-elevation difference is
+            # significant relative to depth.  Quadratic formula interpolates
+            # the face WSE assuming a linearly sloping water surface.
             #
             # Step 7a — quadratic interpolation:
-            #   num9 = eff_lower + (depth_higher**2 - depth_ref_lower**2)
-            #                      / (2 * delta_min_elev)
-            # This balances depths on both sides of the sloping bed.
+            #   num9 = eff_lower + (depth_higher² - depth_ref_lower²)
+            #                      / (2 × delta_min_elev)
             if delta_min_elev > 1e-12:
                 num9 = eff_lower + (depth_higher ** 2 - depth_ref_lower ** 2) / (
                     2.0 * delta_min_elev
                 )
             else:
-                # Flat bed — no interpolation needed; use higher WSE directly.
+                # Flat bed — quadratic collapses to face_ws.
                 num9 = face_ws
 
-            # Step 7b — linear blend toward face_ws as depth increases:
-            # When depth_higher is between delta_min_elev and 2*delta_min_elev,
-            # blend num9 with face_ws so the result transitions smoothly into
-            # Logic 6 (deep flow) at the upper boundary.
-            #   weight of num9    = (2*dz - d) / dz  ->  1 at d=dz, 0 at d=2*dz
-            #   weight of face_ws = (d - dz)  / dz  ->  0 at d=dz, 1 at d=2*dz
+            # Step 7b — linear blend toward face_ws as depth approaches 2×dz.
+            # Weights: num9 → (2dz-d)/dz, face_ws → (d-dz)/dz.
+            # depth_higher > delta_min_elev → HC_DOWNHILL_INTERMEDIATE (blended).
+            # depth_higher <= delta_min_elev → HC_DOWNHILL_SHALLOW (pure quadratic).
+            # HC_DOWNHILL_SHALLOW does NOT clear the all-shallow rendering flag
+            # (C# Renderer.cs:3094 — treated identically to a disconnected face
+            # for the purpose of ShallowBehavior.ReduceToHorizontal).
             if depth_higher > delta_min_elev and delta_min_elev > 1e-12:
                 num9 = (
                     (2.0 * delta_min_elev - depth_higher) * num9
@@ -2098,11 +2083,12 @@ def rasterize_rasmap(
         skipped even when this flag is ``True``.  Default ``False``
         (matches RasMapper default).
     shallow_to_flat:
-        When ``True``, cells whose every bounding face is hydraulically
-        disconnected (all-shallow) are rendered with the flat cell-average
-        WSE and no barycentric interpolation.  Matches
+        When ``True``, cells where every bounding face has ``HC_NONE``,
+        ``HC_LEVEE``, or ``HC_DOWNHILL_SHALLOW`` (i.e. no face with an
+        active hydraulic connection) are rendered with the flat cell-average
+        WSE instead of barycentric interpolation.  Matches
         ``ShallowBehavior.ReduceToHorizontal`` in ``Renderer.cs``.
-        Default ``False`` (matches RasMapper default).
+        Default ``False`` (matches RASMapper default).
 
     Returns
     -------
