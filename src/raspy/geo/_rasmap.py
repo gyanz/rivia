@@ -35,7 +35,6 @@ rasterize_rasmap
 
 from __future__ import annotations
 
-from collections import defaultdict
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -1347,19 +1346,18 @@ def compute_facepoint_velocities(
     total = int(fp_face_info[:, 1].sum())
     fp_vel_data = np.zeros((total, 2), dtype=np.float64)
 
-    face_fp_local_idx = _build_face_fp_local_idx(
-        face_facepoint_indexes.astype(np.int64),
-        fp_face_info.astype(np.int64),
-        fp_face_values.astype(np.int64),
-    )
+    # np.asarray avoids an allocation when the arrays are already int64.
+    _ffi64 = np.asarray(face_facepoint_indexes, dtype=np.int64)
+    _fpi64 = np.asarray(fp_face_info,           dtype=np.int64)
+    _fpv64 = np.asarray(fp_face_values,          dtype=np.int64)
+
+    face_fp_local_idx = _build_face_fp_local_idx(_ffi64, _fpi64, _fpv64)
 
     _compute_facepoint_velocities_nb(
         fp_vel_data,
         face_vel_A, face_vel_B, face_connected,
         face_inv_lengths,
-        face_facepoint_indexes.astype(np.int64),
-        fp_face_info.astype(np.int64),
-        fp_face_values.astype(np.int64),
+        _ffi64, _fpi64, _fpv64,
         face_value_a, face_value_b,
     )
 
@@ -2101,13 +2099,18 @@ def rasterize_rasmap(
     ys = np.asarray(ys, dtype=np.float64)
     cell_ids = cell_id_grid[valid_rows, valid_cols]  # 1-based
 
-    # Group pixels by owning cell for batch processing
-    pixel_groups: dict[int, list[int]] = defaultdict(list)
-    for i, cid in enumerate(cell_ids):
-        pixel_groups[int(cid)].append(i)
+    # Group pixels by owning cell using a sort-based CSR representation.
+    # Avoids an O(n_pixels) Python loop that dominates for large meshes.
+    _sort_order  = np.argsort(cell_ids, kind="stable")
+    _sorted_cids = cell_ids[_sort_order]
+    _unique_cids, _group_starts = np.unique(_sorted_cids, return_index=True)
+    _group_ends       = np.empty(len(_unique_cids), dtype=np.intp)
+    _group_ends[:-1]  = _group_starts[1:]
+    _group_ends[-1]   = len(_sorted_cids)
 
-    for raster_id, pix_indices in pixel_groups.items():
-        cell_idx = raster_id - 1  # back to 0-based
+    for _gi, raster_id in enumerate(_unique_cids):
+        cell_idx = int(raster_id) - 1  # back to 0-based
+        pix_arr  = _sort_order[_group_starts[_gi]:_group_ends[_gi]]
 
         # ---- Build ordered facepoint polygon for this cell ---------------
         # Read the CSR slice: face_indices are in CCW order around the cell;
@@ -2267,7 +2270,6 @@ def rasterize_rasmap(
         # ---- Pixel loop for this cell -------------------------------------
         # Gather all pixels belonging to this cell into contiguous arrays
         # to avoid repeated index arithmetic inside the inner loop.
-        pix_arr = np.array(pix_indices, dtype=np.int64)
         pix_rows = valid_rows[pix_arr]
         pix_cols = valid_cols[pix_arr]
         pix_xs   = xs[pix_arr]

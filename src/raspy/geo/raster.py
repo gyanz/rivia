@@ -407,24 +407,31 @@ def rasmap_raster(
         valid_rows, valid_cols = np.where(cell_id_grid > 0)
 
         out_arr: np.ndarray = np.full((out_height, out_width), nodata, dtype=np.float32)
-        for idx in range(len(valid_rows)):
-            r = int(valid_rows[idx])
-            c = int(valid_cols[idx])
-            ci = int(cell_id_grid[r, c]) - 1
-            if variable == "water_surface":
-                if terrain_grid is not None:
-                    t = float(terrain_grid[r, c])
-                    if np.isnan(t) or t == nodata:
-                        continue
-                    if float(cell_wse[ci]) < t + depth_threshold:
-                        continue
-                out_arr[r, c] = np.float32(cell_wse[ci])
-            elif variable == "depth":
-                t = float(terrain_grid[r, c]) if terrain_grid is not None else 0.0
-                if np.isnan(t) or t == nodata:
-                    continue
-                dep = float(cell_wse[ci]) - t
-                out_arr[r, c] = np.float32(max(0.0, dep)) if dep > 0 else nodata
+        # ci_arr: 0-based cell index for every valid pixel (vectorised lookup).
+        ci_arr = cell_id_grid[valid_rows, valid_cols] - 1
+
+        if variable == "water_surface":
+            wse_vals = cell_wse[ci_arr].astype(np.float32)
+            if terrain_grid is not None:
+                t_vals = terrain_grid[valid_rows, valid_cols]
+                ok = (
+                    ~np.isnan(t_vals)
+                    & (t_vals != nodata)
+                    & (wse_vals >= t_vals + depth_threshold)
+                )
+                out_arr[valid_rows[ok], valid_cols[ok]] = wse_vals[ok]
+            else:
+                out_arr[valid_rows, valid_cols] = wse_vals
+
+        elif variable == "depth":
+            # terrain_grid is guaranteed non-None for depth (guarded at entry).
+            t_vals = terrain_grid[valid_rows, valid_cols]  # type: ignore[index]
+            ok = ~np.isnan(t_vals) & (t_vals != nodata)
+            dep = cell_wse[ci_arr[ok]].astype(np.float64) - t_vals[ok]
+            wet = dep > 0
+            r_wet = valid_rows[ok][wet]
+            c_wet = valid_cols[ok][wet]
+            out_arr[r_wet, c_wet] = dep[wet].astype(np.float32)
 
     # -- 3b. Sloping/hybrid mode — full RASMapper stencil pipeline ----------
     # Also used for horizontal-mode velocity (see comment above).
