@@ -36,6 +36,7 @@ def rasmap_raster(
     output_path: str | Path | None = None,
     *,
     cell_centers: np.ndarray | None = None,
+    cell_surface_area: np.ndarray | None = None,
     reference_raster: str | Path | None = None,
     cell_size: float | None = None,
     crs: Any | None = None,
@@ -188,6 +189,15 @@ def rasmap_raster(
         face chord (the RASMapper-exact ``GetFaceMidSide`` algorithm).  When
         ``None`` the chord midpoint of the two endpoint facepoints is used
         instead, which is adequate for orthogonal meshes.
+    cell_surface_area:
+        ``(n_cells,)`` plan-view cell areas in model area units
+        (:attr:`~raspy.hdf.FlowArea.cell_surface_area`).  Used to split cells
+        into "flat" (area ≤ ``pixel_size² × 5``) and "sloping" groups,
+        matching RASMapper's ``SplitCellsOnThreshold`` /
+        ``PixelRenderingCutoff = 5`` logic.  When ``None`` all cells are
+        treated as sloping (current behaviour, correct for typical meshes but
+        incorrect for fine-resolution refinement areas such as channels).
+        Only relevant for velocity variables.
     reference_raster:
         Existing GeoTIFF whose transform and CRS are inherited.  Also used
         as the terrain DEM for depth computation and per-pixel wet/dry
@@ -420,6 +430,7 @@ def rasmap_raster(
     # WSE and depth keep their flat (per-cell) rendering.
     _flat_velocity = render_mode == "horizontal" and variable in ("speed", "velocity")
     if render_mode == "horizontal" and not _flat_velocity:
+        # This path runs for WSE and depth in horizontal model
         cell_id_grid = _rasmap.build_cell_id_raster(
             cell_polygons, wet_mask, out_transform, out_height, out_width
         )
@@ -521,6 +532,30 @@ def rasmap_raster(
                 fp_coords, terrain_grid, out_transform
             )
 
+        # -- Flat-cell velocity (SplitCellsOnThreshold / PixelRenderingCutoff) --
+        # Cells with area ≤ pixel_size² × 5 receive a uniform whole-cell
+        # least-squares velocity instead of the stencil, matching RASMapper's
+        # ComputeFromFacePerpValues(FlatMeshMap) path (Renderer.cs).
+        # NaN sentinel means "use stencil" for that cell.
+        flat_cell_vx: np.ndarray | None = None
+        flat_cell_vy: np.ndarray | None = None
+        if variable in ("speed", "velocity") and cell_surface_area is not None:
+            _px = abs(out_transform.a)
+            _threshold = _px * _px * 5.0
+            _flat_mask = np.asarray(cell_surface_area[:n_cells]) <= _threshold
+            if _flat_mask.any():
+                flat_cell_vx = np.full(n_cells, np.nan, dtype=np.float64)
+                flat_cell_vy = np.full(n_cells, np.nan, dtype=np.float64)
+                _fvx, _fvy = _rasmap.compute_cell_flat_velocities(
+                    cell_face_info[:n_cells],
+                    cell_face_values,
+                    np.asarray(face_normal_velocity, dtype=np.float64),
+                    face_normals[:, :2].astype(np.float64),
+                    wet_mask & _flat_mask,
+                )
+                flat_cell_vx[_flat_mask] = _fvx[_flat_mask]
+                flat_cell_vy[_flat_mask] = _fvy[_flat_mask]
+
         # Step 4b–4e: pixel loop
         # rasterize_rasmap uses "speed" for 1-band magnitude, "velocity" for
         # 4-band (Vx, Vy, speed, direction).  The public variable="velocity"
@@ -553,6 +588,8 @@ def rasmap_raster(
             with_faces=(render_mode == "hybrid"),
             use_depth_weights=use_depth_weights,
             shallow_to_flat=shallow_to_flat,
+            flat_cell_vx=flat_cell_vx,
+            flat_cell_vy=flat_cell_vy,
         )
 
     # -- 4. Write output ----------------------------------------------------

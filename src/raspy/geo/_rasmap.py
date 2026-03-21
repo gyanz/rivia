@@ -1878,6 +1878,101 @@ def sample_terrain_at_facepoints(
 
 
 # ---------------------------------------------------------------------------
+# Flat-cell velocity helper
+# ---------------------------------------------------------------------------
+
+
+@njit(cache=True)
+def compute_cell_flat_velocities(
+    cell_face_info: np.ndarray,
+    cell_face_values: np.ndarray,
+    face_normal_vel: np.ndarray,
+    face_normals_2d: np.ndarray,
+    flat_wet_mask: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Whole-cell least-squares velocity for small (flat) cells.
+
+    Mirrors ``MeshFV2D.ComputeCellValue_FacePerpLeastSquares`` from
+    ``archive/DLLs/RasMapperLib/MeshFV2D.cs``, called by
+    ``ComputeFromFacePerpValues(FlatMeshMap, ...)`` in ``Renderer.cs``.
+
+    RASMapper classifies each cell as *flat* when its plan-view area is at or
+    below ``pixel_size² × PixelRenderingCutoff`` (cutoff = 5, defined in
+    ``MeshFV2D.cs``).  Flat cells receive a single uniform velocity vector
+    painted over all their pixels, rather than the C-stencil + facepoint
+    interpolation used for larger (sloping) cells.
+
+    The vector is the least-squares solution to ``V · nᵢ ≈ vᵢ`` over all
+    faces of the cell, where ``nᵢ`` is the unit face normal and ``vᵢ`` is
+    the face-perpendicular velocity:
+
+    .. code-block:: text
+
+        M  = Σᵢ nᵢ nᵢᵀ        (2×2 symmetric normal matrix)
+        B  = Σᵢ nᵢ vᵢ
+        V  = M⁻¹ B
+
+    Parameters
+    ----------
+    cell_face_info : ndarray, shape ``(n_cells, 2)``
+        ``[start, count]`` CSR offsets into *cell_face_values*.
+    cell_face_values : ndarray, shape ``(n_csr, 2)``
+        ``[face_index, orientation]`` pairs in CCW order per cell.
+    face_normal_vel : ndarray, shape ``(n_faces,)``
+        Signed face-perpendicular velocity (positive = A→B direction).
+    face_normals_2d : ndarray, shape ``(n_faces, 2)``
+        Unit normal vectors ``[nx, ny]`` for each face (A→B direction).
+    flat_wet_mask : ndarray, shape ``(n_cells,)``, bool
+        ``True`` for cells that are both flat AND wet; all others are skipped.
+
+    Returns
+    -------
+    vx, vy : ndarray, shape ``(n_cells,)``
+        Velocity components.  Cells not in *flat_wet_mask* are left at 0.0.
+    """
+    n_cells = flat_wet_mask.shape[0]
+    vx = np.zeros(n_cells, dtype=np.float64)
+    vy = np.zeros(n_cells, dtype=np.float64)
+
+    for ci in range(n_cells):
+        if not flat_wet_mask[ci]:
+            continue
+        start = int(cell_face_info[ci, 0])
+        count = int(cell_face_info[ci, 1])
+        if count < 3:
+            continue  # degenerate cell
+
+        # Accumulate normal matrix M = Σ nᵢnᵢᵀ and rhs B = Σ nᵢvᵢ.
+        A11 = 0.0; A22 = 0.0; A12 = 0.0
+        B1  = 0.0; B2  = 0.0
+        for k in range(count):
+            fi  = int(cell_face_values[start + k, 0])
+            nx  = float(face_normals_2d[fi, 0])
+            ny  = float(face_normals_2d[fi, 1])
+            v   = float(face_normal_vel[fi])
+            A11 += nx * nx
+            A22 += ny * ny
+            A12 += nx * ny
+            B1  += nx * v
+            B2  += ny * v
+
+        # Invert M analytically and solve V = M⁻¹B.
+        # FaceVelocityCoef.Complete() / Compute() in FaceVelocityCoef.cs.
+        det = A11 * A22 - A12 * A12
+        if det == 0.0:
+            # Degenerate matrix: fallback to uniform average (1/count weight).
+            k_inv = 1.0 / count
+            vx[ci] = k_inv * B1
+            vy[ci] = k_inv * B2
+        else:
+            inv_det = 1.0 / det
+            vx[ci] = (A22 * B1 - A12 * B2) * inv_det
+            vy[ci] = (-A12 * B1 + A11 * B2) * inv_det
+
+    return vx, vy
+
+
+# ---------------------------------------------------------------------------
 # Step 4 — Main pixel rasterization loop
 # ---------------------------------------------------------------------------
 
@@ -1910,6 +2005,8 @@ def rasterize_rasmap(
     with_faces: bool = True,
     use_depth_weights: bool = False,
     shallow_to_flat: bool = False,
+    flat_cell_vx: np.ndarray | None = None,
+    flat_cell_vy: np.ndarray | None = None,
 ) -> np.ndarray:
     """Step 4 — pixel-level barycentric interpolation for all wet cells.
 
@@ -2080,6 +2177,12 @@ def rasterize_rasmap(
         WSE instead of barycentric interpolation.  Matches
         ``ShallowBehavior.ReduceToHorizontal`` in ``Renderer.cs``.
         Default ``False`` (matches RASMapper default).
+    flat_cell_vx, flat_cell_vy : ndarray, shape ``(n_cells,)``, optional
+        Pre-computed whole-cell least-squares velocity from
+        :func:`compute_cell_flat_velocities`.  ``NaN`` entries mean "use the
+        stencil for this cell" (i.e. the cell is not flat or was dry).
+        When both are ``None`` (default) the stencil is used for all cells.
+        Only consulted for ``variable in ("speed", "velocity")``.
 
     Returns
     -------
@@ -2382,20 +2485,26 @@ def rasterize_rasmap(
                 output[r, c] = np.float32(max(0.0, dep)) if dep > 0 else nodata
 
             elif variable in ("speed", "velocity"):
-                # Donated barycentric blend over the 2N-sample stencil:
-                #   vel_w[0..N-1]   × corner (facepoint) velocities
-                #   vel_w[N..2N-1]  × face-midpoint velocities
-                # vel_w always uses donated weights regardless of with_faces,
-                # since velocity always uses the full stencil in RasMapper.
-                if nb_fp_vx is None:
-                    continue
-                Vx = 0.0;  Vy = 0.0
-                for i in range(N):
-                    Vx += vel_w[i]     * nb_fp_vx[i]
-                    Vy += vel_w[i]     * nb_fp_vy[i]
-                for j in range(N):
-                    Vx += vel_w[N + j] * nb_face_vx[j]
-                    Vy += vel_w[N + j] * nb_face_vy[j]
+                # Flat-cell override: cells with area ≤ pixel² × 5 receive a
+                # uniform whole-cell least-squares vector (ComputeFromFacePerpValues
+                # FlatMeshMap path in C# Renderer.cs).  Non-NaN sentinel marks
+                # flat cells; NaN means "use the stencil" for this cell.
+                if (flat_cell_vx is not None
+                        and not np.isnan(float(flat_cell_vx[cell_idx]))):
+                    Vx = float(flat_cell_vx[cell_idx])
+                    Vy = float(flat_cell_vy[cell_idx])  # type: ignore[index]
+                else:
+                    # Sloping cell: donated barycentric blend over the 2N-sample
+                    # stencil (corner facepoints + face midpoints).
+                    if nb_fp_vx is None:
+                        continue
+                    Vx = 0.0;  Vy = 0.0
+                    for i in range(N):
+                        Vx += vel_w[i]     * nb_fp_vx[i]
+                        Vy += vel_w[i]     * nb_fp_vy[i]
+                    for j in range(N):
+                        Vx += vel_w[N + j] * nb_face_vx[j]
+                        Vy += vel_w[N + j] * nb_face_vy[j]
                 spd = float(np.sqrt(Vx * Vx + Vy * Vy))
                 if variable == "speed":
                     output[r, c] = np.float32(spd)
