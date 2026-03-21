@@ -161,7 +161,7 @@ class TestComputeFaceWss:
     def test_both_cells_wet_shared_face_connected(self):
         """Interior face is connected when both cells have WSE well above invert."""
         cell_wse = np.array([2.0, 2.0], dtype=np.float64)
-        face_connected, val_a, val_b = compute_face_wss(
+        face_connected, val_a, val_b, hconn = compute_face_wss(
             cell_wse, CELL_MIN_ELEV, FACE_MIN_ELEV, FACE_CI, CELL_FACE_COUNT
         )
         assert face_connected[3], "shared face should be connected"
@@ -169,15 +169,16 @@ class TestComputeFaceWss:
     def test_one_cell_dry_shared_face_disconnected(self):
         """Interior face is disconnected when one cell is dry."""
         cell_wse = np.array([0.0, 2.0], dtype=np.float64)  # cell0 dry
-        face_connected, _, _ = compute_face_wss(
+        face_connected, _, _, hconn = compute_face_wss(
             cell_wse, CELL_MIN_ELEV, FACE_MIN_ELEV, FACE_CI, CELL_FACE_COUNT
         )
         assert not face_connected[3]
+        assert hconn[3] == 0  # HC_NONE
 
     def test_boundary_faces_never_connected(self):
         """Boundary faces (cellB=-1) are always marked disconnected."""
         cell_wse = np.array([5.0, 5.0], dtype=np.float64)
-        face_connected, _, _ = compute_face_wss(
+        face_connected, _, _, _ = compute_face_wss(
             cell_wse, CELL_MIN_ELEV, FACE_MIN_ELEV, FACE_CI, CELL_FACE_COUNT
         )
         # faces 0,1,2 are boundary for cell0; faces 4,5,6 for cell1
@@ -187,7 +188,7 @@ class TestComputeFaceWss:
     def test_face_value_a_nodata_on_dry_cell(self):
         """face_value_a is -9999 for the dry side."""
         cell_wse = np.array([0.0, 3.0], dtype=np.float64)
-        _, val_a, val_b = compute_face_wss(
+        _, val_a, val_b, _ = compute_face_wss(
             cell_wse, CELL_MIN_ELEV, FACE_MIN_ELEV, FACE_CI, CELL_FACE_COUNT
         )
         assert val_a[3] == -9999.0  # cell0 is dry → face3 cellA side nodata
@@ -200,21 +201,49 @@ class TestComputeFaceWss:
         cell_min = np.full(N_CELLS, -2.0, dtype=np.float64)  # cells well below
         cell_wse2 = np.array([0.5, 0.5])  # above cell_min but below face_invert=1
         face_min2 = np.full(N_FACES, 1.0, dtype=np.float64)
-        face_connected, val_a, val_b = compute_face_wss(
+        face_connected, val_a, val_b, hconn = compute_face_wss(
             cell_wse2, cell_min, face_min2, FACE_CI, CELL_FACE_COUNT
         )
         assert not face_connected[3]
+        assert hconn[3] == 0  # HC_NONE — both below face sill
         assert val_a[3] == pytest.approx(0.5)
         assert val_b[3] == pytest.approx(0.5)
 
     def test_returns_correct_dtypes(self):
         cell_wse = np.array([2.0, 2.0])
-        fc, va, vb = compute_face_wss(
+        fc, va, vb, hconn = compute_face_wss(
             cell_wse, CELL_MIN_ELEV, FACE_MIN_ELEV, FACE_CI, CELL_FACE_COUNT
         )
         assert fc.dtype == bool
         assert va.dtype == np.float64
         assert vb.dtype == np.float64
+        assert hconn.dtype == np.uint8
+
+    def test_hconn_downhill_shallow(self):
+        """Higher cell shallow relative to bed-elevation step → HC_DOWNHILL_SHALLOW.
+
+        Setup: FACE_CI[3]=[cell0(cellA), cell1(cellB)], cell0 bed=0, cell1 bed=0.4.
+        cell1 is higher (wse=0.42 > 0.30).  depth_higher = 0.42-0.4 = 0.02;
+        bed_diff = 0.4.  0.02 <= 0.4 → DownhillShallow.
+        """
+        c_min = np.array([0.0, 0.4], dtype=np.float64)
+        c_wse = np.array([0.3, 0.42], dtype=np.float64)
+        _, _, _, hconn = compute_face_wss(
+            c_wse, c_min, np.zeros(N_FACES, dtype=np.float64), FACE_CI, CELL_FACE_COUNT
+        )
+        assert hconn[3] == 4, f"expected HC_DOWNHILL_SHALLOW(4), got {hconn[3]}"
+        # DownhillShallow does NOT clear the all-shallow flag for cell0.
+        assert _all_shallow(0, CELL_FACE_INFO, CELL_FACE_VALS, hconn)
+
+    def test_hconn_clears_all_shallow(self):
+        """Backfill / DownhillDeep / DownhillIntermediate all clear the all-shallow flag."""
+        cell_wse = np.array([2.0, 2.0], dtype=np.float64)
+        _, _, _, hconn = compute_face_wss(
+            cell_wse, CELL_MIN_ELEV, FACE_MIN_ELEV, FACE_CI, CELL_FACE_COUNT
+        )
+        # Equal WSE + zero bed elevations: flag_backfill fires (product=0 ≤ 0) → HC_BACKFILL
+        assert hconn[3] in (1, 2, 3), f"expected connected HC (1-3), got {hconn[3]}"
+        assert not _all_shallow(0, CELL_FACE_INFO, CELL_FACE_VALS, hconn)
 
 
 # ---------------------------------------------------------------------------
@@ -254,7 +283,7 @@ def _make_fp_face_orientation():
 
 class TestComputeFacepointWse:
     def _run(self, cell_wse):
-        face_connected, val_a, val_b = compute_face_wss(
+        face_connected, val_a, val_b, _ = compute_face_wss(
             cell_wse, CELL_MIN_ELEV, FACE_MIN_ELEV, FACE_CI, CELL_FACE_COUNT
         )
         fp_info, fp_vals = _make_fp_face_orientation()
@@ -352,7 +381,7 @@ class TestComputeVertexVelocities:
             fc = np.zeros(N_FACES, dtype=bool)
             fc[3] = True
         cell_wse = np.array([2.0, 2.0])
-        _, val_a, val_b = compute_face_wss(
+        _, val_a, val_b, _ = compute_face_wss(
             cell_wse, CELL_MIN_ELEV, FACE_MIN_ELEV, FACE_CI, CELL_FACE_COUNT
         )
         A, B = reconstruct_face_velocities(
@@ -405,7 +434,7 @@ class TestReplaceFaceVelocitiesSloped:
         fc = np.zeros(N_FACES, dtype=bool)
         fc[3] = True
         cell_wse = np.array([2.0, 2.0])
-        _, val_a, val_b = compute_face_wss(
+        _, val_a, val_b, _ = compute_face_wss(
             cell_wse, CELL_MIN_ELEV, FACE_MIN_ELEV, FACE_CI, CELL_FACE_COUNT
         )
         A, B = reconstruct_face_velocities(
@@ -431,7 +460,7 @@ class TestReplaceFaceVelocitiesSloped:
         fc = np.zeros(N_FACES, dtype=bool)
         fc[3] = True
         cell_wse = np.array([2.0, 2.0])
-        _, val_a, val_b = compute_face_wss(
+        _, val_a, val_b, _ = compute_face_wss(
             cell_wse, CELL_MIN_ELEV, FACE_MIN_ELEV, FACE_CI, CELL_FACE_COUNT
         )
         A, B = reconstruct_face_velocities(
@@ -563,34 +592,35 @@ class TestPixelWseSloped:
 
 
 class TestAllShallow:
-    # face_cell_indexes: face3 is shared (cell1=cellA, cell0=cellB); boundary faces use -1.
-    _FCI = np.array([
-        [-1, 0], [-1, 0], [-1, 0],  # faces 0-2: boundary → cell0 only
-        [ 1, 0],                      # face3: shared between cell1 (A) and cell0 (B)
-        [-1, 1], [-1, 1], [-1, 1],  # faces 4-6: boundary → cell1 only
-    ], dtype=np.int32)
-    _FME = FACE_MIN_ELEV  # all zero
-
     def test_no_connected_faces_is_all_shallow(self):
-        fc = np.zeros(N_FACES, dtype=bool)
-        wse = np.ones(N_CELLS, dtype=np.float64)
-        assert _all_shallow(0, CELL_FACE_INFO, CELL_FACE_VALS, fc, self._FME, self._FCI, wse)
+        hconn = np.zeros(N_FACES, dtype=np.uint8)  # all HC_NONE
+        assert _all_shallow(0, CELL_FACE_INFO, CELL_FACE_VALS, hconn)
 
-    def test_one_connected_face_not_all_shallow(self):
-        fc = np.zeros(N_FACES, dtype=bool)
-        fc[3] = True  # shared face; wse > face_min_elev → not DownhillShallow
-        wse = np.ones(N_CELLS, dtype=np.float64)  # both cells wse=1 > face_min=0
-        assert not _all_shallow(0, CELL_FACE_INFO, CELL_FACE_VALS, fc, self._FME, self._FCI, wse)
+    def test_backfill_clears_all_shallow(self):
+        hconn = np.zeros(N_FACES, dtype=np.uint8)
+        hconn[3] = 1  # HC_BACKFILL — clears the flag
+        assert not _all_shallow(0, CELL_FACE_INFO, CELL_FACE_VALS, hconn)
 
-    def test_downhill_shallow_face_is_still_all_shallow(self):
-        """A connected face with lower WSE < face sill is DownhillShallow.
+    def test_downhill_deep_clears_all_shallow(self):
+        hconn = np.zeros(N_FACES, dtype=np.uint8)
+        hconn[3] = 2  # HC_DOWNHILL_DEEP — clears the flag
+        assert not _all_shallow(0, CELL_FACE_INFO, CELL_FACE_VALS, hconn)
 
-        DownhillShallow faces do NOT clear the all-shallow flag (C# Renderer.cs:3094).
-        """
-        fc = np.zeros(N_FACES, dtype=bool)
-        fc[3] = True  # connected but DownhillShallow
-        wse = np.full(N_CELLS, -1.0, dtype=np.float64)  # both cells wse=-1 < face_min=0
-        assert _all_shallow(0, CELL_FACE_INFO, CELL_FACE_VALS, fc, self._FME, self._FCI, wse)
+    def test_downhill_intermediate_clears_all_shallow(self):
+        hconn = np.zeros(N_FACES, dtype=np.uint8)
+        hconn[3] = 3  # HC_DOWNHILL_INTERMEDIATE — clears the flag
+        assert not _all_shallow(0, CELL_FACE_INFO, CELL_FACE_VALS, hconn)
+
+    def test_downhill_shallow_does_not_clear_all_shallow(self):
+        """HC_DOWNHILL_SHALLOW does NOT clear the all-shallow flag (C# Renderer.cs:3094)."""
+        hconn = np.zeros(N_FACES, dtype=np.uint8)
+        hconn[3] = 4  # HC_DOWNHILL_SHALLOW
+        assert _all_shallow(0, CELL_FACE_INFO, CELL_FACE_VALS, hconn)
+
+    def test_levee_does_not_clear_all_shallow(self):
+        hconn = np.zeros(N_FACES, dtype=np.uint8)
+        hconn[3] = 5  # HC_LEVEE — disconnected, does not clear
+        assert _all_shallow(0, CELL_FACE_INFO, CELL_FACE_VALS, hconn)
 
 
 # ---------------------------------------------------------------------------

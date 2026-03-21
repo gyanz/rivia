@@ -483,7 +483,7 @@ class FlowAreaResults(FlowArea):
         cell_face_info, cell_face_values = self.cell_face_info
         _cell_face_count = cell_face_info[:, 1].astype(np.int32)
 
-        face_connected, _, _ = _rasmap.compute_face_wss(
+        face_connected, _, _, _ = _rasmap.compute_face_wss(
             cell_wse, self._cell_min_elevation, self.face_min_elevation,
             self.face_cell_indexes, _cell_face_count,
         )
@@ -530,7 +530,7 @@ class FlowAreaResults(FlowArea):
         cell_face_info, cell_face_values = self.cell_face_info
         _cell_face_count = cell_face_info[:, 1].astype(np.int32)
 
-        face_connected, face_value_a, face_value_b = _rasmap.compute_face_wss(
+        face_connected, face_value_a, face_value_b, _ = _rasmap.compute_face_wss(
             cell_wse, self._cell_min_elevation, self.face_min_elevation,
             self.face_cell_indexes, _cell_face_count,
         )

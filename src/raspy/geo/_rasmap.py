@@ -56,6 +56,15 @@ from numba import njit
 _MIN_WS_PLOT_TOLERANCE = 0.001  # matches C# RASResults.MinWSPlotTolerance
 _NODATA = -9999.0
 
+# HydraulicConnection enum values — mirror C# RasMapperLib.Mesh.HydraulicConnection
+# (archive/DLLs/RasMapperLib/RasMapperLib.Mesh/HydraulicConnection.cs)
+HC_NONE                  = 0  # disconnected: dry cell, boundary, or both below sill
+HC_BACKFILL              = 1  # connected: WSE gradient opposes bed-elevation gradient
+HC_DOWNHILL_DEEP         = 2  # connected: higher-cell depth >= 2 × bed-elevation diff
+HC_DOWNHILL_INTERMEDIATE = 3  # connected: depth between bed_diff and 2×bed_diff
+HC_DOWNHILL_SHALLOW      = 4  # connected: higher-cell depth <= bed-elevation diff
+HC_LEVEE                 = 5  # disconnected: critical-flow overtopping (levee/weir crest)
+
 
 @njit(cache=True)
 def _avg_wse_with_crit_check(
@@ -175,15 +184,22 @@ def compute_face_wss(
     -------
     face_connected : bool ndarray, shape ``(n_faces,)``
         True for hydraulically connected faces (water actively flowing).
+        Equivalent to ``face_hconn not in {HC_NONE, HC_LEVEE}``.
     face_value_a : float64 ndarray, shape ``(n_faces,)``
         WSE on the cellA side of each face; ``-9999`` where nodata.
     face_value_b : float64 ndarray, shape ``(n_faces,)``
         WSE on the cellB side of each face; ``-9999`` where nodata.
+    face_hconn : uint8 ndarray, shape ``(n_faces,)``
+        Full hydraulic-connection classification per face.  Values are the
+        ``HC_*`` module constants (``HC_NONE``, ``HC_BACKFILL``,
+        ``HC_DOWNHILL_DEEP``, ``HC_DOWNHILL_INTERMEDIATE``,
+        ``HC_DOWNHILL_SHALLOW``, ``HC_LEVEE``).
     """
     n_faces = len(face_cell_indexes)
     face_connected = np.zeros(n_faces, dtype=np.bool_)
     face_value_a = np.full(n_faces, _NODATA, dtype=np.float64)
     face_value_b = np.full(n_faces, _NODATA, dtype=np.float64)
+    face_hconn = np.zeros(n_faces, dtype=np.uint8)  # HC_NONE by default
 
     for f in range(n_faces):
         cellA = int(face_cell_indexes[f, 0])
@@ -216,14 +232,14 @@ def compute_face_wss(
         if flag_a_dry or flag_b_dry or face_is_perimeter:
             face_value_a[f] = _NODATA if (flag_a_dry or cell_a_virtual) else wse_a
             face_value_b[f] = _NODATA if (flag_b_dry or cell_b_virtual) else wse_b
-            face_connected[f] = False
+            # face_connected[f] and face_hconn[f] stay False / HC_NONE
             continue
 
         # Logic 3: both cells below face invert
         if wse_a <= min_elev_face and wse_b <= min_elev_face:
             face_value_a[f] = wse_a
             face_value_b[f] = wse_b
-            face_connected[f] = False
+            # face_connected[f] and face_hconn[f] stay False / HC_NONE
             continue
 
         # Strict `>` mirrors C# MeshFV2D.cs — when wse_a == wse_b, cellB is
@@ -318,6 +334,7 @@ def compute_face_wss(
                 face_value_a[f] = wse_a
                 face_value_b[f] = wse_b
                 face_connected[f] = False
+                face_hconn[f] = HC_LEVEE
             else:
                 # Logic 5: backfill
                 # WSE and bed gradients oppose — water backs into a depression.
@@ -325,6 +342,7 @@ def compute_face_wss(
                 face_value_a[f] = face_ws
                 face_value_b[f] = face_ws
                 face_connected[f] = True
+                face_hconn[f] = HC_BACKFILL
         elif depth_higher >= 2.0 * delta_min_elev:
             # Logic 6: deep flow
             # The water depth in the higher cell is at least twice the
@@ -342,6 +360,7 @@ def compute_face_wss(
             face_value_a[f] = face_ws
             face_value_b[f] = face_ws
             face_connected[f] = True
+            face_hconn[f] = HC_DOWNHILL_DEEP
         else:
             # Logic 7: transitional flow
             # The bed-elevation difference is significant relative to depth.
@@ -371,11 +390,14 @@ def compute_face_wss(
                     (2.0 * delta_min_elev - depth_higher) * num9
                     + (depth_higher - delta_min_elev) * face_ws
                 ) / delta_min_elev
+                face_hconn[f] = HC_DOWNHILL_INTERMEDIATE
+            else:
+                face_hconn[f] = HC_DOWNHILL_SHALLOW
             face_connected[f] = True
             face_value_a[f] = num9
             face_value_b[f] = num9
 
-    return face_connected, face_value_a, face_value_b
+    return face_connected, face_value_a, face_value_b, face_hconn
 
 
 # ---------------------------------------------------------------------------
@@ -1640,12 +1662,10 @@ def _all_shallow(
     cell_idx: int,
     cell_face_info: np.ndarray,
     cell_face_values: np.ndarray,
-    face_connected: np.ndarray,
-    face_min_elev: np.ndarray,
-    face_cell_indexes: np.ndarray,
-    cell_wse: np.ndarray,
+    face_hconn: np.ndarray,
 ) -> bool:
-    """Return True when ALL faces of this cell are disconnected or DownhillShallow.
+    """Return True when ALL faces of this cell are ``HC_NONE``, ``HC_LEVEE``, or
+    ``HC_DOWNHILL_SHALLOW`` — i.e. no face has an *active* hydraulic connection.
 
     Mirrors C# ``Renderer.cs:3079-3097`` line 3094::
 
@@ -1653,26 +1673,20 @@ def _all_shallow(
                 (faceValues.HydraulicConnection != HydraulicConnection.DownhillShallow))
             flag = false;
 
-    A face is ``DownhillShallow`` when it is hydraulically connected but the
-    lower-side cell WSE is below the face sill (``min(wse_a, wse_b) <
-    face_min_elev``).  Such faces do *not* clear the all-shallow flag —
-    only a face that is connected AND not DownhillShallow clears it.
+    Only ``HC_BACKFILL`` (1), ``HC_DOWNHILL_DEEP`` (2), and
+    ``HC_DOWNHILL_INTERMEDIATE`` (3) clear the all-shallow flag.
+    ``HC_DOWNHILL_SHALLOW`` (4) is connected but shallow — it does *not* clear
+    the flag.  ``HC_NONE`` (0) and ``HC_LEVEE`` (5) are disconnected — they
+    also do not clear the flag.
     """
     start = int(cell_face_info[cell_idx, 0])
     count = int(cell_face_info[cell_idx, 1])
     for k in range(count):
         fi = int(cell_face_values[start + k, 0])
-        if face_connected[fi]:
-            # Check for DownhillShallow: lower-side WSE < face sill elevation.
-            cA = int(face_cell_indexes[fi, 0])
-            cB = int(face_cell_indexes[fi, 1])
-            wse_a = cell_wse[cA] if cA >= 0 else 1.0e30
-            wse_b = cell_wse[cB] if cB >= 0 else 1.0e30
-            lower = min(wse_a, wse_b)
-            if lower >= face_min_elev[fi]:
-                # Not DownhillShallow — this connected face clears the all-shallow flag.
-                return False
-            # DownhillShallow — treat as shallow; continue checking remaining faces.
+        hc = int(face_hconn[fi])
+        # Clears flag only for Backfill=1, DownhillDeep=2, DownhillIntermediate=3.
+        if HC_BACKFILL <= hc <= HC_DOWNHILL_INTERMEDIATE:
+            return False
     return True
 
 
@@ -1914,7 +1928,7 @@ def rasterize_rasmap(
     face_vel_A: np.ndarray | None,
     face_vel_B: np.ndarray | None,
     fp_elev: np.ndarray | None,
-    face_connected: np.ndarray,
+    face_hconn: np.ndarray,
     nodata: float,
     depth_threshold: float = _MIN_WS_PLOT_TOLERANCE,
     with_faces: bool = True,
@@ -2054,12 +2068,13 @@ def rasterize_rasmap(
         ``(n_fp,)`` terrain elevation sampled at facepoints; enables
         depth-weighted rebalancing (``PaintCell_8Stencil_RebalanceWeights``).
         Pass ``None`` to skip rebalancing.
-    face_connected:
-        ``(n_faces,)`` bool — from :func:`compute_face_wss`.  Used by the
-        all-shallow check (``shallow_to_flat``) to detect cells where every
-        bounding face is hydraulically disconnected.  Must be the real
-        connectivity array, not the ``face_value_a != _NODATA`` proxy (which
-        misclassifies Logic 3/4 faces as connected).
+    face_hconn:
+        ``(n_faces,)`` uint8 — hydraulic-connection classification from
+        :func:`compute_face_wss` (``HC_*`` constants).  Used by the
+        all-shallow check (``shallow_to_flat``): only ``HC_BACKFILL``,
+        ``HC_DOWNHILL_DEEP``, and ``HC_DOWNHILL_INTERMEDIATE`` clear the
+        all-shallow flag; ``HC_DOWNHILL_SHALLOW`` is connected but does not
+        clear it (C# ``Renderer.cs:3094``).
     nodata:
         Fill value for dry / out-of-domain pixels.
     depth_threshold:
@@ -2202,10 +2217,9 @@ def rasterize_rasmap(
             use_sloped = False
 
         # ShallowBehavior.ReduceToHorizontal (C# Renderer.cs:3099 / 2226):
-        # A cell is "all-shallow" when every one of its bounding faces is
-        # either hydraulically disconnected OR DownhillShallow (connected but
-        # the lower-side cell WSE < face sill elevation).  Only a face that
-        # is connected AND not DownhillShallow clears the all-shallow flag
+        # A cell is "all-shallow" when every bounding face has HC_NONE,
+        # HC_LEVEE, or HC_DOWNHILL_SHALLOW.  Only HC_BACKFILL, HC_DOWNHILL_DEEP,
+        # and HC_DOWNHILL_INTERMEDIATE clear the all-shallow flag
         # (C# Renderer.cs:3094).  When shallow_to_flat=True, all-shallow cells
         # are rendered with the flat cell-average WSE: skipping
         # DownwardAdjustFPValues and the entire sloped paint path.  Nulling
@@ -2215,8 +2229,7 @@ def rasterize_rasmap(
         # When shallow_to_flat=False, the all-shallow condition is ignored and
         # sloped interpolation continues as normal (C# non-ReduceToHorizontal).
         if use_sloped and shallow_to_flat and _all_shallow(
-            cell_idx, cell_face_info, cell_face_values, face_connected,
-            face_min_elev, face_cell_indexes, cell_wse,
+            cell_idx, cell_face_info, cell_face_values, face_hconn,
         ):
             use_sloped = False
             fp_local_wse_adj = None

@@ -442,7 +442,7 @@ def rasmap_raster(
     # Also used for horizontal-mode velocity (see comment above).
     if render_mode != "horizontal" or _flat_velocity:
         # Step A: hydraulic connectivity
-        face_connected, face_value_a, face_value_b = _rasmap.compute_face_wss(
+        face_connected, face_value_a, face_value_b, face_hconn = _rasmap.compute_face_wss(
             cell_wse, cell_min_elevation, face_min_elevation,
             face_cell_indexes, _cell_face_count_arr,
         )
@@ -532,7 +532,7 @@ def rasmap_raster(
             face_vel_A=face_vel_A,
             face_vel_B=face_vel_B,
             fp_elev=fp_elev,
-            face_connected=face_connected,
+            face_hconn=face_hconn,
             nodata=nodata,
             depth_threshold=depth_threshold,
             with_faces=(render_mode == "hybrid"),
