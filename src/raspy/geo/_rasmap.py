@@ -1712,12 +1712,183 @@ def _pixel_wse_sloped(
 # ---------------------------------------------------------------------------
 
 
+@njit(cache=True)
+def _scanline_rasterize_nb(
+    poly_xy: np.ndarray,       # (total_verts, 2) float64 — all polygons concatenated
+    poly_offsets: np.ndarray,  # (n_polys + 1,) int32 — CSR: poly i → [offsets[i]:offsets[i+1]]
+    wet_mask: np.ndarray,      # (n_polys,) bool
+    tf_c: float,               # transform.c — x coordinate of left edge of col 0
+    tf_f: float,               # transform.f — y coordinate of top  edge of row 0
+    tf_a: float,               # transform.a — pixel width  (> 0)
+    tf_e: float,               # transform.e — pixel height (< 0)
+    H: int,
+    W: int,
+    out: np.ndarray,           # (H, W) int32, zeroed before call, mutated in-place
+) -> None:
+    """Scan-line polygon rasterization matching ``RasterizePolygon.ComputeCells``.
+
+    For each wet cell polygon:
+
+    1. Walk every non-horizontal edge; for each row whose center-Y is **strictly
+       above the lower endpoint and at-or-below the upper endpoint** (half-open
+       interval ``y_lo < y_c <= y_hi``), record the X-intersection.  This
+       convention handles degenerate vertices (polygon tip exactly on a center-Y)
+       correctly without the ``IsVertexVerticallyBetweenNeighbors`` special-case:
+
+       * ``∧`` tip (both neighbors below): two intersections at ``x_v`` → empty
+         fill range → no pixels painted (bounce). ✓
+       * ``∨`` tip (both neighbors above): zero intersections → row skipped. ✓
+       * True crossing (neighbors on opposite sides): exactly one intersection. ✓
+
+    2. Sort the intersections for the row; fill between each consecutive pair
+       using the same center-point rule as RASMapper: include column *c* if
+       ``x_left ≤ center_x(c) ≤ x_right``.
+
+    Results match ``rasterio.features.rasterize(all_touched=False)`` for all
+    well-behaved interior pixels; the two algorithms may differ by ≤ 1 pixel at
+    polygon edges where a vertex Y lands exactly on a row's center Y.
+    """
+    py = -tf_e   # positive pixel height
+    px =  tf_a   # positive pixel width
+    x_raster_max = tf_c + W * px
+
+    # Per-polygon intersection buffer.  Max intersections per row = n_verts.
+    # 64 is sufficient for all HEC-RAS cell polygons (≤ 20 vertices typical).
+    xs_buf = np.empty(64, np.float64)
+
+    n_polys = len(wet_mask)
+    for pi in range(n_polys):
+        if not wet_mask[pi]:
+            continue
+
+        v_start = int(poly_offsets[pi])
+        v_end   = int(poly_offsets[pi + 1])
+        n_verts = v_end - v_start
+
+        # Drop a repeated closing vertex (first == last).
+        while n_verts > 3:
+            if (poly_xy[v_start + n_verts - 1, 0] == poly_xy[v_start, 0] and
+                    poly_xy[v_start + n_verts - 1, 1] == poly_xy[v_start, 1]):
+                n_verts -= 1
+            else:
+                break
+
+        if n_verts < 3:
+            continue
+
+        cell_val = np.int32(pi + 1)  # 1-based
+
+        # --- Polygon bounding box -------------------------------------------
+        y_min = poly_xy[v_start, 1]
+        y_max = poly_xy[v_start, 1]
+        for vi in range(v_start + 1, v_start + n_verts):
+            y = poly_xy[vi, 1]
+            if y < y_min:
+                y_min = y
+            if y > y_max:
+                y_max = y
+
+        # Row range.  Pixel (r, c) center: y_c = tf_f + (r + 0.5) * tf_e
+        # Since tf_e < 0, y decreases as r increases.
+        # Row containing y: r = floor((tf_f - y) / py)
+        r_top = int(np.floor((tf_f - y_max) / py))
+        r_bot = int(np.floor((tf_f - y_min) / py))
+        if r_top < 0:
+            r_top = 0
+        if r_bot >= H:
+            r_bot = H - 1
+        if r_top > r_bot:
+            continue
+
+        # --- Scan rows -------------------------------------------------------
+        for r in range(r_top, r_bot + 1):
+            yc = tf_f + (r + 0.5) * tf_e   # pixel center Y (= tf_f - (r+0.5)*py)
+
+            n_xs = 0
+            for k in range(n_verts):
+                k_next = k + 1
+                if k_next == n_verts:
+                    k_next = 0
+
+                y0 = poly_xy[v_start + k,      1]
+                y1 = poly_xy[v_start + k_next, 1]
+                x0 = poly_xy[v_start + k,      0]
+                x1 = poly_xy[v_start + k_next, 0]
+
+                dy = y1 - y0
+                if dy == 0.0:
+                    continue  # horizontal edge — skip
+
+                # Half-open interval: include if y_lo < yc <= y_hi
+                if dy > 0.0:
+                    if not (y0 < yc <= y1):
+                        continue
+                else:
+                    if not (y1 < yc <= y0):
+                        continue
+
+                xi = x0 + (yc - y0) * (x1 - x0) / dy
+                if xi < x_raster_max and n_xs < 64:
+                    xs_buf[n_xs] = xi
+                    n_xs += 1
+
+            if n_xs < 2:
+                continue
+
+            # Insertion sort (n_xs is small — ≤ n_verts)
+            for i in range(1, n_xs):
+                key = xs_buf[i]
+                j = i - 1
+                while j >= 0 and xs_buf[j] > key:
+                    xs_buf[j + 1] = xs_buf[j]
+                    j -= 1
+                xs_buf[j + 1] = key
+
+            # Fill between consecutive pairs of intersections
+            i = 0
+            while i + 1 < n_xs:
+                x_left  = xs_buf[i]
+                x_right = xs_buf[i + 1]
+                i += 2
+
+                if x_right <= tf_c:
+                    continue  # pair lies entirely left of raster
+
+                # Left column: first c where center_x(c) >= x_left
+                # Mirrors RasMapper: col = floor((x-tf_c)/px); if x > center_x(col): col++
+                c_left = int(np.floor((x_left - tf_c) / px))
+                if c_left < 0:
+                    c_left = 0
+                elif c_left < W:
+                    if x_left > tf_c + (c_left + 0.5) * px:
+                        c_left += 1
+
+                # Right column: last c where center_x(c) <= x_right
+                c_right = int(np.floor((x_right - tf_c) / px))
+                if c_right >= W:
+                    c_right = W - 1
+                elif c_right >= 0:
+                    if x_right < tf_c + (c_right + 0.5) * px:
+                        c_right -= 1
+
+                if c_left < 0:
+                    c_left = 0
+                if c_right >= W:
+                    c_right = W - 1
+                if c_left > c_right:
+                    continue
+
+                for c in range(c_left, c_right + 1):
+                    out[r, c] = cell_val
+
+
 def build_cell_id_raster(
     cell_polygons: list[np.ndarray],
     wet_mask: np.ndarray,
     transform: "rasterio.transform.Affine",
     height: int,
     width: int,
+    use_scanline: bool = True,
 ) -> np.ndarray:
     """Rasterize cell ownership: pixel value = cell_idx + 1, 0 = outside.
 
@@ -1726,23 +1897,6 @@ def build_cell_id_raster(
     Mirrors ``RasterizePolygon.ComputeCells``
     (``archive/DLLs/RasMapperLib/RasterizePolygon.cs``) called from
     ``MeshFV2D.cs``.
-
-    **Differences from RasMapperLib**
-
-    * *Algorithm:* RasMapperLib uses a custom scan-line fill that walks polygon
-      edges and collects X-intersections at each row's cell-center Y, then fills
-      between sorted intersection pairs.  This implementation delegates to
-      ``rasterio.features.rasterize`` (GDAL center-point test,
-      ``all_touched=False``).  Both apply the same owning rule — a pixel is
-      owned if its center falls inside the polygon — so results agree for the
-      vast majority of pixels.
-    * *Degenerate vertices:* RasMapperLib has explicit
-      ``IsVertexVerticallyBetweenNeighbors`` logic to handle the case where a
-      polygon vertex lies exactly on a row's center-Y line, preventing
-      double-counting at those edges.  GDAL's behavior at such positions may
-      differ slightly.
-    * *Invalid polygons:* this implementation calls ``Polygon.is_valid`` via
-      Shapely and skips degenerate geometries; RasMapperLib has no such check.
 
     Parameters
     ----------
@@ -1755,6 +1909,13 @@ def build_cell_id_raster(
         Rasterio affine transform for the output grid.
     height, width:
         Output raster dimensions.
+    use_scanline:
+        ``True`` (default) — use the Numba scan-line implementation
+        ``_scanline_rasterize_nb``, which closely mirrors RasMapperLib's
+        ``RasterizePolygon.ComputeCells`` (half-open interval rule, same fill
+        criterion as RASMapper).  Toggle to ``False`` to use the
+        ``rasterio.features.rasterize`` path (GDAL, requires Shapely) for
+        performance comparison.
 
     Returns
     -------
@@ -1762,9 +1923,34 @@ def build_cell_id_raster(
         ``cell_id_grid[r, c] = cell_idx + 1`` for the owning cell (1-based),
         or 0 where no cell covers that pixel.
     """
+    if use_scanline:
+        # --- Numba scan-line path -------------------------------------------
+        # Build CSR representation: flat (total_verts, 2) array + int32 offsets.
+        n_polys = len(cell_polygons)
+        offsets = np.zeros(n_polys + 1, dtype=np.int32)
+        for ci in range(n_polys):
+            offsets[ci + 1] = offsets[ci] + len(cell_polygons[ci])
+        total_verts = int(offsets[n_polys])
+        poly_xy = np.empty((total_verts, 2), dtype=np.float64)
+        for ci in range(n_polys):
+            s = int(offsets[ci])
+            e = int(offsets[ci + 1])
+            if e > s:
+                poly_xy[s:e] = cell_polygons[ci]
+
+        out = np.zeros((height, width), dtype=np.int32)
+        _scanline_rasterize_nb(
+            poly_xy, offsets,
+            wet_mask.astype(np.bool_),
+            float(transform.c), float(transform.f),
+            float(transform.a), float(transform.e),
+            height, width,
+            out,
+        )
+        return out
+
     import rasterio.features
     from shapely.geometry import Polygon as _Polygon
-    from shapely.ops import polygonize as _polygonize
 
     shapes: list[tuple] = []
     for ci in range(len(cell_polygons)):
@@ -1778,7 +1964,7 @@ def build_cell_id_raster(
             continue
         shapes.append((poly, ci + 1))  # 1-based so 0 = no cell
 
-    cell_id = rasterio.features.rasterize(
+    return rasterio.features.rasterize(
         shapes,
         out_shape=(height, width),
         transform=transform,
@@ -1786,7 +1972,6 @@ def build_cell_id_raster(
         dtype=np.int32,
         all_touched=False,
     )
-    return cell_id
 
 
 # ---------------------------------------------------------------------------
