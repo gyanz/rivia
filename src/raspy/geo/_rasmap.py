@@ -1707,6 +1707,36 @@ def _pixel_wse_sloped(
         return result + base_val
 
 
+@njit(cache=True)
+def _compute_cell_pixel_weights(
+    pxs: np.ndarray,
+    pys: np.ndarray,
+    verts_x: np.ndarray,
+    verts_y: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Compute barycentric and donated weights for all pixels of one cell.
+
+    Runs :func:`_barycentric_weights` and :func:`_donate` for every pixel
+    in a single Numba dispatch, eliminating per-pixel Python→Numba overhead.
+
+    Returns
+    -------
+    fw_batch : float32 ``(n_pixels, N)``
+        Barycentric weights for each pixel over the N polygon corners.
+    vel_w_batch : float64 ``(n_pixels, 2*N)``
+        Donated weights for the full 2N-point stencil (N corners + N faces).
+    """
+    n = len(pxs)
+    N = len(verts_x)
+    fw_batch    = np.empty((n, N),      dtype=np.float32)
+    vel_w_batch = np.empty((n, 2 * N),  dtype=np.float64)
+    for i in range(n):
+        fw              = _barycentric_weights(pxs[i], pys[i], verts_x, verts_y)
+        fw_batch[i]     = fw
+        vel_w_batch[i]  = _donate(fw)
+    return fw_batch, vel_w_batch
+
+
 # ---------------------------------------------------------------------------
 # Step 4 — Build cell-ID raster
 # ---------------------------------------------------------------------------
@@ -2439,21 +2469,18 @@ def rasterize_rasmap(
         if count < 3:
             continue  # degenerate cell — skip
 
-        face_indices = [int(cell_face_values[start + k, 0]) for k in range(count)]
-        face_orients = [int(cell_face_values[start + k, 1]) for k in range(count)]
+        face_indices = cell_face_values[start:start + count, 0].astype(np.int64)
+        face_orients = cell_face_values[start:start + count, 1].astype(np.int64)
 
         # Pick the CCW-entry facepoint for each face.
         # RasMapper invariant (Face.cs / GetFPPrev): for cellA (ori=+1) the
         # face runs fpA→fpB in CCW order, so fpA is the entry point; for
         # cellB (ori=-1) it runs fpB→fpA, so fpB is the entry point.
         # Equivalent to Face.GetFPPrev(cellIdx) in RasMapperLib.
-        verts_fp = [
-            int(face_facepoint_indexes[fi, 0]) if ori > 0  # cellA → fpA
-            else int(face_facepoint_indexes[fi, 1])          # cellB → fpB
-            for fi, ori in zip(face_indices, face_orients)
-        ]
-        verts_x = np.array([float(fp_coords[fp, 0]) for fp in verts_fp], dtype=np.float64)
-        verts_y = np.array([float(fp_coords[fp, 1]) for fp in verts_fp], dtype=np.float64)
+        _fp_col  = np.where(face_orients > 0, 0, 1)
+        verts_fp = face_facepoint_indexes[face_indices, _fp_col]
+        verts_x  = fp_coords[verts_fp, 0].astype(np.float64)
+        verts_y  = fp_coords[verts_fp, 1].astype(np.float64)
         N = count
 
         # ---- Per-cell WSE arrays (for sloping WSE / depth) ---------------
@@ -2465,20 +2492,15 @@ def rasterize_rasmap(
             # fp_wse shape is (n_faces, 2): col 0 = fpA arc, col 1 = fpB arc.
             # ori > 0 → this cell is cellA → corner facepoint is fpA → col 0.
             # ori < 0 → this cell is cellB → corner facepoint is fpB → col 1.
-            fp_local_wse = np.array(
-                [float(fp_wse[fi, 0 if ori > 0 else 1])
-                 for fi, ori in zip(face_indices, face_orients)],
-                dtype=np.float64,
-            )
+            fp_local_wse = fp_wse[face_indices, _fp_col].astype(np.float64)
             if with_faces:
                 # Face-midpoint WSEs: select the side of the face that belongs
                 # to this cell.  face_value_a corresponds to cellA (column 0
                 # of face_cell_indexes); face_value_b to cellB (column 1).
-                face_local_wse = np.array([
-                    float(face_value_a[fi]) if cell_idx == int(face_cell_indexes[fi, 0])
-                    else float(face_value_b[fi])
-                    for fi in face_indices
-                ], dtype=np.float64)
+                _is_cellA      = cell_idx == face_cell_indexes[face_indices, 0]
+                face_local_wse = np.where(
+                    _is_cellA, face_value_a[face_indices], face_value_b[face_indices]
+                ).astype(np.float64)
                 # Valid when at least one corner OR face-midpoint has a real WSE.
                 has_valid_wse = (fp_local_wse != _NODATA).any() or (face_local_wse != _NODATA).any()
             else:
@@ -2594,26 +2616,38 @@ def rasterize_rasmap(
         pix_xs   = xs[pix_arr]
         pix_ys   = ys[pix_arr]
 
-        for pi in range(len(pix_arr)):
-            px = float(pix_xs[pi])
-            py = float(pix_ys[pi])
-            r  = int(pix_rows[pi])
-            c  = int(pix_cols[pi])
+        # Pre-batch terrain values (Opportunity C): one vectorised numpy index
+        # per cell instead of per-pixel 2-D lookups from Python.
+        _t_vals: np.ndarray | None = (
+            terrain_grid[pix_rows, pix_cols] if terrain_grid is not None else None
+        )
 
-            # ---- Wet/dry check + barycentric weights ---------------------
+        # Pre-batch pixel weights (Opportunity A): run _barycentric_weights
+        # and _donate for every pixel of this cell in a single Numba dispatch,
+        # eliminating 2×n_pixels Python→Numba round-trips.
+        fw_batch, vel_w_batch = _compute_cell_pixel_weights(
+            pix_xs, pix_ys, verts_x, verts_y
+        )
+
+        for pi in range(len(pix_arr)):
+            r = int(pix_rows[pi])
+            c = int(pix_cols[pi])
+
+            fw    = fw_batch[pi]
+            vel_w = vel_w_batch[pi]
+
+            # ---- Wet/dry check -------------------------------------------
             # Four branches depending on sloped mode and available data:
             #
             # (A1) Sloped corners + faces (with_faces=True, default):
             #      Interpolate per-pixel WSE from the full 2N-point stencil
             #      (N corner facepoints + N face midpoints, donated weights).
             if use_sloped and fp_local_wse_adj is not None and face_local_wse is not None:
-                fw = _barycentric_weights(px, py, verts_x, verts_y)
-                vel_w = _donate(fw)
                 pixel_wse = _pixel_wse_sloped(vel_w, fp_local_wse_adj, face_local_wse, cell_dw)
                 if pixel_wse == _NODATA:
                     continue
-                if terrain_grid is not None:
-                    t_elev = float(terrain_grid[r, c])
+                if _t_vals is not None:
+                    t_elev = float(_t_vals[pi])
                     if np.isnan(t_elev) or t_elev == _NODATA:
                         continue
                     if pixel_wse < t_elev + depth_threshold:
@@ -2625,13 +2659,11 @@ def rasterize_rasmap(
             #      over the N corner facepoints only — no donation to face
             #      midpoints (CellStencilMethod.JustFacepoints in C#).
             elif use_sloped and fp_local_wse_adj is not None:
-                fw = _barycentric_weights(px, py, verts_x, verts_y)
-                vel_w = _donate(fw)  # still donate for velocity interpolation
                 pixel_wse = float(np.dot(fw, fp_local_wse_adj))
                 if pixel_wse == _NODATA:
                     continue
-                if terrain_grid is not None:
-                    t_elev = float(terrain_grid[r, c])
+                if _t_vals is not None:
+                    t_elev = float(_t_vals[pi])
                     if np.isnan(t_elev) or t_elev == _NODATA:
                         continue
                     if pixel_wse < t_elev + depth_threshold:
@@ -2641,21 +2673,17 @@ def rasterize_rasmap(
             # (B) Terrain available but no sloped WSE data: use the uniform
             #     cell-average WSE for the depth test.  Applies when fp_wse
             #     is None (horizontal mode) or cell reverted to flat.
-            elif terrain_grid is not None:
-                t_elev = float(terrain_grid[r, c])
+            elif _t_vals is not None:
+                t_elev = float(_t_vals[pi])
                 if np.isnan(t_elev) or t_elev == _NODATA:
                     continue
                 if float(cell_wse[cell_idx]) < t_elev + depth_threshold:
                     continue
-                fw = _barycentric_weights(px, py, verts_x, verts_y)
-                vel_w = _donate(fw)
                 pixel_wse = float(cell_wse[cell_idx])
             # (C) No terrain at all: every pixel in the cell is treated as
             #     wet; depth output will be meaningless so callers should
             #     not request "depth" without a terrain grid.
             else:
-                fw = _barycentric_weights(px, py, verts_x, verts_y)
-                vel_w = _donate(fw)
                 pixel_wse = float(cell_wse[cell_idx])
                 t_elev = 0.0
 
@@ -2700,13 +2728,13 @@ def rasterize_rasmap(
                     # stencil (corner facepoints + face midpoints).
                     if nb_fp_vx is None:
                         continue
-                    Vx = 0.0;  Vy = 0.0
-                    for i in range(N):
-                        Vx += vel_w[i]     * nb_fp_vx[i]
-                        Vy += vel_w[i]     * nb_fp_vy[i]
-                    for j in range(N):
-                        Vx += vel_w[N + j] * nb_face_vx[j]
-                        Vy += vel_w[N + j] * nb_face_vy[j]
+                    # Opportunity D: replace four Python for-loops with np.dot.
+                    Vx = float(
+                        np.dot(vel_w[:N], nb_fp_vx) + np.dot(vel_w[N:], nb_face_vx)
+                    )
+                    Vy = float(
+                        np.dot(vel_w[:N], nb_fp_vy) + np.dot(vel_w[N:], nb_face_vy)
+                    )
                 spd = float(np.sqrt(Vx * Vx + Vy * Vy))
                 if variable == "speed":
                     output[r, c] = np.float32(spd)
