@@ -64,7 +64,8 @@ def rasmap_raster(
     ----------------
     **water_surface / depth — horizontal** (``render_mode="horizontal"``)
 
-    1. ``build_cell_id_raster`` — paint cell IDs into the pixel grid.
+    1. ``build_cell_id_raster`` — scan-line rasterize wet cell polygons
+       (Numba, mirrors ``RasterizePolygon.ComputeCells``).
     2. *(pixel loop)* — write ``cell_wse`` directly; every pixel in a cell
        gets the same flat value.
 
@@ -83,7 +84,7 @@ def rasmap_raster(
     B. ``compute_facepoint_wse`` — planar regression fitting a plane through
        the face midpoint WSE samples; the intercept ``c`` at each facepoint
        is the corner WSE.
-    4a. ``build_cell_id_raster`` — paint cell IDs into the pixel grid.
+    4a. ``build_cell_id_raster`` — scan-line rasterize wet cell polygons.
     4b. ``sample_terrain_at_facepoints`` — terrain elevation at facepoints
         for depth rebalancing (only when a DEM is supplied).
     4c. ``rasterize_rasmap`` — per-pixel barycentric interpolation of the
@@ -106,7 +107,7 @@ def rasmap_raster(
        averaging of face velocity vectors to facepoints.
     3.5. ``replace_face_velocities_sloped`` — replace each face velocity
          with the average of its two endpoint facepoint velocities.
-    4a. ``build_cell_id_raster`` — paint cell IDs into the pixel grid.
+    4a. ``build_cell_id_raster`` — scan-line rasterize wet cell polygons.
     4c. ``rasterize_rasmap`` — per-pixel barycentric interpolation of
         facepoint velocity vectors; speed magnitude ``sqrt(Vx²+Vy²)``
         computed per pixel.  ``"velocity"`` returns the speed band only;

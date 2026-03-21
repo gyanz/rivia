@@ -19,7 +19,7 @@ Step B  — Facepoint WSE via PlanarRegressionZ
 Step 2  — C-stencil tangential velocity reconstruction
 Step 3  — Inverse-face-length weighted facepoint velocity averaging
 Step 3.5— Sloped face velocity replacement
-Step 4  — Polygon barycentric weights + donate + pixel interpolation
+Step 4  — Polygon scan-line rasterization + barycentric pixel interpolation
 
 Public API
 ----------
@@ -29,7 +29,7 @@ compute_facepoint_wse
 reconstruct_face_velocities
 compute_facepoint_velocities
 replace_face_velocities_sloped
-build_cell_id_raster
+build_cell_id_raster        (default: Numba scan-line; GDAL fallback via use_scanline=False)
 sample_terrain_at_facepoints
 rasterize_rasmap
 """
@@ -1898,6 +1898,27 @@ def build_cell_id_raster(
     (``archive/DLLs/RasMapperLib/RasterizePolygon.cs``) called from
     ``MeshFV2D.cs``.
 
+    **Scan-line path** (``use_scanline=True``, default)
+
+    Delegates to :func:`_scanline_rasterize_nb` — a Numba JIT scan-line fill
+    that closely follows RasMapperLib:
+
+    * *Edge rule:* half-open interval ``y_lo < y_c ≤ y_hi`` (vs RASMapper's
+      ``IsVertexVerticallyBetweenNeighbors``).  Both handle degenerate vertices
+      (polygon tip exactly on a center-Y row) correctly; they may disagree on
+      ≤ 1 pixel at those positions.
+    * *Fill rule:* ``x_left ≤ center_x(c) ≤ x_right`` — identical to
+      RASMapper.
+    * ~22× faster than the GDAL path on a typical mesh (no Shapely
+      allocation, single compiled loop).
+
+    **GDAL path** (``use_scanline=False``)
+
+    Delegates to ``rasterio.features.rasterize`` with ``all_touched=False``
+    (GDAL center-point test).  Requires ``shapely``.  Both paths produce
+    pixel-perfect agreement for all well-behaved interior pixels; edge pixels
+    at polygon boundaries may differ by ≤ 1 pixel.
+
     Parameters
     ----------
     cell_polygons:
@@ -1910,12 +1931,8 @@ def build_cell_id_raster(
     height, width:
         Output raster dimensions.
     use_scanline:
-        ``True`` (default) — use the Numba scan-line implementation
-        ``_scanline_rasterize_nb``, which closely mirrors RasMapperLib's
-        ``RasterizePolygon.ComputeCells`` (half-open interval rule, same fill
-        criterion as RASMapper).  Toggle to ``False`` to use the
-        ``rasterio.features.rasterize`` path (GDAL, requires Shapely) for
-        performance comparison.
+        ``True`` (default) — Numba scan-line path.
+        ``False`` — GDAL / ``rasterio.features.rasterize`` path.
 
     Returns
     -------
