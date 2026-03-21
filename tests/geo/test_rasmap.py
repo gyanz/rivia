@@ -563,14 +563,34 @@ class TestPixelWseSloped:
 
 
 class TestAllShallow:
+    # face_cell_indexes: face3 is shared (cell1=cellA, cell0=cellB); boundary faces use -1.
+    _FCI = np.array([
+        [-1, 0], [-1, 0], [-1, 0],  # faces 0-2: boundary → cell0 only
+        [ 1, 0],                      # face3: shared between cell1 (A) and cell0 (B)
+        [-1, 1], [-1, 1], [-1, 1],  # faces 4-6: boundary → cell1 only
+    ], dtype=np.int32)
+    _FME = FACE_MIN_ELEV  # all zero
+
     def test_no_connected_faces_is_all_shallow(self):
         fc = np.zeros(N_FACES, dtype=bool)
-        assert _all_shallow(0, CELL_FACE_INFO, CELL_FACE_VALS, fc)
+        wse = np.ones(N_CELLS, dtype=np.float64)
+        assert _all_shallow(0, CELL_FACE_INFO, CELL_FACE_VALS, fc, self._FME, self._FCI, wse)
 
     def test_one_connected_face_not_all_shallow(self):
         fc = np.zeros(N_FACES, dtype=bool)
-        fc[3] = True  # shared face
-        assert not _all_shallow(0, CELL_FACE_INFO, CELL_FACE_VALS, fc)
+        fc[3] = True  # shared face; wse > face_min_elev → not DownhillShallow
+        wse = np.ones(N_CELLS, dtype=np.float64)  # both cells wse=1 > face_min=0
+        assert not _all_shallow(0, CELL_FACE_INFO, CELL_FACE_VALS, fc, self._FME, self._FCI, wse)
+
+    def test_downhill_shallow_face_is_still_all_shallow(self):
+        """A connected face with lower WSE < face sill is DownhillShallow.
+
+        DownhillShallow faces do NOT clear the all-shallow flag (C# Renderer.cs:3094).
+        """
+        fc = np.zeros(N_FACES, dtype=bool)
+        fc[3] = True  # connected but DownhillShallow
+        wse = np.full(N_CELLS, -1.0, dtype=np.float64)  # both cells wse=-1 < face_min=0
+        assert _all_shallow(0, CELL_FACE_INFO, CELL_FACE_VALS, fc, self._FME, self._FCI, wse)
 
 
 # ---------------------------------------------------------------------------

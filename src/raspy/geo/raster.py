@@ -69,8 +69,11 @@ def rasmap_raster(
 
     **water_surface / depth — sloping** (``render_mode="sloping"``)
 
-    Matches RasMapperLib ``JustFacepoints`` path with
-    ``ReduceToHorizontal=True`` hardcoded.
+    Matches RasMapperLib ``SetSlopingRenderingMode()`` (SharedData.cs:1778):
+    ``CellStencilMethod.JustFacepoints`` + ``ShallowBehavior.None``.
+    GUI label: *"Sloping (Cell Corners)"*.  The "Shallow Water reduces to
+    Horizontal" checkbox is a sub-option of WithFaces only and does not
+    apply to this mode.
 
     A. ``compute_face_wss`` — hydraulic connectivity + per-face WSE values
        (``face_value_a``, ``face_value_b``).
@@ -82,7 +85,7 @@ def rasmap_raster(
         for depth rebalancing (only when a DEM is supplied).
     4c. ``rasterize_rasmap`` — per-pixel barycentric interpolation of the
         facepoint WSE values within each cell's triangles (``with_faces=False``,
-        ``shallow_to_flat=True``).
+        ``shallow_to_flat=False``).
 
     **water_surface / depth — hybrid** (``render_mode="hybrid"``)
 
@@ -193,11 +196,11 @@ def rasmap_raster(
     nodata:
         Fill value for dry / out-of-domain pixels.
     render_mode:
-        ``"sloping"`` (default) — RASMapper "Sloping Cell Corners" pipeline;
-        per-pixel WSE interpolation using corner facepoints only
-        (``with_faces=False``).  RasMapperLib hardcodes
-        ``shallow_to_flat=True`` for this mode; the user-supplied value is
-        overridden.  Matches ``store_map(render_mode="sloping")``.
+        ``"sloping"`` (default) — RASMapper "Sloping (Cell Corners)" pipeline;
+        N-point barycentric interpolation using corner facepoints only
+        (``with_faces=False``, ``shallow_to_flat=False``).  Matches
+        ``SetSlopingRenderingMode()`` (SharedData.cs:1778) and
+        ``store_map(render_mode="sloping")``.
         ``"hybrid"`` — RASMapper "Sloping Cell Corners + Face Centers"
         (``with_faces=True``); more accurate near cell edges.
         ``use_depth_weights`` and ``shallow_to_flat`` are honoured as
@@ -212,10 +215,10 @@ def rasmap_raster(
         Requires *reference_raster* when ``True``.
     shallow_to_flat:
         When ``True``, cells with no hydraulically-connected faces are
-        rendered flat (horizontal).  **Ignored** for ``"horizontal"`` mode.
-        For ``"sloping"`` mode this is overridden to ``True`` per
-        RasMapperLib's hardcoded behaviour.  Only user-configurable for
-        ``"hybrid"`` mode.
+        rendered flat (horizontal).  **Ignored** for ``"horizontal"`` and
+        ``"sloping"`` modes (forced ``False`` — "Shallow Water reduces to
+        Horizontal" is a WithFaces-only sub-option in the RASMapper GUI).
+        Only user-configurable for ``"hybrid"`` mode.
     depth_threshold:
         Minimum depth for a pixel to be considered wet (default ``0.001``).
         Matches ``RASResults.MinWSPlotTolerance``.
@@ -288,9 +291,11 @@ def rasmap_raster(
     # shallow_to_flat and use_depth_weights are only user-controllable for hybrid;
     # for other modes the values are dictated by the RasMapperLib implementation.
     if render_mode == "sloping":
-        # CellStencilMethod.JustFacepoints + ShallowBehavior.ReduceToHorizontal
-        # Both are hardcoded in RasMapperLib for the "sloping" mode.
-        shallow_to_flat = True
+        # CellStencilMethod.JustFacepoints + ShallowBehavior.None
+        # SetSlopingRenderingMode() in SharedData.cs:1778.
+        # "Shallow Water reduces to Horizontal" is a sub-option of WithFaces only
+        # (GUI: "Sloping Cell Corners + Face Centers") — not available for this mode.
+        shallow_to_flat = False
         use_depth_weights = False
     elif render_mode == "horizontal":
         shallow_to_flat = False

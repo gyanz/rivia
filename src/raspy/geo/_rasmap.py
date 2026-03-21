@@ -1641,17 +1641,38 @@ def _all_shallow(
     cell_face_info: np.ndarray,
     cell_face_values: np.ndarray,
     face_connected: np.ndarray,
+    face_min_elev: np.ndarray,
+    face_cell_indexes: np.ndarray,
+    cell_wse: np.ndarray,
 ) -> bool:
-    """Return True when ALL faces of this cell are disconnected (shallow).
+    """Return True when ALL faces of this cell are disconnected or DownhillShallow.
 
-    C# ``Renderer.cs:3079-3097``.
+    Mirrors C# ``Renderer.cs:3079-3097`` line 3094::
+
+        if (faceValues.IsHydraulicallyConnected &
+                (faceValues.HydraulicConnection != HydraulicConnection.DownhillShallow))
+            flag = false;
+
+    A face is ``DownhillShallow`` when it is hydraulically connected but the
+    lower-side cell WSE is below the face sill (``min(wse_a, wse_b) <
+    face_min_elev``).  Such faces do *not* clear the all-shallow flag —
+    only a face that is connected AND not DownhillShallow clears it.
     """
     start = int(cell_face_info[cell_idx, 0])
     count = int(cell_face_info[cell_idx, 1])
     for k in range(count):
         fi = int(cell_face_values[start + k, 0])
         if face_connected[fi]:
-            return False
+            # Check for DownhillShallow: lower-side WSE < face sill elevation.
+            cA = int(face_cell_indexes[fi, 0])
+            cB = int(face_cell_indexes[fi, 1])
+            wse_a = cell_wse[cA] if cA >= 0 else 1.0e30
+            wse_b = cell_wse[cB] if cB >= 0 else 1.0e30
+            lower = min(wse_a, wse_b)
+            if lower >= face_min_elev[fi]:
+                # Not DownhillShallow — this connected face clears the all-shallow flag.
+                return False
+            # DownhillShallow — treat as shallow; continue checking remaining faces.
     return True
 
 
@@ -2181,19 +2202,22 @@ def rasterize_rasmap(
             use_sloped = False
 
         # ShallowBehavior.ReduceToHorizontal (C# Renderer.cs:3099 / 2226):
-        # A cell is "all-shallow" when every one of its bounding faces (the
-        # shared edges between this cell and each of its neighbours) is
-        # hydraulically disconnected (face WSE == _NODATA), meaning no
-        # active hydraulic connection exists across any edge of the cell.
-        # When shallow_to_flat=True, such cells are
-        # rendered with the flat cell-average WSE: skipping
+        # A cell is "all-shallow" when every one of its bounding faces is
+        # either hydraulically disconnected OR DownhillShallow (connected but
+        # the lower-side cell WSE < face sill elevation).  Only a face that
+        # is connected AND not DownhillShallow clears the all-shallow flag
+        # (C# Renderer.cs:3094).  When shallow_to_flat=True, all-shallow cells
+        # are rendered with the flat cell-average WSE: skipping
         # DownwardAdjustFPValues and the entire sloped paint path.  Nulling
         # fp_local_wse_adj and face_local_wse here makes the pixel loop fall
         # through to the flat branch (B/C) automatically, so no extra logic
         # is needed inside the loop.
         # When shallow_to_flat=False, the all-shallow condition is ignored and
         # sloped interpolation continues as normal (C# non-ReduceToHorizontal).
-        if use_sloped and shallow_to_flat and _all_shallow(cell_idx, cell_face_info, cell_face_values, face_connected):
+        if use_sloped and shallow_to_flat and _all_shallow(
+            cell_idx, cell_face_info, cell_face_values, face_connected,
+            face_min_elev, face_cell_indexes, cell_wse,
+        ):
             use_sloped = False
             fp_local_wse_adj = None
             face_local_wse = None
@@ -2287,7 +2311,6 @@ def rasterize_rasmap(
             # (A1) Sloped corners + faces (with_faces=True, default):
             #      Interpolate per-pixel WSE from the full 2N-point stencil
             #      (N corner facepoints + N face midpoints, donated weights).
-            #      Most accurate wet/dry boundary.
             if use_sloped and fp_local_wse_adj is not None and face_local_wse is not None:
                 fw = _barycentric_weights(px, py, verts_x, verts_y)
                 vel_w = _donate(fw)
@@ -2332,7 +2355,6 @@ def rasterize_rasmap(
                 fw = _barycentric_weights(px, py, verts_x, verts_y)
                 vel_w = _donate(fw)
                 pixel_wse = float(cell_wse[cell_idx])
-                t_elev = t_elev
             # (C) No terrain at all: every pixel in the cell is treated as
             #     wet; depth output will be meaningless so callers should
             #     not request "depth" without a terrain grid.
