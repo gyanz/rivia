@@ -36,6 +36,8 @@ rasterize_rasmap
 
 from __future__ import annotations
 
+import logging
+import os
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -48,6 +50,9 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 from numba import njit, prange
+import numba as _numba
+
+_log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -2435,6 +2440,14 @@ def rasterize_rasmap(
         For ``"velocity"``: 4-band array ``(4, H, W)`` — ``[Vx, Vy, speed, direction_deg]``.
     """
     import rasterio.transform as _rt
+
+    _log.info(
+        "rasterize_rasmap: %d/%d cores available for parallel kernels "
+        "(NUMBA_NUM_THREADS=%s)",
+        _numba.get_num_threads(),
+        os.cpu_count() or 1,
+        os.environ.get("NUMBA_NUM_THREADS", "unset"),
+    )
 
     H, W = cell_id_grid.shape
     is_velocity_4band = variable == "velocity"
