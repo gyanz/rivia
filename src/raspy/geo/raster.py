@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 @log_call(logging.INFO)
 @timed(logging.INFO)
 def rasmap_raster(
-    variable: Literal["wse", "water_surface", "depth", "velocity"],
+    variable: Literal["wse", "water_surface", "depth", "velocity", "velocity_vector"],
     cell_wse: np.ndarray,
     cell_min_elevation: np.ndarray,
     face_min_elevation: np.ndarray,
@@ -95,7 +95,7 @@ def rasmap_raster(
     calls ``rasterize_rasmap`` with ``with_faces=True``; ``use_depth_weights``
     and ``shallow_to_flat`` are user-configurable.
 
-    **velocity — sloping / hybrid**
+    **velocity / velocity_vector — sloping / hybrid**
 
     A. ``compute_face_wss`` — hydraulic connectivity + ``face_hconn`` (same as WSE pipeline).
     2. ``reconstruct_face_velocities`` — C-stencil least-squares
@@ -108,9 +108,10 @@ def rasmap_raster(
     4a. ``build_cell_id_raster`` — paint cell IDs into the pixel grid.
     4c. ``rasterize_rasmap`` — per-pixel barycentric interpolation of
         facepoint velocity vectors; speed magnitude ``sqrt(Vx²+Vy²)``
-        computed per pixel.
+        computed per pixel.  ``"velocity"`` returns the speed band only;
+        ``"velocity_vector"`` returns all four bands.
 
-    **velocity — horizontal** (``render_mode="horizontal"``)
+    **velocity / velocity_vector — horizontal** (``render_mode="horizontal"``)
 
     RASMapper uses its stencil pipeline (``Render2D_8Stencil``) for velocity
     even in horizontal mode whenever cells are large relative to the pixel
@@ -125,12 +126,14 @@ def rasmap_raster(
     ----------
     variable:
         ``"wse"`` / ``"water_surface"`` — water-surface elevation (aliases).
-        ``"depth"``    — water depth (WSE minus terrain); requires
-                         *reference_raster* (DEM).
-        ``"velocity"`` — 4-band velocity raster ``[Vx, Vy, speed, direction]``
-                         (bands 1–4 of the output dataset); requires
-                         *face_normal_velocity*.  ``speed = sqrt(Vx²+Vy²)``;
-                         ``direction`` is degrees clockwise from north.
+        ``"depth"``          — water depth (WSE minus terrain); requires
+                               *reference_raster* (DEM).
+        ``"velocity"``       — 1-band speed raster ``sqrt(Vx²+Vy²)``; requires
+                               *face_normal_velocity*.
+        ``"velocity_vector"``— 4-band velocity raster ``[Vx, Vy, speed,
+                               direction_deg]`` (bands 1–4); requires
+                               *face_normal_velocity*.  ``direction_deg`` is
+                               degrees clockwise from north.
     cell_wse:
         ``(n_cells,)`` water-surface elevation per cell.
     cell_min_elevation:
@@ -271,14 +274,23 @@ def rasmap_raster(
     if variable == "wse":
         variable = "water_surface"
 
+    # Translate public velocity names to internal rasterize_rasmap names.
+    # "velocity"        → "speed"    (1-band magnitude output)
+    # "velocity_vector" → "velocity" (4-band Vx/Vy/speed/direction output)
+    if variable == "velocity":
+        variable = "speed"
+    elif variable == "velocity_vector":
+        variable = "velocity"
+
     if variable == "depth" and reference_raster is None:
         raise ValueError(
             "reference_raster is required when variable='depth'. "
             "Provide a path to a terrain DEM GeoTIFF."
         )
-    if variable == "velocity" and face_normal_velocity is None:
+    if variable in ("speed", "velocity") and face_normal_velocity is None:
         raise ValueError(
-            "face_normal_velocity is required when variable='velocity'."
+            "face_normal_velocity is required when variable='velocity' "
+            "or variable='velocity_vector'."
         )
     if reference_raster is None and cell_size is None:
         raise ValueError(
@@ -406,7 +418,7 @@ def rasmap_raster(
     # threshold, so horizontal velocity is rendered with the sloping stencil.
     # We mirror this by directing velocity to the sloping pipeline below.
     # WSE and depth keep their flat (per-cell) rendering.
-    _flat_velocity = render_mode == "horizontal" and variable == "velocity"
+    _flat_velocity = render_mode == "horizontal" and variable in ("speed", "velocity")
     if render_mode == "horizontal" and not _flat_velocity:
         cell_id_grid = _rasmap.build_cell_id_raster(
             cell_polygons, wet_mask, out_transform, out_height, out_width
@@ -479,7 +491,7 @@ def rasmap_raster(
         replaced_face_vel = None
         face_vel_A = None
         face_vel_B = None
-        if variable == "velocity" and face_normal_velocity is not None:
+        if variable in ("speed", "velocity") and face_normal_velocity is not None:
             face_normals_2d = face_normals[:, :2]
             face_vel_A, face_vel_B = _rasmap.reconstruct_face_velocities(
                 face_normal_velocity.astype(np.float64),
@@ -544,7 +556,7 @@ def rasmap_raster(
         )
 
     # -- 4. Write output ----------------------------------------------------
-    # velocity → 4-band (Vx, Vy, speed, direction); all others → 1-band.
+    # velocity_vector (internal: "velocity") → 4-band; all others → 1-band.
     n_bands = 4 if variable == "velocity" else 1
     profile: dict[str, Any] = dict(
         driver="GTiff",

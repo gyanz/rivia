@@ -708,9 +708,11 @@ class FlowAreaResults(FlowArea):
         # -- 3. Rasterize velocity via full rasmap pipeline ---------------
         # reference_raster enables pixel-level dry masking (WSE < terrain →
         # nodata) in addition to the coarser cell-level wet check.
+        # "velocity_vector" → 4-band [Vx, Vy, speed, direction]; quiver
+        # needs all four bands.
         fp_face_info, fp_face_values = self.facepoint_face_orientation
         ds = _raster.rasmap_raster(
-            variable="velocity",
+            variable="velocity_vector",
             cell_wse=np.array(self.water_surface[timestep, :]),
             cell_min_elevation=self._cell_min_elevation,
             face_min_elevation=self.face_min_elevation,
@@ -956,7 +958,7 @@ class FlowAreaResults(FlowArea):
     @timed(logging.INFO)
     def export_raster(
         self,
-        variable: Literal["wse", "water_surface", "depth", "velocity"],
+        variable: Literal["wse", "water_surface", "depth", "velocity", "velocity_vector"],
         timestep: int | None = None,
         output_path: str | Path | None = None,
         *,
@@ -982,8 +984,10 @@ class FlowAreaResults(FlowArea):
             ``"wse"`` / ``"water_surface"`` — water-surface elevation.
             ``"depth"``    — water depth (WSE minus terrain); requires
                              *reference_raster*.
-            ``"velocity"`` — velocity magnitude ``sqrt(Vx²+Vy²)``; requires
-                             an explicit *timestep*.
+            ``"velocity"``        — 1-band speed raster ``sqrt(Vx²+Vy²)``; requires
+                                    an explicit *timestep*.
+            ``"velocity_vector"`` — 4-band raster ``[Vx, Vy, speed, direction_deg]``;
+                                    requires an explicit *timestep*.
         timestep:
             0-based time index.  Pass ``None`` to use the time of maximum
             water-surface elevation (``"wse"``/``"water_surface"`` and
@@ -1042,12 +1046,12 @@ class FlowAreaResults(FlowArea):
             If ``rasterio`` or ``shapely`` are not installed.
         ValueError
             If ``variable="depth"`` and *reference_raster* is not provided.
-            If ``variable="velocity"`` and ``timestep=None``.
+            If ``variable="velocity"`` or ``variable="velocity_vector"`` and ``timestep=None``.
             If neither *reference_raster* nor *cell_size* is provided.
         """
         from raspy.geo import raster as _raster
 
-        if variable == "velocity" and timestep is None:
+        if variable in ("velocity", "velocity_vector") and timestep is None:
             raise ValueError(
                 "timestep=None is not supported for velocity. "
                 "Provide an explicit timestep index."
@@ -1063,7 +1067,7 @@ class FlowAreaResults(FlowArea):
             cell_wse = self._wse(timestep)
 
         face_normal_velocity: np.ndarray | None = None
-        if variable == "velocity":
+        if variable in ("velocity", "velocity_vector"):
             face_normal_velocity = np.array(self.face_velocity[timestep, :])
 
         cell_face_info, cell_face_values = self.cell_face_info
