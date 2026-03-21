@@ -2487,14 +2487,14 @@ def _rasterize_cells_nb(
 
             # Value interpolation
             if variable_flag == _VAR_WSE:
-                if use_sloped and has_face_wse:
+                if has_face_wse:
                     val = _pixel_wse_sloped(vel_w, fp_local_wse_adj, face_local_wse, cell_dw)
                     output[0, r, c] = np.float32(val) if val != _NODATA else np.float32(nodata)
                 else:
                     output[0, r, c] = np.float32(pixel_wse)
 
             elif variable_flag == _VAR_DEPTH:
-                if use_sloped and has_face_wse:
+                if has_face_wse:
                     pix_wse = _pixel_wse_sloped(vel_w, fp_local_wse_adj, face_local_wse, cell_dw)
                 else:
                     pix_wse = pixel_wse
