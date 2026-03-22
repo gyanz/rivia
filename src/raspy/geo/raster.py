@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 
 
 @log_call(logging.INFO)
-@timed(logging.INFO)
+@timed()
 def rasmap_raster(
     variable: Literal["wse", "water_surface", "depth", "velocity", "velocity_vector"],
     cell_wse: np.ndarray,
