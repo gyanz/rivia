@@ -212,8 +212,8 @@ class TestComputeFaceWss:
         va, vb, hconn = compute_face_wss(
             cell_wse, CELL_MIN_ELEV, FACE_MIN_ELEV, FACE_CI, CELL_FACE_COUNT
         )
-        assert va.dtype == np.float64
-        assert vb.dtype == np.float64
+        assert va.dtype == np.float32
+        assert vb.dtype == np.float32
         assert hconn.dtype == np.uint8
 
     def test_hconn_downhill_shallow(self):
@@ -317,7 +317,7 @@ class TestComputeFacepointWse:
     def test_output_shape(self):
         fp_wse = self._run(np.array([2.0, 2.0]))
         assert fp_wse.shape == (N_FACES, 2)
-        assert fp_wse.dtype == np.float64
+        assert fp_wse.dtype == np.float32
 
 
 # ---------------------------------------------------------------------------
@@ -451,7 +451,7 @@ class TestReplaceFaceVelocitiesSloped:
     def test_output_shape(self):
         rv = self._run()
         assert rv.shape == (N_FACES, 2)
-        assert rv.dtype == np.float64
+        assert rv.dtype == np.float32
 
     def test_equals_average_of_endpoint_fp_velocities(self):
         """Each face's replaced velocity must be the mean of its two fp velocities."""

@@ -509,7 +509,7 @@ class MapperExtension:
         )
 
     @log_call(logging.INFO)
-    @timed(logging.INFO)
+    @timed()
     def store_map(
         self,
         variable: Literal[

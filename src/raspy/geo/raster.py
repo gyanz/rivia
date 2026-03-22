@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 
 
 @log_call(logging.INFO)
-@timed(logging.INFO)
+@timed()
 def rasmap_raster(
     variable: Literal["wse", "water_surface", "depth", "velocity", "velocity_vector"],
     cell_wse: np.ndarray,
@@ -386,7 +386,7 @@ def rasmap_raster(
 
         if nd is not None:
             raw[raw == nd] = np.nan
-        terrain_grid = raw.astype(np.float64)
+        terrain_grid = raw  # already float32 from src.read
     else:
         # Derive grid from perimeter bbox or facepoint bbox
         if perimeter is not None and len(perimeter) >= 3:
@@ -468,7 +468,7 @@ def rasmap_raster(
             # terrain_grid is guaranteed non-None for depth (guarded at entry).
             t_vals = terrain_grid[valid_rows, valid_cols]  # type: ignore[index]
             ok = ~np.isnan(t_vals) & (t_vals != nodata)
-            dep = cell_wse[ci_arr[ok]].astype(np.float64) - t_vals[ok]
+            dep = cell_wse[ci_arr[ok]].astype(np.float32) - t_vals[ok]
             wet = dep > 0
             r_wet = valid_rows[ok][wet]
             c_wet = valid_cols[ok][wet]
@@ -516,7 +516,7 @@ def rasmap_raster(
         if variable in ("speed", "velocity") and face_normal_velocity is not None:
             face_normals_2d = face_normals[:, :2]
             face_vel_A, face_vel_B = _rasmap.reconstruct_face_velocities(
-                face_normal_velocity.astype(np.float64),
+                np.asarray(face_normal_velocity, dtype=np.float32),
                 face_normals_2d, face_connected,
                 face_cell_indexes, cell_face_info[:n_cells], cell_face_values,
             )
@@ -555,13 +555,13 @@ def rasmap_raster(
             _threshold = _px * _px * 5.0
             _flat_mask = np.asarray(cell_surface_area[:n_cells]) <= _threshold
             if _flat_mask.any():
-                flat_cell_vx = np.full(n_cells, np.nan, dtype=np.float64)
-                flat_cell_vy = np.full(n_cells, np.nan, dtype=np.float64)
+                flat_cell_vx = np.full(n_cells, np.nan, dtype=np.float32)
+                flat_cell_vy = np.full(n_cells, np.nan, dtype=np.float32)
                 _fvx, _fvy = _rasmap.compute_cell_flat_velocities(
                     cell_face_info[:n_cells],
                     cell_face_values,
-                    np.asarray(face_normal_velocity, dtype=np.float64),
-                    face_normals[:, :2].astype(np.float64),
+                    np.asarray(face_normal_velocity, dtype=np.float32),
+                    np.asarray(face_normals[:, :2], dtype=np.float32),
                     wet_mask & _flat_mask,
                 )
                 flat_cell_vx[_flat_mask] = _fvx[_flat_mask]

@@ -6,8 +6,13 @@ import logging
 import time
 from pathlib import Path
 
+# Custom level for timer output — sits above WARNING (30) so it survives
+# benchmark runs that suppress INFO/DEBUG to reduce I/O overhead.
+TIMER: int = 35
+logging.addLevelName(TIMER, "TIMER")
 
-def timed(level: int = logging.DEBUG):
+
+def timed(level: int = TIMER):
     """Decorator that logs the elapsed wall-clock time of a function call.
 
     Parameters

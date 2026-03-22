@@ -956,7 +956,7 @@ class FlowAreaResults(FlowArea):
     # ------------------------------------------------------------------
 
     @log_call(logging.INFO)
-    @timed(logging.INFO)
+    @timed()
     def export_raster(
         self,
         variable: Literal["wse", "water_surface", "depth", "velocity", "velocity_vector"],
@@ -1106,7 +1106,7 @@ class FlowAreaResults(FlowArea):
         )
 
     @log_call(logging.INFO)
-    @timed(logging.INFO)
+    @timed()
     def export_hydraulic_rasters(
         self,
         timestep: int,
