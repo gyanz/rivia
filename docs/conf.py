@@ -2,6 +2,7 @@
 # https://www.sphinx-doc.org/en/master/usage/configuration.html
 
 import sys
+from importlib.metadata import version as _get_version, PackageNotFoundError
 from pathlib import Path
 
 # Add src/ to sys.path so autodoc can import raspy without installing it.
@@ -11,7 +12,11 @@ sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 project = "raspy"
 copyright = "2025, Gyan Basyal and WEST Consultants, Inc."
 author = "Gyan Basyal and WEST Consultants, Inc."
-release = "0.1.0"
+
+try:
+    release = _get_version("raspy")
+except PackageNotFoundError:
+    release = "0.0.0.dev0"
 
 # -- General configuration ---------------------------------------------------
 extensions = [

@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=75.0"]
+requires = ["setuptools>=75.0", "setuptools-scm"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "raspy"
-version = "0.1.0"
+dynamic = ["version"]
 description = "A modern Python interface for HEC-RAS hydraulic modeling software"
 readme = "README.md"
 license = "Apache-2.0"
@@ -17,7 +17,6 @@ keywords = ["hec-ras", "hydraulics", "hydrology", "modeling", "water-resources"]
 classifiers = [
     "Development Status :: 2 - Pre-Alpha",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: Apache Software License",
     "Operating System :: Microsoft :: Windows",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
@@ -93,3 +92,8 @@ disallow_untyped_defs = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-x --tb=short"
+
+[tool.setuptools_scm]
+# Write version to src/raspy/_version.py so it is available at runtime
+# without requiring the package to be installed.
+write_to = "src/raspy/_version.py"
