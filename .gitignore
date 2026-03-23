@@ -1,58 +1,48 @@
-# Python
-__pycache__/
-test.py
-test1.py
-hazard.py
-test.xlsm
+# Root-level development scripts (not part of the package)
+/*.py
 *.xlsm
+*.tmp
+
+# Python build and packaging
+__pycache__/
 *.py[cod]
-*$py.class
-*.so
-*.egg
 *.egg-info/
 dist/
 build/
+*.egg
 *.whl
+*.tar.gz
 
-# Virtual environments
-.venv/
-venv/
-ENV/
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
+# setuptools-scm generated version file
+src/raspy/_version.py
 
 # Testing
 .pytest_cache/
 .coverage
 htmlcov/
 
-# mypy
+# Type checking and linting
 .mypy_cache/
-
-# ruff
 .ruff_cache/
 
-# OS
-Thumbs.db
-Desktop.ini
-.DS_Store
-
-# Distribution
-*.tar.gz
-*.whl
-
-# Extra
-archive/
-CLAUDE.md
-.claude
+# Virtual environments
+.venv/
+venv/
 
 # Sphinx build output
 docs/_build/
 docs/api/generated/
 
-# setuptools-scm generated version file
-src/raspy/_version.py
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Project-specific
+archive/
+CLAUDE.md
+.claude
