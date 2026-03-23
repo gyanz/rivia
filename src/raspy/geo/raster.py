@@ -57,7 +57,7 @@ def rasmap_raster(
     RASMapper's ``"Horizontal"``, ``"Sloping Cell Corners"``, and
     ``"Sloping Cell Corners + Face Centers"`` render modes.
 
-    See ``docs/export_raster2_plan.md`` for a full description of the
+    See ``archive/docs/export_raster2_plan.md`` for a full description of the
     algorithm steps.
 
     Pipeline summary

@@ -7,15 +7,17 @@ name = "raspy"
 version = "0.1.0"
 description = "A modern Python interface for HEC-RAS hydraulic modeling software"
 readme = "README.md"
-license = "MIT"
+license = "Apache-2.0"
 requires-python = ">=3.10"
 authors = [
     { name = "Gyan Basyal" },
+    { name = "WEST Consultants, Inc.", email = "info@westconsultants.com" },
 ]
 keywords = ["hec-ras", "hydraulics", "hydrology", "modeling", "water-resources"]
 classifiers = [
     "Development Status :: 2 - Pre-Alpha",
     "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
     "Operating System :: Microsoft :: Windows",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
@@ -48,11 +50,17 @@ dev = [
     "mypy",
     "build",
 ]
+docs = [
+    "sphinx>=7.0",
+    "furo",
+    "sphinx-autodoc-typehints",
+    "myst-parser",
+]
 
 [project.urls]
-Homepage = "https://github.com/gbasyal/raspy"
-Repository = "https://github.com/gbasyal/raspy"
-Issues = "https://github.com/gbasyal/raspy/issues"
+Homepage = "https://github.com/gyanz/raspy"
+Repository = "https://github.com/gyanz/raspy"
+Issues = "https://github.com/gyanz/raspy/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]

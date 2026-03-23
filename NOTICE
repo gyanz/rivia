@@ -1,0 +1,13 @@
+raspy
+Copyright 2025 Gyan Basyal and WEST Consultants, Inc.
+
+This product was developed by Gyan Basyal at WEST Consultants, Inc.
+(https://www.westconsultants.com) and is licensed under the Apache
+License, Version 2.0.
+
+---
+
+This software includes algorithms reverse-engineered from HEC-RAS,
+a hydraulic modeling program developed by the U.S. Army Corps of
+Engineers Hydrologic Engineering Center (HEC), which is in the
+public domain.

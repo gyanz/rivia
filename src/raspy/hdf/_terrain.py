@@ -11,7 +11,7 @@ Derived from analysis of:
   archive/DLLs/RasMapperLib/RasMapperLib/GroundLineModificationLayer.cs
   archive/DLLs/RasMapperLib/RasMapperLib/ElevationModificationGroup.cs
 
-See docs/terrain_export.md for a full description of the HDF structure and
+See archive/docs/terrain_export.md for a full description of the HDF structure and
 the modification-rasterisation algorithm.
 """
 

@@ -46,5 +46,10 @@ Desktop.ini
 *.whl
 
 # Extra
-archive/*
+archive/
+CLAUDE.md
 .claude
+
+# Sphinx build output
+docs/_build/
+docs/api/generated/
