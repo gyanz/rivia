@@ -8,6 +8,15 @@ from pathlib import Path
 # Add src/ to sys.path so autodoc can import raspy without installing it.
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
+# Mock Windows-only modules so autodoc works on Linux (e.g. Read the Docs).
+autodoc_mock_imports = [
+    "win32com",
+    "win32con",
+    "win32gui",
+    "win32process",
+    "pywintypes",
+]
+
 # -- Project information -----------------------------------------------------
 project = "raspy"
 copyright = "2025, Gyan Basyal and WEST Consultants, Inc."
