@@ -2,22 +2,25 @@
 
 A modern, modular Python library for interacting with [HEC-RAS](https://www.hec.usace.army.mil/software/hec-ras/) hydraulic modeling software.
 
-> **Status:** Pre-alpha / Planning phase. Not yet functional.
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
+[![Platform](https://img.shields.io/badge/platform-Windows-lightgrey.svg)](https://www.hec.usace.army.mil/software/hec-ras/)
 
 ## Overview
 
-`raspy` provides a clean, Pythonic interface for:
+`raspy` provides a clean, Pythonic interface for working with HEC-RAS projects:
 
-- **Controlling HEC-RAS** via COM automation (run simulations, modify plans)
-- **Reading/writing** HEC-RAS text input files (`.prj`, `.g*`, `.f*`, etc.)
-- **Accessing HDF5 output** files produced by HEC-RAS
-- **Working with geometry** data (cross sections, reaches, junctions)
+- **Control HEC-RAS** via COM automation — open projects, switch plans, run simulations
+- **Read and write** HEC-RAS text input files (`.prj`, `.g*`, `.p*`, `.f*`, `.u*`)
+- **Access HDF5 results** — water surface, velocity, depth, and other outputs
+- **Export rasters** — pixel-perfect RASMapper-equivalent rasters (WSE, depth, velocity, etc.)
+- **Export terrain** — mosaic and modify terrain from HEC-RAS terrain HDF files
 
 ## Requirements
 
-- **Windows** (HEC-RAS is Windows-only)
+- **Windows** — HEC-RAS is Windows-only
 - Python 3.10+
-- HEC-RAS installed (for COM automation features)
+- HEC-RAS 5.x or later installed
 
 ## Installation
 
@@ -25,28 +28,53 @@ A modern, modular Python library for interacting with [HEC-RAS](https://www.hec.
 pip install raspy
 ```
 
-For development:
+With geospatial extras (required for raster export):
 
 ```bash
-git clone https://github.com/gbasyal/raspy.git
-cd raspy
-pip install -e ".[dev]"
+pip install raspy[geo]
+```
+
+## Quick Example
+
+```python
+from raspy.model import Model
+
+# Open a HEC-RAS project
+model = Model("path/to/project.prj")
+print(model.version)       # e.g. "6.30"
+
+# Switch plans
+model.change_plan(title="Base Condition")
+model.change_plan(short_id="BC")
+model.change_plan(index=0)
+
+# Read HDF results
+area = model.hdf.flow_area_results["Perimeter 1"]
+wse_max = area.max_water_surface()
+
+# Export a WSE raster
+vrt = model.export_wse(timestep=None, render_mode="sloping")
+print(vrt.path)
 ```
 
 ## Package Structure
 
 ```
 raspy/
-├── controller/   # COM interface to run/control HEC-RAS
-├── io/           # Read/write HEC-RAS text input files
-├── hdf/          # Read/write HEC-RAS HDF5 output files
-├── geometry/     # Geometry and mesh data
-└── utils/        # Shared helpers
+├── com/       # COM interface to run/control HEC-RAS
+├── model/     # Model - primary project interface; read/write text input files, read HDF results
+├── hdf/       # Read HEC-RAS HDF5 geometry and result files
+├── geo/       # Geospatial operations: raster export (geopandas/rasterio)
+└── utils/     # Shared helpers
 ```
 
 ## Development
 
 ```bash
+git clone https://github.com/gyanz/raspy.git
+cd raspy
+pip install -e ".[dev,geo,docs]"
+
 # Run tests
 pytest tests/ -x --tb=short
 
@@ -56,10 +84,12 @@ ruff check src/
 # Type check
 mypy src/raspy
 
-# Build
-python -m build
+# Build docs
+sphinx-build -b html docs docs/_build/html
 ```
 
 ## License
 
-MIT
+Copyright 2025 Gyan Basyal and WEST Consultants, Inc.
+
+Licensed under the [Apache License, Version 2.0](LICENSE).

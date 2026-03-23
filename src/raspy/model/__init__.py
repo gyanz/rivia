@@ -1,4 +1,12 @@
-"""Read/write HEC-RAS text input files (.prj, .g*, .f*, etc.)."""
+"""High-level HEC-RAS project interface and text file I/O.
+
+:class:`Model` is the primary entry point — it opens a project via COM,
+manages plan switching and reloading, and provides lazy access to plan files,
+geometry files, flow files, and HDF results.
+
+Individual file classes (:class:`GeometryFile`, :class:`PlanFile`, etc.) can
+also be used standalone without a :class:`Model` instance.
+"""
 
 import atexit
 import contextlib
