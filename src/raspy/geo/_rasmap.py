@@ -114,10 +114,11 @@ def compute_face_wss(
     ``archive/DLLs/RasMapperLib/RasMapperLib/MeshFV2D.cs``.
 
     For each face the function determines the hydraulic-connection type
-    (``face_hconn``, one of the ``HC_*`` constants), whether water is actively
-    flowing across the face (``face_connected``), and the WSE to assign to
-    each side (cellA → ``face_value_a``, cellB → ``face_value_b``).  The
-    per-side values are used by :func:`compute_facepoint_wse` to fit a sloped
+    (``face_hconn``, one of the ``HC_*`` constants) and the WSE to assign to
+    each side (cellA → ``face_value_a``, cellB → ``face_value_b``).
+    Connectedness is a derived boolean — not a separate return value — and is
+    computed as ``face_hconn >= HC_BACKFILL`` (see Returns).
+    Per-side values are used by :func:`compute_facepoint_wse` to fit a sloped
     water surface; ``face_hconn`` is used by :func:`_rasterize_rasmap` to
     determine the all-shallow rendering fallback.
 
@@ -125,39 +126,37 @@ def compute_face_wss(
     ----------------------------------
     1. **No real neighbour** (``cellA < 0`` or ``cellB < 0``): face sits on
        the outer mesh boundary with only one real cell.  Skip entirely —
-       outputs remain at ``_NODATA`` / ``False`` / ``HC_NONE``.
+       outputs remain at ``_NODATA`` / ``_NODATA`` / ``HC_NONE``.
 
     2. **Virtual cell or dry cell** → ``HC_NONE``: cells with
        ``face_count == 1`` are virtual boundary cells inserted by HEC-RAS as
        computational placeholders.  By HEC-RAS convention the virtual cell is
-       always cellB, so ``face_is_perimeter = cell_b_virtual``.  If either
-       cell is dry (``wse <= min_elev + _MIN_WS_PLOT_TOLERANCE``) or the face
-       is a perimeter face, ``face_connected = False``.  The dry/virtual side
-       gets ``_NODATA``; a wet real cell keeps its own WSE.
+       always cellB, so ``face_is_perimeter = cell_b_virtual``.  Dry cells
+       (``wse <= min_elev + _MIN_WS_PLOT_TOLERANCE``) and perimeter faces
+       all yield ``HC_NONE``; the dry/virtual side gets ``_NODATA``, a wet
+       real cell keeps its own WSE.
 
     3. **Both cells below the face invert** → ``HC_NONE``: both WSEs are
        at or below ``face_min_elev`` — water is ponded on both sides without
-       reaching the sill.  Both sides take the cell WSE; ``face_connected =
-       False``.
+       reaching the sill.  Both sides take the cell WSE.
 
     4. **Overtopping / weir-crest** → ``HC_LEVEE``: ``was_crit_cap_used``
        (average WSE < 2/3 of head above sill) AND
        ``depth_higher / depth_above_face > 2`` (upstream pool is deep relative
        to the driving head).  The face acts as a crested structure.
-       ``face_connected = False``; each side keeps its own cell WSE.
+       Each side keeps its own cell WSE.
 
-    5. **Backfill** → ``HC_BACKFILL``, ``face_connected = True``:
+    5. **Backfill** → ``HC_BACKFILL``:
        ``(wse_b - wse_a) * (bed_b - bed_a) <= 0`` — WSE and bed gradients
        oppose each other (water backs up into a depression).  Both sides take
        ``face_ws`` (the higher cell WSE).
 
-    6. **Deep flow** → ``HC_DOWNHILL_DEEP``, ``face_connected = True``:
+    6. **Deep flow** → ``HC_DOWNHILL_DEEP``:
        ``depth_higher >= 2 * delta_bed`` — the higher cell is deep enough
        that the bed step is negligible (submerged bump).  Both sides take
        ``face_ws``.
 
-    7. **Transitional flow** — quadratic interpolation; ``face_connected =
-       True``:
+    7. **Transitional flow** — quadratic interpolation:
 
        * ``depth_higher > delta_bed`` → ``HC_DOWNHILL_INTERMEDIATE``: blends
          the quadratic estimate with ``face_ws`` for a smooth transition into
@@ -326,7 +325,7 @@ def compute_face_wss(
             if flag_levee:
                 # Logic 4 → HC_LEVEE: overtopping / weir-crest.
                 # Each side keeps its own cell WSE.  The two pools are
-                # hydraulically separated at the crest — face_connected = False.
+                # hydraulically separated at the crest — face_connected = True.
                 face_value_a[f] = wse_a
                 face_value_b[f] = wse_b
                 face_hconn[f] = HC_LEVEE
@@ -499,22 +498,44 @@ def _planar_z_intercept(
     zs: np.ndarray,
     n: int,
 ) -> float:
-    """Fit a plane Z = a*dx + b*dy + c and return c at (base_x, base_y).
+    """Fit a plane Z = a·dx + b·dy + c to *n* application points and return c.
 
-    Matches ``PlanarRegressionZ`` in ``archive/DLLs/RasMapperLib/MeshFV2D.cs``.
-    Working in local coordinates ``dx = x - base_x``, ``dy = y - base_y`` so
-    that evaluating the plane at the origin (the facepoint) gives Z = c directly.
+    Working coordinates are ``dx = x - base_x``, ``dy = y - base_y`` so the
+    fitted plane evaluates to ``Z = c`` exactly at ``(base_x, base_y)`` — no
+    further substitution needed.
 
-    Takes pre-allocated numpy arrays and an explicit count ``n`` (the first
-    ``n`` elements are used) so the function can be compiled with Numba
-    ``@njit``.
+    Solves the 3x3 least-squares normal equations::
 
-    Degenerate cases:
+        ⎡Σdx²   ΣdxΣdy  Σdx⎤ ⎡a⎤   ⎡Σdx·z⎤
+        ⎢ΣdxΣdy  Σdy²   Σdy⎥ ⎢b⎥ = ⎢Σdy·z⎥
+        ⎣Σdx    Σdy     n  ⎦ ⎣c⎦   ⎣Σz   ⎦
 
-    * n = 0 → return ``_NODATA``
-    * n = 1 → return ``zs[0]``
-    * n = 2 → return average
-    * det = 0 (collinear) → return average
+    using Cramer's rule (``c = det_c / det``).
+
+    Matches ``PlanarRegressionZ`` in
+    ``archive/DLLs/RasMapperLib/MeshFV2D.cs``.
+
+    Parameters
+    ----------
+    base_x, base_y:
+        Coordinates of the point at which the plane is evaluated (the
+        facepoint).  Used as the local-coordinate origin.
+    app_xs, app_ys:
+        Pre-allocated arrays of application-point x/y coordinates.  Only
+        the first ``n`` elements are read.
+    zs:
+        Pre-allocated array of WSE values at each application point.  Only
+        the first ``n`` elements are read.
+    n:
+        Number of valid entries in ``app_xs``, ``app_ys``, and ``zs``.
+        Passed explicitly so the function can be compiled with ``@njit``.
+
+    Returns
+    -------
+    float
+        Fitted Z value at ``(base_x, base_y)``.  Degenerate cases:
+        ``n = 0`` → ``_NODATA``; ``n = 1`` → ``zs[0]``; ``n = 2`` →
+        average; ``det = 0`` (collinear points) → average of all z values.
     """
     if n == 0:
         return _NODATA
@@ -568,8 +589,31 @@ def _face_app_point(
 ) -> tuple[float, float]:
     """Return the application point (x, y) for face *fi*.
 
-    Uses the precomputed midside when available (``face_midsides.shape[0] > 0``);
-    falls back to chord midpoint of the two endpoint facepoints.
+    The application point is the XY location at which a face contributes
+    its WSE sample to the ``PlanarRegressionZ`` fit in
+    :func:`_compute_facepoint_wse_nb`.  Using the midside (the intersection
+    of the cell-centre-to-cell-centre line with the face chord) rather than
+    the raw chord midpoint improves accuracy on non-orthogonal meshes where
+    the cell centres are not aligned with the face normal.
+
+    Parameters
+    ----------
+    fi:
+        Face index.
+    fp_coords:
+        ``(n_fp, 2)`` — facepoint XY coordinates.
+    face_facepoint_indexes:
+        ``(n_faces, 2)`` — ``[fpA, fpB]`` for each face.
+    face_midsides:
+        Precomputed application points from :func:`_compute_face_midsides`,
+        shape ``(n_faces, 2)``.  An empty array (``shape[0] == 0``) is used
+        as the "not available" sentinel, in which case the chord midpoint
+        of fpA and fpB is returned instead.
+
+    Returns
+    -------
+    tuple[float, float]
+        ``(x, y)`` application point for face *fi*.
     """
     if face_midsides.shape[0] > 0:
         return face_midsides[fi, 0], face_midsides[fi, 1]
@@ -603,6 +647,9 @@ def _compute_facepoint_wse_nb(
     Faces adjacent to each facepoint are angle-sorted CCW (from
     ``fp_face_values``).  Hydraulically-connected faces form *arcs*; arcs
     are separated by disconnected (shallow/dry) faces.
+
+    connected connected | disconnected | connected connected connected
+    ←————— arc 1 ———————             ←————————— arc 2 ————————————→
 
     For each arc a separate ``PlanarRegressionZ`` is fitted:
 
@@ -805,9 +852,39 @@ def compute_facepoint_wse(
 ) -> np.ndarray:
     """Step B — arc-based per-facepoint WSE via PlanarRegressionZ.
 
-    Public wrapper around the ``@njit`` kernel :func:`_compute_facepoint_wse_nb`.
-    ``face_midsides`` may be omitted or ``None``; an empty ``(0, 2)`` sentinel
-    is passed to the kernel in that case so that the midpoint branch is skipped.
+    Public wrapper around the ``@njit`` kernel
+    :func:`_compute_facepoint_wse_nb`.  See that function for a full
+    description of the arc decomposition algorithm.
+
+    Parameters
+    ----------
+    fp_coords:
+        ``(n_fp, 2)`` — facepoint XY coordinates.
+    fp_face_info:
+        ``(n_fp, 2)`` int32 — ``[start, count]`` into ``fp_face_values``.
+        From :attr:`~raspy.hdf.FlowArea.facepoint_face_orientation_info`.
+    fp_face_values:
+        ``(total, 2)`` int32 — ``[face_idx, orientation]`` in CCW angle order.
+    face_facepoint_indexes:
+        ``(n_faces, 2)`` — ``[fpA, fpB]`` for each face.
+    face_value_a:
+        ``(n_faces,)`` float32 — cellA-side WSE from :func:`compute_face_wss`.
+    face_value_b:
+        ``(n_faces,)`` float32 — cellB-side WSE from :func:`compute_face_wss`.
+    face_connected:
+        ``(n_faces,)`` bool — hydraulic connectivity from
+        :func:`compute_face_wss`.
+    face_midsides:
+        ``(n_faces, 2)`` float64 from :func:`_compute_face_midsides`, or
+        ``None``.  Supplying midsides improves accuracy on non-orthogonal
+        meshes; omit (or pass ``None``) for orthogonal meshes or when cell
+        centres are unavailable — the chord midpoint is used instead.
+
+    Returns
+    -------
+    fp_wse_at_face : float32 ndarray, shape ``(n_faces, 2)``
+        Per-face arc WSE: ``[fi, 0]`` from fpA's arc, ``[fi, 1]`` from
+        fpB's arc.  ``-9999`` where the arc has no valid sample points.
     """
     ms = face_midsides if face_midsides is not None else np.empty((0, 2), dtype=np.float64)
     return _compute_facepoint_wse_nb(
@@ -1443,10 +1520,40 @@ def replace_face_velocities_sloped(
 
 @njit(cache=True)
 def _barycentric_weights(px: float, py: float, verts_x: np.ndarray, verts_y: np.ndarray) -> np.ndarray:
-    """Generalised polygon barycentric coordinates, cast to float32.
+    """Generalised barycentric coordinates of point (px, py) inside a polygon.
 
-    Matches ``archive/DLLs/RasMapperLib/RASGeometryMapPoints.cs:2956``
-    ``fpWeights[l] = (float)(array[l] / num3)``.
+    Computes a Wachspress-style weight for each vertex so that the weights
+    sum to 1 and a weighted sum of vertex values interpolates smoothly
+    inside the polygon.  For vertex j the raw weight is::
+
+        w_j = cp_j * ∏ xp[k]   for all edges k not adjacent to j
+
+    where
+
+    * ``xp[i]`` = signed area of triangle (vert_i, vert_{i+1}, P) —
+      zero edges are clamped to ``1e-5`` to avoid division by zero.
+    * ``cp_j`` = signed area of triangle (vert_{j-1}, vert_j, vert_{j+1}) —
+      the "corner triangle" at vertex j.
+
+    Raw weights are summed, normalised, negative values clamped to 0, then
+    renormalised again to guarantee a non-negative partition of unity.
+
+    Matches ``RASGeometryMapPoints.cs:2956``
+    (``fpWeights[l] = (float)(array[l] / num3)``).
+
+    Parameters
+    ----------
+    px, py:
+        Query point coordinates.
+    verts_x, verts_y:
+        Polygon vertex coordinates in order (CCW or CW), length N.
+
+    Returns
+    -------
+    weights : float32 ndarray, shape ``(N,)``
+        Non-negative barycentric weights summing to 1.
+        Degenerate cases: N = 0 → empty; N = 1 → ``[1]``; N = 2 →
+        ``[0.5, 0.5]``; total ≈ 0 → uniform ``1/N``.
     """
     N = len(verts_x)
     if N < 3:
@@ -1500,13 +1607,59 @@ def _barycentric_weights(px: float, py: float, verts_x: np.ndarray, verts_y: np.
 
 @njit(cache=True)
 def _donate(fp_weights: np.ndarray) -> np.ndarray:
-    """Redistribute facepoint weights to edge midpoints.
+    """Redistribute facepoint weights to edge midpoints (face velocities).
 
-    Returns ``velocity_weights`` of length ``2*N``.  First N entries are
-    updated facepoint weights; last N entries are face-midpoint weights.
+    When a pixel P sits near an edge rather than near a corner, some of the
+    interpolation weight should flow from the two endpoint facepoints to
+    the shared edge midpoint so that the reconstructed face velocity
+    contributes to the final velocity estimate.
 
-    Matches ``redistribute_weights_to_edge_midpoints`` /
-    ``archive/DLLs/RasMapperLib/RASGeometryMapPoints.cs`` donate logic.
+    **Layout of the output** (length ``2*N``):
+
+    * ``w[0..N-1]`` — updated corner-facepoint weights (reduced by donations).
+    * ``w[N+j]``   — weight for the midpoint of edge ``j → (j+1) % N``,
+      i.e. the face between facepoints ``j`` and ``j+1``.
+
+    **Algorithm** (two passes):
+
+    *Pass 1 — intended donations.*  For each facepoint ``i`` compute how
+    much weight it wants to share with each adjacent edge midpoint::
+
+        ratio     = w_i / (w_{i-1} + w_{i+1})
+        cw_give[i]  = ratio * w_{i-1}   # toward edge (i-1) → i
+        ccw_give[i] = ratio * w_{i+1}   # toward edge i → (i+1)
+
+    The ratio scales the donation by how large ``w_i`` is relative to its
+    two neighbours.
+
+    *Pass 2 — conservative bilateral transfer.*  For each edge ``j → j+1``
+    the actual transfer is the minimum of what each endpoint is willing to
+    give::
+
+        can_donate   = min(ccw_give[j], cw_give[j+1])
+        w[j]        -= can_donate
+        w[j+1]      -= can_donate
+        w[N + j]     = 2 * can_donate
+
+    The ``min`` prevents either endpoint from donating more than its
+    neighbour also agrees to give.  Both endpoints each surrender
+    ``can_donate``, so the midpoint receives ``2 * can_donate`` and total
+    weight is conserved.
+
+    Matches ``redistribute_weights_to_edge_midpoints`` in
+    ``archive/DLLs/RasMapperLib/RASGeometryMapPoints.cs``.
+
+    Parameters
+    ----------
+    fp_weights:
+        Float32 array of length N — barycentric corner weights from
+        :func:`_barycentric_weights`.
+
+    Returns
+    -------
+    w : float64 ndarray, shape ``(2*N,)``
+        Combined facepoint + face-midpoint weights.  Sums to the same
+        total as ``fp_weights`` (weight is conserved, not created).
     """
     N = len(fp_weights)
     w = np.zeros(2 * N, dtype=np.float64)
