@@ -417,9 +417,10 @@ class Model(MapperExtension):
             self.controller.Compute_HideComputationWindow()
         try:
             return self.controller.Compute_CurrentPlan(BlockingMode=blocking)
-        finally:
+        except Exception:
             if hide_window:
                 self.controller.Compute_ShowComputationWindow()
+            raise
 
     def __del__(self):
         with contextlib.suppress(Exception):
