@@ -156,12 +156,13 @@ class Model(MapperExtension):
     @property
     def flow_file(self) -> Path:
         """Return the current flow file path."""
-        with open(self.plan_file) as fid:
+        plan_file = self.plan_file
+        with open(plan_file) as fid:
             for line in fid:
                 if line.startswith("Flow File"):
                     ext = line.split("=")[1].strip()
                     if ext:
-                        return self.plan_file.with_suffix(f".{ext}")
+                        return plan_file.with_suffix(f".{ext}")
 
     @property
     def project(self) -> ProjectFile:
