@@ -2150,12 +2150,8 @@ class ControllerBase(object):
         rc = self._rc
         rc.ShowRas()
 
-    show = ShowRas  # alias for ShowRas function
-
     def QuitRas(self):
         logger.warning("HEC-Version < 5.X.X does not have window hide interface.")
-
-    hide = QuitRas
 
     # %% Steady
     def SteadyFlow_ClearFlowData(self):
