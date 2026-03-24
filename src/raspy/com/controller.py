@@ -129,9 +129,6 @@ class _ControllerBase:
             return self.HECRASVersion()
         return self._rasver
 
-    def controller(self):
-        return self._rc
-
     @property
     def exe(self):
         return self._runtime.exe
@@ -216,8 +213,8 @@ class _ControllerBase:
 
         Notes
         -----
-        Only meaningful when ``blocking=False`` was passed to
-        :meth:`compute`. Poll this in a loop while waiting.
+        Only meaningful when ``BlockingMode=False`` was passed to
+        :meth:`Compute_CurrentPlan`. Poll this in a loop while waiting.
 
         Raises
         ------
@@ -236,7 +233,7 @@ class _ControllerBase:
 
         Notes
         -----
-        Requires ``blocking=False`` in :meth:`compute` to be meaningful.
+        Requires ``BlockingMode=False`` in :meth:`Compute_CurrentPlan` to be meaningful.
 
         Raises
         ------

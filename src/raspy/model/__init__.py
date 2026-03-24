@@ -121,7 +121,7 @@ class Model(MapperExtension):
         self._hdf = None
 
     @property
-    def version(self):
+    def version(self) -> int:
         return self._ras_version
 
     @property
@@ -135,34 +135,33 @@ class Model(MapperExtension):
 
     @property
     def geom_file(self) -> Path:
-        """Return the plan file path."""
+        """Return the current geometry file path."""
         return Path(self.controller.CurrentGeomFile())
 
     @property
     def geom_hdf_file(self) -> Path:
-        """Return the plan file path."""
+        """Return the current geometry HDF file path."""
         return self.geom_file.with_name(self.geom_file.name + ".hdf")
 
     @property
     def plan_file(self) -> Path:
-        """Return the plan file path."""
+        """Return the current plan file path."""
         return Path(self.controller.CurrentPlanFile())
 
     @property
     def plan_hdf_file(self) -> Path:
-        """Return the plan file path."""
+        """Return the current plan HDF file path."""
         return self.plan_file.with_name(self.plan_file.name + ".hdf")
 
     @property
     def flow_file(self) -> Path:
-        """Return the flow file path."""
-        plan_file = Path(self.controller.CurrentPlanFile())
-        with open(plan_file) as fid:
+        """Return the current flow file path."""
+        with open(self.plan_file) as fid:
             for line in fid:
                 if line.startswith("Flow File"):
                     ext = line.split("=")[1].strip()
                     if ext:
-                        return plan_file.with_suffix(f".{ext}")
+                        return self.plan_file.with_suffix(f".{ext}")
 
     @property
     def project(self) -> ProjectFile:
@@ -366,12 +365,12 @@ class Model(MapperExtension):
             self._hdf = None
         # v503+: Project_Close + Project_Open reloads without restarting COM.
         # Older versions: restart the COM process entirely.
-        if self._ras_version >= 5030:
+        try:
             self.controller.Project_Close()
-            self.controller.Project_Open(str(self._project_path))
-        else:
+        except NotImplementedError:
             self.controller.close()
             self._rc = com.open(self._ras_version)
+        finally:
             self.controller.Project_Open(str(self._project_path))
 
     def show(self):
@@ -379,12 +378,6 @@ class Model(MapperExtension):
 
     def hide(self):
         self.controller.hide()
-
-    def hide_compute(self, flag: bool):
-        if flag:
-            self.controller.Compute_HideComputationWindow()
-        else:
-            self.controller.Compute_ShowComputationWindow()
 
     def run(
         self, blocking: bool = True, hide_window: bool = False
