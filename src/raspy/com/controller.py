@@ -293,13 +293,13 @@ class _ControllerBase:
         return self._rc.Compute_IsStillComputing()
 
     def Compute_CurrentPlan(  # noqa: N802
-        self, blocking: bool = True
+        self, BlockingMode: bool = True
     ) -> tuple[bool, tuple[str, ...]]:
         """Compute the current plan, compatible with all HEC-RAS versions.
 
         Parameters
         ----------
-        blocking : bool, optional
+        BlockingMode : bool, optional
             If True (default), block until computation completes. If False,
             return immediately while HEC-RAS computes in the background.
             Ignored for HEC-RAS versions below 5.0 (always blocking).
@@ -317,7 +317,7 @@ class _ControllerBase:
 
         try:
             if version < 5000:
-                if not blocking:
+                if not BlockingMode:
                     logger.debug(
                         "compute: blocking unavailable in HEC-RAS version %d", version
                     )
@@ -329,7 +329,7 @@ class _ControllerBase:
                 return success, ()
 
             elif version < 5030:
-                res = rc.Compute_CurrentPlan(None, None, blocking)
+                res = rc.Compute_CurrentPlan(None, None, BlockingMode)
                 success = res[0]
                 logger.debug("compute: version %d returns no messages", version)
                 if not success:
@@ -337,7 +337,7 @@ class _ControllerBase:
                 return success, ()
 
             else:
-                res = rc.Compute_CurrentPlan(None, None, int(blocking))
+                res = rc.Compute_CurrentPlan(None, None, int(BlockingMode))
                 success = res[0]
                 messages = res[2] if res[2] is not None else ()
                 if not success:
