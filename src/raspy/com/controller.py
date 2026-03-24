@@ -157,7 +157,141 @@ class _ControllerBase:
     def close(self):
         if self.is_alive:
             self._runtime.close()
-    
+
+    # ------------------------------------------------------------------
+    # Window visibility
+    # ------------------------------------------------------------------
+
+    def show(self) -> None:
+        """Display the main HEC-RAS window.
+
+        Works on all supported HEC-RAS versions.
+        """
+        self._rc.ShowRas()
+
+    def hide(self) -> None:
+        """Hide the main HEC-RAS window.
+
+        Notes
+        -----
+        HEC-RAS 4.x does not expose a window-hide COM method. Calling this on
+        a version-4 controller logs a warning and does nothing. For version 5.0
+        and above, ``QuitRas()`` is used, which hides (minimises) the window.
+        """
+        if self._rasver < 5000:
+            logger.warning(
+                "show/hide: HEC-RAS %d does not support window hide via COM; "
+                "ignoring hide() call.",
+                self._rasver,
+            )
+            return
+        self._rc.QuitRas()
+
+    # ------------------------------------------------------------------
+    # Project lifecycle (version-gated)
+    # ------------------------------------------------------------------
+
+    def Project_Close(self) -> None:
+        """Close the currently open HEC-RAS project.
+
+        Raises
+        ------
+        NotImplementedError
+            If the connected HEC-RAS version is older than 5.0.3 (version code
+            5030), which does not expose ``Project_Close`` via COM.
+        """
+        if self._rasver < 5030:
+            raise NotImplementedError(
+                f"Project_Close() requires HEC-RAS 5.0.3+ (version code ≥ 5030); "
+                f"connected version is {self._rasver}."
+            )
+        self._rc.Project_Close()
+
+    # ------------------------------------------------------------------
+    # Compute helpers (version-gated)
+    # ------------------------------------------------------------------
+
+    def Compute_Complete(self) -> bool:
+        """Return ``True`` once an asynchronous computation has finished.
+
+        Notes
+        -----
+        Only meaningful when ``blocking=False`` was passed to
+        :meth:`compute`. Poll this in a loop while waiting.
+
+        Raises
+        ------
+        NotImplementedError
+            For HEC-RAS versions below 5.0, which do not expose this method.
+        """
+        if self._rasver < 5000:
+            raise NotImplementedError(
+                f"Compute_Complete() requires HEC-RAS 5.0+ (version code ≥ 5000); "
+                f"connected version is {self._rasver}."
+            )
+        return self._rc.Compute_Complete()
+
+    def Compute_StartedFromController(self) -> bool:
+        """Return ``True`` if the current computation was started via COM.
+
+        Notes
+        -----
+        Requires ``blocking=False`` in :meth:`compute` to be meaningful.
+
+        Raises
+        ------
+        NotImplementedError
+            For HEC-RAS versions below 5.0.
+        """
+        if self._rasver < 5000:
+            raise NotImplementedError(
+                f"Compute_StartedFromController() requires HEC-RAS 5.0+ "
+                f"(version code ≥ 5000); connected version is {self._rasver}."
+            )
+        return self._rc.Compute_StartedFromController
+
+    def Compute_Cancel(self) -> None:
+        """Cancel a running computation.
+
+        Notes
+        -----
+        Only available in HEC-RAS 4.x. This method was removed in version 5.0.
+        Use :meth:`compute` with ``blocking=True`` (default) to avoid needing
+        cancellation on modern versions.
+
+        Raises
+        ------
+        NotImplementedError
+            For HEC-RAS 5.0 and above, where this COM method no longer exists.
+        """
+        if self._rasver >= 5000:
+            raise NotImplementedError(
+                f"Compute_Cancel() was removed in HEC-RAS 5.0; "
+                f"connected version is {self._rasver}."
+            )
+        self._rc.Compute_Cancel()
+
+    def Compute_IsStillComputing(self) -> bool:
+        """Return ``True`` if a computation is still running.
+
+        Notes
+        -----
+        Only available in HEC-RAS 4.x. Removed in version 5.0. On 5.0+ use
+        :meth:`Compute_Complete` instead.
+
+        Raises
+        ------
+        NotImplementedError
+            For HEC-RAS 5.0 and above.
+        """
+        if self._rasver >= 5000:
+            raise NotImplementedError(
+                f"Compute_IsStillComputing() was removed in HEC-RAS 5.0; "
+                f"use Compute_Complete() instead. "
+                f"Connected version is {self._rasver}."
+            )
+        return self._rc.Compute_IsStillComputing()
+
     def compute(self, blocking: bool = True) -> tuple[bool, tuple[str, ...]]:
         """Compute the current plan, compatible with all HEC-RAS versions.
 
