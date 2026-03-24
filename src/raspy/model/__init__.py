@@ -405,7 +405,7 @@ class Model(MapperExtension):
         else:
             compute_blocking = 0
 
-        result_tuple = self.controller.compute(compute_blocking)
+        result_tuple = self.controller.Compute_CurrentPlan(compute_blocking)
 
     def __del__(self):
         with contextlib.suppress(Exception):

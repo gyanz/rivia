@@ -292,7 +292,9 @@ class _ControllerBase:
             )
         return self._rc.Compute_IsStillComputing()
 
-    def compute(self, blocking: bool = True) -> tuple[bool, tuple[str, ...]]:
+    def Compute_CurrentPlan(  # noqa: N802
+        self, blocking: bool = True
+    ) -> tuple[bool, tuple[str, ...]]:
         """Compute the current plan, compatible with all HEC-RAS versions.
 
         Parameters
