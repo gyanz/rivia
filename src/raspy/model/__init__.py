@@ -386,26 +386,40 @@ class Model(MapperExtension):
         else:
             self.controller.Compute_ShowComputationWindow()
 
-    def run(self, hide_compute_window: bool | None = False, compute_blocking: bool | None = True) -> None:
+    def run(
+        self, blocking: bool = True, hide_window: bool = False
+    ) -> tuple[bool, tuple[str, ...]]:
         """Run HEC-RAS computations for the current plan.
 
         Parameters
         ----------
-        blocking
-            If ``True``, block until computations are complete. If ``False``,
-            return immediately and allow computations to run in the background.
-            If ``None``, use the current value of the :attr:`compute_blocking`
-            property (which defaults to ``True``).
+        blocking : bool, optional
+            If ``True`` (default), block until computations complete.
+            If ``False``, return immediately while HEC-RAS computes in
+            the background.  Not supported in HEC-RAS 4.x (always blocking).
+        hide_window : bool, optional
+            If ``True``, hide the computation window before running and
+            restore it afterward. Default is ``False``.
+
+        Returns
+        -------
+        success : bool
+            ``True`` if the computation completed successfully.
+        messages : tuple[str, ...]
+            Messages returned by HEC-RAS. Empty for versions below 5.0.3.
+
+        Raises
+        ------
+        HecRasComputeError
+            If HEC-RAS reports a computation failure or a COM error occurs.
         """
-        if hide_compute_window:
+        if hide_window:
             self.controller.Compute_HideComputationWindow()
-
-        if compute_blocking:
-            compute_blocking = 1
-        else:
-            compute_blocking = 0
-
-        result_tuple = self.controller.Compute_CurrentPlan(compute_blocking)
+        try:
+            return self.controller.Compute_CurrentPlan(BlockingMode=blocking)
+        finally:
+            if hide_window:
+                self.controller.Compute_ShowComputationWindow()
 
     def __del__(self):
         with contextlib.suppress(Exception):
