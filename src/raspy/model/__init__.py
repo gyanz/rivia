@@ -115,14 +115,18 @@ class Model(MapperExtension):
         self._rc = com.open(ras_version)
         self._ras_version = self._rc.ras_version()
         self._rc.Project_Open(str(self._project_path))
-        self._compute_blocking = 1
         self._plan: PlanFile | None = None
         self._project: ProjectFile | None = None
+        self._flow: SteadyFlowFile | UnsteadyFlowEditor | None = None
         self._hdf = None
 
     @property
     def version(self):
         return self._ras_version
+
+    @property
+    def controller(self):
+        return self._rc
 
     @property
     def project_file(self) -> Path:
@@ -132,7 +136,7 @@ class Model(MapperExtension):
     @property
     def geom_file(self) -> Path:
         """Return the plan file path."""
-        return Path(self._rc.CurrentGeomFile())
+        return Path(self.controller.CurrentGeomFile())
 
     @property
     def geom_hdf_file(self) -> Path:
@@ -142,7 +146,7 @@ class Model(MapperExtension):
     @property
     def plan_file(self) -> Path:
         """Return the plan file path."""
-        return Path(self._rc.CurrentPlanFile())
+        return Path(self.controller.CurrentPlanFile())
 
     @property
     def plan_hdf_file(self) -> Path:
@@ -152,7 +156,7 @@ class Model(MapperExtension):
     @property
     def flow_file(self) -> Path:
         """Return the flow file path."""
-        plan_file = Path(self._rc.CurrentPlanFile())
+        plan_file = Path(self.controller.CurrentPlanFile())
         with open(plan_file) as fid:
             for line in fid:
                 if line.startswith("Flow File"):
@@ -178,6 +182,41 @@ class Model(MapperExtension):
         if self._plan is None:
             self._plan = PlanFile(self.plan_file)
         return self._plan
+
+    @property
+    def flow(self) -> SteadyFlowFile | UnsteadyFlowEditor:
+        """Lazily parsed flow file for the current plan.
+
+        Returns a :class:`SteadyFlowFile` when the plan references a steady
+        flow file (extension starting with ``f``), or an
+        :class:`UnsteadyFlowEditor` when it references an unsteady flow file
+        (extension starting with ``u``).
+
+        Raises
+        ------
+        ValueError
+            If the plan has no ``Flow File=`` entry, or the extension is not a
+            recognised steady (``f*``) or unsteady (``u*``) type.
+        FileNotFoundError
+            If the flow file path does not exist on disk.
+        """
+        if self._flow is None:
+            path = self.flow_file
+            if path is None:
+                raise ValueError(
+                    f"Plan file {self.plan_file.name!r} has no 'Flow File=' entry."
+                )
+            if self.plan.is_steady:
+                self._flow = SteadyFlowFile(path)
+            elif self.plan.is_unsteady:
+                self._flow = UnsteadyFlowEditor(path)
+            else:
+                ext = self.plan.flow_file
+                raise ValueError(
+                    f"Unrecognised flow file extension {ext!r}; "
+                    "expected an 'f*' (steady) or 'u*' (unsteady) extension."
+                )
+        return self._flow
 
     @property
     def hdf(self):
@@ -247,7 +286,7 @@ class Model(MapperExtension):
         plans = self.project.plans()
 
         # --- validate COM plan list matches project file ---
-        _, com_titles = self._rc.Plan_Names(IncludeOnlyPlansInBaseDirectory=True)
+        _, com_titles = self.controller.Plan_Names(IncludeOnlyPlansInBaseDirectory=True)
         if len(com_titles) != len(plans):
             logger.warning(
                 "COM reports %d plans but project file lists %d.",
@@ -302,12 +341,12 @@ class Model(MapperExtension):
             )
 
         logger.debug("Setting current plan to %r", plan_title)
-        success = self._rc.Plan_SetCurrent(plan_title)
+        success = self.controller.Plan_SetCurrent(plan_title)
         if not success:
             raise RuntimeError(
                 f"HEC-RAS failed to set current plan to {plan_title!r}."
             )
-        self._rc.Project_Save()
+        self.controller.Project_Save()
         self.reload()
 
     def reset(self):
@@ -321,45 +360,58 @@ class Model(MapperExtension):
 
     def reload(self):
         self._plan = None  # invalidate cached PlanFile so next access re-parses
+        self._flow = None
         if self._hdf is not None:
             self._hdf.close()
             self._hdf = None
         # v503+: Project_Close + Project_Open reloads without restarting COM.
         # Older versions: restart the COM process entirely.
         if self._ras_version >= 5030:
-            self._rc.Project_Close()
-            self._rc.Project_Open(str(self._project_path))
+            self.controller.Project_Close()
+            self.controller.Project_Open(str(self._project_path))
         else:
-            self._rc.close()
+            self.controller.close()
             self._rc = com.open(self._ras_version)
-            self._rc.Project_Open(str(self._project_path))
+            self.controller.Project_Open(str(self._project_path))
 
     def show(self):
-        self._rc.show()
+        self.controller.show()
 
     def hide(self):
-        self._rc.hide()
+        self.controller.hide()
 
-    def show_compute(self, flag: bool):
+    def hide_compute(self, flag: bool):
         if flag:
-            self._rc.Compute_ShowComputationWindow()
+            self.controller.Compute_HideComputationWindow()
         else:
-            self._rc.Compute_HideComputationWindow()
+            self.controller.Compute_ShowComputationWindow()
 
-    @property
-    def compute_blocking(self) -> bool:
-        """Return ``True`` if compute runs are blocking (synchronous)."""
-        return bool(self._compute_blocking)
+    def run(self, hide_compute_window: bool | None = False, compute_blocking: bool | None = True) -> None:
+        """Run HEC-RAS computations for the current plan.
 
-    @compute_blocking.setter
-    def compute_blocking(self, flag: bool) -> None:
-        self._compute_blocking = 1 if flag else 0
+        Parameters
+        ----------
+        blocking
+            If ``True``, block until computations are complete. If ``False``,
+            return immediately and allow computations to run in the background.
+            If ``None``, use the current value of the :attr:`compute_blocking`
+            property (which defaults to ``True``).
+        """
+        if hide_compute_window:
+            self.controller.Compute_HideComputationWindow()
+
+        if compute_blocking:
+            compute_blocking = 1
+        else:
+            compute_blocking = 0
+
+        result_tuple = self.controller.compute(compute_blocking)
 
     def __del__(self):
         with contextlib.suppress(Exception):
             logger.debug("Executing Model destructor.")
         with contextlib.suppress(Exception):
-            self._rc.close()
+            self.controller.close()
 
 
 def _get_ras_version_from_project_file(project_file: str | Path):

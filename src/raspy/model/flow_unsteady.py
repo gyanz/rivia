@@ -764,6 +764,10 @@ class UnsteadyFlowFile:
 
     @use_restart.setter
     def use_restart(self, value: int) -> None:
+        if value:
+            value = 1
+        else:
+            value = 0
         self._set("Use Restart", f" {value} ")
 
     # ------------------------------------------------------------------
@@ -1381,10 +1385,29 @@ class UnsteadyFlowEditor:
     # Initial conditions
     # ------------------------------------------------------------------
 
-    def set_initial_flow(self, river: str, reach: str, rs: str, flow: float) -> None:
+    def set_initial_flow(self, index: int, flow: float) -> None:
+        """Update the initial flow at *index* in :attr:`initial_flow_locs`.
+
+        Args:
+            index: Zero-based position in ``initial_flow_locs``.
+            flow: New flow value.
+
+        Raises:
+            IndexError: *index* is out of range.
+        """
+        self.initial_flow_locs[index].flow = flow
+
+    def set_initial_flow_at(self, river: str, reach: str, rs: str, flow: float) -> None:
         """Update the initial flow at the given location.
 
-        Raises ``KeyError`` if not found.
+        Args:
+            river: River name (case-insensitive match).
+            reach: Reach name (case-insensitive match).
+            rs: River station string.
+            flow: New flow value.
+
+        Raises:
+            KeyError: No matching ``Initial Flow Loc`` entry found.
         """
         r = river.strip().lower()
         rc = reach.strip().lower()

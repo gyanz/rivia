@@ -14,6 +14,30 @@ from ._ver503 import Controller as C503, RASEvents as E503
 logger = logging.getLogger("raspy.com")
 
 
+class HecRasComputeError(RuntimeError):
+    """Raised when a HEC-RAS computation fails or the COM call errors.
+
+    Attributes
+    ----------
+    messages : tuple[str, ...]
+        Messages returned by HEC-RAS at the time of failure. Empty when the
+        version does not expose messages or when the error is COM-level.
+    com_error : pywintypes.com_error or None
+        The underlying COM exception, if the failure was a COM-level error.
+        ``None`` when HEC-RAS returned ``success=False`` without a COM error.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        messages: tuple[str, ...] = (),
+        com_error=None,
+    ):
+        super().__init__(message)
+        self.messages = messages
+        self.com_error = com_error
+
+
 def controller(version: str | int):
     """Create a version-appropriate HEC-RAS controller for the given version.
 
@@ -133,6 +157,68 @@ class _ControllerBase:
     def close(self):
         if self.is_alive:
             self._runtime.close()
+    
+    def compute(self, blocking: bool = True) -> tuple[bool, tuple[str, ...]]:
+        """Compute the current plan, compatible with all HEC-RAS versions.
+
+        Parameters
+        ----------
+        blocking : bool, optional
+            If True (default), block until computation completes. If False,
+            return immediately while HEC-RAS computes in the background.
+            Ignored for HEC-RAS versions below 5.0 (always blocking).
+
+        Returns
+        -------
+        success : bool
+            True if the computation completed successfully.
+        messages : tuple[str, ...]
+            Messages returned by HEC-RAS during computation. Empty for
+            versions below 5.0.3.
+        """
+        rc = self._rc
+        version = self.ras_version()
+
+        try:
+            if version < 5000:
+                if not blocking:
+                    logger.debug(
+                        "compute: blocking unavailable in HEC-RAS version %d", version
+                    )
+                res = rc.Compute_CurrentPlan(None, None)
+                success = res[0]
+                logger.debug("compute: version %d returns no messages", version)
+                if not success:
+                    raise HecRasComputeError("HEC-RAS computation failed.")
+                return success, ()
+
+            elif version < 5030:
+                res = rc.Compute_CurrentPlan(None, None, blocking)
+                success = res[0]
+                logger.debug("compute: version %d returns no messages", version)
+                if not success:
+                    raise HecRasComputeError("HEC-RAS computation failed.")
+                return success, ()
+
+            else:
+                res = rc.Compute_CurrentPlan(None, None, int(blocking))
+                success = res[0]
+                messages = res[2] if res[2] is not None else ()
+                if not success:
+                    detail = "; ".join(messages) if messages else "no details available"
+                    raise HecRasComputeError(
+                        f"HEC-RAS computation failed: {detail}",
+                        messages=messages,
+                    )
+                return success, messages
+
+        except HecRasComputeError:
+            raise
+        except pywintypes.com_error as e:
+            raise HecRasComputeError(
+                f"COM error during HEC-RAS computation: {e}",
+                com_error=e,
+            ) from e
 
     def __del__(self):
         try:

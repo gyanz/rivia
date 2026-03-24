@@ -163,7 +163,7 @@ class PlanFile:
     # ------------------------------------------------------------------
 
     @property
-    def simulation_date(self) -> tuple[str, str] | None:
+    def simulation_window(self) -> tuple[str, str] | None:
         """Simulation start and end as ``(start, end)``.
 
         Each component has the form ``"DDMONYYYY,HHMM"``
@@ -182,8 +182,8 @@ class PlanFile:
         end = f"{parts[2]},{parts[3]}"
         return start, end
 
-    @simulation_date.setter
-    def simulation_date(self, value: tuple[str, str]) -> None:
+    @simulation_window.setter
+    def simulation_window(self, value: tuple[str, str]) -> None:
         """Set simulation date from a ``(start, end)`` tuple.
 
         Each element must be ``"DDMONYYYY,HHMM"`` (e.g. ``"01JAN2020,0000"``).
