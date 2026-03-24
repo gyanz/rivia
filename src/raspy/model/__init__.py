@@ -11,6 +11,7 @@ also be used standalone without a :class:`Model` instance.
 import atexit
 import contextlib
 import logging
+import re
 import shutil
 from pathlib import Path
 
@@ -373,6 +374,38 @@ class Model(MapperExtension):
             self._rc = com.open(self._ras_version)
         finally:
             self.controller.Project_Open(str(self._project_path))
+
+    def delete_restart_files(self) -> list[Path]:
+        """Delete all restart files associated with the current plan.
+
+        Restart files follow the pattern ``<plan_file>.<datestamp>.rst``
+        where the plan file extension is ``.p<digits>`` (e.g. ``.p01``).
+
+        Returns
+        -------
+        list[Path]
+            Paths of the files that were deleted. Empty if none were found.
+
+        Raises
+        ------
+        ValueError
+            If the current plan file does not have the expected ``.p<digits>``
+            extension.
+        """
+        plan_file = self.plan_file
+        if not re.fullmatch(r"\.p\d+", plan_file.suffix):
+            raise ValueError(
+                f"Unexpected plan file extension {plan_file.suffix!r}; "
+                "expected .p<digits> (e.g. .p01)."
+            )
+        pattern = re.compile(re.escape(plan_file.name) + r"\..+\.rst$")
+        deleted = []
+        for path in plan_file.parent.iterdir():
+            if pattern.fullmatch(path.name):
+                path.unlink()
+                logger.debug("Deleted restart file: %s", path.name)
+                deleted.append(path)
+        return deleted
 
     def show(self):
         self.controller.show()
