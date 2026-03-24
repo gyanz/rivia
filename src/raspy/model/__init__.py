@@ -416,11 +416,14 @@ class Model(MapperExtension):
         if hide_window:
             self.controller.Compute_HideComputationWindow()
         try:
-            return self.controller.Compute_CurrentPlan(BlockingMode=blocking)
+            result = self.controller.Compute_CurrentPlan(BlockingMode=blocking)
         except Exception:
             if hide_window:
                 self.controller.Compute_ShowComputationWindow()
             raise
+        success, messages = result
+        logger.debug("Compute_CurrentPlan: success=%s, messages=%s", success, messages)
+        return success, messages
 
     def __del__(self):
         with contextlib.suppress(Exception):
