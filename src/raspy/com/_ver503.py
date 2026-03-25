@@ -1,3 +1,8 @@
+# Derived from PyRAS by Gonzalo Peña-Castellanos
+# Original author: Gonzalo Peña-Castellanos (https://github.com/goanpeca)
+# Original repository no longer publicly available.
+# Modifications made for raspy.
+
 import logging
 
 from . import _ver500

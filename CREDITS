@@ -1,0 +1,14 @@
+Credits and Acknowledgements
+=============================
+
+PyRAS — Gonzalo Peña-Castellanos
+----------------------------------
+Portions of raspy/com/ (_ver400.py, _ver500.py, _ver503.py) are derived
+from PyRAS, a HEC-RAS Python wrapper originally authored by Gonzalo
+Peña-Castellanos.
+
+  Original author : Gonzalo Peña-Castellanos
+  GitHub          : https://github.com/goanpeca
+  Repository      : original repository no longer publicly available
+
+We are grateful for his pioneering work on HEC-RAS COM automation in Python.
