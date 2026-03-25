@@ -22,6 +22,29 @@ automatically on exit — useful when running batch modifications:
 model = Model("path/to/project.prj", backup=True)
 ```
 
+```{important}
+`Model` requires exactly one HEC-RAS process running for the version it
+targets.  At construction time, all existing HEC-RAS instances of that
+version are closed automatically before the new session is opened.
+
+Different versions do not collide — you can hold a `Model` instance
+targeting HEC-RAS 6.6 while independently working with a separate instance
+targeting HEC-RAS 6.7.
+```
+
+```{warning}
+When `backup=True` is used and the Python process terminates abnormally
+(crash, forced kill, IDE restart), raspy backup files are left on disk.
+The next time a `Model` instance is created for that project, those backup
+files are automatically restored — **overwriting the current HEC-RAS input
+files**.  Any edits made to the project in HEC-RAS or a text editor after
+the abnormal exit will be silently lost.
+
+If you suspect stale backup files are present, you may either delete them
+manually or open the project with raspy so that the backup files are
+ingested and the session closes normally.
+```
+
 ## 2. Switching plans
 
 ```python
