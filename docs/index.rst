@@ -1,16 +1,12 @@
 raspy
 =====
 
-**raspy** is a modern Python library for interacting with HEC-RAS hydraulic modeling software.
-
-.. include:: guide/quickstart.md
-   :parser: myst_parser.sphinx_
-
 .. toctree::
    :maxdepth: 1
    :caption: User Guide
    :hidden:
 
+   guide/introduction
    guide/installation
    guide/quickstart
 
