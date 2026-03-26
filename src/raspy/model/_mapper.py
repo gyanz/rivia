@@ -349,7 +349,7 @@ class MapperExtension:
         if timestep < 0:
             raise ValueError("timestep must be >= 0 or None")
 
-        ts = self.hdf.time_stamps
+        ts = self.hdf.time_stamps_map
         if timestep >= len(ts):
             raise IndexError(
                 f"timestep index {timestep} out of range; "

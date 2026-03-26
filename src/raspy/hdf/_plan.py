@@ -1956,7 +1956,7 @@ class PlanHdf(GeometryHdf):
     ::
 
         with PlanHdf("MyModel.p01") as hdf:
-            ts   = hdf.time_stamps
+            ts   = hdf.time_stamps_map
             area = hdf.flow_areas["spillway"]
 
             wse   = area.water_surface[10]    # one timestep
@@ -1995,7 +1995,7 @@ class PlanHdf(GeometryHdf):
         return raw.decode() if isinstance(raw, (bytes, np.bytes_)) else str(raw)
 
     @property
-    def time_step(self) -> float | None:
+    def time_step_map(self) -> float | None:
         """Output time step in seconds, or ``None`` for steady-flow plans.
 
         Derived from the difference between the first two time stamps.
@@ -2033,7 +2033,7 @@ class PlanHdf(GeometryHdf):
     # ------------------------------------------------------------------
 
     @property
-    def time_stamps(self) -> pd.DatetimeIndex:
+    def time_stamps_map(self) -> pd.DatetimeIndex:
         """Simulation output time stamps as a ``pd.DatetimeIndex``.
 
         Parsed from the ``Time Date Stamp`` dataset written by HEC-RAS.
@@ -2049,7 +2049,7 @@ class PlanHdf(GeometryHdf):
         return pd.to_datetime(raw, format=_RAS_TS_FMT)
 
     @property
-    def n_timesteps(self) -> int | None:
+    def n_timesteps_map(self) -> int | None:
         """Number of output time steps, or ``None`` for steady-flow plans."""
         ds = self._hdf.get(_TIME_STAMP_DS)
         if ds is None:
