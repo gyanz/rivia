@@ -118,6 +118,7 @@ class Model(MapperExtension):
         self._rc.Project_Open(str(self._project_path))
         self._plan: PlanFile | None = None
         self._project: ProjectFile | None = None
+        self._geom: GeometryFile | None = None
         self._flow: SteadyFlowFile | UnsteadyFlowEditor | None = None
         self._hdf = None
 
@@ -183,6 +184,13 @@ class Model(MapperExtension):
         if self._plan is None:
             self._plan = PlanFile(self.plan_file)
         return self._plan
+
+    @property
+    def geom(self) -> GeometryFile:
+        """Lazily parsed geometry file for the current plan."""
+        if self._geom is None:
+            self._geom = GeometryFile(self.geom_file)
+        return self._geom
 
     @property
     def flow(self) -> SteadyFlowFile | UnsteadyFlowEditor:
@@ -361,6 +369,7 @@ class Model(MapperExtension):
 
     def reload(self):
         self._plan = None  # invalidate cached PlanFile so next access re-parses
+        self._geom = None
         self._flow = None
         if self._hdf is not None:
             self._hdf.close()

@@ -9,18 +9,17 @@ all associated files and results through a single object.
 ```python
 from raspy.model import Model
 
-model = Model("path/to/project.prj")
+model = Model("path/to/project.prj", ras_version=None, backup=False)
 print(model.version)          # e.g. "6.30"
 print(model.plan_file)        # Path to current plan file
 print(model.geom_file)        # Path to current geometry file
 ```
 
+`ras_version` is auto-detected from the project file's current plan; pass an explicit
+version string (e.g. `"6.30"`) or integer (e.g. `630`) to override it.
+
 Pass `backup=True` to snapshot all input files on open and restore them
 automatically on exit — useful when running batch modifications:
-
-```python
-model = Model("path/to/project.prj", backup=True)
-```
 
 ```{important}
 `Model` requires exactly one HEC-RAS process running for the version it
