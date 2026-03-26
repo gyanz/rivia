@@ -1994,20 +1994,53 @@ class PlanHdf(GeometryHdf):
         raw = self._hdf.attrs["File Version"]
         return raw.decode() if isinstance(raw, (bytes, np.bytes_)) else str(raw)
 
+    @staticmethod
+    def _parse_ras_time_interval(raw: bytes | np.bytes_ | str) -> float:
+        """Parse a HEC-RAS time-interval string to seconds.
+
+        HEC-RAS concatenates the numeric value and unit without spaces,
+        e.g. ``b'20SEC'``, ``b'5MIN'``, ``b'1HR'``, ``b'1HOUR'``,
+        ``b'1DAY'``.  Returns the equivalent number of seconds.
+        """
+        if isinstance(raw, (bytes, np.bytes_)):
+            text = raw.decode().strip()
+        else:
+            text = str(raw).strip()
+        i = 0
+        while i < len(text) and (text[i].isdigit() or text[i] in ".+-"):
+            i += 1
+        value, unit = float(text[:i]), text[i:].upper()
+        _to_seconds = {"SEC": 1, "MIN": 60, "HR": 3600, "HOUR": 3600, "DAY": 86400}
+        multiplier = next((v for k, v in _to_seconds.items() if unit.startswith(k)), 1)
+        return value * multiplier
+
+    def _plan_info_attr(self, name: str) -> bytes | np.bytes_ | str | None:
+        """Return a ``Plan Data/Plan Information`` attribute by name, or ``None``."""
+        grp = self._hdf.get("Plan Data/Plan Information")
+        return None if grp is None else grp.attrs.get(name)
+
+    @property
+    def time_step_computation(self) -> float | None:
+        """Computation time step in seconds, or ``None`` if absent.
+
+        Read from ``Plan Data/Plan Information`` attribute
+        ``Computation Time Step Base``.  HEC-RAS stores the value as a
+        concatenated number-unit string, e.g. ``'20SEC'``, ``'5MIN'``,
+        ``'1HR'``, ``'1HOUR'``, ``'1DAY'``.
+        """
+        raw = self._plan_info_attr("Computation Time Step Base")
+        return None if raw is None else self._parse_ras_time_interval(raw)
+
     @property
     def time_step_map(self) -> float | None:
-        """Output time step in seconds, or ``None`` for steady-flow plans.
+        """Mapping output interval in seconds, or ``None`` if absent.
 
-        Derived from the difference between the first two time stamps.
-        Returns ``None`` when the time-stamp dataset is absent (steady plans
-        have no unsteady output block).
+        Read from ``Plan Data/Plan Information`` attribute
+        ``Base Output Interval``.  HEC-RAS stores the value as a
+        concatenated number-unit string, e.g. ``'5MIN'``.
         """
-        ds = self._hdf.get(_TIME_STAMP_DS)
-        if ds is None:
-            return None
-        raw = np.array(ds[:2]).astype(str)
-        ts = pd.to_datetime(raw, format=_RAS_TS_FMT)
-        return (ts[1] - ts[0]).total_seconds()
+        raw = self._plan_info_attr("Base Output Interval")
+        return None if raw is None else self._parse_ras_time_interval(raw)
 
     @property
     def projection(self) -> str | None:
