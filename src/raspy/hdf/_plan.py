@@ -70,6 +70,7 @@ _DSS_ROOT = (
 _DSS_INLINE = f"{_DSS_ROOT}/Inline Structures"
 _DSS_LATERAL = f"{_DSS_ROOT}/Lateral Structures"
 _DSS_BRIDGE = f"{_DSS_ROOT}/Bridge"
+_DSS_TIME_STAMP_DS = f"{_DSS_ROOT}/Time Date Stamp"
 
 
 # Timestamp format written by HEC-RAS (e.g. "03Jan2000 00:00:00")
@@ -2077,6 +2078,22 @@ class PlanHdf(GeometryHdf):
             raise KeyError(
                 f"Time Date Stamp dataset not found at '{_TIME_STAMP_DS}'. "
                 "Ensure this is an unsteady-flow plan HDF file."
+            )
+        raw = np.array(ds).astype(str)
+        return pd.to_datetime(raw, format=_RAS_TS_FMT)
+
+    @property
+    def time_stamps_hydrograph(self) -> pd.DatetimeIndex:
+        """DSS hydrograph output time stamps as a ``pd.DatetimeIndex``.
+
+        Parsed from ``Results/.../DSS Hydrograph Output/Unsteady Time
+        Series/Time Date Stamp``.  Format: ``DD Mon YYYY HH:MM:SS``.
+        """
+        ds = self._hdf.get(_DSS_TIME_STAMP_DS)
+        if ds is None:
+            raise KeyError(
+                f"Time Date Stamp dataset not found at '{_DSS_TIME_STAMP_DS}'. "
+                "Ensure DSS hydrograph output was written for this plan."
             )
         raw = np.array(ds).astype(str)
         return pd.to_datetime(raw, format=_RAS_TS_FMT)
