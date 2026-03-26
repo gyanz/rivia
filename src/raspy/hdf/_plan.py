@@ -16,8 +16,9 @@ archive/ras_tools/r2d/ras2d_cell_velocity.py.
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterator
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, overload
 
 import numpy as np
 import pandas as pd
@@ -28,6 +29,8 @@ from ._base import _HdfFile
 from ._geometry import (
     _SA_ROOT,
     Bridge,
+    CrossSection,
+    CrossSectionCollection,
     FlowArea,
     FlowAreaCollection,
     GeometryHdf,
@@ -70,6 +73,9 @@ _DSS_INLINE = f"{_DSS_ROOT}/Inline Structures"
 _DSS_LATERAL = f"{_DSS_ROOT}/Lateral Structures"
 _DSS_BRIDGE = f"{_DSS_ROOT}/Bridge"
 _DSS_TIME_STAMP_DS = f"{_DSS_ROOT}/Time Date Stamp"
+
+_TS_XS = f"{_TS_ROOT}/Cross Sections"
+_DSS_XS = f"{_DSS_ROOT}/Cross Sections"
 
 
 # Timestamp format written by HEC-RAS (e.g. "03Jan2000 00:00:00")
@@ -1986,6 +1992,206 @@ class PlanStructureCollection(StructureCollection):
 
 
 # ---------------------------------------------------------------------------
+# CrossSectionResults / CrossSectionResultsCollection
+# ---------------------------------------------------------------------------
+
+
+class CrossSectionResults(CrossSection):
+    """Geometry *and* time-series results for one HEC-RAS 1-D cross section.
+
+    Inherits all geometry fields from :class:`~raspy.hdf.CrossSection`.
+
+    Result datasets are stored as ``(n_t, n_xs)`` matrices shared across all
+    cross sections; each instance holds its column index and loads only its
+    own slice on demand.
+
+    Parameters
+    ----------
+    geom:
+        Geometry object from :class:`CrossSectionCollection`.
+    hdf:
+        Open ``h5py.File`` — kept alive by the parent ``PlanHdf`` context.
+    index:
+        Column index of this XS in the ``(n_t, n_xs)`` result datasets.
+    root:
+        HDF path prefix for the result group
+        (Base Output or DSS Hydrograph Output).
+    """
+
+    def __init__(
+        self,
+        geom: CrossSection,
+        hdf: h5py.File,
+        index: int,
+        root: str,
+    ) -> None:
+        CrossSection.__init__(
+            self,
+            river=geom.river,
+            reach=geom.reach,
+            rs=geom.rs,
+            name=geom.name,
+            left_bank=geom.left_bank,
+            right_bank=geom.right_bank,
+            len_left=geom.len_left,
+            len_channel=geom.len_channel,
+            len_right=geom.len_right,
+            contraction=geom.contraction,
+            expansion=geom.expansion,
+            station_elevation=geom.station_elevation,
+            mannings_n=geom.mannings_n,
+            centerline=geom.centerline,
+        )
+        self._hdf = hdf
+        self._index = index
+        self._root = root
+        self._cache: dict[str, np.ndarray] = {}
+
+    def _load(self, dataset: str) -> np.ndarray:
+        if dataset not in self._cache:
+            ds = self._hdf.get(f"{self._root}/{dataset}")
+            if ds is None:
+                raise KeyError(
+                    f"Dataset '{dataset}' not found at '{self._root}'."
+                )
+            self._cache[dataset] = np.array(ds[:, self._index])
+        return self._cache[dataset]
+
+    # ------------------------------------------------------------------
+    # Time-series properties (available in both Base Output and DSS)
+    # ------------------------------------------------------------------
+
+    @property
+    def water_surface(self) -> np.ndarray:
+        """Water surface elevation time series.  Shape ``(n_t,)``."""
+        return self._load("Water Surface")
+
+    @property
+    def flow(self) -> np.ndarray:
+        """Flow time series.  Shape ``(n_t,)``."""
+        return self._load("Flow")
+
+    @property
+    def flow_volume_cumulative(self) -> np.ndarray:
+        """Cumulative flow volume time series.  Shape ``(n_t,)``."""
+        return self._load("Flow Volume Cumulative")
+
+    # ------------------------------------------------------------------
+    # Additional properties (Base Output / mapping interval only)
+    # ------------------------------------------------------------------
+
+    @property
+    def flow_lateral(self) -> np.ndarray | None:
+        """Lateral flow time series, or ``None`` if absent.  Shape ``(n_t,)``."""
+        try:
+            return self._load("Flow Lateral")
+        except KeyError:
+            return None
+
+    @property
+    def velocity_channel(self) -> np.ndarray | None:
+        """Channel velocity time series, or ``None`` if absent.  Shape ``(n_t,)``."""
+        try:
+            return self._load("Velocity Channel")
+        except KeyError:
+            return None
+
+    @property
+    def velocity_total(self) -> np.ndarray | None:
+        """Total velocity time series, or ``None`` if absent.  Shape ``(n_t,)``."""
+        try:
+            return self._load("Velocity Total")
+        except KeyError:
+            return None
+
+
+class CrossSectionResultsCollection(CrossSectionCollection):
+    """Plan-enriched cross section collection with time-series results.
+
+    Each item is a :class:`CrossSectionResults` that combines geometry
+    fields with lazy result access.
+
+    Parameters
+    ----------
+    hdf:
+        Open ``h5py.File`` handle.
+    root:
+        HDF path to the cross section result group — either
+        ``_TS_XS`` (Base Output, mapping interval) or
+        ``_DSS_XS`` (DSS Hydrograph Output).
+    """
+
+    def __init__(self, hdf: h5py.File, root: str) -> None:
+        super().__init__(hdf)
+        self._root = root
+        self._result_items: dict[str, CrossSectionResults] | None = None
+
+    def _load_results(self) -> dict[str, CrossSectionResults]:
+        if self._result_items is not None:
+            return self._result_items
+
+        geom_items = CrossSectionCollection._load(self)
+
+        attrs_ds = self._hdf.get(f"{self._root}/Cross Section Attributes")
+        if attrs_ds is None:
+            self._result_items = {}
+            return self._result_items
+
+        result_attrs = np.array(attrs_ds)
+        fn = attrs_ds.dtype.names
+
+        # Build (river, reach, station) → column-index mapping
+        result_index: dict[tuple[str, str, str], int] = {}
+        for i, row in enumerate(result_attrs):
+            r  = _decode(row["River"])   if "River"   in fn else ""
+            rc = _decode(row["Reach"])   if "Reach"   in fn else ""
+            st = _decode(row["Station"]) if "Station" in fn else ""
+            result_index[(r, rc, st)] = i
+
+        items: dict[str, CrossSectionResults] = {}
+        for key, geom in geom_items.items():
+            idx = result_index.get((geom.river, geom.reach, geom.rs))
+            if idx is not None:
+                items[key] = CrossSectionResults(
+                    geom, self._hdf, idx, self._root
+                )
+
+        self._result_items = items
+        return self._result_items
+
+    @overload
+    def __getitem__(self, key: int) -> CrossSectionResults: ...
+    @overload
+    def __getitem__(self, key: str) -> CrossSectionResults: ...
+
+    def __getitem__(self, key: int | str) -> CrossSectionResults:
+        items = self._load_results()
+        if isinstance(key, int):
+            keys = list(items)
+            try:
+                return items[keys[key]]
+            except IndexError:
+                raise IndexError(
+                    f"Index {key} out of range (n={len(items)})"
+                ) from None
+        if key not in items:
+            raise KeyError(
+                f"Cross section {key!r} not found. Available: {self.names}"
+            )
+        return items[key]
+
+    def __len__(self) -> int:
+        return len(self._load_results())
+
+    def __iter__(self) -> Iterator[CrossSectionResults]:
+        return iter(self._load_results().values())
+
+    @property
+    def names(self) -> list[str]:
+        return list(self._load_results().keys())
+
+
+# ---------------------------------------------------------------------------
 # PlanHdf - public entry point
 # ---------------------------------------------------------------------------
 
@@ -2030,6 +2236,8 @@ class PlanHdf(GeometryHdf):
         self._plan_flow_areas: FlowAreaResultsCollection | None = None
         self._plan_storage_areas: StorageAreaResultsCollection | None = None
         self._plan_structures: PlanStructureCollection | None = None
+        self._plan_cross_sections: CrossSectionResultsCollection | None = None
+        self._plan_cross_sections_dss: CrossSectionResultsCollection | None = None
 
     # ------------------------------------------------------------------
     # File metadata
@@ -2133,7 +2341,7 @@ class PlanHdf(GeometryHdf):
         return pd.to_datetime(raw, format=_RAS_TS_FMT)
 
     @property
-    def timestamps_hydrograph(self) -> pd.DatetimeIndex:
+    def timestamps_dss(self) -> pd.DatetimeIndex:
         """DSS hydrograph output time stamps as a ``pd.DatetimeIndex``.
 
         Parsed from ``Results/.../DSS Hydrograph Output/Unsteady Time
@@ -2149,7 +2357,7 @@ class PlanHdf(GeometryHdf):
         return pd.to_datetime(raw, format=_RAS_TS_FMT)
 
     @property
-    def interval_hydrograph(self) -> float | None:
+    def interval_dss(self) -> float | None:
         """DSS hydrograph output interval in seconds, or ``None`` if absent.
 
         Derived from the difference between the first two hydrograph
@@ -2171,7 +2379,7 @@ class PlanHdf(GeometryHdf):
         return len(ds)
 
     @property
-    def n_hydrograph(self) -> int | None:
+    def n_dss(self) -> int | None:
         """Number of DSS hydrograph output time steps, or ``None`` if absent."""
         ds = self._hdf.get(_DSS_TIME_STAMP_DS)
         if ds is None:
@@ -2216,6 +2424,41 @@ class PlanHdf(GeometryHdf):
         if self._plan_structures is None:
             self._plan_structures = PlanStructureCollection(self._hdf)
         return self._plan_structures
+
+    @property
+    def cross_sections(self) -> CrossSectionResultsCollection:
+        """1-D cross sections with geometry and Base Output results.
+
+        Results are at the mapping output interval
+        (:attr:`timestamps_mapping`).  All variables are available:
+        ``water_surface``, ``flow``, ``flow_lateral``,
+        ``velocity_channel``, ``velocity_total``,
+        ``flow_volume_cumulative``.
+
+        See also :attr:`cross_sections_dss` for the DSS hydrograph interval
+        (fewer variables but finer timestep when DSS output was enabled).
+        """
+        if self._plan_cross_sections is None:
+            self._plan_cross_sections = CrossSectionResultsCollection(
+                self._hdf, _TS_XS
+            )
+        return self._plan_cross_sections
+
+    @property
+    def cross_sections_dss(self) -> CrossSectionResultsCollection:
+        """1-D cross sections with geometry and DSS Hydrograph Output results.
+
+        Results are at the hydrograph output interval
+        (:attr:`timestamps_dss`).  Available variables:
+        ``water_surface``, ``flow``, ``flow_volume_cumulative``.
+        ``flow_lateral``, ``velocity_channel``, and ``velocity_total``
+        return ``None`` (not stored in DSS output).
+        """
+        if self._plan_cross_sections_dss is None:
+            self._plan_cross_sections_dss = CrossSectionResultsCollection(
+                self._hdf, _DSS_XS
+            )
+        return self._plan_cross_sections_dss
 
     @property
     def sa2d_connections(self) -> dict[str, SA2DConnection]:

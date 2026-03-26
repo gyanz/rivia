@@ -12,9 +12,10 @@ archive/ras_tools/r2d/ras2d_cell_velocity.py.
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Generic, TypeVar, overload
 
 import numpy as np
 import pandas as pd
@@ -34,6 +35,7 @@ _GEOM_2D_ATTRS = f"{_GEOM_2D_ROOT}/Attributes"
 _SA_ROOT = "Geometry/Storage Areas"
 _BC_ROOT = "Geometry/Boundary Condition Lines"
 _STRUCT_ROOT = "Geometry/Structures"
+_XS_ROOT = "Geometry/Cross Sections"
 
 
 # ---------------------------------------------------------------------------
@@ -2030,6 +2032,86 @@ class SA2DConnection(Structure):
     downstream_node: str = ""
 
 
+_T = TypeVar("_T")
+
+
+class StructureIndex(Generic[_T]):
+    """Ordered mapping of structures supporting string-key *and* integer-index access.
+
+    Behaves like a read-only ``dict`` but also accepts integer positions::
+
+        coll["Lower Levee"]   # by name
+        coll[0]               # first item (insertion order)
+        coll[-1]              # last item
+        len(coll)
+        list(coll.keys())
+        for name, obj in coll.items(): ...
+
+    Parameters
+    ----------
+    items:
+        Ordered ``dict`` of ``{name: structure}`` pairs.
+    """
+
+    def __init__(self, items: dict[str, _T]) -> None:
+        self._items = items
+        self._keys: list[str] = list(items)
+
+    @overload
+    def __getitem__(self, key: int) -> _T: ...
+
+    @overload
+    def __getitem__(self, key: str) -> _T: ...
+
+    def __getitem__(self, key: int | str) -> _T:
+        if isinstance(key, int):
+            try:
+                return self._items[self._keys[key]]
+            except IndexError:
+                raise IndexError(
+                    f"Index {key} out of range for {len(self._keys)} structures"
+                ) from None
+        if key not in self._items:
+            raise KeyError(
+                f"{key!r} not found. Available: {self._keys}"
+            )
+        return self._items[key]
+
+    def __contains__(self, key: object) -> bool:
+        return key in self._items
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._keys)
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}({self._keys!r})"
+
+    def keys(self):
+        """Keys in insertion order."""
+        return self._items.keys()
+
+    def values(self):
+        """Values in insertion order."""
+        return self._items.values()
+
+    def items(self):
+        """``(key, value)`` pairs in insertion order."""
+        return self._items.items()
+
+    @property
+    def names(self) -> list[str]:
+        """All keys in insertion order."""
+        return self._keys
+
+
+# ---------------------------------------------------------------------------
+# Structure / SA2DConnection / StructureCollection
+# ---------------------------------------------------------------------------
+
+
 class StructureCollection:
     """Access all structures stored in ``Geometry/Structures/Attributes``.
 
@@ -2228,24 +2310,32 @@ class StructureCollection:
         return list(self._load().keys())
 
     @property
-    def connections(self) -> dict[str, SA2DConnection]:
+    def connections(self) -> StructureIndex[SA2DConnection]:
         """All :class:`SA2DConnection` instances keyed by connection name."""
-        return {k: v for k, v in self._load().items() if isinstance(v, SA2DConnection)}
+        return StructureIndex(
+            {k: v for k, v in self._load().items() if isinstance(v, SA2DConnection)}
+        )
 
     @property
-    def bridges(self) -> dict[str, Bridge]:
+    def bridges(self) -> StructureIndex[Bridge]:
         """All :class:`Bridge` instances keyed by ``"River Reach RS"``."""
-        return {k: v for k, v in self._load().items() if isinstance(v, Bridge)}
+        return StructureIndex(
+            {k: v for k, v in self._load().items() if isinstance(v, Bridge)}
+        )
 
     @property
-    def laterals(self) -> dict[str, Lateral]:
+    def laterals(self) -> StructureIndex[Lateral]:
         """All :class:`Lateral` instances keyed by ``"River Reach RS"``."""
-        return {k: v for k, v in self._load().items() if isinstance(v, Lateral)}
+        return StructureIndex(
+            {k: v for k, v in self._load().items() if isinstance(v, Lateral)}
+        )
 
     @property
-    def inlines(self) -> dict[str, Inline]:
+    def inlines(self) -> StructureIndex[Inline]:
         """All :class:`Inline` instances keyed by ``"River Reach RS"``."""
-        return {k: v for k, v in self._load().items() if isinstance(v, Inline)}
+        return StructureIndex(
+            {k: v for k, v in self._load().items() if isinstance(v, Inline)}
+        )
 
     @property
     def summary(self) -> pd.DataFrame:
@@ -2274,8 +2364,16 @@ class StructureCollection:
             })
         return pd.DataFrame(rows)
 
-    def __getitem__(self, key: str) -> Structure:
+    def __getitem__(self, key: str | int) -> Structure:
         items = self._load()
+        if isinstance(key, int):
+            keys = list(items)
+            try:
+                return items[keys[key]]
+            except IndexError:
+                raise IndexError(
+                    f"Index {key} out of range for {len(keys)} structures"
+                ) from None
         if key not in items:
             raise KeyError(f"Structure {key!r} not found. Available: {self.names}")
         return items[key]
@@ -2293,6 +2391,173 @@ class StructureCollection:
 # ---------------------------------------------------------------------------
 # GeometryHdf — public entry point
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# CrossSection / CrossSectionCollection
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class CrossSection:
+    """One HEC-RAS 1-D cross section from ``Geometry/Cross Sections/Attributes``.
+
+    Attributes
+    ----------
+    river, reach, rs:
+        Location identity — river name, reach name, river station.
+    name:
+        Optional user label (HDF ``Name`` field).
+    left_bank, right_bank:
+        Bank stations (feet or metres) separating LOB / channel / ROB.
+    len_left, len_channel, len_right:
+        Reach lengths for left overbank, channel, and right overbank.
+    contraction, expansion:
+        Energy loss coefficients.
+    station_elevation:
+        Cross-section survey points, shape ``(n, 2)``:
+        columns are ``[station, elevation]``.
+    mannings_n:
+        Manning's *n* breakpoints, shape ``(n, 2)``:
+        columns are ``[station, n_value]``.
+    centerline:
+        Plan-view centreline coordinates, shape ``(n, 2)``:
+        columns are ``[x, y]``.
+    """
+
+    river: str = ""
+    reach: str = ""
+    rs: str = ""
+    name: str = ""
+    left_bank: float = float("nan")
+    right_bank: float = float("nan")
+    len_left: float = float("nan")
+    len_channel: float = float("nan")
+    len_right: float = float("nan")
+    contraction: float = float("nan")
+    expansion: float = float("nan")
+    station_elevation: np.ndarray = field(default_factory=lambda: np.empty((0, 2)))
+    mannings_n: np.ndarray = field(default_factory=lambda: np.empty((0, 2)))
+    centerline: np.ndarray = field(default_factory=lambda: np.empty((0, 2)))
+
+
+class CrossSectionCollection:
+    """Access all 1-D cross sections in ``Geometry/Cross Sections``.
+
+    Keyed by ``"River Reach RS"`` — the same convention used by
+    :class:`StructureCollection` and the DSS Hydrograph Output group names.
+
+    Parameters
+    ----------
+    hdf:
+        Open ``h5py.File`` handle.
+    """
+
+    def __init__(self, hdf: h5py.File) -> None:
+        self._hdf = hdf
+        self._items: dict[str, CrossSection] | None = None
+
+    def _load(self) -> dict[str, CrossSection]:
+        if self._items is not None:
+            return self._items
+
+        root = self._hdf.get(_XS_ROOT)
+        if root is None:
+            self._items = {}
+            return self._items
+
+        attrs_ds = root["Attributes"]
+        attrs = np.array(attrs_ds)
+        fn = attrs_ds.dtype.names
+
+        def _s(row, f: str) -> str:
+            return _decode(row[f]) if f in fn else ""
+
+        def _f(row, f: str) -> float:
+            return float(row[f]) if f in fn else float("nan")
+
+        # Ragged-array helpers: Info shape (n_xs, 2) → [start, count]
+        se_info = np.array(root["Station Elevation Info"])   # (n_xs, 2)
+        se_vals = np.array(root["Station Elevation Values"]) # (total, 2)
+        mn_info = np.array(root["Manning's n Info"])          # (n_xs, 2)
+        mn_vals = np.array(root["Manning's n Values"])        # (total, 2)
+        # Polyline Info (n_xs, 4): col0=start, col1=count in Polyline Points
+        pl_info = np.array(root["Polyline Info"])
+        pl_pts  = np.array(root["Polyline Points"])           # (total, 2)
+
+        items: dict[str, CrossSection] = {}
+        for i, row in enumerate(attrs):
+            river = _s(row, "River")
+            reach = _s(row, "Reach")
+            rs    = _s(row, "RS")
+            key   = f"{river} {reach} {rs}".strip() or f"XS_{i}"
+            if key in items:
+                key = f"{key}_{i}"
+
+            se_start, se_count = int(se_info[i, 0]), int(se_info[i, 1])
+            mn_start, mn_count = int(mn_info[i, 0]), int(mn_info[i, 1])
+            pl_start, pl_count = int(pl_info[i, 0]), int(pl_info[i, 1])
+
+            items[key] = CrossSection(
+                river=river,
+                reach=reach,
+                rs=rs,
+                name=_s(row, "Name"),
+                left_bank=_f(row, "Left Bank"),
+                right_bank=_f(row, "Right Bank"),
+                len_left=_f(row, "Len Left"),
+                len_channel=_f(row, "Len Channel"),
+                len_right=_f(row, "Len Right"),
+                contraction=_f(row, "Contr"),
+                expansion=_f(row, "Expan"),
+                station_elevation=(
+                    se_vals[se_start : se_start + se_count].astype(float)
+                ),
+                mannings_n=(
+                    mn_vals[mn_start : mn_start + mn_count].astype(float)
+                ),
+                centerline=(
+                    pl_pts[pl_start : pl_start + pl_count].astype(float)
+                ),
+            )
+
+        self._items = items
+        return self._items
+
+    @property
+    def names(self) -> list[str]:
+        """Keys of all cross sections in the collection."""
+        return list(self._load().keys())
+
+    @overload
+    def __getitem__(self, key: int) -> CrossSection: ...
+    @overload
+    def __getitem__(self, key: str) -> CrossSection: ...
+
+    def __getitem__(self, key: int | str) -> CrossSection:
+        items = self._load()
+        if isinstance(key, int):
+            keys = list(items)
+            try:
+                return items[keys[key]]
+            except IndexError:
+                raise IndexError(
+                    f"Index {key} out of range (n={len(items)})"
+                ) from None
+        if key not in items:
+            raise KeyError(
+                f"Cross section {key!r} not found. Available: {self.names}"
+            )
+        return items[key]
+
+    def __len__(self) -> int:
+        return len(self._load())
+
+    def __iter__(self) -> Iterator[CrossSection]:
+        return iter(self._load().values())
+
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}({len(self)} cross sections)"
 
 
 class GeometryHdf(_HdfFile):
@@ -2319,6 +2584,7 @@ class GeometryHdf(_HdfFile):
         self._storage_areas: StorageAreaCollection | None = None
         self._boundary_condition_lines: BoundaryConditionCollection | None = None
         self._structures: StructureCollection | None = None
+        self._cross_sections: CrossSectionCollection | None = None
 
     # ------------------------------------------------------------------
     # Collections
@@ -2351,6 +2617,13 @@ class GeometryHdf(_HdfFile):
         if self._structures is None:
             self._structures = StructureCollection(self._hdf)
         return self._structures
+
+    @property
+    def cross_sections(self) -> CrossSectionCollection:
+        """Access all 1-D cross sections stored in the geometry HDF."""
+        if self._cross_sections is None:
+            self._cross_sections = CrossSectionCollection(self._hdf)
+        return self._cross_sections
 
 
 
