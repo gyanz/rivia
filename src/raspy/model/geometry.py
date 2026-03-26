@@ -4,11 +4,12 @@
 (.g01, .g02, …).  All lines are stored verbatim.  Typed access is provided
 for:
 
-- File metadata (``geom_title``, ``program_version``)
+- File metadata (``geom_title``, ``program_version``, ``viewing_rectangle``)
 - Reach / node inventory (``reaches``, ``junctions``, ``node_rs_list``)
 - Cross-section data: ``#Sta/Elev``, ``#Mann``, ``Bank Sta``,
-  ``#XS Ineff``, ``Exp/Cntr``  (read via :meth:`get_cross_section`,
-  write via targeted setters)
+  ``#XS Ineff``, ``Exp/Cntr``, ``Levee``, ``#Block Obstruct``,
+  ``XS HTab Starting El and Incr``
+  (read via :meth:`get_cross_section`, write via targeted setters)
 - Structure nodes (bridge, culvert, inline/lateral structure) preserved
   verbatim and accessible via :meth:`get_node_lines`
 
@@ -27,10 +28,15 @@ Cross-section fixed-width format (8-char columns):
 
 .. code-block:: text
 
-    #Sta/Elev= N      alternating station/elevation pairs, 10 values per row
-    #Mann= N,t,a      triplets (station, n-value, variation),  9 values per row
-    #XS Ineff= N      triplets (x_start, x_end, elevation),   9 values per row
-                      followed by ``Permanent Ineff=`` flags (8-char each, 10/row)
+    #Sta/Elev= N          alternating station/elevation pairs, 10 per row
+    #Mann= N,t,a          triplets (station, n-value, variation), 9 per row
+    #XS Ineff= N          triplets (x_start, x_end, elevation),  9 per row
+                          followed by Permanent Ineff= flags (8-char, 10/row)
+    #Block Obstruct= N,t  triplets (x_start, x_end, elevation),  9 per row
+    Levee=lf,ls,le,rf,rs,re[,lfe,rfe]
+                          left/right flag(-1=active), station, elevation,
+                          optional failure elevations
+    XS HTab Starting El and Incr=el,incr,count
 
 Vertical (depth/flow-varying) Manning's n — appears between ``XS Rating Curve=``
 and ``Exp/Cntr=`` when active:
@@ -138,7 +144,7 @@ def _format_block(values: list[float], cols: int, width: int = _COL) -> list[str
 
 
 def _parse_block(lines: list[str], count: int, width: int = _COL) -> list[float]:
-    """Parse up to *count* fixed-width values from *lines*."""
+    """Parse up to *count* fixed-width values from *lines*, skipping blanks."""
     values: list[float] = []
     for line in lines:
         pos = 0
@@ -153,8 +159,55 @@ def _parse_block(lines: list[str], count: int, width: int = _COL) -> list[float]
     return values[:count]
 
 
+def _parse_block_fixed(
+    lines: list[str], count: int, width: int = _COL
+) -> list[float]:
+    """Read exactly *count* fixed-width positions; blank fields become 0.0.
+
+    Unlike :func:`_parse_block`, blank columns are NOT skipped — they
+    contribute a ``0.0``.  Required for ``#Block Obstruct`` data where
+    absent endpoints are left blank rather than omitted.
+    """
+    values: list[float] = []
+    for line in lines:
+        pos = 0
+        while pos + width <= len(line) and len(values) < count:
+            token = line[pos : pos + width].strip()
+            try:
+                values.append(float(token) if token else 0.0)
+            except ValueError:
+                values.append(0.0)
+            pos += width
+        # Pad if line is shorter than expected
+        while len(values) < count:
+            values.append(0.0)
+    return values[:count]
+
+
 def _row_count(n: int, cols: int) -> int:
     return ceil(n / cols) if n > 0 else 0
+
+
+def _fmt_levee_val(v: float | None) -> str:
+    """Format a levee field value: integer when whole, else decimal, else ''."""
+    if v is None:
+        return ""
+    return str(int(v)) if v == int(v) else str(v)
+
+
+def _fmt_levee_line(left: LeveeData | None, right: LeveeData | None) -> str:
+    """Build the ``Levee=`` line from left/right :class:`LeveeData`."""
+    if left is not None:
+        lf = f"-1,{_fmt_levee_val(left.station)},{_fmt_levee_val(left.elevation)}"
+        l_fail = _fmt_levee_val(left.failure_elevation)
+    else:
+        lf, l_fail = "0,,", ""
+    if right is not None:
+        rf = f"-1,{_fmt_levee_val(right.station)},{_fmt_levee_val(right.elevation)}"
+        r_fail = _fmt_levee_val(right.failure_elevation)
+    else:
+        rf, r_fail = "0,,", ""
+    return f"Levee={lf},{rf},{l_fail},{r_fail}"
 
 
 # ---------------------------------------------------------------------------
@@ -194,6 +247,43 @@ class IneffArea:
     x_end: float
     elevation: float
     permanent: bool = False
+
+
+@dataclass
+class LeveeData:
+    """Levee definition for one bank of a cross section.
+
+    Encoded on the ``Levee=`` line as a ``-1`` active flag followed by
+    station and elevation.
+
+    Attributes:
+        station:           Lateral station of the levee crest.
+        elevation:         Levee crest elevation.
+        failure_elevation: Elevation at which the levee fails; ``None`` if
+                           not specified.
+    """
+
+    station: float
+    elevation: float
+    failure_elevation: float | None = None
+
+
+@dataclass
+class BlockedObstruction:
+    """One blocked-obstruction interval in a cross section (``#Block Obstruct``).
+
+    Flow area between *x_start* and *x_end* is blocked up to *elevation*.
+    Use a very large elevation (e.g. ``999``) for a permanently blocked zone.
+
+    Attributes:
+        x_start:   Left boundary station.
+        x_end:     Right boundary station.
+        elevation: Elevation ceiling of the blocked zone.
+    """
+
+    x_start: float
+    x_end: float
+    elevation: float
 
 
 @dataclass
@@ -260,10 +350,18 @@ class CrossSection:
         left_length:    Left overbank reach length from node header.
         channel_length: Channel reach length from node header.
         right_length:   Right overbank reach length from node header.
-        interpolated:   ``True`` if the RS string had a trailing ``*``
-                        (HEC-RAS interpolated cross section).
-        vertical_n:     Vertical (depth/flow-varying) Manning's n, or
-                        ``None`` if the cross section uses flat n-values.
+        interpolated:           ``True`` if the RS string had a trailing ``*``
+                                (HEC-RAS interpolated cross section).
+        vertical_n:             Vertical (depth/flow-varying) Manning's n, or
+                                ``None`` if the cross section uses flat n-values.
+        levee_left:             Left-bank levee (``Levee=`` line), or ``None``.
+        levee_right:            Right-bank levee (``Levee=`` line), or ``None``.
+        blocked_obstructions:   Blocked-obstruction intervals
+                                (``#Block Obstruct``).
+        htab_starting_elevation: Starting elevation for the hydraulic table
+                                 (``XS HTab Starting El and Incr``).
+        htab_increment:         Elevation increment for the hydraulic table.
+        htab_count:             Number of entries in the hydraulic table.
     """
 
     river: str
@@ -285,6 +383,12 @@ class CrossSection:
     right_length: float | None = None
     interpolated: bool = False
     vertical_n: VerticalN | None = None
+    levee_left: LeveeData | None = None
+    levee_right: LeveeData | None = None
+    blocked_obstructions: list[BlockedObstruction] = field(default_factory=list)
+    htab_starting_elevation: float | None = None
+    htab_increment: float | None = None
+    htab_count: int | None = None
 
 
 logger = logging.getLogger("raspy.model")
@@ -467,6 +571,34 @@ class GeometryFile:
         Treat as read-only; HEC-RAS manages this field.
         """
         return self._get("Program Version")
+
+    @property
+    def viewing_rectangle(self) -> tuple[float, float, float, float] | None:
+        """Map viewport as ``(min_x, min_y, max_x, max_y)``, or ``None``.
+
+        HEC-RAS writes this as ``Viewing Rectangle= x1 , y1 , x2 , y2``.
+        """
+        raw = self._get("Viewing Rectangle")
+        if raw is None:
+            return None
+        parts = [p.strip() for p in raw.split(",")]
+        if len(parts) < 4:
+            return None
+        try:
+            return (
+                float(parts[0]),
+                float(parts[1]),
+                float(parts[2]),
+                float(parts[3]),
+            )
+        except ValueError:
+            return None
+
+    @viewing_rectangle.setter
+    def viewing_rectangle(
+        self, value: tuple[float, float, float, float]
+    ) -> None:
+        self._set("Viewing Rectangle", " , ".join(str(v) for v in value))
 
     # ------------------------------------------------------------------
     # Reach / node inventory
@@ -656,6 +788,71 @@ class GeometryFile:
                         xs.contraction = float(parts[1].strip())
                     except ValueError:
                         pass
+                i += 1
+                continue
+
+            # Levee=L_flag,L_sta,L_elev,R_flag,R_sta,R_elev[,L_fail,R_fail]
+            if ln.startswith("Levee="):
+                lp = ln.split("=", 1)[1].split(",")
+
+                def _gp(p: list[str], idx: int) -> str:
+                    return p[idx].strip() if idx < len(p) else ""
+
+                if _gp(lp, 0) == "-1" and _gp(lp, 1):
+                    sta = _gp(lp, 1)
+                    elv = _gp(lp, 2)
+                    fai = _gp(lp, 6)
+                    if sta:
+                        xs.levee_left = LeveeData(
+                            station=float(sta),
+                            elevation=float(elv) if elv else 0.0,
+                            failure_elevation=float(fai) if fai else None,
+                        )
+                if _gp(lp, 3) == "-1" and _gp(lp, 4):
+                    sta = _gp(lp, 4)
+                    elv = _gp(lp, 5)
+                    fai = _gp(lp, 7)
+                    if sta:
+                        xs.levee_right = LeveeData(
+                            station=float(sta),
+                            elevation=float(elv) if elv else 0.0,
+                            failure_elevation=float(fai) if fai else None,
+                        )
+                i += 1
+                continue
+
+            # #Block Obstruct= N , type
+            if ln.startswith("#Block Obstruct="):
+                parts = ln.split("=", 1)[1].split(",")
+                n_obs = int(parts[0].strip())
+                n_rows = _row_count(n_obs * 3, _COLS_MANN)
+                # Use fixed-position reader: blank columns = 0.0 (absent
+                # endpoints are left blank in interpolated XS).
+                flat = _parse_block_fixed(
+                    block[i + 1 : i + 1 + n_rows], n_obs * 3
+                )
+                xs.blocked_obstructions = [
+                    BlockedObstruction(
+                        x_start=flat[j],
+                        x_end=flat[j + 1],
+                        elevation=flat[j + 2],
+                    )
+                    for j in range(0, len(flat), 3)
+                ]
+                i += 1 + n_rows
+                continue
+
+            # XS HTab Starting El and Incr=el,incr,count
+            if ln.startswith("XS HTab Starting El and Incr="):
+                parts = ln.split("=", 1)[1].split(",")
+                try:
+                    xs.htab_starting_elevation = float(parts[0].strip())
+                    if len(parts) > 1:
+                        xs.htab_increment = float(parts[1].strip())
+                    if len(parts) > 2:
+                        xs.htab_count = int(parts[2].strip())
+                except (ValueError, IndexError):
+                    pass
                 i += 1
                 continue
 
@@ -970,6 +1167,151 @@ class GeometryFile:
         new_lines.append(f"Vertical n Flow={flow_val} ")
 
         self._splice(insert_at, old_count, new_lines)
+
+    def set_levee(
+        self,
+        river: str,
+        reach: str,
+        rs: str,
+        left: LeveeData | None,
+        right: LeveeData | None,
+    ) -> None:
+        """Set or remove levee data for the given cross section.
+
+        Pass ``None`` for both *left* and *right* to remove any existing
+        ``Levee=`` line.  The line is replaced in-place when it already
+        exists; otherwise it is inserted before ``#XS Ineff=`` or
+        ``Bank Sta=``.
+
+        Args:
+            river: River name (case-insensitive).
+            reach: Reach name (case-insensitive).
+            rs:    River station string.
+            left:  Left-bank levee definition, or ``None`` to clear.
+            right: Right-bank levee definition, or ``None`` to clear.
+
+        Raises:
+            KeyError: No matching cross-section node found.
+        """
+        start = self._find_node_start(river, reach, rs)
+        if start is None:
+            raise KeyError(f"No node found for {river!r}, {reach!r}, {rs!r}")
+        end = self._find_node_end(start)
+        levee_i = self._find_key_in_block(start, end, "Levee=")
+
+        if left is None and right is None:
+            if levee_i is not None:
+                self._splice(levee_i, 1, [])
+            return
+
+        line = _fmt_levee_line(left, right)
+        if levee_i is not None:
+            self._splice(levee_i, 1, [line])
+        else:
+            insert_at = end
+            for key in ("#XS Ineff=", "Bank Sta="):
+                idx = self._find_key_in_block(start, end, key)
+                if idx is not None:
+                    insert_at = idx
+                    break
+            self._splice(insert_at, 0, [line])
+
+    def set_blocked_obstructions(
+        self,
+        river: str,
+        reach: str,
+        rs: str,
+        obstructions: list[BlockedObstruction],
+    ) -> None:
+        """Replace or remove the blocked-obstruction block for the given XS.
+
+        Pass an empty list to remove any existing ``#Block Obstruct=`` block.
+        When no block exists, the new block is inserted before ``Bank Sta=``.
+
+        Args:
+            river:        River name (case-insensitive).
+            reach:        Reach name (case-insensitive).
+            rs:           River station string.
+            obstructions: New obstruction list (empty = remove).
+
+        Raises:
+            KeyError: No matching cross-section node found.
+        """
+        start = self._find_node_start(river, reach, rs)
+        if start is None:
+            raise KeyError(f"No node found for {river!r}, {reach!r}, {rs!r}")
+        end = self._find_node_end(start)
+
+        bo_i = self._find_key_in_block(start, end, "#Block Obstruct=")
+        if bo_i is not None:
+            n_old = int(
+                self._lines[bo_i].split("=", 1)[1].split(",")[0].strip()
+            )
+            old_count = 1 + _row_count(n_old * 3, _COLS_MANN)
+        else:
+            old_count = 0
+
+        if not obstructions:
+            if bo_i is not None:
+                self._splice(bo_i, old_count, [])
+            return
+
+        n = len(obstructions)
+        flat = [v for o in obstructions for v in (o.x_start, o.x_end, o.elevation)]
+        new_lines = [f"#Block Obstruct= {n} , 0 "] + _format_block(
+            flat, _COLS_MANN
+        )
+
+        if bo_i is not None:
+            self._splice(bo_i, old_count, new_lines)
+        else:
+            bank_i = self._find_key_in_block(start, end, "Bank Sta=")
+            insert_at = bank_i if bank_i is not None else end
+            self._splice(insert_at, 0, new_lines)
+
+    def set_htab(
+        self,
+        river: str,
+        reach: str,
+        rs: str,
+        starting_elevation: float,
+        increment: float,
+        count: int,
+    ) -> None:
+        """Set the hydraulic-table parameters for the given cross section.
+
+        Replaces the ``XS HTab Starting El and Incr=`` line in-place, or
+        inserts it after ``XS Rating Curve=`` if absent.
+
+        Args:
+            river:              River name (case-insensitive).
+            reach:              Reach name (case-insensitive).
+            rs:                 River station string.
+            starting_elevation: First elevation in the hydraulic table.
+            increment:          Elevation increment between table entries.
+            count:              Number of entries in the hydraulic table.
+
+        Raises:
+            KeyError: No matching cross-section node found.
+        """
+        start = self._find_node_start(river, reach, rs)
+        if start is None:
+            raise KeyError(f"No node found for {river!r}, {reach!r}, {rs!r}")
+        end = self._find_node_end(start)
+
+        htab_i = self._find_key_in_block(
+            start, end, "XS HTab Starting El and Incr="
+        )
+        line = (
+            f"XS HTab Starting El and Incr="
+            f"{starting_elevation},{increment}, {count} "
+        )
+        if htab_i is not None:
+            self._splice(htab_i, 1, [line])
+        else:
+            rc_i = self._find_key_in_block(start, end, "XS Rating Curve=")
+            insert_at = (rc_i + 1) if rc_i is not None else end
+            self._splice(insert_at, 0, [line])
 
     # ------------------------------------------------------------------
     # Raw node access (for structures)
