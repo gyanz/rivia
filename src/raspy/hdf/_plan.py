@@ -1708,11 +1708,24 @@ class SA2DConnectionResults(_StructureResultsMixin, SA2DConnection):
     def tailwater_cells(self) -> np.ndarray | None:
         """2-D mesh cell indices on the tailwater side, or ``None`` if absent.
 
-        Shape ``(n_faces,)``.
+        For 2D↔2D connections (levees) these are stored as a flat ``int32``
+        dataset at the group root.  For SA↔2D connections (e.g. a dam with a
+        storage-area headwater) they are stored as fixed-width byte strings in
+        ``HW TW Segments/Tailwater Cells`` and are decoded here.
+
+        Shape ``(n_cells,)``.
         """
-        if "Tailwater Cells" not in self._g:
-            return None
-        return self._load("Tailwater Cells")
+        # 2D↔2D: flat int32 at group root
+        if "Tailwater Cells" in self._g:
+            return self._load("Tailwater Cells")
+        # SA↔2D: string-encoded cell indices in HW TW Segments subgroup
+        seg = self._g.get("HW TW Segments")
+        if seg is not None and "Tailwater Cells" in seg:
+            raw = seg["Tailwater Cells"][:]
+            return np.array(
+                [int(v.decode().strip()) for v in raw], dtype=np.int32
+            )
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -1884,15 +1897,17 @@ class PlanStructureCollection(StructureCollection):
         for key, geom in geom_items.items():
 
             if isinstance(geom, SA2DConnection):
-                # Exact name match first; then suffix match for the 2D↔2D
-                # prefix convention (plan name "BaldEagleCr Lower Levee"
-                # matches geometry name "Lower Levee").
-                grp = conn_groups.get(geom.name)
-                if grp is None:
-                    for gk, gv in conn_groups.items():
-                        if gk.endswith(" " + geom.name):
-                            grp = gv
-                            break
+                # Derive plan result group name from geometry fields:
+                #   2D↔2D (levee): "{upstream_2d_area} {connection}"
+                #   SA↔2D / SA↔SA (one end is SA or '--'): Connection name
+                if (
+                    geom.upstream_type == "2D"
+                    and geom.downstream_type == "2D"
+                ):
+                    plan_key = f"{geom.upstream_node} {geom.name}"
+                else:
+                    plan_key = geom.name
+                grp = conn_groups.get(plan_key)
                 items[key] = (
                     SA2DConnectionResults(geom, grp) if grp is not None else geom
                 )
