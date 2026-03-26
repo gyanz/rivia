@@ -27,10 +27,23 @@ Cross-section fixed-width format (8-char columns):
 
 .. code-block:: text
 
-    #Sta/Elev= N   alternating station/elevation pairs, 10 values per row
-    #Mann= N,t,a   triplets (station, n-value, variation),  9 values per row
-    #XS Ineff= N   triplets (x_start, x_end, elevation),   9 values per row
-                   followed by ``Permanent Ineff=`` flags (8-char each, 10/row)
+    #Sta/Elev= N      alternating station/elevation pairs, 10 values per row
+    #Mann= N,t,a      triplets (station, n-value, variation),  9 values per row
+    #XS Ineff= N      triplets (x_start, x_end, elevation),   9 values per row
+                      followed by ``Permanent Ineff=`` flags (8-char each, 10/row)
+
+Vertical (depth/flow-varying) Manning's n — appears between ``XS Rating Curve=``
+and ``Exp/Cntr=`` when active:
+
+.. code-block:: text
+
+    Vertical n Elevations= N    N WSE or flow breakpoints (8-char cols, 10/row)
+    Vertical n for Station=S    per-station entry; N n-values follow (8-char, 10/row)
+    ...
+    Vertical n Flow= F          F=0 → WSE breakpoints; F=-1 → flow breakpoints
+
+When vertical n is active, ``#Mann= N , 0 , 0`` stores zone boundary stations
+only; n-values in that block are all zero (placeholders).
 
 Derived from format inspection of HEC-RAS 6.6 example files and
 ``archive/ras_tools/geomParser.py``.
@@ -184,6 +197,43 @@ class IneffArea:
 
 
 @dataclass
+class VerticalNStation:
+    """Manning's n values at one cross-section station, varying by depth or flow.
+
+    Attributes:
+        station:  Lateral station (same coordinate system as ``#Sta/Elev``).
+        n_values: n-value at each breakpoint in :class:`VerticalN`.
+    """
+
+    station: float
+    n_values: list[float]
+
+
+@dataclass
+class VerticalN:
+    """Vertical (depth/flow-varying) Manning's n for a cross section.
+
+    HEC-RAS stores this block between ``XS Rating Curve=`` and
+    ``Exp/Cntr=`` when vertical variation is active.  The ``#Mann``
+    block in the same XS still defines zone boundaries but carries
+    placeholder zero n-values.
+
+    Attributes:
+        breakpoints: Water-surface elevations (``by_flow=False``) or
+                     flow values (``by_flow=True``) at which n is
+                     tabulated.  Length N.
+        by_flow:     ``True`` when breakpoints are flows
+                     (``Vertical n Flow=-1``); ``False`` when they
+                     are WSE (``Vertical n Flow= 0``).
+        stations:    Per-station n-value curves, each with N entries.
+    """
+
+    breakpoints: list[float]
+    by_flow: bool
+    stations: list[VerticalNStation]
+
+
+@dataclass
 class CrossSection:
     """Parsed data for one HEC-RAS cross section (node type 1).
 
@@ -212,6 +262,8 @@ class CrossSection:
         right_length:   Right overbank reach length from node header.
         interpolated:   ``True`` if the RS string had a trailing ``*``
                         (HEC-RAS interpolated cross section).
+        vertical_n:     Vertical (depth/flow-varying) Manning's n, or
+                        ``None`` if the cross section uses flat n-values.
     """
 
     river: str
@@ -232,6 +284,7 @@ class CrossSection:
     channel_length: float | None = None
     right_length: float | None = None
     interpolated: bool = False
+    vertical_n: VerticalN | None = None
 
 
 logger = logging.getLogger("raspy.model")
@@ -606,6 +659,42 @@ class GeometryFile:
                 i += 1
                 continue
 
+            # Vertical n Elevations= N
+            if ln.startswith("Vertical n Elevations="):
+                n_bp = int(ln.split("=", 1)[1].strip())
+                n_bp_rows = _row_count(n_bp, _COLS_STAE)
+                breakpoints = _parse_block(
+                    block[i + 1 : i + 1 + n_bp_rows], n_bp
+                )
+                i += 1 + n_bp_rows
+                vn_stations: list[VerticalNStation] = []
+                by_flow = False
+                while i < len(block):
+                    sln = block[i]
+                    if sln.startswith("Vertical n for Station="):
+                        sta = float(sln.split("=", 1)[1].strip())
+                        n_val_rows = _row_count(n_bp, _COLS_STAE)
+                        n_vals = _parse_block(
+                            block[i + 1 : i + 1 + n_val_rows], n_bp
+                        )
+                        vn_stations.append(
+                            VerticalNStation(station=sta, n_values=n_vals)
+                        )
+                        i += 1 + n_val_rows
+                    elif sln.startswith("Vertical n Flow="):
+                        flow_val = int(sln.split("=", 1)[1].strip())
+                        by_flow = flow_val == -1
+                        i += 1
+                        break
+                    else:
+                        i += 1
+                xs.vertical_n = VerticalN(
+                    breakpoints=breakpoints,
+                    by_flow=by_flow,
+                    stations=vn_stations,
+                )
+                continue
+
             i += 1
 
         return xs
@@ -811,6 +900,76 @@ class GeometryFile:
         if ec_i is None:
             raise KeyError(f"No Exp/Cntr= line found for {river!r}, {reach!r}, {rs!r}")
         self._splice(ec_i, 1, [f"Exp/Cntr={expansion},{contraction}"])
+
+    def set_vertical_n(
+        self,
+        river: str,
+        reach: str,
+        rs: str,
+        vertical_n: VerticalN | None,
+    ) -> None:
+        """Replace or remove the vertical n block for the given cross section.
+
+        When *vertical_n* is not ``None`` the existing block (if any) is
+        replaced in-place; if none exists, the block is inserted after the
+        ``XS Rating Curve=`` line.  Passing ``None`` removes any existing
+        block.
+
+        The caller is responsible for ensuring the ``#Mann`` block still
+        contains valid zone boundary stations.  When vertical n is active
+        HEC-RAS expects those n-values to be ``0`` (placeholders).
+
+        Args:
+            river:      River name (case-insensitive).
+            reach:      Reach name (case-insensitive).
+            rs:         River station string.
+            vertical_n: New vertical n data, or ``None`` to remove.
+
+        Raises:
+            KeyError: No matching cross-section node found.
+        """
+        start = self._find_node_start(river, reach, rs)
+        if start is None:
+            raise KeyError(f"No node found for {river!r}, {reach!r}, {rs!r}")
+        end = self._find_node_end(start)
+
+        vn_elev_i = self._find_key_in_block(
+            start, end, "Vertical n Elevations="
+        )
+        if vn_elev_i is not None:
+            vn_flow_i = self._find_key_in_block(
+                vn_elev_i, end, "Vertical n Flow="
+            )
+            old_count = (
+                (vn_flow_i - vn_elev_i + 1) if vn_flow_i is not None else 0
+            )
+            insert_at = vn_elev_i
+        else:
+            rc_i = self._find_key_in_block(start, end, "XS Rating Curve=")
+            insert_at = (rc_i + 1) if rc_i is not None else end
+            old_count = 0
+
+        if vertical_n is None:
+            if old_count > 0:
+                self._splice(insert_at, old_count, [])
+            return
+
+        n_bp = len(vertical_n.breakpoints)
+        new_lines: list[str] = [f"Vertical n Elevations= {n_bp} "]
+        new_lines += _format_block(vertical_n.breakpoints, _COLS_STAE)
+        for vs in vertical_n.stations:
+            sta_val = vs.station
+            sta_str = (
+                str(int(sta_val))
+                if sta_val == int(sta_val)
+                else str(sta_val)
+            )
+            new_lines.append(f"Vertical n for Station={sta_str}")
+            new_lines += _format_block(vs.n_values, _COLS_STAE)
+        flow_val = -1 if vertical_n.by_flow else 0
+        new_lines.append(f"Vertical n Flow={flow_val} ")
+
+        self._splice(insert_at, old_count, new_lines)
 
     # ------------------------------------------------------------------
     # Raw node access (for structures)
