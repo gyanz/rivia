@@ -24,17 +24,17 @@ AREA = "TestArea"
 class TestTimeStamps:
     def test_returns_datetimeindex(self, synthetic_plan_hdf):
         with PlanHdf(synthetic_plan_hdf) as hdf:
-            ts = hdf.time_stamps_map
+            ts = hdf.timestamps_mapping
         assert isinstance(ts, pd.DatetimeIndex)
 
     def test_length_matches_timesteps(self, synthetic_plan_hdf):
         with PlanHdf(synthetic_plan_hdf) as hdf:
-            ts = hdf.time_stamps_map
+            ts = hdf.timestamps_mapping
         assert len(ts) == N_TIMESTEPS
 
     def test_timestamps_are_increasing(self, synthetic_plan_hdf):
         with PlanHdf(synthetic_plan_hdf) as hdf:
-            ts = hdf.time_stamps_map
+            ts = hdf.timestamps_mapping
         assert ts.is_monotonic_increasing
 
 
@@ -331,7 +331,7 @@ class TestExportRaster:
 class TestPlanHdfIntegration:
     def test_time_stamps_length(self):
         with PlanHdf(EXAMPLE_PLAN_HDF) as hdf:
-            ts = hdf.time_stamps_map
+            ts = hdf.timestamps_mapping
         assert len(ts) > 0
 
     def test_water_surface_shape(self):

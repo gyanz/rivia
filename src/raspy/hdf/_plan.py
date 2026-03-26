@@ -1957,7 +1957,7 @@ class PlanHdf(GeometryHdf):
     ::
 
         with PlanHdf("MyModel.p01") as hdf:
-            ts   = hdf.time_stamps_map
+            ts   = hdf.timestamps_mapping
             area = hdf.flow_areas["spillway"]
 
             wse   = area.water_surface[10]    # one timestep
@@ -2021,8 +2021,8 @@ class PlanHdf(GeometryHdf):
         return None if grp is None else grp.attrs.get(name)
 
     @property
-    def time_step_computation(self) -> float | None:
-        """Computation time step in seconds, or ``None`` if absent.
+    def interval_computation(self) -> float | None:
+        """Base computation time step in seconds, or ``None`` if absent.
 
         Read from ``Plan Data/Plan Information`` attribute
         ``Computation Time Step Base``.  HEC-RAS stores the value as a
@@ -2033,7 +2033,7 @@ class PlanHdf(GeometryHdf):
         return None if raw is None else self._parse_ras_time_interval(raw)
 
     @property
-    def time_step_map(self) -> float | None:
+    def interval_mapping(self) -> float | None:
         """Mapping output interval in seconds, or ``None`` if absent.
 
         Read from ``Plan Data/Plan Information`` attribute
@@ -2067,7 +2067,7 @@ class PlanHdf(GeometryHdf):
     # ------------------------------------------------------------------
 
     @property
-    def time_stamps_map(self) -> pd.DatetimeIndex:
+    def timestamps_mapping(self) -> pd.DatetimeIndex:
         """Simulation output time stamps as a ``pd.DatetimeIndex``.
 
         Parsed from the ``Time Date Stamp`` dataset written by HEC-RAS.
@@ -2083,7 +2083,7 @@ class PlanHdf(GeometryHdf):
         return pd.to_datetime(raw, format=_RAS_TS_FMT)
 
     @property
-    def time_stamps_hydrograph(self) -> pd.DatetimeIndex:
+    def timestamps_hydrograph(self) -> pd.DatetimeIndex:
         """DSS hydrograph output time stamps as a ``pd.DatetimeIndex``.
 
         Parsed from ``Results/.../DSS Hydrograph Output/Unsteady Time
@@ -2099,7 +2099,7 @@ class PlanHdf(GeometryHdf):
         return pd.to_datetime(raw, format=_RAS_TS_FMT)
 
     @property
-    def time_step_hydrograph(self) -> float | None:
+    def interval_hydrograph(self) -> float | None:
         """DSS hydrograph output interval in seconds, or ``None`` if absent.
 
         Derived from the difference between the first two hydrograph
@@ -2113,7 +2113,7 @@ class PlanHdf(GeometryHdf):
         return (ts[1] - ts[0]).total_seconds()
 
     @property
-    def n_timesteps_map(self) -> int | None:
+    def n_mapping(self) -> int | None:
         """Number of output time steps, or ``None`` for steady-flow plans."""
         ds = self._hdf.get(_TIME_STAMP_DS)
         if ds is None:
@@ -2121,7 +2121,7 @@ class PlanHdf(GeometryHdf):
         return len(ds)
 
     @property
-    def n_timesteps_hydrograph(self) -> int | None:
+    def n_hydrograph(self) -> int | None:
         """Number of DSS hydrograph output time steps, or ``None`` if absent."""
         ds = self._hdf.get(_DSS_TIME_STAMP_DS)
         if ds is None:

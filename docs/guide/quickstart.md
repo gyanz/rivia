@@ -192,8 +192,8 @@ plan's HDF file.
 
 ```python
 hdf = model.hdf
-print(hdf.time_stamps_map)     # pd.DatetimeIndex of output timesteps
-print(hdf.n_timesteps_map)     # number of timesteps
+print(hdf.timestamps_mapping)     # pd.DatetimeIndex of output timesteps
+print(hdf.n_mapping)     # number of timesteps
 ```
 
 ### 2D flow areas
