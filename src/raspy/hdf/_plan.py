@@ -27,11 +27,17 @@ from raspy.utils import log_call, timed
 from ._base import _HdfFile
 from ._geometry import (
     _SA_ROOT,
+    Bridge,
     FlowArea,
     FlowAreaCollection,
     GeometryHdf,
+    Inline,
+    Lateral,
+    SA2DConnection,
     StorageArea,
     StorageAreaCollection,
+    Structure,
+    StructureCollection,
     _decode,
 )
 
@@ -56,6 +62,14 @@ _TS_SA_CONN = f"{_TS_ROOT}/SA 2D Area Conn"
 
 _TIME_DS = f"{_TS_ROOT}/Time"
 _TIME_STAMP_DS = f"{_TS_ROOT}/Time Date Stamp"
+
+_DSS_ROOT = (
+    "Results/Unsteady/Output/Output Blocks"
+    "/DSS Hydrograph Output/Unsteady Time Series"
+)
+_DSS_INLINE = f"{_DSS_ROOT}/Inline Structures"
+_DSS_LATERAL = f"{_DSS_ROOT}/Lateral Structures"
+_DSS_BRIDGE = f"{_DSS_ROOT}/Bridge"
 
 
 # Timestamp format written by HEC-RAS (e.g. "03Jan2000 00:00:00")
@@ -1498,96 +1512,180 @@ class StorageAreaResultsCollection(StorageAreaCollection):
 
 
 # ---------------------------------------------------------------------------
-# SA2DConnectionResults - one connection between two hydraulic areas
+# _StructureResultsMixin - shared HDF result access for all structure types
 # ---------------------------------------------------------------------------
 
 
-class SA2DConnectionResults:
-    """Time-series results for one HEC-RAS hydraulic connection.
+class _StructureResultsMixin:
+    """Mixin that adds ``Structure Variables`` HDF access to geometry dataclasses.
 
-    In HEC-RAS, the "SA/2D Area Conn" group holds connections between
-    any two of: a Storage Area, a 2-D Flow Area, or another Storage Area.
-    Common examples: dam, levee, inline weir, gate structure.
+    All four structure result classes inherit this so ``variable_names``,
+    ``total_flow``, ``stage_hw``, ``stage_tw``, ``weir_variables``, and
+    ``gate_flow`` are implemented once and shared.
 
-    Parameters
-    ----------
-    name:
-        Name of the connection (group key in the HDF file).
-    group:
-        ``h5py.Group`` at ``-/SA 2D Area Conn/<name>``.
+    Concrete subclasses must set ``self._g`` (the result ``h5py.Group``) and
+    ``self._cache`` (empty ``dict``) in their ``__init__``.
     """
 
-    def __init__(self, name: str, group: "h5py.Group") -> None:
-        self.name = name
-        self._g = group
-        self._cache: dict[str, np.ndarray] = {}
+    if TYPE_CHECKING:
+        _g: h5py.Group
+        _cache: dict[str, np.ndarray]
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
 
     def _load(self, key: str) -> np.ndarray:
         if key not in self._cache:
             self._cache[key] = np.array(self._g[key])
         return self._cache[key]
 
+    def _col_index(self, *candidates: str) -> int:
+        """Index of first column whose name contains any candidate (case-insensitive).
+
+        Candidates are tried in order; the first column whose lowercased name
+        contains a lowercased candidate wins.  Raises ``KeyError`` if nothing
+        matches.
+        """
+        names_lower = [n.lower() for n in self.variable_names]
+        for cand in candidates:
+            cand_l = cand.lower()
+            for i, n in enumerate(names_lower):
+                if cand_l in n:
+                    return i
+        raise KeyError(
+            f"No column matching {candidates!r} in {self.variable_names!r}"
+        )
+
     # ------------------------------------------------------------------
-    # Structure Variables (always present)
+    # Structure Variables
     # ------------------------------------------------------------------
 
     @property
     def variable_names(self) -> list[str]:
-        """Column names from the ``Structure Variables`` HDF attribute.
+        """Column names from the ``Structure Variables`` ``Variable_Unit`` attribute.
 
-        Typical columns: ``Total Flow``, ``Weir Flow``, ``Stage HW``,
-        ``Stage TW`` [, ``Total Gate Flow``].  Falls back to
-        ``col_0``, ``col_1``, - when the attribute is absent.
+        Falls back to ``col_0``, ``col_1``, ... when the attribute is absent.
         """
         ds = self._g["Structure Variables"]
         attr = ds.attrs.get("Variable_Unit")
         if attr is None:
             attr = ds.attrs.get("Variables")
         if attr is not None:
-            # attr shape is (n_vars, 2): column 0 = variable name, column 1 = unit
             return [_decode(v[0]) for v in attr]
         return [f"col_{i}" for i in range(ds.shape[1])]
 
     @property
     def structure_variables(self) -> "h5py.Dataset":
-        """All structure variables.
+        """All structure variables as a lazy ``h5py.Dataset``, shape ``(n_t, n_vars)``.
 
-        Lazy ``h5py.Dataset``, shape ``(n_t, n_vars)``.
-        Slice to read: ``conn.structure_variables[:]``.
         Column names are in :attr:`variable_names`.
         """
         return self._g["Structure Variables"]
 
-    # Convenience column accessors (always present for all connection types)
-
     @property
     def total_flow(self) -> np.ndarray:
-        """Total flow through the connection.  Shape ``(n_t,)``."""
-        return self._load("Structure Variables")[:, 0]
-
-    @property
-    def weir_flow(self) -> np.ndarray:
-        """Weir flow component.  Shape ``(n_t,)``."""
-        return self._load("Structure Variables")[:, 1]
+        """Total flow through the structure.  Shape ``(n_t,)``."""
+        return self._load("Structure Variables")[
+            :, self._col_index("total flow", "flow")
+        ]
 
     @property
     def stage_hw(self) -> np.ndarray:
         """Headwater stage (upstream side).  Shape ``(n_t,)``."""
-        return self._load("Structure Variables")[:, 2]
+        return self._load("Structure Variables")[
+            :, self._col_index("stage hw", "hw", "headwater")
+        ]
 
     @property
     def stage_tw(self) -> np.ndarray:
         """Tailwater stage (downstream side).  Shape ``(n_t,)``."""
-        return self._load("Structure Variables")[:, 3]
+        return self._load("Structure Variables")[
+            :, self._col_index("stage tw", "tw", "tailwater")
+        ]
 
     # ------------------------------------------------------------------
-    # Optional datasets
+    # Optional datasets (shared by Inline, Lateral, Bridge, SA2DConnection)
     # ------------------------------------------------------------------
 
     @property
+    def weir_variables(self) -> "h5py.Dataset | None":
+        """Detailed weir hydraulics time series, or ``None`` if absent."""
+        return self._g.get("Weir Variables")
+
+    def gate_flow(self, gate_number: int) -> "h5py.Dataset":
+        """Gate operation dataset for gate *gate_number* (1-based).
+
+        Returns a lazy ``h5py.Dataset``, shape ``(n_t, n_vars)``.
+
+        Raises
+        ------
+        KeyError
+            If the gate number does not exist for this structure.
+        """
+        path = f"Gate Groups/Gate #{gate_number}"
+        if path not in self._g:
+            gates_grp = self._g.get("Gate Groups")
+            available = list(gates_grp.keys()) if gates_grp is not None else []
+            raise KeyError(
+                f"Gate #{gate_number} not found. Available: {available}"
+            )
+        return self._g[path]
+
+
+# ---------------------------------------------------------------------------
+# SA2DConnectionResults - one connection between two hydraulic areas
+# ---------------------------------------------------------------------------
+
+
+class SA2DConnectionResults(_StructureResultsMixin, SA2DConnection):
+    """Geometry *and* time-series results for one HEC-RAS SA/2D connection.
+
+    Inherits geometry from :class:`~raspy.hdf.SA2DConnection` and shared HDF
+    result access (``structure_variables``, ``total_flow``, ``stage_hw``,
+    ``stage_tw``, ``weir_variables``, ``gate_flow``) from
+    :class:`_StructureResultsMixin`.
+
+    Parameters
+    ----------
+    geom:
+        Geometry object from :class:`~raspy.hdf.StructureCollection`.
+    group:
+        ``h5py.Group`` at ``-/SA 2D Area Conn/<plan_name>``.
+    """
+
+    def __init__(self, geom: SA2DConnection, group: h5py.Group) -> None:
+        SA2DConnection.__init__(
+            self,
+            mode=geom.mode,
+            upstream_type=geom.upstream_type,
+            downstream_type=geom.downstream_type,
+            centerline=geom.centerline,
+            name=geom.name,
+            upstream_node=geom.upstream_node,
+            downstream_node=geom.downstream_node,
+        )
+        # Plan result group name may differ from geometry name for 2D↔2D connections
+        # (HEC-RAS prefixes the flow-area name, e.g. "Lower Levee" →
+        #  "BaldEagleCr Lower Levee").
+        self._plan_name: str = group.name.split("/")[-1]
+        self._g = group
+        self._cache: dict[str, np.ndarray] = {}
+
+    # ------------------------------------------------------------------
+    # SA2D-specific result datasets
+    # ------------------------------------------------------------------
+
+    @property
+    def weir_flow(self) -> np.ndarray:
+        """Weir overflow component.  Shape ``(n_t,)``."""
+        return self._load("Structure Variables")[
+            :, self._col_index("weir flow")
+        ]
+
+    @property
     def breaching_variables(self) -> "h5py.Dataset | None":
-        """Breach geometry and flow time series, or ``None`` if the connection
-        is not breach-capable.
+        """Breach geometry and flow time series, or ``None`` if not breach-capable.
 
         Lazy ``h5py.Dataset``, shape ``(n_t, 10)``.
         Columns: Stage HW, Stage TW, Bottom Width, Bottom Elevation,
@@ -1597,43 +1695,10 @@ class SA2DConnectionResults:
         return self._g.get("Breaching Variables")
 
     @property
-    def weir_variables(self) -> "h5py.Dataset | None":
-        """Detailed weir hydraulics time series, or ``None`` if absent.
-
-        Lazy ``h5py.Dataset``, shape ``(n_t, 9)``.
-        """
-        return self._g.get("Weir Variables")
-
-    def gate_flow(self, gate_number: int) -> "h5py.Dataset":
-        """Gate operation dataset for the specified gate (1-based numbering).
-
-        Returns a lazy ``h5py.Dataset``, shape ``(n_t, n_vars)``.
-
-        Raises
-        ------
-        KeyError
-            If the gate number does not exist for this connection.
-        """
-        path = f"Gate Groups/Gate #{gate_number}"
-        if path not in self._g:
-            gates_grp = self._g.get("Gate Groups")
-            available = list(gates_grp.keys()) if gates_grp is not None else []
-            raise KeyError(
-                f"Gate #{gate_number} not found for connection {self.name!r}. "
-                f"Available: {available}"
-            )
-        return self._g[path]
-
-    # ------------------------------------------------------------------
-    # Static cell connectivity
-    # ------------------------------------------------------------------
-
-    @property
     def headwater_cells(self) -> np.ndarray | None:
-        """Cell indices on the headwater side, or ``None`` if not stored.
+        """2-D mesh cell indices on the headwater side, or ``None`` if absent.
 
-        Shape ``(n_faces,)``.  Absent for some structure types (e.g. gates
-        without explicit face-level connectivity).
+        Shape ``(n_faces,)``.
         """
         if "Headwater Cells" not in self._g:
             return None
@@ -1641,7 +1706,7 @@ class SA2DConnectionResults:
 
     @property
     def tailwater_cells(self) -> np.ndarray | None:
-        """Cell indices on the tailwater side, or ``None`` if not stored.
+        """2-D mesh cell indices on the tailwater side, or ``None`` if absent.
 
         Shape ``(n_faces,)``.
         """
@@ -1651,85 +1716,207 @@ class SA2DConnectionResults:
 
 
 # ---------------------------------------------------------------------------
-# SA2DConnectionCollection
+# InlineResults - inline structure geometry + plan results
 # ---------------------------------------------------------------------------
 
 
-class SA2DConnectionCollection:
-    """Access all SA/2D hydraulic connections in a plan HDF file.
+class InlineResults(_StructureResultsMixin, Inline):
+    """Geometry *and* time-series results for one HEC-RAS inline structure.
 
-    Connections can link a Storage Area to a 2-D Flow Area, two Storage Areas
-    to each other, or two 2-D Flow Areas.  Each connection is a named
-    ``h5py.Group`` under ``-/SA 2D Area Conn/``.
+    Inherits geometry from :class:`~raspy.hdf.Inline` and shared HDF result
+    access from :class:`_StructureResultsMixin`.
+
+    The HDF group is at
+    ``Results/.../DSS Hydrograph Output/.../Inline Structures/<river reach rs>``.
 
     Parameters
     ----------
-    hdf:
-        Open ``h5py.File`` handle.
+    geom:
+        Geometry object from :class:`~raspy.hdf.StructureCollection`.
+    group:
+        ``h5py.Group`` at the inline structure result path.
     """
 
-    def __init__(self, hdf: "h5py.File") -> None:
-        self._hdf = hdf
-        self._items: dict[str, SA2DConnectionResults] | None = None
+    def __init__(self, geom: Inline, group: h5py.Group) -> None:
+        Inline.__init__(
+            self,
+            mode=geom.mode,
+            upstream_type=geom.upstream_type,
+            downstream_type=geom.downstream_type,
+            centerline=geom.centerline,
+            location=geom.location,
+            upstream_node=geom.upstream_node,
+            downstream_node=geom.downstream_node,
+            weir=geom.weir,
+            gate_groups=geom.gate_groups,
+        )
+        self._g = group
+        self._cache: dict[str, np.ndarray] = {}
 
-    def _load(self) -> dict[str, SA2DConnectionResults]:
+
+# ---------------------------------------------------------------------------
+# LateralResults - lateral structure geometry + plan results
+# ---------------------------------------------------------------------------
+
+
+class LateralResults(_StructureResultsMixin, Lateral):
+    """Geometry *and* time-series results for one HEC-RAS lateral structure.
+
+    Inherits geometry from :class:`~raspy.hdf.Lateral` and shared HDF result
+    access from :class:`_StructureResultsMixin`.
+
+    The HDF group is at
+    ``Results/.../DSS Hydrograph Output/.../Lateral Structures/<river reach rs>``.
+
+    ``downstream_node`` is the name of the connected Storage Area or 2-D Flow
+    Area, or an empty string when flow exits the system.
+
+    Parameters
+    ----------
+    geom:
+        Geometry object from :class:`~raspy.hdf.StructureCollection`.
+    group:
+        ``h5py.Group`` at the lateral structure result path.
+    """
+
+    def __init__(self, geom: Lateral, group: h5py.Group) -> None:
+        Lateral.__init__(
+            self,
+            mode=geom.mode,
+            upstream_type=geom.upstream_type,
+            downstream_type=geom.downstream_type,
+            centerline=geom.centerline,
+            location=geom.location,
+            upstream_node=geom.upstream_node,
+            downstream_node=geom.downstream_node,
+            weir=geom.weir,
+            gate_groups=geom.gate_groups,
+        )
+        self._g = group
+        self._cache: dict[str, np.ndarray] = {}
+
+
+# ---------------------------------------------------------------------------
+# BridgeResults - bridge geometry + plan results
+# ---------------------------------------------------------------------------
+
+
+class BridgeResults(_StructureResultsMixin, Bridge):
+    """Geometry *and* time-series results for one HEC-RAS bridge structure.
+
+    Inherits geometry from :class:`~raspy.hdf.Bridge` and shared HDF result
+    access from :class:`_StructureResultsMixin`.
+
+    The HDF group is at
+    ``Results/.../DSS Hydrograph Output/.../Bridge/<river reach rs>``.
+
+    Parameters
+    ----------
+    geom:
+        Geometry object from :class:`~raspy.hdf.StructureCollection`.
+    group:
+        ``h5py.Group`` at the bridge result path.
+    """
+
+    def __init__(self, geom: Bridge, group: h5py.Group) -> None:
+        Bridge.__init__(
+            self,
+            mode=geom.mode,
+            upstream_type=geom.upstream_type,
+            downstream_type=geom.downstream_type,
+            centerline=geom.centerline,
+            location=geom.location,
+            upstream_node=geom.upstream_node,
+            downstream_node=geom.downstream_node,
+            weir=geom.weir,
+            gate_groups=geom.gate_groups,
+        )
+        self._g = group
+        self._cache: dict[str, np.ndarray] = {}
+
+
+# ---------------------------------------------------------------------------
+# PlanStructureCollection - plan-enriched StructureCollection
+# ---------------------------------------------------------------------------
+
+
+class PlanStructureCollection(StructureCollection):
+    """Plan-enriched structure collection: all structure types with results.
+
+    Overrides :class:`~raspy.hdf.StructureCollection` so each item carries
+    both geometry attributes *and* time-series result access:
+
+    * :class:`SA2DConnection` → :class:`SA2DConnectionResults`
+      (Base Output ``SA 2D Area Conn``)
+    * :class:`Inline` → :class:`InlineResults`
+      (DSS Hydrograph Output ``Inline Structures``)
+    * :class:`Lateral` → :class:`LateralResults`
+      (DSS Hydrograph Output ``Lateral Structures``)
+    * :class:`Bridge` → :class:`BridgeResults`
+      (DSS Hydrograph Output ``Bridge``)
+
+    When no plan result group is found for a structure (e.g. DSS output was
+    not requested for that type), the plain geometry object is kept unchanged.
+    """
+
+    def _load(self) -> dict[str, Structure]:  # type: ignore[override]
         if self._items is not None:
-            return self._items
-
-        if _TS_SA_CONN not in self._hdf:
-            self._items = {}
             return self._items
 
         import h5py as _h5
 
-        root = self._hdf[_TS_SA_CONN]
-        self._items = {
-            k: SA2DConnectionResults(k, root[k])
-            for k, v in root.items()
-            if isinstance(v, _h5.Group)
-        }
+        # Build geometry items first (parent caches in self._items).
+        geom_items = StructureCollection._load(self)
+
+        # Helper: collect sub-groups from an HDF path (returns {} when absent).
+        def _groups(path: str) -> dict[str, h5py.Group]:
+            root = self._hdf.get(path)
+            if root is None:
+                return {}
+            return {k: v for k, v in root.items() if isinstance(v, _h5.Group)}
+
+        conn_groups = _groups(_TS_SA_CONN)
+        inline_groups = _groups(_DSS_INLINE)
+        lateral_groups = _groups(_DSS_LATERAL)
+        bridge_groups = _groups(_DSS_BRIDGE)
+
+        items: dict[str, Structure] = {}
+        for key, geom in geom_items.items():
+
+            if isinstance(geom, SA2DConnection):
+                # Exact name match first; then suffix match for the 2D↔2D
+                # prefix convention (plan name "BaldEagleCr Lower Levee"
+                # matches geometry name "Lower Levee").
+                grp = conn_groups.get(geom.name)
+                if grp is None:
+                    for gk, gv in conn_groups.items():
+                        if gk.endswith(" " + geom.name):
+                            grp = gv
+                            break
+                items[key] = (
+                    SA2DConnectionResults(geom, grp) if grp is not None else geom
+                )
+
+            elif isinstance(geom, Inline):
+                plan_key = " ".join(geom.location)
+                grp = inline_groups.get(plan_key)
+                items[key] = InlineResults(geom, grp) if grp is not None else geom
+
+            elif isinstance(geom, Lateral):
+                plan_key = " ".join(geom.location)
+                grp = lateral_groups.get(plan_key)
+                items[key] = LateralResults(geom, grp) if grp is not None else geom
+
+            elif isinstance(geom, Bridge):
+                plan_key = " ".join(geom.location)
+                grp = bridge_groups.get(plan_key)
+                items[key] = BridgeResults(geom, grp) if grp is not None else geom
+
+            else:
+                items[key] = geom
+
+        self._items = items
         return self._items
-
-    @property
-    def names(self) -> list[str]:
-        """Names of all connections in the file."""
-        return list(self._load().keys())
-
-    @property
-    def summary(self) -> pd.DataFrame:
-        """One row per connection with basic attributes.
-
-        Columns: ``name``, ``n_variables``, ``variable_names``,
-        ``has_breaching``, ``has_weir``.
-        """
-        rows = [
-            {
-                "name": conn.name,
-                "n_variables": conn.structure_variables.shape[1],
-                "variable_names": conn.variable_names,
-                "has_breaching": conn.breaching_variables is not None,
-                "has_weir": conn.weir_variables is not None,
-            }
-            for conn in self._load().values()
-        ]
-        return pd.DataFrame(rows)
-
-    def __getitem__(self, name: str) -> SA2DConnectionResults:
-        items = self._load()
-        if name not in items:
-            raise KeyError(
-                f"SA/2D connection {name!r} not found. Available: {self.names}"
-            )
-        return items[name]
-
-    def __contains__(self, name: str) -> bool:
-        return name in self._load()
-
-    def __iter__(self):
-        return iter(self._load())
-
-    def __len__(self) -> int:
-        return len(self._load())
 
 
 # ---------------------------------------------------------------------------
@@ -1776,7 +1963,7 @@ class PlanHdf(GeometryHdf):
         self._program_directory = Path(program_directory) if program_directory else None
         self._plan_flow_areas: FlowAreaResultsCollection | None = None
         self._plan_storage_areas: StorageAreaResultsCollection | None = None
-        self._sa_connections: SA2DConnectionCollection | None = None
+        self._plan_structures: PlanStructureCollection | None = None
 
     # ------------------------------------------------------------------
     # File metadata
@@ -1855,7 +2042,7 @@ class PlanHdf(GeometryHdf):
         return len(ds)
 
     # ------------------------------------------------------------------
-    # Collections (override GeometryHdf.flow_areas)
+    # Collections (override GeometryHdf equivalents with results-aware types)
     # ------------------------------------------------------------------
 
     @property
@@ -1873,12 +2060,32 @@ class PlanHdf(GeometryHdf):
         return self._plan_storage_areas
 
     @property
-    def storage_area_connections(self) -> SA2DConnectionCollection:
-        """Access SA/2D hydraulic connections (levees, dams, gates, etc.).
+    def structures(self) -> PlanStructureCollection:
+        """Access all structures with geometry *and* plan results.
 
-        Each connection can link a Storage Area to a 2-D Flow Area, two
-        Storage Areas, or two 2-D Flow Areas.
+        Returns a :class:`PlanStructureCollection` where each item is
+        upgraded to the matching results class when plan output is present:
+
+        * :class:`SA2DConnectionResults` — SA/2D connections
+        * :class:`InlineResults` — inline structures
+        * :class:`LateralResults` — lateral structures
+        * :class:`BridgeResults` — bridge structures
+
+        Use :attr:`~raspy.hdf.StructureCollection.connections`,
+        :attr:`~raspy.hdf.StructureCollection.inlines`,
+        :attr:`~raspy.hdf.StructureCollection.laterals`, and
+        :attr:`~raspy.hdf.StructureCollection.bridges` for filtered access.
         """
-        if self._sa_connections is None:
-            self._sa_connections = SA2DConnectionCollection(self._hdf)
-        return self._sa_connections
+        if self._plan_structures is None:
+            self._plan_structures = PlanStructureCollection(self._hdf)
+        return self._plan_structures
+
+    @property
+    def sa2d_connections(self) -> dict[str, SA2DConnection]:
+        """SA/2D hydraulic connections keyed by geometry name.
+
+        Convenience alias for ``hdf.structures.connections``.
+        Items are :class:`SA2DConnectionResults` when plan output is present,
+        plain :class:`SA2DConnection` otherwise.
+        """
+        return self.structures.connections
