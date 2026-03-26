@@ -58,8 +58,6 @@ _SUM_2D = f"{_SUM_ROOT}/2D Flow Areas"
 
 _TS_SA = f"{_TS_ROOT}/Storage Areas"
 _SUM_SA = f"{_SUM_ROOT}/Storage Areas"
-_TS_SA_CONN = f"{_TS_ROOT}/SA 2D Area Conn"
-
 _TIME_DS = f"{_TS_ROOT}/Time"
 _TIME_STAMP_DS = f"{_TS_ROOT}/Time Date Stamp"
 
@@ -67,6 +65,7 @@ _DSS_ROOT = (
     "Results/Unsteady/Output/Output Blocks"
     "/DSS Hydrograph Output/Unsteady Time Series"
 )
+_DSS_SA_CONN = f"{_DSS_ROOT}/SA 2D Area Conn"
 _DSS_INLINE = f"{_DSS_ROOT}/Inline Structures"
 _DSS_LATERAL = f"{_DSS_ROOT}/Lateral Structures"
 _DSS_BRIDGE = f"{_DSS_ROOT}/Bridge"
@@ -1605,6 +1604,32 @@ class _StructureResultsMixin:
             :, self._col_index("stage tw", "tw", "tailwater")
         ]
 
+    @property
+    def total_gate_flow(self) -> np.ndarray | None:
+        """Sum of flow through all gate groups.  Shape ``(n_t,)``.
+
+        Returns ``None`` when no ``Total Gate Flow`` column is present in
+        ``Structure Variables`` (i.e. the structure has no gate groups).
+        """
+        try:
+            col = self._col_index("total gate flow", "gate flow")
+        except KeyError:
+            return None
+        return self._load("Structure Variables")[:, col]
+
+    @property
+    def weir_flow(self) -> np.ndarray | None:
+        """Weir overflow component.  Shape ``(n_t,)``.
+
+        Returns ``None`` when no ``Weir Flow`` column is present in
+        ``Structure Variables`` (i.e. the structure has no weir).
+        """
+        try:
+            col = self._col_index("weir flow")
+        except KeyError:
+            return None
+        return self._load("Structure Variables")[:, col]
+
     # ------------------------------------------------------------------
     # Optional datasets (shared by Inline, Lateral, Bridge, SA2DConnection)
     # ------------------------------------------------------------------
@@ -1676,13 +1701,6 @@ class SA2DConnectionResults(_StructureResultsMixin, SA2DConnection):
     # ------------------------------------------------------------------
     # SA2D-specific result datasets
     # ------------------------------------------------------------------
-
-    @property
-    def weir_flow(self) -> np.ndarray:
-        """Weir overflow component.  Shape ``(n_t,)``."""
-        return self._load("Structure Variables")[
-            :, self._col_index("weir flow")
-        ]
 
     @property
     def breaching_variables(self) -> "h5py.Dataset | None":
@@ -1809,6 +1827,38 @@ class LateralResults(_StructureResultsMixin, Lateral):
         self._g = group
         self._cache: dict[str, np.ndarray] = {}
 
+    # ------------------------------------------------------------------
+    # Lateral-specific reach-split variables
+    # ------------------------------------------------------------------
+
+    @property
+    def flow_hw_us(self) -> np.ndarray:
+        """Flow at the upstream bounding cross section.  Shape ``(n_t,)``."""
+        return self._load("Structure Variables")[
+            :, self._col_index("flow hw us")
+        ]
+
+    @property
+    def flow_hw_ds(self) -> np.ndarray:
+        """Flow at the downstream bounding cross section.  Shape ``(n_t,)``."""
+        return self._load("Structure Variables")[
+            :, self._col_index("flow hw ds")
+        ]
+
+    @property
+    def stage_hw_us(self) -> np.ndarray:
+        """Stage at the upstream bounding cross section.  Shape ``(n_t,)``."""
+        return self._load("Structure Variables")[
+            :, self._col_index("stage hw us")
+        ]
+
+    @property
+    def stage_hw_ds(self) -> np.ndarray:
+        """Stage at the downstream bounding cross section.  Shape ``(n_t,)``."""
+        return self._load("Structure Variables")[
+            :, self._col_index("stage hw ds")
+        ]
+
 
 # ---------------------------------------------------------------------------
 # BridgeResults - bridge geometry + plan results
@@ -1889,7 +1939,7 @@ class PlanStructureCollection(StructureCollection):
                 return {}
             return {k: v for k, v in root.items() if isinstance(v, _h5.Group)}
 
-        conn_groups = _groups(_TS_SA_CONN)
+        conn_groups = _groups(_DSS_SA_CONN)
         inline_groups = _groups(_DSS_INLINE)
         lateral_groups = _groups(_DSS_LATERAL)
         bridge_groups = _groups(_DSS_BRIDGE)
