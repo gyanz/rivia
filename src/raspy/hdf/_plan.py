@@ -2099,9 +2099,31 @@ class PlanHdf(GeometryHdf):
         return pd.to_datetime(raw, format=_RAS_TS_FMT)
 
     @property
+    def time_step_hydrograph(self) -> float | None:
+        """DSS hydrograph output interval in seconds, or ``None`` if absent.
+
+        Derived from the difference between the first two hydrograph
+        time stamps.
+        """
+        ds = self._hdf.get(_DSS_TIME_STAMP_DS)
+        if ds is None or len(ds) < 2:
+            return None
+        raw = np.array(ds[:2]).astype(str)
+        ts = pd.to_datetime(raw, format=_RAS_TS_FMT)
+        return (ts[1] - ts[0]).total_seconds()
+
+    @property
     def n_timesteps_map(self) -> int | None:
         """Number of output time steps, or ``None`` for steady-flow plans."""
         ds = self._hdf.get(_TIME_STAMP_DS)
+        if ds is None:
+            return None
+        return len(ds)
+
+    @property
+    def n_timesteps_hydrograph(self) -> int | None:
+        """Number of DSS hydrograph output time steps, or ``None`` if absent."""
+        ds = self._hdf.get(_DSS_TIME_STAMP_DS)
         if ds is None:
             return None
         return len(ds)
