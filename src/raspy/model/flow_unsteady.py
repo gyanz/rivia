@@ -1308,25 +1308,25 @@ class UnsteadyFlowEditor:
         for (orig_idx, _), (_, sorted_bc) in zip(targets, sorted_targets):
             self.boundaries[orig_idx] = sorted_bc
 
-    def sort_gate_boundaries(self, *, ascending: bool = True) -> None:
+    def sort_flow_hydrographs(self, *, ascending: bool = False) -> None:
+        """Sort :class:`FlowHydrograph` entries by river station."""
+        self._sort_type(FlowHydrograph, ascending=ascending)
+
+    def sort_gate_boundaries(self, *, ascending: bool = False) -> None:
         """Sort :class:`GateBoundary` entries by river station.
 
         Other boundary types remain at their original positions.
 
         Args:
-            ascending: If ``True`` (default), lowest station first
-                       (downstream -> upstream for standard RAS numbering).
-                       Set to ``False`` for descending (upstream -> downstream).
+            ascending: If ``False`` (default), highest station first
+                       (upstream -> downstream for standard RAS numbering).
+                       Set to ``True`` for ascending (downstream -> upstream).
         """
         self._sort_type(GateBoundary, ascending=ascending)
 
-    def sort_lateral_inflows(self, *, ascending: bool = True) -> None:
+    def sort_lateral_inflows(self, *, ascending: bool = False) -> None:
         """Sort :class:`LateralInflow` entries by river station."""
         self._sort_type(LateralInflow, ascending=ascending)
-
-    def sort_flow_hydrographs(self, *, ascending: bool = True) -> None:
-        """Sort :class:`FlowHydrograph` entries by river station."""
-        self._sort_type(FlowHydrograph, ascending=ascending)
 
     # ------------------------------------------------------------------
     # Set by index (works naturally after sorting)
