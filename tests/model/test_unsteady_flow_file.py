@@ -334,7 +334,7 @@ class TestVerbatimGateOpenings:
         dst = tmp_copy(INLINE_3G)
         f = UnsteadyFlowFile(dst)
         new_vals = [8.5] * 100
-        f.set_gate_openings(
+        f.set_gate_opening(
             "Nittany River", "Weir Reach", "41.75", "Left Group", new_vals
         )
         f.save()
@@ -346,7 +346,7 @@ class TestVerbatimGateOpenings:
     def test_set_scalar_broadcasts(self, tmp_copy):
         dst = tmp_copy(INLINE_3G)
         f = UnsteadyFlowFile(dst)
-        f.set_gate_openings("Nittany River", "Weir Reach", "41.75", "Middle Group", 7.0)
+        f.set_gate_opening("Nittany River", "Weir Reach", "41.75", "Middle Group", 7.0)
         f.save()
         result = UnsteadyFlowFile(dst).get_gate_openings(
             "Nittany River", "Weir Reach", "41.75", "Middle Group"
@@ -360,7 +360,7 @@ class TestVerbatimGateOpenings:
         before = f.get_gate_openings(
             "Nittany River", "Weir Reach", "41.75", "Middle Group"
         )
-        f.set_gate_openings("Nittany River", "Weir Reach", "41.75", "Left Group", 0.0)
+        f.set_gate_opening("Nittany River", "Weir Reach", "41.75", "Left Group", 0.0)
         f.save()
         after = UnsteadyFlowFile(dst).get_gate_openings(
             "Nittany River", "Weir Reach", "41.75", "Middle Group"
@@ -371,7 +371,7 @@ class TestVerbatimGateOpenings:
         dst = tmp_copy(INLINE_3G)
         f = UnsteadyFlowFile(dst)
         with pytest.raises(KeyError):
-            f.set_gate_openings(
+            f.set_gate_opening(
                 "Nittany River", "Weir Reach", "41.75", "No Gate", [1.0]
             )
 
@@ -617,15 +617,15 @@ class TestEditorSetByIndex:
         assert len(vals) == 100
         assert vals[0] == pytest.approx(300.0)
 
-    def test_set_gate_openings_list(self):
+    def test_set_gate_opening_list(self):
         ed = UnsteadyFlowEditor(INLINE_3G)
         new_vals = [4.0] * 100
-        ed.set_gate_openings(0, new_vals, gate_index=0)
+        ed.set_gate_opening(0, new_vals, gate_index=0)
         assert ed.gate_boundaries[0].gates[0].values == pytest.approx(new_vals)
 
-    def test_set_gate_openings_scalar(self):
+    def test_set_gate_opening_scalar(self):
         ed = UnsteadyFlowEditor(INLINE_3G)
-        ed.set_gate_openings(0, 6.0, gate_index=1)
+        ed.set_gate_opening(0, 6.0, gate_index=1)
         vals = ed.gate_boundaries[0].gates[1].values
         assert len(vals) == 100
         assert all(v == pytest.approx(6.0) for v in vals)
@@ -682,33 +682,33 @@ class TestEditorSetByIndex:
         assert all(v == pytest.approx(999.0) for v in ed.lateral_inflows[0].values)
         assert ed.lateral_inflows[-1].values == pytest.approx(original_last)
 
-    # set_all_gate_openings --------------------------------------------------
+    # set_all_gate_opening --------------------------------------------------
 
-    def test_set_all_gate_openings_scalar_per_gate(self):
+    def test_set_all_gate_opening_scalar_per_gate(self):
         """One scalar per gate broadcasts to the full series length."""
         ed = UnsteadyFlowEditor(INLINE_3G)
         gates = ed.gate_boundaries[0].gates
         scalars = [float(i + 1) for i in range(len(gates))]
-        ed.set_all_gate_openings(scalars)
+        ed.set_all_gate_opening(scalars)
         for i, gate in enumerate(gates):
             assert all(v == pytest.approx(scalars[i]) for v in gate.values)
 
-    def test_set_all_gate_openings_list_per_gate(self):
+    def test_set_all_gate_opening_list_per_gate(self):
         """One list[float] per gate sets exact values."""
         ed = UnsteadyFlowEditor(INLINE_3G)
         gates = ed.gate_boundaries[0].gates
         series = [[float(i)] * 100 for i in range(len(gates))]
-        ed.set_all_gate_openings(series)
+        ed.set_all_gate_opening(series)
         for i, gate in enumerate(gates):
             assert gate.values == pytest.approx(series[i])
 
-    def test_set_all_gate_openings_partial_leaves_rest_unchanged(self):
+    def test_set_all_gate_opening_partial_leaves_rest_unchanged(self):
         """If values is shorter than gate count, remaining gates are untouched."""
         ed = UnsteadyFlowEditor(INLINE_3G)
         gates = ed.gate_boundaries[0].gates
         original_last = list(gates[-1].values)
         # INLINE_3G has 3 gates; only update first one
-        ed.set_all_gate_openings([7.0])
+        ed.set_all_gate_opening([7.0])
         assert all(v == pytest.approx(7.0) for v in gates[0].values)
         assert gates[-1].values == pytest.approx(original_last)
 
@@ -737,27 +737,27 @@ class TestEditorSetAtLocation:
         assert filt
         assert all(v == pytest.approx(777.0) for v in filt[0].values)
 
-    def test_set_gate_openings_at(self):
+    def test_set_gate_opening_at(self):
         ed = UnsteadyFlowEditor(INLINE_3G)
         new_vals = [2.5] * 100
-        ed.set_gate_openings_at(
+        ed.set_gate_opening_at(
             "Nittany River", "Weir Reach", "41.75", "Left Group", new_vals
         )
         gate = ed.gate_boundaries[0].gates[0]
         assert gate.values == pytest.approx(new_vals)
 
-    def test_set_gate_openings_at_scalar(self):
+    def test_set_gate_opening_at_scalar(self):
         ed = UnsteadyFlowEditor(INLINE_3G)
-        ed.set_gate_openings_at(
+        ed.set_gate_opening_at(
             "Nittany River", "Weir Reach", "41.75", "Middle Group", 9.0
         )
         gate = ed.gate_boundaries[0].gates[1]
         assert all(v == pytest.approx(9.0) for v in gate.values)
 
-    def test_set_gate_openings_at_missing_gate_raises(self):
+    def test_set_gate_opening_at_missing_gate_raises(self):
         ed = UnsteadyFlowEditor(INLINE_3G)
         with pytest.raises(KeyError):
-            ed.set_gate_openings_at(
+            ed.set_gate_opening_at(
                 "Nittany River", "Weir Reach", "41.75", "No Such Gate", [1.0]
             )
 

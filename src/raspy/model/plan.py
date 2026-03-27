@@ -3,9 +3,24 @@
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 
 logger = logging.getLogger("raspy.model")
+
+_MONTHS = {"JAN", "FEB", "MAR", "APR", "MAY", "JUN",
+           "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"}
+_DATE_RE = re.compile(r"^(\d{2})([A-Z]{3})(\d{4})$")
+
+
+def _check_sim_date(date: str) -> None:
+    """Raise ``ValueError`` if *date* is not in ``DDMONYYYY`` format."""
+    m = _DATE_RE.match(date)
+    if not m or m.group(2) not in _MONTHS:
+        raise ValueError(
+            f"Invalid simulation date {date!r}. "
+            "Expected DDMONYYYY (e.g. '01JAN2020')."
+        )
 
 
 class PlanFile:
@@ -163,11 +178,12 @@ class PlanFile:
     # ------------------------------------------------------------------
 
     @property
-    def simulation_window(self) -> tuple[str, str] | None:
-        """Simulation start and end as ``(start, end)``.
+    def simulation_window(self) -> tuple[tuple[str, str], tuple[str, str]] | None:
+        """Simulation start and end as ``((date, time), (date, time))``.
 
-        Each component has the form ``"DDMONYYYY,HHMM"``
-        (e.g. ``"18FEB1999,0000"``).  Returns ``None`` if the key is absent.
+        Each date is ``"DDMONYYYY"`` and each time is ``"HHMM"``
+        (e.g. ``(("18FEB1999", "0000"), ("20FEB1999", "2400"))``).
+        Returns ``None`` if the key is absent.
         """
         raw = self._get("Simulation Date")
         if raw is None:
@@ -178,17 +194,31 @@ class PlanFile:
                 f"Unexpected Simulation Date format: {raw!r}. "
                 "Expected 'DDMONYYYY,HHMM,DDMONYYYY,HHMM'."
             )
-        start = f"{parts[0]},{parts[1]}"
-        end = f"{parts[2]},{parts[3]}"
-        return start, end
+        return (parts[0], parts[1]), (parts[2], parts[3])
 
     @simulation_window.setter
-    def simulation_window(self, value: tuple[str, str]) -> None:
-        """Set simulation date from a ``(start, end)`` tuple.
+    def simulation_window(
+        self,
+        value: tuple[str, str] | tuple[tuple[str, str], tuple[str, str]],
+    ) -> None:
+        """Set simulation date.
 
-        Each element must be ``"DDMONYYYY,HHMM"`` (e.g. ``"01JAN2020,0000"``).
+        Accepts either a flat ``(start, end)`` tuple where each element is
+        ``"DDMONYYYY,HHMM"`` (e.g. ``"01JAN2020,0000"``), or a nested
+        ``((date, time), (date, time))`` tuple where each pair is joined
+        with ``","`` to form the same string.
         """
         start, end = value
+        if isinstance(start, tuple):
+            _check_sim_date(start[0])
+            start = f"{start[0]},{start[1]}"
+        else:
+            _check_sim_date(start.split(",")[0])
+        if isinstance(end, tuple):
+            _check_sim_date(end[0])
+            end = f"{end[0]},{end[1]}"
+        else:
+            _check_sim_date(end.split(",")[0])
         self._set("Simulation Date", f"{start},{end}")
 
     # ------------------------------------------------------------------

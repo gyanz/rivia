@@ -982,7 +982,7 @@ class UnsteadyFlowFile:
             i += 1
         return None
 
-    def set_gate_openings(
+    def set_gate_opening(
         self, river: str, reach: str, rs: str, gate_name: str, values: _Values
     ) -> None:
         """Replace gate opening values for the given location and gate name.
@@ -1366,7 +1366,7 @@ class UnsteadyFlowEditor:
         for bc, v in zip(self.lateral_inflows, values, strict=False):
             bc.values = _coerce_values(v, len(bc.values))
 
-    def set_gate_openings(
+    def set_gate_opening(
         self, index: int, values: _Values, gate_index: int = 0
     ) -> None:
         """Set gate opening values by position in :attr:`gate_boundaries`.
@@ -1380,7 +1380,7 @@ class UnsteadyFlowEditor:
         gate = self.gate_boundaries[index].gates[gate_index]
         gate.values = _coerce_values(values, len(gate.values))
 
-    def set_all_gate_openings(self, values: list[float | list[float]]) -> None:
+    def set_all_gate_opening(self, values: list[float | list[float]]) -> None:
         """Set gate opening values across all gates in all :class:`GateBoundary`.
 
         Args:
@@ -1439,7 +1439,7 @@ class UnsteadyFlowEditor:
             raise KeyError(f"No LateralInflow at {river!r}, {reach!r}, {rs!r}")
         b.values = _coerce_values(values, len(b.values))
 
-    def set_gate_openings_at(
+    def set_gate_opening_at(
         self, river: str, reach: str, rs: str, gate: str | int, values: _Values
     ) -> None:
         """Set gate opening values by location and gate name or index.
