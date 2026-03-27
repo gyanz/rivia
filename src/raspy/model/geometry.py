@@ -1329,6 +1329,51 @@ class GeometryFile:
         end = self._find_node_end(start)
         return [ln.rstrip("\n") for ln in self._lines[start:end]]
 
+    def inline_gate_groups(self, river: str, reach: str, rs: str) -> list[str]:
+        """Return gate group names for an inline structure, in file order.
+
+        Parses ``IW Gate Name`` header lines from the node block.  The name
+        is the first comma-separated field on the data line that immediately
+        follows each header line.
+
+        Parameters
+        ----------
+        river:
+            River name.
+        reach:
+            Reach name.
+        rs:
+            River station of the inline structure.
+
+        Returns
+        -------
+        list[str]
+            Gate group names, e.g. ``["Left Group", "Center Group", "Right Group"]``.
+
+        Raises
+        ------
+        KeyError
+            If the node is not found or is not an inline structure (type 5).
+        """
+        lines = self.get_node_lines(river, reach, rs)
+        if lines is None:
+            raise KeyError(
+                f"Node not found: river={river!r}, reach={reach!r}, rs={rs!r}"
+            )
+        node_type = self.node_type(river, reach, rs)
+        if node_type != NODE_INLINE_STRUCTURE:
+            raise KeyError(
+                f"Node at river={river!r}, reach={reach!r}, rs={rs!r} "
+                f"is not an inline structure (type={node_type!r})"
+            )
+        names: list[str] = []
+        for i, line in enumerate(lines):
+            if line.startswith("IW Gate Name"):
+                # Next line: name is the first comma-separated field
+                if i + 1 < len(lines):
+                    names.append(lines[i + 1].split(",", 1)[0].strip())
+        return names
+
     def node_type(self, river: str, reach: str, rs: str) -> int | None:
         """Return the node type code for *(river, reach, rs)*, or ``None``.
 

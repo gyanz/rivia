@@ -130,7 +130,7 @@ class DssReader:
         rs: str,
         output: str,
         *,
-        gate: int | None = None,
+        gate: str | int | None = None,
         start: str | datetime | None = None,
         end: str | datetime | None = None,
         trim_missing: bool = False,
@@ -168,10 +168,14 @@ class DssReader:
             (``"<RS> INL STRUCT"``); use for ``FLOW-TOTAL``, ``FLOW-WEIR``,
             ``STAGE-HW``, ``STAGE-TW``.
 
-            ``0`` — gate-total path (``"<RS> INL STRUCT GATE TOTAL"``).
+            ``"GATE TOTAL"`` — aggregate gate path
+            (``"<RS> INL STRUCT GATE TOTAL"``).
 
-            ``N`` (int ≥ 1) — per-gate path (``"<RS> INL STRUCT Gate #N"``);
-            use for ``FLOW-GATE`` and ``Gate Opening`` of gate *N*.
+            ``str`` — gate group name as defined in the geometry file (e.g.
+            ``"Left Group"``); produces ``"<RS> INL STRUCT Left Group"``.
+
+            ``int`` — zero-based index into the gate group list parsed from
+            the geometry file; resolved to the group name automatically.
         start:
             Start of the time window as a :class:`datetime` or a DSS-style
             date string (e.g. ``"01Jan2020"``).  ``None`` defaults to the
@@ -226,9 +230,29 @@ class DssReader:
                 "are currently handled."
             )
 
+        if gate is not None and node_type == NODE_XS:
+            raise ValueError(
+                f"gate selector is not valid for cross sections; "
+                f"node at river={river!r}, reach={reach!r}, rs={rs!r} "
+                f"is a cross section."
+            )
+
+        gate_name: str | None
+        if isinstance(gate, int):
+            groups = self._model.geom.inline_gate_groups(river, reach, rs)
+            try:
+                gate_name = groups[gate]
+            except IndexError as exc:
+                raise IndexError(
+                    f"Gate index {gate} out of range; "
+                    f"{len(groups)} gate group(s) at {river!r}, {reach!r}, {rs!r}"
+                ) from exc
+        else:
+            gate_name = gate
+
         plan = self._model.plan
         part_a = f"{river} {reach}"
-        part_b = _part_b(node_type, rs, gate)
+        part_b = _part_b(node_type, rs, gate_name)
         part_e = plan.dss_interval or ""
         part_f = plan.short_id or ""
         pathname = f"/{part_a}/{part_b}/{output}//{part_e}/{part_f}/"
@@ -439,7 +463,7 @@ class DssReader:
 
     def gate_opening(
         self,
-        gate: int,
+        gate: str | int,
         river: str,
         reach: str,
         rs: str,
@@ -452,7 +476,8 @@ class DssReader:
         Parameters
         ----------
         gate:
-            Gate number (1-based, e.g. ``1`` for Gate #1).
+            Gate group name (str) as defined in the geometry file, or a
+            zero-based integer index into the gate group list.
         river:
             River name.
         reach:
@@ -520,7 +545,7 @@ class DssReader:
         _assert_inline(self._model.geom.node_type(river, reach, rs), river, reach, rs)
         start, end = window if window is not None else (None, None)
         return self.timeseries(
-            river, reach, rs, INL_FLOW_GATE, gate=0, start=start, end=end
+            river, reach, rs, INL_FLOW_GATE, gate="GATE TOTAL", start=start, end=end
         )
 
     def weir_flow(
@@ -630,11 +655,14 @@ def _assert_inline(node_type: int | None, river: str, reach: str, rs: str) -> No
         )
 
 
-def _part_b(node_type: int, rs: str, gate: int | None) -> str:
+def _part_b(node_type: int, rs: str, gate: str | None) -> str:
     """Return the DSS Part B string for a given node type and gate selector.
 
     RS is normalised (stripped of whitespace and trailing ``*``) to match the
     convention used in the DSS file.
+
+    *gate* must already be resolved to a string name (or ``None``).  Integer
+    gate indexes are resolved by the caller before reaching this function.
     """
     rs_norm = rs.strip().rstrip("*").strip()
     if node_type == NODE_XS:
@@ -642,6 +670,4 @@ def _part_b(node_type: int, rs: str, gate: int | None) -> str:
     # Inline structure
     if gate is None:
         return f"{rs_norm} INL STRUCT"
-    if gate == 0:
-        return f"{rs_norm} INL STRUCT GATE TOTAL"
-    return f"{rs_norm} INL STRUCT Gate #{gate}"
+    return f"{rs_norm} INL STRUCT {gate}"
