@@ -567,6 +567,29 @@ class TestEditorSorting:
         rs_again = [float(li.river_station) for li in ed.lateral_inflows]
         assert rs_desc == rs_again
 
+    def test_sort_respects_river_reach_group_order(self):
+        """Group (River, Reach) order must follow first appearance, not be changed.
+
+        Reach B appears first in the list; Reach A appears after.
+        After ascending sort the order must be:
+            (B, 200), (A, 100), (A, 300)   — group order B then A is preserved,
+                                              RS sorted within each group.
+        NOT (A, 100), (A, 300), (B, 200)   — alphabetical group ordering is wrong.
+        NOT (B, 200), (A, 300), (A, 100)   — RS not sorted within group.
+        """
+        li_b200 = LateralInflow(river="River", reach="Reach B", river_station="200")
+        li_a300 = LateralInflow(river="River", reach="Reach A", river_station="300")
+        li_a100 = LateralInflow(river="River", reach="Reach A", river_station="100")
+        ed = UnsteadyFlowEditor.__new__(UnsteadyFlowEditor)
+        ed.boundaries = [li_b200, li_a300, li_a100]
+        ed._header_lines = []
+        ed._path = None
+
+        ed.sort_lateral_inflows(ascending=True)
+
+        result = [(li.reach, float(li.river_station)) for li in ed.lateral_inflows]
+        assert result == [("Reach B", 200.0), ("Reach A", 100.0), ("Reach A", 300.0)]
+
 
 # ---------------------------------------------------------------------------
 # UnsteadyFlowEditor — set by index

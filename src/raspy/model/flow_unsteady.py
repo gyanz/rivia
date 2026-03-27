@@ -210,6 +210,19 @@ class _Boundary:
             f"{self.river_station:8},{self._location_tail}"
         )
 
+    def location(
+        self, *, rs_float: bool = False
+    ) -> tuple[str, str, str] | tuple[str, str, float]:
+        """Return ``(river, reach, river_station)``.
+
+        Args:
+            rs_float: If ``True``, river_station is returned as ``float``
+                      (strips trailing ``'*'``); otherwise as ``str`` (default).
+        """
+        if rs_float:
+            return (self.river, self.reach, self._rs_float())
+        return (self.river, self.reach, self.river_station)
+
     def _rs_float(self) -> float:
         """River station as float for sorting (strips trailing '*')."""
         try:
@@ -1274,14 +1287,24 @@ class UnsteadyFlowEditor:
     # ------------------------------------------------------------------
 
     def _sort_type(self, bc_type: type, *, ascending: bool) -> None:
-        """Sort boundaries of *bc_type* by river station within the list,
-        preserving the relative positions of all other boundary types."""
+        """Sort boundaries of *bc_type* by river station within each (river, reach)
+        group, preserving both group order and the positions of all other types."""
         targets = [
             (i, b) for i, b in enumerate(self.boundaries) if isinstance(b, bc_type)
         ]
-        sorted_targets = sorted(
-            targets, key=lambda t: t[1]._rs_float(), reverse=not ascending
-        )
+        # Group in first-appearance order (dict preserves insertion order, Python 3.7+)
+        groups: dict[tuple[str, str], list[tuple[int, object]]] = {}
+        for item in targets:
+            key = (item[1].river, item[1].reach)
+            if key not in groups:
+                groups[key] = []
+            groups[key].append(item)
+        # Sort by RS within each group, then flatten preserving group order
+        sorted_targets = []
+        for group in groups.values():
+            sorted_targets.extend(
+                sorted(group, key=lambda t: t[1]._rs_float(), reverse=not ascending)
+            )
         for (orig_idx, _), (_, sorted_bc) in zip(targets, sorted_targets):
             self.boundaries[orig_idx] = sorted_bc
 
