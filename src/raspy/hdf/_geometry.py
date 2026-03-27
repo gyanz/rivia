@@ -2133,6 +2133,7 @@ class StructureCollection:
     def __init__(self, hdf: "h5py.File") -> None:
         self._hdf = hdf
         self._items: dict[str, Structure] | None = None
+        self._tuple_index: dict[tuple[str, str, str], str] | None = None
 
     # ------------------------------------------------------------------
     # Internal loader
@@ -2298,6 +2299,15 @@ class StructureCollection:
                     items[key] = Structure(**base)  # unknown type, store as base
 
         self._items = items
+
+        # Secondary index: (river, reach, rs) → string key for non-connection structures.
+        self._tuple_index = {}
+        for k, v in items.items():
+            if isinstance(v, (Bridge, Inline, Lateral)):
+                r, rc, rs = v.location
+                normalized = (r.strip(), rc.strip(), rs.strip())
+                self._tuple_index[normalized] = k
+
         return self._items
 
     # ------------------------------------------------------------------
@@ -2364,7 +2374,7 @@ class StructureCollection:
             })
         return pd.DataFrame(rows)
 
-    def __getitem__(self, key: str | int) -> Structure:
+    def __getitem__(self, key: str | int | tuple[str, str, str]) -> Structure:
         items = self._load()
         if isinstance(key, int):
             keys = list(items)
@@ -2374,12 +2384,27 @@ class StructureCollection:
                 raise IndexError(
                     f"Index {key} out of range for {len(keys)} structures"
                 ) from None
+        if isinstance(key, tuple):
+            r, rc, rs = key
+            normalized = (r.strip(), rc.strip(), rs.strip())
+            str_key = self._tuple_index.get(normalized)  # type: ignore[union-attr]
+            if str_key is None:
+                raise KeyError(
+                    f"No structure at {key!r}. "
+                    "SA2DConnections cannot be looked up by (River, Reach, RS)."
+                )
+            return items[str_key]
         if key not in items:
             raise KeyError(f"Structure {key!r} not found. Available: {self.names}")
         return items[key]
 
-    def __contains__(self, key: str) -> bool:
-        return key in self._load()
+    def __contains__(self, key: object) -> bool:
+        items = self._load()
+        if isinstance(key, tuple) and len(key) == 3:
+            r, rc, rs = key
+            normalized = (str(r).strip(), str(rc).strip(), str(rs).strip())
+            return normalized in self._tuple_index  # type: ignore[operator]
+        return key in items
 
     def __iter__(self):
         return iter(self._load())
