@@ -505,7 +505,7 @@ class DssReader:
             river, reach, rs, INL_GATE_OPENING, gate=gate, start=start, end=end
         )
 
-    def gate_flow_total(
+    def total_gate_flow(
         self,
         river: str,
         reach: str,
