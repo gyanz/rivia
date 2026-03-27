@@ -217,6 +217,11 @@ class PlanFile:
         self._set("Output Interval", value)
 
     @property
+    def dss_interval(self) -> str | None:
+        """Output write interval, e.g. ``"1HOUR"`` (``Output Interval=``)."""
+        return self.output_interval
+
+    @property
     def instantaneous_interval(self) -> str | None:
         """Instantaneous output interval (``Instantaneous Interval=``).
 

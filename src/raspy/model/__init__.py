@@ -16,6 +16,18 @@ import shutil
 from pathlib import Path
 
 from .. import com
+from ._dss import (
+    INL_FLOW_GATE,
+    INL_FLOW_TOTAL,
+    INL_FLOW_WEIR,
+    INL_GATE_OPENING,
+    INL_STAGE_HW,
+    INL_STAGE_TW,
+    XS_FLOW,
+    XS_FLOW_CUM,
+    XS_STAGE,
+    DssExtension,
+)
 from ._mapper import MapperExtension
 from .flow_steady import SteadyBoundary, SteadyFlowFile
 from .flow_unsteady import (
@@ -77,6 +89,16 @@ __all__ = [
     "InitialRRRElev",
     "SteadyFlowFile",
     "SteadyBoundary",
+    "DssExtension",
+    "XS_FLOW",
+    "XS_FLOW_CUM",
+    "XS_STAGE",
+    "INL_FLOW_TOTAL",
+    "INL_FLOW_WEIR",
+    "INL_STAGE_HW",
+    "INL_STAGE_TW",
+    "INL_FLOW_GATE",
+    "INL_GATE_OPENING",
 ]
 
 logger = logging.getLogger("raspy.model")
@@ -84,7 +106,7 @@ logger = logging.getLogger("raspy.model")
 EXT_BACKUP_FILE = "raspy_bkup"
 
 
-class Model(MapperExtension):
+class Model(DssExtension, MapperExtension):
     """High-level interface for working with an HEC-RAS project via the COM object.
 
     Use this class in preference to `com.open`. While `com.open` returns a raw HEC-RAS
