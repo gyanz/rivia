@@ -518,6 +518,91 @@ class DssReader:
             river, reach, rs, INL_FLOW_GATE, gate=0, start=start, end=end
         )
 
+    def weir_flow(
+        self,
+        river: str,
+        reach: str,
+        rs: str,
+        *,
+        window: tuple[str | datetime | None, str | datetime | None] | None = None,
+    ) -> pd.Series:
+        """Return the weir flow time-series for an inline structure.
+
+        Parameters
+        ----------
+        river:
+            River name.
+        reach:
+            Reach name.
+        rs:
+            River station of the inline structure.
+        window:
+            Optional ``(start, end)`` time window.  Each bound is a
+            :class:`datetime` or a DSS-style date string (e.g.
+            ``"01Jan2020"``), or ``None`` to use the plan simulation window.
+
+        Returns
+        -------
+        pd.Series
+            Weir flow values indexed by :class:`pandas.DatetimeIndex`.
+
+        Raises
+        ------
+        ValueError
+            If the node at *(river, reach, rs)* is not an inline structure.
+        """
+        _assert_inline(self._model.geom.node_type(river, reach, rs), river, reach, rs)
+        start, end = window if window is not None else (None, None)
+        return self.timeseries(river, reach, rs, INL_FLOW_WEIR, start=start, end=end)
+
+    def flow_cum(
+        self,
+        river: str,
+        reach: str,
+        rs: str,
+        *,
+        window: tuple[str | datetime | None, str | datetime | None] | None = None,
+    ) -> pd.Series:
+        """Return the cumulative flow volume time-series for a cross section.
+
+        Parameters
+        ----------
+        river:
+            River name.
+        reach:
+            Reach name.
+        rs:
+            River station of the cross section.
+        window:
+            Optional ``(start, end)`` time window.  Each bound is a
+            :class:`datetime` or a DSS-style date string (e.g.
+            ``"01Jan2020"``), or ``None`` to use the plan simulation window.
+
+        Returns
+        -------
+        pd.Series
+            Cumulative flow volume values indexed by :class:`pandas.DatetimeIndex`.
+
+        Raises
+        ------
+        ValueError
+            If the node at *(river, reach, rs)* is not a cross section.
+        """
+        node_type = self._model.geom.node_type(river, reach, rs)
+        if node_type is None:
+            raise ValueError(
+                f"Node not found in geometry: river={river!r}, "
+                f"reach={reach!r}, rs={rs!r}"
+            )
+        if node_type != NODE_XS:
+            raise ValueError(
+                f"flow_cum() requires a cross section; "
+                f"node at river={river!r}, reach={reach!r}, rs={rs!r} "
+                f"has type {node_type!r} (expected NODE_XS={NODE_XS})."
+            )
+        start, end = window if window is not None else (None, None)
+        return self.timeseries(river, reach, rs, XS_FLOW_CUM, start=start, end=end)
+
 
 # ---------------------------------------------------------------------------
 # Internal helpers
