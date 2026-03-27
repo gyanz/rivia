@@ -1,8 +1,8 @@
 """Read HEC-RAS DSS output files (.dss) for plan results.
 
-Provides :class:`DssExtension`, a mixin added to :class:`~raspy.model.Model`
-that reads time-series data from the DSS file written alongside an HEC-RAS
-unsteady simulation.
+Provides :class:`DssReader`, accessible via :attr:`Model.dss`, which reads
+time-series data from the DSS file written alongside an HEC-RAS unsteady
+simulation.
 
 DSS path convention used by HEC-RAS::
 
@@ -44,14 +44,18 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pandas as pd
 
 from .geometry import NODE_INLINE_STRUCTURE, NODE_XS
 
+if TYPE_CHECKING:
+    from . import Model
+
 logger = logging.getLogger("raspy.model")
 
-__all__ = ["DssExtension"]
+__all__ = ["DssReader"]
 
 # ---------------------------------------------------------------------------
 # Output variable name constants
@@ -79,16 +83,16 @@ INL_GATE_OPENING = "Gate Opening"
 
 
 # ---------------------------------------------------------------------------
-# Mixin
+# DssReader
 # ---------------------------------------------------------------------------
 
 
-class DssExtension:
-    """Mixin that adds DSS output reading to :class:`raspy.model.Model`.
+class DssReader:
+    """DSS output reader for an HEC-RAS model.
 
-    Reads time-series results from the ``.dss`` file written by HEC-RAS
-    alongside an unsteady simulation.  The DSS file path is derived from the
-    project file by replacing its extension with ``.dss``.
+    Obtained via :attr:`Model.dss` rather than instantiated directly.  Reads
+    time-series results from the ``.dss`` file written alongside an unsteady
+    simulation.
 
     Requires the ``pydsstools`` package::
 
@@ -97,19 +101,26 @@ class DssExtension:
     Usage::
 
         model = Model("path/to/project.prj")
-        flow = model.timeseries("Canal 1", "Pool 1-4", "7", "FLOW")
-        total_flow = model.timeseries(
-            "Canal 1", "Pool 1-4", "6.9", "FLOW-TOTAL"
-        )
-        gate1_opening = model.timeseries(
-            "Canal 1", "Pool 1-4", "6.9", "Gate Opening", gate=1
-        )
+        flow  = model.dss.flow("Canal 1", "Pool 1-4", "7")
+        hw    = model.dss.stage_hw("Canal 1", "Pool 1-4", "6.9")
+        gate1 = model.dss.gate_opening(1, "Canal 1", "Pool 1-4", "6.9")
     """
+
+    def __init__(self, model: Model) -> None:
+        self._model = model
+
+    # ------------------------------------------------------------------
+    # File path
+    # ------------------------------------------------------------------
 
     @property
     def dss_file(self) -> Path:
         """Path to the DSS output file (project file with ``.dss`` extension)."""
-        return self.project_file.with_suffix(".dss")  # type: ignore[attr-defined]
+        return self._model.project_file.with_suffix(".dss")
+
+    # ------------------------------------------------------------------
+    # Generic timeseries
+    # ------------------------------------------------------------------
 
     def timeseries(
         self,
@@ -162,11 +173,11 @@ class DssExtension:
             use for ``FLOW-GATE`` and ``Gate Opening`` of gate *N*.
         start:
             Start of the time window as a :class:`datetime` or a DSS-style
-            date string (e.g. ``"01Jan2020"``).  ``None`` reads from the
-            first record.
+            date string (e.g. ``"01Jan2020"``).  ``None`` defaults to the
+            plan simulation start.
         end:
             End of the time window as a :class:`datetime` or a DSS-style
-            date string.  ``None`` reads to the last record.
+            date string.  ``None`` defaults to the plan simulation end.
         trim_missing:
             Passed to ``pydsstools`` ``read_ts``.  When ``False`` (default),
             missing values are kept; when ``True``, leading and trailing
@@ -197,12 +208,10 @@ class DssExtension:
                 "Install it with: pip install pydsstools"
             ) from exc
 
-        dss_path = self.dss_file  # type: ignore[attr-defined]
-        if not dss_path.is_file():
-            raise FileNotFoundError(f"DSS file not found: {dss_path}")
+        if not self.dss_file.is_file():
+            raise FileNotFoundError(f"DSS file not found: {self.dss_file}")
 
-        geom = self.geom  # type: ignore[attr-defined]
-        node_type = geom.node_type(river, reach, rs)
+        node_type = self._model.geom.node_type(river, reach, rs)
         if node_type is None:
             raise ValueError(
                 f"Node not found in geometry: river={river!r}, "
@@ -216,7 +225,7 @@ class DssExtension:
                 "are currently handled."
             )
 
-        plan = self.plan  # type: ignore[attr-defined]
+        plan = self._model.plan
         part_a = f"{river} {reach}"
         part_b = _part_b(node_type, rs, gate)
         part_e = plan.dss_interval or ""
@@ -233,99 +242,15 @@ class DssExtension:
                 end = sim_window[1].replace(",", " ")
         window = (start, end) if (start is not None or end is not None) else None
 
-        with HecDss.Open(str(dss_path)) as fid:
+        with HecDss.Open(str(self.dss_file)) as fid:
             ts = fid.read_ts(pathname, window=window, trim_missing=trim_missing)
 
         times = pd.DatetimeIndex([t.datetime() for t in ts.times])
         return pd.Series(ts.values, index=times, name=output)
 
-    def gate_opening(
-        self,
-        gate: int,
-        river: str,
-        reach: str,
-        rs: str,
-        *,
-        window: tuple[str | datetime | None, str | datetime | None] | None = None,
-    ) -> pd.Series:
-        """Return the gate opening time-series for a specific gate on an
-        inline structure.
-
-        Parameters
-        ----------
-        gate:
-            Gate number (1-based, e.g. ``1`` for Gate #1).
-        river:
-            River name.
-        reach:
-            Reach name.
-        rs:
-            River station of the inline structure.
-        window:
-            Optional ``(start, end)`` time window.  Each bound is a
-            :class:`datetime` or a DSS-style date string (e.g.
-            ``"01Jan2020"``), or ``None`` to read from the first / to the
-            last record.
-
-        Returns
-        -------
-        pd.Series
-            Gate opening values indexed by :class:`pandas.DatetimeIndex`.
-
-        Raises
-        ------
-        ValueError
-            If the node at *(river, reach, rs)* is not an inline structure.
-        """
-        _assert_inline(self.geom.node_type(river, reach, rs), river, reach, rs)  # type: ignore[attr-defined]
-        start, end = window if window is not None else (None, None)
-        return self.timeseries(
-            river, reach, rs, INL_GATE_OPENING, gate=gate, start=start, end=end
-        )
-
-    def gate_flow_total(
-        self,
-        river: str,
-        reach: str,
-        rs: str,
-        *,
-        window: tuple[str | datetime | None, str | datetime | None] | None = None,
-    ) -> pd.Series:
-        """Return the total gate flow time-series for an inline structure.
-
-        Reads the ``FLOW-GATE`` variable at the ``GATE TOTAL`` path
-        (``"<RS> INL STRUCT GATE TOTAL"``), which is the sum of flow across
-        all gates.
-
-        Parameters
-        ----------
-        river:
-            River name.
-        reach:
-            Reach name.
-        rs:
-            River station of the inline structure.
-        window:
-            Optional ``(start, end)`` time window.  Each bound is a
-            :class:`datetime` or a DSS-style date string (e.g.
-            ``"01Jan2020"``), or ``None`` to read from the first / to the
-            last record.
-
-        Returns
-        -------
-        pd.Series
-            Total gate flow values indexed by :class:`pandas.DatetimeIndex`.
-
-        Raises
-        ------
-        ValueError
-            If the node at *(river, reach, rs)* is not an inline structure.
-        """
-        _assert_inline(self.geom.node_type(river, reach, rs), river, reach, rs)  # type: ignore[attr-defined]
-        start, end = window if window is not None else (None, None)
-        return self.timeseries(
-            river, reach, rs, INL_FLOW_GATE, gate=0, start=start, end=end
-        )
+    # ------------------------------------------------------------------
+    # Convenience methods
+    # ------------------------------------------------------------------
 
     def flow(
         self,
@@ -353,8 +278,7 @@ class DssExtension:
         window:
             Optional ``(start, end)`` time window.  Each bound is a
             :class:`datetime` or a DSS-style date string (e.g.
-            ``"01Jan2020"``), or ``None`` to read from the first / to the
-            last record.
+            ``"01Jan2020"``), or ``None`` to use the plan simulation window.
 
         Returns
         -------
@@ -367,7 +291,7 @@ class DssExtension:
             If the node is not found or its type is not a cross section or
             inline structure.
         """
-        node_type = self.geom.node_type(river, reach, rs)  # type: ignore[attr-defined]
+        node_type = self._model.geom.node_type(river, reach, rs)
         if node_type is None:
             raise ValueError(
                 f"Node not found in geometry: river={river!r}, "
@@ -407,8 +331,7 @@ class DssExtension:
         window:
             Optional ``(start, end)`` time window.  Each bound is a
             :class:`datetime` or a DSS-style date string (e.g.
-            ``"01Jan2020"``), or ``None`` to read from the first / to the
-            last record.
+            ``"01Jan2020"``), or ``None`` to use the plan simulation window.
 
         Returns
         -------
@@ -420,7 +343,7 @@ class DssExtension:
         ValueError
             If the node at *(river, reach, rs)* is not a cross section.
         """
-        node_type = self.geom.node_type(river, reach, rs)  # type: ignore[attr-defined]
+        node_type = self._model.geom.node_type(river, reach, rs)
         if node_type is None:
             raise ValueError(
                 f"Node not found in geometry: river={river!r}, "
@@ -456,8 +379,7 @@ class DssExtension:
         window:
             Optional ``(start, end)`` time window.  Each bound is a
             :class:`datetime` or a DSS-style date string (e.g.
-            ``"01Jan2020"``), or ``None`` to read from the first / to the
-            last record.
+            ``"01Jan2020"``), or ``None`` to use the plan simulation window.
 
         Returns
         -------
@@ -469,11 +391,9 @@ class DssExtension:
         ValueError
             If the node at *(river, reach, rs)* is not an inline structure.
         """
-        _assert_inline(self.geom.node_type(river, reach, rs), river, reach, rs)  # type: ignore[attr-defined]
+        _assert_inline(self._model.geom.node_type(river, reach, rs), river, reach, rs)
         start, end = window if window is not None else (None, None)
-        return self.timeseries(
-            river, reach, rs, INL_STAGE_HW, start=start, end=end
-        )
+        return self.timeseries(river, reach, rs, INL_STAGE_HW, start=start, end=end)
 
     def stage_tw(
         self,
@@ -496,8 +416,7 @@ class DssExtension:
         window:
             Optional ``(start, end)`` time window.  Each bound is a
             :class:`datetime` or a DSS-style date string (e.g.
-            ``"01Jan2020"``), or ``None`` to read from the first / to the
-            last record.
+            ``"01Jan2020"``), or ``None`` to use the plan simulation window.
 
         Returns
         -------
@@ -509,10 +428,94 @@ class DssExtension:
         ValueError
             If the node at *(river, reach, rs)* is not an inline structure.
         """
-        _assert_inline(self.geom.node_type(river, reach, rs), river, reach, rs)  # type: ignore[attr-defined]
+        _assert_inline(self._model.geom.node_type(river, reach, rs), river, reach, rs)
+        start, end = window if window is not None else (None, None)
+        return self.timeseries(river, reach, rs, INL_STAGE_TW, start=start, end=end)
+
+    def gate_opening(
+        self,
+        gate: int,
+        river: str,
+        reach: str,
+        rs: str,
+        *,
+        window: tuple[str | datetime | None, str | datetime | None] | None = None,
+    ) -> pd.Series:
+        """Return the gate opening time-series for a specific gate on an
+        inline structure.
+
+        Parameters
+        ----------
+        gate:
+            Gate number (1-based, e.g. ``1`` for Gate #1).
+        river:
+            River name.
+        reach:
+            Reach name.
+        rs:
+            River station of the inline structure.
+        window:
+            Optional ``(start, end)`` time window.  Each bound is a
+            :class:`datetime` or a DSS-style date string (e.g.
+            ``"01Jan2020"``), or ``None`` to use the plan simulation window.
+
+        Returns
+        -------
+        pd.Series
+            Gate opening values indexed by :class:`pandas.DatetimeIndex`.
+
+        Raises
+        ------
+        ValueError
+            If the node at *(river, reach, rs)* is not an inline structure.
+        """
+        _assert_inline(self._model.geom.node_type(river, reach, rs), river, reach, rs)
         start, end = window if window is not None else (None, None)
         return self.timeseries(
-            river, reach, rs, INL_STAGE_TW, start=start, end=end
+            river, reach, rs, INL_GATE_OPENING, gate=gate, start=start, end=end
+        )
+
+    def gate_flow_total(
+        self,
+        river: str,
+        reach: str,
+        rs: str,
+        *,
+        window: tuple[str | datetime | None, str | datetime | None] | None = None,
+    ) -> pd.Series:
+        """Return the total gate flow time-series for an inline structure.
+
+        Reads the ``FLOW-GATE`` variable at the ``GATE TOTAL`` path
+        (``"<RS> INL STRUCT GATE TOTAL"``), which is the sum of flow across
+        all gates.
+
+        Parameters
+        ----------
+        river:
+            River name.
+        reach:
+            Reach name.
+        rs:
+            River station of the inline structure.
+        window:
+            Optional ``(start, end)`` time window.  Each bound is a
+            :class:`datetime` or a DSS-style date string (e.g.
+            ``"01Jan2020"``), or ``None`` to use the plan simulation window.
+
+        Returns
+        -------
+        pd.Series
+            Total gate flow values indexed by :class:`pandas.DatetimeIndex`.
+
+        Raises
+        ------
+        ValueError
+            If the node at *(river, reach, rs)* is not an inline structure.
+        """
+        _assert_inline(self._model.geom.node_type(river, reach, rs), river, reach, rs)
+        start, end = window if window is not None else (None, None)
+        return self.timeseries(
+            river, reach, rs, INL_FLOW_GATE, gate=0, start=start, end=end
         )
 
 
@@ -535,7 +538,6 @@ def _assert_inline(node_type: int | None, river: str, reach: str, rs: str) -> No
             f"has type {node_type!r} "
             f"(expected NODE_INLINE_STRUCTURE={NODE_INLINE_STRUCTURE})."
         )
-
 
 
 def _part_b(node_type: int, rs: str, gate: int | None) -> str:

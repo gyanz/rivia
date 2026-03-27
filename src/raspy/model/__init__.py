@@ -26,7 +26,7 @@ from ._dss import (
     XS_FLOW,
     XS_FLOW_CUM,
     XS_STAGE,
-    DssExtension,
+    DssReader,
 )
 from ._mapper import MapperExtension
 from .flow_steady import SteadyBoundary, SteadyFlowFile
@@ -89,7 +89,7 @@ __all__ = [
     "InitialRRRElev",
     "SteadyFlowFile",
     "SteadyBoundary",
-    "DssExtension",
+    "DssReader",
     "XS_FLOW",
     "XS_FLOW_CUM",
     "XS_STAGE",
@@ -106,7 +106,7 @@ logger = logging.getLogger("raspy.model")
 EXT_BACKUP_FILE = "raspy_bkup"
 
 
-class Model(DssExtension, MapperExtension):
+class Model(MapperExtension):
     """High-level interface for working with an HEC-RAS project via the COM object.
 
     Use this class in preference to `com.open`. While `com.open` returns a raw HEC-RAS
@@ -144,6 +144,7 @@ class Model(DssExtension, MapperExtension):
         self._flow: SteadyFlowFile | UnsteadyFlowEditor | None = None
         self._hdf = None
         self._hdf_geom = None
+        self._dss: DssReader | None = None
 
     @property
     def version(self) -> int:
@@ -292,6 +293,25 @@ class Model(DssExtension, MapperExtension):
         return self._hdf_geom
 
     @property
+    def dss_file(self) -> Path:
+        """Path to the DSS output file (project file with ``.dss`` extension)."""
+        return self._project_path.with_suffix(".dss")
+
+    @property
+    def dss(self) -> DssReader:
+        """Lazily created :class:`DssReader` for this plan's DSS output file.
+
+        Provides time-series access for cross-sections and inline structures::
+
+            flow  = model.dss.flow("Canal 1", "Pool 1-4", "7")
+            hw    = model.dss.stage_hw("Canal 1", "Pool 1-4", "6.9")
+            gate1 = model.dss.gate_opening(1, "Canal 1", "Pool 1-4", "6.9")
+        """
+        if self._dss is None:
+            self._dss = DssReader(self)
+        return self._dss
+
+    @property
     def plan_index(self) -> int:
         for i, plan_info in enumerate(self.project.plans()):
             if plan_info["path"].name == self.plan_file.name:
@@ -412,6 +432,7 @@ class Model(DssExtension, MapperExtension):
         self._plan = None  # invalidate cached PlanFile so next access re-parses
         self._geom = None
         self._flow = None
+        self._dss = None
         if self._hdf is not None:
             self._hdf.close()
             self._hdf = None
