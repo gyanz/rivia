@@ -2440,6 +2440,11 @@ class CrossSection:
     mannings_n: np.ndarray = field(default_factory=lambda: np.empty((0, 2)))
     centerline: np.ndarray = field(default_factory=lambda: np.empty((0, 2)))
 
+    @property
+    def location(self) -> tuple[str, str, str]:
+        """``(river, reach, rs)`` identity tuple for this cross section."""
+        return (self.river, self.reach, self.rs)
+
 
 class CrossSectionCollection:
     """Access all 1-D cross sections in ``Geometry/Cross Sections``.
@@ -2456,6 +2461,7 @@ class CrossSectionCollection:
     def __init__(self, hdf: h5py.File) -> None:
         self._hdf = hdf
         self._items: dict[str, CrossSection] | None = None
+        self._loc_index: dict[tuple[str, str, str], str] = {}
 
     def _load(self) -> dict[str, CrossSection]:
         if self._items is not None:
@@ -2498,6 +2504,7 @@ class CrossSectionCollection:
             mn_start, mn_count = int(mn_info[i, 0]), int(mn_info[i, 1])
             pl_start, pl_count = int(pl_info[i, 0]), int(pl_info[i, 1])
 
+            self._loc_index[(river, reach, rs)] = key
             items[key] = CrossSection(
                 river=river,
                 reach=reach,
@@ -2533,8 +2540,10 @@ class CrossSectionCollection:
     def __getitem__(self, key: int) -> CrossSection: ...
     @overload
     def __getitem__(self, key: str) -> CrossSection: ...
+    @overload
+    def __getitem__(self, key: tuple[str, str, str]) -> CrossSection: ...
 
-    def __getitem__(self, key: int | str) -> CrossSection:
+    def __getitem__(self, key: int | str | tuple[str, str, str]) -> CrossSection:
         items = self._load()
         if isinstance(key, int):
             keys = list(items)
@@ -2544,6 +2553,13 @@ class CrossSectionCollection:
                 raise IndexError(
                     f"Index {key} out of range (n={len(items)})"
                 ) from None
+        if isinstance(key, tuple):
+            str_key = self._loc_index.get(key)
+            if str_key is None:
+                raise KeyError(
+                    f"Cross section {key!r} not found."
+                )
+            return items[str_key]
         if key not in items:
             raise KeyError(
                 f"Cross section {key!r} not found. Available: {self.names}"
