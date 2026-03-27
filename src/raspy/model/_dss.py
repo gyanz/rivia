@@ -386,6 +386,55 @@ class DssExtension:
         start, end = window if window is not None else (None, None)
         return self.timeseries(river, reach, rs, output, start=start, end=end)
 
+    def stage(
+        self,
+        river: str,
+        reach: str,
+        rs: str,
+        *,
+        window: tuple[str | datetime | None, str | datetime | None] | None = None,
+    ) -> pd.Series:
+        """Return the stage (water surface elevation) time-series for a cross section.
+
+        Parameters
+        ----------
+        river:
+            River name.
+        reach:
+            Reach name.
+        rs:
+            River station of the cross section.
+        window:
+            Optional ``(start, end)`` time window.  Each bound is a
+            :class:`datetime` or a DSS-style date string (e.g.
+            ``"01Jan2020"``), or ``None`` to read from the first / to the
+            last record.
+
+        Returns
+        -------
+        pd.Series
+            Stage values indexed by :class:`pandas.DatetimeIndex`.
+
+        Raises
+        ------
+        ValueError
+            If the node at *(river, reach, rs)* is not a cross section.
+        """
+        node_type = self.geom.node_type(river, reach, rs)  # type: ignore[attr-defined]
+        if node_type is None:
+            raise ValueError(
+                f"Node not found in geometry: river={river!r}, "
+                f"reach={reach!r}, rs={rs!r}"
+            )
+        if node_type != NODE_XS:
+            raise ValueError(
+                f"stage() requires a cross section; "
+                f"node at river={river!r}, reach={reach!r}, rs={rs!r} "
+                f"has type {node_type!r} (expected NODE_XS={NODE_XS})."
+            )
+        start, end = window if window is not None else (None, None)
+        return self.timeseries(river, reach, rs, XS_STAGE, start=start, end=end)
+
     def stage_hw(
         self,
         river: str,
