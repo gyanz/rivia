@@ -121,6 +121,7 @@ class Model(MapperExtension):
         self._geom: GeometryFile | None = None
         self._flow: SteadyFlowFile | UnsteadyFlowEditor | None = None
         self._hdf = None
+        self._hdf_geom = None
 
     @property
     def version(self) -> int:
@@ -251,6 +252,24 @@ class Model(MapperExtension):
         return self._hdf
 
     @property
+    def hdf_geom(self):
+        """Lazily opened geometry HDF file as a :class:`raspy.hdf.GeometryHdf` instance.
+
+        Unlike :attr:`hdf` (which requires the plan to have been run), the geometry
+        HDF (``*.gx.hdf``) is written when the geometry is processed and is always
+        available.  Use this property to access mesh geometry, cell coordinates,
+        face data, and structures without needing plan results.
+
+        The handle is kept open until :meth:`reload` is called or the
+        ``GeometryHdf`` object is closed directly.
+        """
+        from raspy.hdf import GeometryHdf
+
+        if self._hdf_geom is None:
+            self._hdf_geom = GeometryHdf(self.geom_hdf_file)
+        return self._hdf_geom
+
+    @property
     def plan_index(self) -> int:
         for i, plan_info in enumerate(self.project.plans()):
             if plan_info["path"].name == self.plan_file.name:
@@ -374,6 +393,9 @@ class Model(MapperExtension):
         if self._hdf is not None:
             self._hdf.close()
             self._hdf = None
+        if self._hdf_geom is not None:
+            self._hdf_geom.close()
+            self._hdf_geom = None
         # v503+: Project_Close + Project_Open reloads without restarting COM.
         # Older versions: restart the COM process entirely.
         try:

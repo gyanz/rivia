@@ -107,8 +107,8 @@ class TestVerbatimProperties:
     def test_program_version_baxter(self):
         assert UnsteadyFlowFile(BAXTER).program_version == "6.30"
 
-    def test_use_restart_zero(self):
-        assert UnsteadyFlowFile(BAXTER).use_restart == 0
+    def test_restart_default(self):
+        assert UnsteadyFlowFile(BAXTER).restart == (0, None)
 
     def test_flow_title_inline_3gates(self):
         assert UnsteadyFlowFile(INLINE_3G).flow_title == "Unsteady Flow Hydrograph"
@@ -124,12 +124,35 @@ class TestVerbatimProperties:
         f.save()
         assert UnsteadyFlowFile(dst).flow_title == "Modified Title"
 
-    def test_set_use_restart(self, tmp_copy):
+    def test_set_restart_flag_true(self, tmp_copy):
         dst = tmp_copy(BAXTER)
         f = UnsteadyFlowFile(dst)
-        f.use_restart = -1
+        f.restart = True
         f.save()
-        assert UnsteadyFlowFile(dst).use_restart == -1
+        assert UnsteadyFlowFile(dst).restart == (1, None)
+
+    def test_set_restart_flag_nonzero_int(self, tmp_copy):
+        dst = tmp_copy(BAXTER)
+        f = UnsteadyFlowFile(dst)
+        f.restart = -1
+        f.save()
+        assert UnsteadyFlowFile(dst).restart == (1, None)
+
+    def test_set_restart_filename(self, tmp_copy):
+        dst = tmp_copy(BAXTER)
+        f = UnsteadyFlowFile(dst)
+        f.restart = "Baxter.p01.01JAN2000 0000.rst"
+        f.save()
+        flag, filename = UnsteadyFlowFile(dst).restart
+        assert flag == 1
+        assert filename == "Baxter.p01.01JAN2000 0000.rst"
+
+    def test_set_restart_none(self, tmp_copy):
+        dst = tmp_copy(BAXTER)
+        f = UnsteadyFlowFile(dst)
+        f.restart = None
+        f.save()
+        assert UnsteadyFlowFile(dst).restart == (0, None)
 
 
 # ---------------------------------------------------------------------------
@@ -403,8 +426,8 @@ class TestEditorParsing:
     def test_program_version(self):
         assert UnsteadyFlowEditor(BAXTER).program_version == "6.30"
 
-    def test_use_restart(self):
-        assert UnsteadyFlowEditor(BAXTER).use_restart == 0
+    def test_restart(self):
+        assert UnsteadyFlowEditor(BAXTER).restart == (0, None)
 
     def test_program_version_old_format_is_none(self):
         assert UnsteadyFlowEditor(INLINE_3G).program_version is None

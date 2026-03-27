@@ -756,19 +756,42 @@ class UnsteadyFlowFile:
         """HEC-RAS version string (``Program Version=``)."""
         return self._get("Program Version")
 
-    @property
-    def use_restart(self) -> int:
-        """Restart flag: ``0`` = no restart, ``-1`` = use restart file."""
-        raw = self._get("Use Restart")
-        return int(raw.strip()) if raw is not None else 0
+    def _set_restart_filename(self, filename: str) -> None:
+        prefix = "Restart Filename="
+        for i, line in enumerate(self._lines):
+            if line.startswith(prefix):
+                self._lines[i] = f"{prefix}{filename}\n"
+                return
+        ur_prefix = "Use Restart="
+        for i, line in enumerate(self._lines):
+            if line.startswith(ur_prefix):
+                self._lines.insert(i + 1, f"{prefix}{filename}\n")
+                return
+        raise KeyError("'Use Restart' not found; cannot insert 'Restart Filename'")
 
-    @use_restart.setter
-    def use_restart(self, value: int) -> None:
-        if value:
-            value = 1
+    @property
+    def restart(self) -> tuple[int, str | None]:
+        """Return ``(flag, filename)`` for the restart configuration.
+
+        *flag* is the ``Use Restart`` value (``0`` = disabled, ``1`` = enabled).
+        *filename* is the ``Restart Filename`` value, or ``None`` if absent.
+        """
+        raw = self._get("Use Restart")
+        flag = int(raw.strip()) if raw is not None else 0
+        filename = self._get("Restart Filename")
+        return (flag, filename)
+
+    @restart.setter
+    def restart(self, value: int | bool | str | None) -> None:
+        if value is None or value is False:
+            self._set("Use Restart", " 0 ")
+        elif value is True:
+            self._set("Use Restart", " 1 ")
+        elif isinstance(value, str):
+            self._set_restart_filename(value)
+            self._set("Use Restart", " 1 ")
         else:
-            value = 0
-        self._set("Use Restart", f" {value} ")
+            self._set("Use Restart", " 1 " if value else " 0 ")
 
     # ------------------------------------------------------------------
     # Flow hydrograph
@@ -1187,14 +1210,44 @@ class UnsteadyFlowEditor:
     def program_version(self) -> str | None:
         return self._header_get("Program Version")
 
-    @property
-    def use_restart(self) -> int:
-        raw = self._header_get("Use Restart")
-        return int(raw.strip()) if raw is not None else 0
+    def _header_set_restart_filename(self, filename: str) -> None:
+        prefix = "Restart Filename="
+        for i, line in enumerate(self._header_lines):
+            if line.startswith(prefix):
+                self._header_lines[i] = f"{prefix}{filename}\n"
+                return
+        ur_prefix = "Use Restart="
+        for i, line in enumerate(self._header_lines):
+            if line.startswith(ur_prefix):
+                self._header_lines.insert(i + 1, f"{prefix}{filename}\n")
+                return
+        raise KeyError(
+            "'Use Restart' not found in header; cannot insert 'Restart Filename'"
+        )
 
-    @use_restart.setter
-    def use_restart(self, value: int) -> None:
-        self._header_set("Use Restart", f" {value} ")
+    @property
+    def restart(self) -> tuple[int, str | None]:
+        """Return ``(flag, filename)`` for the restart configuration.
+
+        *flag* is the ``Use Restart`` value (``0`` = disabled, ``1`` = enabled).
+        *filename* is the ``Restart Filename`` value, or ``None`` if absent.
+        """
+        raw = self._header_get("Use Restart")
+        flag = int(raw.strip()) if raw is not None else 0
+        filename = self._header_get("Restart Filename")
+        return (flag, filename)
+
+    @restart.setter
+    def restart(self, value: int | bool | str | None) -> None:
+        if value is None or value is False:
+            self._header_set("Use Restart", " 0 ")
+        elif value is True:
+            self._header_set("Use Restart", " 1 ")
+        elif isinstance(value, str):
+            self._header_set_restart_filename(value)
+            self._header_set("Use Restart", " 1 ")
+        else:
+            self._header_set("Use Restart", " 1 " if value else " 0 ")
 
     # ------------------------------------------------------------------
     # Typed boundary views
