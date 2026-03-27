@@ -1440,22 +1440,34 @@ class UnsteadyFlowEditor:
         b.values = _coerce_values(values, len(b.values))
 
     def set_gate_openings_at(
-        self, river: str, reach: str, rs: str, gate_name: str, values: _Values
+        self, river: str, reach: str, rs: str, gate: str | int, values: _Values
     ) -> None:
-        """Set gate opening values by location and gate name.
+        """Set gate opening values by location and gate name or index.
 
         Args:
+            gate: Gate name string, or a zero-based integer index into
+                the boundary's gate list.
             values: A scalar is broadcast to the existing time-series length.
         """
         b = self._find_boundary(river, reach, rs)
         if not isinstance(b, GateBoundary):
             raise KeyError(f"No GateBoundary at {river!r}, {reach!r}, {rs!r}")
-        gn = gate_name.strip().lower()
-        for gate in b.gates:
-            if gate.gate_name.strip().lower() == gn:
-                gate.values = _coerce_values(values, len(gate.values))
+        if isinstance(gate, int):
+            try:
+                g = b.gates[gate]
+            except IndexError as exc:
+                raise IndexError(
+                    f"Gate index {gate} out of range; "
+                    f"{len(b.gates)} gate(s) at {river!r}, {reach!r}, {rs!r}"
+                ) from exc
+            g.values = _coerce_values(values, len(g.values))
+            return
+        gn = gate.strip().lower()
+        for g in b.gates:
+            if g.gate_name.strip().lower() == gn:
+                g.values = _coerce_values(values, len(g.values))
                 return
-        raise KeyError(f"Gate {gate_name!r} not found at {river!r}, {reach!r}, {rs!r}")
+        raise KeyError(f"Gate {gate!r} not found at {river!r}, {reach!r}, {rs!r}")
 
     # ------------------------------------------------------------------
     # Initial conditions

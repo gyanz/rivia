@@ -143,7 +143,6 @@ class Model(MapperExtension):
         self._geom: GeometryFile | None = None
         self._flow: SteadyFlowFile | UnsteadyFlowEditor | None = None
         self._hdf = None
-        self._hdf_geom = None
         self._dss: DssReader | None = None
 
     @property
@@ -253,44 +252,29 @@ class Model(MapperExtension):
 
     @property
     def hdf(self):
-        """Lazily opened plan HDF file as a :class:`raspy.hdf.PlanHdf` instance.
+        """Lazily opened HDF file as a :class:`raspy.hdf.PlanHdf` or
+        :class:`raspy.hdf.GeometryHdf`.
 
-        The handle is kept open until :meth:`reload` is called (which closes
-        and discards it) or until the ``PlanHdf`` object is closed directly.
-        Use as a context manager for explicit lifetime control::
+        Returns a cached :class:`~raspy.hdf.PlanHdf` when the plan HDF file
+        exists and opens without error.  If the plan HDF is missing or cannot
+        be opened, returns a **fresh** (uncached) :class:`~raspy.hdf.GeometryHdf`
+        from the geometry HDF instead — useful when the plan has not yet been run.
 
-            with model.hdf as h:
-                depth = h.flow_areas["spillway"].depth(10)
-
-        Or keep it open across multiple calls::
-
-            area = model.hdf.flow_areas["spillway"]
-            wse  = area.water_surface[5]
-            depth = area.depth(5)
+        The ``PlanHdf`` handle is kept open until :meth:`reload` is called or
+        the object is closed directly.  The ``GeometryHdf`` fallback is not
+        cached; each access that requires the fallback opens a new handle.
         """
-        from raspy.hdf import PlanHdf
+        from raspy.hdf import GeometryHdf, PlanHdf
 
         if self._hdf is None:
-            self._hdf = PlanHdf(self.plan_hdf_file)
+            plan_path = self.plan_hdf_file
+            try:
+                if not plan_path.exists():
+                    raise FileNotFoundError(plan_path)
+                self._hdf = PlanHdf(plan_path)
+            except Exception:
+                return GeometryHdf(self.geom_hdf_file)
         return self._hdf
-
-    @property
-    def hdf_geom(self):
-        """Lazily opened geometry HDF file as a :class:`raspy.hdf.GeometryHdf` instance.
-
-        Unlike :attr:`hdf` (which requires the plan to have been run), the geometry
-        HDF (``*.gx.hdf``) is written when the geometry is processed and is always
-        available.  Use this property to access mesh geometry, cell coordinates,
-        face data, and structures without needing plan results.
-
-        The handle is kept open until :meth:`reload` is called or the
-        ``GeometryHdf`` object is closed directly.
-        """
-        from raspy.hdf import GeometryHdf
-
-        if self._hdf_geom is None:
-            self._hdf_geom = GeometryHdf(self.geom_hdf_file)
-        return self._hdf_geom
 
     @property
     def dss_file(self) -> Path:
@@ -436,9 +420,6 @@ class Model(MapperExtension):
         if self._hdf is not None:
             self._hdf.close()
             self._hdf = None
-        if self._hdf_geom is not None:
-            self._hdf_geom.close()
-            self._hdf_geom = None
         # v503+: Project_Close + Project_Open reloads without restarting COM.
         # Older versions: restart the COM process entirely.
         try:

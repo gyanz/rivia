@@ -46,6 +46,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import numpy as np
 import pandas as pd
 
 from .geometry import NODE_INLINE_STRUCTURE, NODE_XS
@@ -242,11 +243,15 @@ class DssReader:
                 end = sim_window[1].replace(",", " ")
         window = (start, end) if (start is not None or end is not None) else None
 
+        logger.debug("DSS time window: %s", window)
+
         with HecDss.Open(str(self.dss_file)) as fid:
             ts = fid.read_ts(pathname, window=window, trim_missing=trim_missing)
 
         times = pd.DatetimeIndex([t.datetime() for t in ts.times])
-        return pd.Series(ts.values, index=times, name=output)
+        values = ts.values
+        values[ts.nodata] = np.nan
+        return pd.Series(values, index=times, name=output)
 
     # ------------------------------------------------------------------
     # Convenience methods
