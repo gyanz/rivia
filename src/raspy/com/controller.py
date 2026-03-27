@@ -336,7 +336,14 @@ class _ControllerBase:
             else:
                 res = rc.Compute_CurrentPlan(None, None, int(BlockingMode))
                 success = res[0]
-                messages = res[1] if res[1] is not None else ()
+                # res layout for v5.0.3+: (status, nmsg, Msg, BlockingMode)
+                raw = res[2]
+                if raw is None:
+                    messages = ()
+                elif isinstance(raw, (list, tuple)):
+                    messages = raw
+                else:
+                    messages = (str(raw),) if raw else ()
                 if not success:
                     detail = "; ".join(messages) if messages else "no details available"
                     raise HecRasComputeError(

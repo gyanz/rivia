@@ -237,6 +237,7 @@ class FlowHydrograph(_Boundary):
 
     interval: str = "1HOUR"
     values: list[float] = field(default_factory=list)
+    flow_hydrograph_slope: str | None = None
     stage_tw_check: int = 0
     dss_file: str = ""
     dss_path: str = ""
@@ -420,7 +421,9 @@ def _parse_boundary_blocks(lines: list[str]) -> list[BoundaryType]:
                         k, v = _next_key(i)
                         if k in ("Boundary Location",) or _is_trailing_key(k):
                             break
-                        if k == "Stage Hydrograph TW Check":
+                        if k == "Flow Hydrograph Slope":
+                            bc.flow_hydrograph_slope = v.strip()
+                        elif k == "Stage Hydrograph TW Check":
                             bc.stage_tw_check = int(v.strip())
                         elif k == "DSS File":
                             bc.dss_file = v.strip()
@@ -1534,6 +1537,8 @@ class UnsteadyFlowEditor:
                 out.append(dl + "\n")
             if isinstance(bc, FlowHydrograph):
                 out.append(f"Stage Hydrograph TW Check={bc.stage_tw_check}\n")
+                if bc.flow_hydrograph_slope is not None:
+                    out.append(f"Flow Hydrograph Slope= {bc.flow_hydrograph_slope}\n")
             if bc.dss_file:
                 out.append(f"DSS File={bc.dss_file}\n")
             out.append(f"DSS Path={bc.dss_path}\n")

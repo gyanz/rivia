@@ -2163,8 +2163,10 @@ class CrossSectionResultsCollection(CrossSectionCollection):
     def __getitem__(self, key: int) -> CrossSectionResults: ...
     @overload
     def __getitem__(self, key: str) -> CrossSectionResults: ...
+    @overload
+    def __getitem__(self, key: tuple[str, str, str]) -> CrossSectionResults: ...
 
-    def __getitem__(self, key: int | str) -> CrossSectionResults:
+    def __getitem__(self, key: int | str | tuple[str, str, str]) -> CrossSectionResults:
         items = self._load_results()
         if isinstance(key, int):
             keys = list(items)
@@ -2174,6 +2176,15 @@ class CrossSectionResultsCollection(CrossSectionCollection):
                 raise IndexError(
                     f"Index {key} out of range (n={len(items)})"
                 ) from None
+        if isinstance(key, tuple):
+            str_key = self._loc_index.get(key)
+            if str_key is None:
+                raise KeyError(f"Cross section {key!r} not found.")
+            if str_key not in items:
+                raise KeyError(
+                    f"Cross section {key!r} has no results in this plan."
+                )
+            return items[str_key]
         if key not in items:
             raise KeyError(
                 f"Cross section {key!r} not found. Available: {self.names}"
