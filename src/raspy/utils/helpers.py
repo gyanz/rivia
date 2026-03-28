@@ -3,8 +3,40 @@
 import datetime as dt
 import functools
 import logging
+import re
 import time
 from pathlib import Path
+
+_MONTHS = {"JAN", "FEB", "MAR", "APR", "MAY", "JUN",
+           "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"}
+_DATE_RE = re.compile(r"^(\d{2})([A-Za-z]{3})(\d{4})$")
+
+
+def check_sim_date(date: str) -> None:
+    """Raise ``ValueError`` if *date* is not in ``DDMONYYYY`` format.
+
+    The month abbreviation is case-insensitive (e.g. ``"01jan2020"`` is valid).
+    """
+    m = _DATE_RE.match(date)
+    if not m or m.group(2).upper() not in _MONTHS:
+        raise ValueError(
+            f"Invalid simulation date {date!r}. "
+            "Expected DDMONYYYY (e.g. '01JAN2020')."
+        )
+
+
+def check_sim_time(time_str: str) -> None:
+    """Raise ``ValueError`` if *time_str* is not ``HHMM`` or ``HHMMSS`` with HH <= 24."""
+    t = time_str.strip()
+    if len(t) not in (4, 6) or not t.isdigit():
+        raise ValueError(
+            f"Invalid simulation time {time_str!r}. Expected HHMM or HHMMSS."
+        )
+    hh = int(t[:2])
+    if hh > 24:
+        raise ValueError(
+            f"Invalid simulation time {time_str!r}: hours {hh} exceeds 24."
+        )
 
 # Custom level for timer output — sits above WARNING (30) so it survives
 # benchmark runs that suppress INFO/DEBUG to reduce I/O overhead.

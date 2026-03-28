@@ -49,12 +49,16 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pandas as pd
 
+from ..utils.helpers import check_sim_date, check_sim_time
 from .geometry import NODE_INLINE_STRUCTURE, NODE_XS
 
 if TYPE_CHECKING:
     from . import Model
 
 logger = logging.getLogger("raspy.model")
+
+#: Type for a single window bound: flat string, ``(date, time)`` tuple, datetime, or None.
+_WindowBound = str | tuple[str, str] | datetime | None
 
 __all__ = ["DssReader"]
 
@@ -131,8 +135,8 @@ class DssReader:
         output: str,
         *,
         gate: str | int | None = None,
-        start: str | datetime | None = None,
-        end: str | datetime | None = None,
+        start: _WindowBound = None,
+        end: _WindowBound = None,
         trim_missing: bool = False,
     ) -> pd.Series:
         """Return a time-series for a cross-section or inline structure.
@@ -262,9 +266,13 @@ class DssReader:
         sim_window = plan.simulation_window
         if sim_window is not None:
             if start is None:
-                start = sim_window[0].replace(",", " ")
+                _s = sim_window[0]
+                start = f"{_s[0]} {_s[1]}" if isinstance(_s, tuple) else _s.replace(",", " ")
             if end is None:
-                end = sim_window[1].replace(",", " ")
+                _e = sim_window[1]
+                end = f"{_e[0]} {_e[1]}" if isinstance(_e, tuple) else _e.replace(",", " ")
+        start = _bound_to_dss_str(start)
+        end = _bound_to_dss_str(end)
         window = (start, end) if (start is not None or end is not None) else None
 
         logger.debug("DSS time window: %s", window)
@@ -287,7 +295,7 @@ class DssReader:
         reach: str,
         rs: str,
         *,
-        window: tuple[str | datetime | None, str | datetime | None] | None = None,
+        window: tuple[_WindowBound, _WindowBound] | None = None,
     ) -> pd.Series:
         """Return the flow time-series for a cross-section or inline structure.
 
@@ -345,7 +353,7 @@ class DssReader:
         reach: str,
         rs: str,
         *,
-        window: tuple[str | datetime | None, str | datetime | None] | None = None,
+        window: tuple[_WindowBound, _WindowBound] | None = None,
     ) -> pd.Series:
         """Return the stage (water surface elevation) time-series for a cross section.
 
@@ -393,7 +401,7 @@ class DssReader:
         reach: str,
         rs: str,
         *,
-        window: tuple[str | datetime | None, str | datetime | None] | None = None,
+        window: tuple[_WindowBound, _WindowBound] | None = None,
     ) -> pd.Series:
         """Return the headwater stage time-series for an inline structure.
 
@@ -430,7 +438,7 @@ class DssReader:
         reach: str,
         rs: str,
         *,
-        window: tuple[str | datetime | None, str | datetime | None] | None = None,
+        window: tuple[_WindowBound, _WindowBound] | None = None,
     ) -> pd.Series:
         """Return the tailwater stage time-series for an inline structure.
 
@@ -468,7 +476,7 @@ class DssReader:
         reach: str,
         rs: str,
         *,
-        window: tuple[str | datetime | None, str | datetime | None] | None = None,
+        window: tuple[_WindowBound, _WindowBound] | None = None,
     ) -> pd.Series:
         """Return the gate opening time-series for a specific gate on an
         inline structure.
@@ -511,7 +519,7 @@ class DssReader:
         reach: str,
         rs: str,
         *,
-        window: tuple[str | datetime | None, str | datetime | None] | None = None,
+        window: tuple[_WindowBound, _WindowBound] | None = None,
     ) -> pd.Series:
         """Return the total gate flow time-series for an inline structure.
 
@@ -554,7 +562,7 @@ class DssReader:
         reach: str,
         rs: str,
         *,
-        window: tuple[str | datetime | None, str | datetime | None] | None = None,
+        window: tuple[_WindowBound, _WindowBound] | None = None,
     ) -> pd.Series:
         """Return the weir flow time-series for an inline structure.
 
@@ -591,7 +599,7 @@ class DssReader:
         reach: str,
         rs: str,
         *,
-        window: tuple[str | datetime | None, str | datetime | None] | None = None,
+        window: tuple[_WindowBound, _WindowBound] | None = None,
     ) -> pd.Series:
         """Return the cumulative flow volume time-series for a cross section.
 
@@ -637,6 +645,22 @@ class DssReader:
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+
+def _bound_to_dss_str(bound: _WindowBound) -> str | datetime | None:
+    """Convert a window bound to the form accepted by pydsstools.
+
+    - ``None``      → ``None`` (use plan simulation window)
+    - ``datetime``  → passed through unchanged
+    - ``str``       → passed through unchanged (DSS-style date string)
+    - ``(date, time)`` tuple → validated and joined as ``"DDMONYYYY HHMM"``
+    """
+    if bound is None or isinstance(bound, (str, datetime)):
+        return bound
+    # tuple[str, str]
+    check_sim_date(bound[0])
+    check_sim_time(bound[1])
+    return f"{bound[0]} {bound[1]}"
 
 
 def _assert_inline(node_type: int | None, river: str, reach: str, rs: str) -> None:

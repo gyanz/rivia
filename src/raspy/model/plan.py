@@ -3,24 +3,33 @@
 from __future__ import annotations
 
 import logging
-import re
+from datetime import datetime
 from pathlib import Path
+
+from ..utils.helpers import check_sim_date as _check_sim_date
+from ..utils.helpers import check_sim_time as _check_sim_time
 
 logger = logging.getLogger("raspy.model")
 
 _MONTHS = {"JAN", "FEB", "MAR", "APR", "MAY", "JUN",
            "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"}
-_DATE_RE = re.compile(r"^(\d{2})([A-Z]{3})(\d{4})$")
+
+_MONTH_ABBR = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN",
+               "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"]
 
 
-def _check_sim_date(date: str) -> None:
-    """Raise ``ValueError`` if *date* is not in ``DDMONYYYY`` format."""
-    m = _DATE_RE.match(date)
-    if not m or m.group(2) not in _MONTHS:
-        raise ValueError(
-            f"Invalid simulation date {date!r}. "
-            "Expected DDMONYYYY (e.g. '01JAN2020')."
-        )
+def _to_sim_date_str(bound: str | tuple[str, str] | datetime) -> str:
+    """Normalise a simulation window bound to ``"DDMONYYYY,HHMM"`` format."""
+    if isinstance(bound, datetime):
+        return f"{bound.day:02d}{_MONTH_ABBR[bound.month - 1]}{bound.year},{bound.hour:02d}{bound.minute:02d}"
+    if isinstance(bound, tuple):
+        _check_sim_date(bound[0])
+        _check_sim_time(bound[1])
+        return f"{bound[0]},{bound[1]}"
+    parts = bound.split(",")
+    _check_sim_date(parts[0])
+    _check_sim_time(parts[1])
+    return bound
 
 
 class PlanFile:
@@ -210,26 +219,23 @@ class PlanFile:
     @simulation_window.setter
     def simulation_window(
         self,
-        value: tuple[str, str] | tuple[tuple[str, str], tuple[str, str]],
+        value: (
+            tuple[str, str]
+            | tuple[tuple[str, str], tuple[str, str]]
+            | tuple[datetime, datetime]
+        ),
     ) -> None:
         """Set simulation date.
 
-        Accepts either a flat ``(start, end)`` tuple where each element is
-        ``"DDMONYYYY,HHMM"`` (e.g. ``"01JAN2020,0000"``), or a nested
-        ``((date, time), (date, time))`` tuple where each pair is joined
-        with ``","`` to form the same string.
+        Each bound can be supplied in one of three forms:
+
+        - Flat string: ``"DDMONYYYY,HHMM"`` (e.g. ``"01JAN2020,0000"``)
+        - Nested tuple: ``("DDMONYYYY", "HHMM")``
+        - :class:`~datetime.datetime` object
         """
         start, end = value
-        if isinstance(start, tuple):
-            _check_sim_date(start[0])
-            start = f"{start[0]},{start[1]}"
-        else:
-            _check_sim_date(start.split(",")[0])
-        if isinstance(end, tuple):
-            _check_sim_date(end[0])
-            end = f"{end[0]},{end[1]}"
-        else:
-            _check_sim_date(end.split(",")[0])
+        start = _to_sim_date_str(start)
+        end = _to_sim_date_str(end)
         self._set("Simulation Date", f"{start},{end}")
 
     # ------------------------------------------------------------------
