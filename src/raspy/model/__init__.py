@@ -474,6 +474,9 @@ class Model(MapperExtension):
         HecRasComputeError
             If HEC-RAS reports a computation failure or a COM error occurs.
         """
+        if self._hdf is not None:
+            self._hdf.close()
+            self._hdf = None
         if self._plan is not None and self._plan.is_modified:
             logger.warning("Plan file %s is modified but not saved.", self.plan_file.name)
         if self._geom is not None and self._geom.is_modified:
