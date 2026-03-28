@@ -420,6 +420,7 @@ class GeometryFile:
             raise FileNotFoundError(f"Geometry file not found: {self._path}")
         with open(self._path, encoding="utf-8", errors="replace") as fh:
             self._lines: list[str] = fh.readlines()
+        self._modified: bool = False
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -438,6 +439,7 @@ class GeometryFile:
         for i, line in enumerate(self._lines):
             if line.startswith(prefix):
                 self._lines[i] = f"{prefix}{raw_value}\n"
+                self._modified = True
                 return
         raise KeyError(f"Key not found in geometry file: {key!r}")
 
@@ -446,6 +448,16 @@ class GeometryFile:
         self._lines[start : start + old_count] = [
             (ln if ln.endswith("\n") else ln + "\n") for ln in new_lines
         ]
+        self._modified = True
+
+    # ------------------------------------------------------------------
+    # Modification state
+    # ------------------------------------------------------------------
+
+    @property
+    def is_modified(self) -> bool:
+        """``True`` if any value has been changed since the last :meth:`save`."""
+        return self._modified
 
     # ------------------------------------------------------------------
     # Static parsing helpers
@@ -1399,3 +1411,4 @@ class GeometryFile:
         dest = Path(path) if path is not None else self._path
         with open(dest, "w", encoding="utf-8") as fh:
             fh.writelines(self._lines)
+        self._modified = False

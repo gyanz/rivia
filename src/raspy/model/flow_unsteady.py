@@ -1111,6 +1111,7 @@ class UnsteadyFlowEditor:
         with open(self._path, encoding="utf-8", errors="replace") as fh:
             self._all_lines: list[str] = fh.readlines()
         self._parse()
+        self._modified: bool = False
 
     # ------------------------------------------------------------------
     # Parsing
@@ -1195,6 +1196,15 @@ class UnsteadyFlowEditor:
         )
 
     # ------------------------------------------------------------------
+    # Modification state
+    # ------------------------------------------------------------------
+
+    @property
+    def is_modified(self) -> bool:
+        """``True`` if any value has been changed since the last :meth:`save`."""
+        return self._modified
+
+    # ------------------------------------------------------------------
     # Scalar properties (read from header_lines, write back in-place)
     # ------------------------------------------------------------------
 
@@ -1211,6 +1221,7 @@ class UnsteadyFlowEditor:
         for i, line in enumerate(self._header_lines):
             if line.startswith(prefix):
                 self._header_lines[i] = f"{prefix}{raw_value}\n"
+                self._modified = True
                 return
         raise KeyError(f"Key not found in header: {key!r}")
 
@@ -1231,11 +1242,13 @@ class UnsteadyFlowEditor:
         for i, line in enumerate(self._header_lines):
             if line.startswith(prefix):
                 self._header_lines[i] = f"{prefix}{filename}\n"
+                self._modified = True
                 return
         ur_prefix = "Use Restart="
         for i, line in enumerate(self._header_lines):
             if line.startswith(ur_prefix):
                 self._header_lines.insert(i + 1, f"{prefix}{filename}\n")
+                self._modified = True
                 return
         raise KeyError(
             "'Use Restart' not found in header; cannot insert 'Restart Filename'"
@@ -1345,6 +1358,7 @@ class UnsteadyFlowEditor:
         """
         bc = self.flow_hydrographs[index]
         bc.values = _coerce_values(values, len(bc.values))
+        self._modified = True
 
     def set_lateral_inflow(self, index: int, values: _Values) -> None:
         """Set lateral inflow values by position in :attr:`lateral_inflows`.
@@ -1355,6 +1369,7 @@ class UnsteadyFlowEditor:
         """
         bc = self.lateral_inflows[index]
         bc.values = _coerce_values(values, len(bc.values))
+        self._modified = True
 
     def set_all_lateral_inflows(self, values: list[float | list[float]]) -> None:
         """Set lateral inflow values across all :class:`LateralInflow` boundaries.
@@ -1368,6 +1383,7 @@ class UnsteadyFlowEditor:
         """
         for bc, v in zip(self.lateral_inflows, values, strict=False):
             bc.values = _coerce_values(v, len(bc.values))
+        self._modified = True
 
     def set_gate_opening(
         self, index: int, values: _Values, gate_index: int = 0
@@ -1382,6 +1398,7 @@ class UnsteadyFlowEditor:
         """
         gate = self.gate_boundaries[index].gates[gate_index]
         gate.values = _coerce_values(values, len(gate.values))
+        self._modified = True
 
     def set_all_gate_opening(self, values: list[float | list[float]]) -> None:
         """Set gate opening values across all gates in all :class:`GateBoundary`.
@@ -1398,6 +1415,7 @@ class UnsteadyFlowEditor:
         all_gates = [gate for gb in self.gate_boundaries for gate in gb.gates]
         for gate, v in zip(all_gates, values, strict=False):
             gate.values = _coerce_values(v, len(gate.values))
+        self._modified = True
 
     # ------------------------------------------------------------------
     # Set by location (river / reach / rs)
@@ -1428,6 +1446,7 @@ class UnsteadyFlowEditor:
         if not isinstance(b, FlowHydrograph):
             raise KeyError(f"No FlowHydrograph at {river!r}, {reach!r}, {rs!r}")
         b.values = _coerce_values(values, len(b.values))
+        self._modified = True
 
     def set_lateral_inflow_at(
         self, river: str, reach: str, rs: str, values: _Values
@@ -1441,6 +1460,7 @@ class UnsteadyFlowEditor:
         if not isinstance(b, LateralInflow):
             raise KeyError(f"No LateralInflow at {river!r}, {reach!r}, {rs!r}")
         b.values = _coerce_values(values, len(b.values))
+        self._modified = True
 
     def set_gate_opening_at(
         self, river: str, reach: str, rs: str, gate: str | int, values: _Values
@@ -1464,11 +1484,13 @@ class UnsteadyFlowEditor:
                     f"{len(b.gates)} gate(s) at {river!r}, {reach!r}, {rs!r}"
                 ) from exc
             g.values = _coerce_values(values, len(g.values))
+            self._modified = True
             return
         gn = gate.strip().lower()
         for g in b.gates:
             if g.gate_name.strip().lower() == gn:
                 g.values = _coerce_values(values, len(g.values))
+                self._modified = True
                 return
         raise KeyError(f"Gate {gate!r} not found at {river!r}, {reach!r}, {rs!r}")
 
@@ -1487,6 +1509,7 @@ class UnsteadyFlowEditor:
             IndexError: *index* is out of range.
         """
         self.initial_flow_locs[index].flow = flow
+        self._modified = True
 
     def set_initial_flow_at(self, river: str, reach: str, rs: str, flow: float) -> None:
         """Update the initial flow at the given location.
@@ -1510,6 +1533,7 @@ class UnsteadyFlowEditor:
                 and loc.river_station.lower() == s
             ):
                 loc.flow = flow
+                self._modified = True
                 return
         raise KeyError(f"Initial Flow Loc not found for {river!r}, {reach!r}, {rs!r}")
 
@@ -1639,3 +1663,4 @@ class UnsteadyFlowEditor:
 
         with open(dest, "w", encoding="utf-8") as fh:
             fh.writelines(out)
+        self._modified = False

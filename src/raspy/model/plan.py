@@ -41,6 +41,7 @@ class PlanFile:
             raise FileNotFoundError(f"Plan file not found: {self._path}")
         with open(self._path, encoding="utf-8", errors="replace") as fh:
             self._lines: list[str] = fh.readlines()
+        self._modified: bool = False
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -64,6 +65,7 @@ class PlanFile:
         for i, line in enumerate(self._lines):
             if line.startswith(prefix):
                 self._lines[i] = f"{prefix}{raw_value}\n"
+                self._modified = True
                 return
         raise KeyError(f"Key not found in plan file: {key!r}")
 
@@ -83,6 +85,15 @@ class PlanFile:
     def _from_bool(value: bool) -> str:
         """Convert a bool to the ``" 1 "`` / ``" 0 "`` style used by run flags."""
         return " 1 " if value else " 0 "
+
+    # ------------------------------------------------------------------
+    # Modification state
+    # ------------------------------------------------------------------
+
+    @property
+    def is_modified(self) -> bool:
+        """``True`` if any value has been changed since the last :meth:`save`."""
+        return self._modified
 
     # ------------------------------------------------------------------
     # Generic escape hatch
@@ -407,3 +418,4 @@ class PlanFile:
         """Write all in-memory lines back to the source plan file."""
         with open(self._path, "w", encoding="utf-8") as fh:
             fh.writelines(self._lines)
+        self._modified = False
