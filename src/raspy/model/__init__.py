@@ -410,9 +410,20 @@ class Model(MapperExtension):
             )
         model_files = _get_project_files(self._project_path)
         _restore_backups(model_files)
-        self.reload()
+        self.reload(save_if_modified=False)
 
-    def reload(self):
+    def reload(self, save_if_modified: bool = True):
+        if save_if_modified:
+            if self._plan is not None and self._plan.is_modified:
+                self._plan.save()
+            if self._geom is not None and self._geom.is_modified:
+                self._geom.save()
+            if (
+                self._flow is not None
+                and hasattr(self._flow, "is_modified")
+                and self._flow.is_modified
+            ):
+                self._flow.save()
         self._plan = None  # invalidate cached PlanFile so next access re-parses
         self._geom = None
         self._flow = None
@@ -463,6 +474,16 @@ class Model(MapperExtension):
         HecRasComputeError
             If HEC-RAS reports a computation failure or a COM error occurs.
         """
+        if self._plan is not None and self._plan.is_modified:
+            logger.warning("Plan file %s is modified but not saved.", self.plan_file.name)
+        if self._geom is not None and self._geom.is_modified:
+            logger.warning("Geometry file %s is modified but not saved.", self.geom_file.name)
+        if (
+            self._flow is not None
+            and hasattr(self._flow, "is_modified")
+            and self._flow.is_modified
+        ):
+            logger.warning("Flow file %s is modified but not saved.", self.flow_file.name)
         if hide_window:
             self.controller.Compute_HideComputationWindow()
         try:
