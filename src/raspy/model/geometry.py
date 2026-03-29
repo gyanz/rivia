@@ -403,16 +403,18 @@ class CrossSection:
 class GateOpening:
     """One gate opening within a gate group.
 
-    Consistent with :class:`raspy.hdf._geometry.GateOpening`.
-
     Attributes:
         name:    Opening name from ``IW Gate Opening=`` line; empty string
                  when the line is absent.
         station: Lateral station of the gate opening (8-char fixed-width column).
+        gis:     GIS (x, y) coordinate pairs from the data line following the
+                 ``IW Gate Opening=`` line (16-char fixed-width columns).
+                 Empty list when the GIS point count is zero.
     """
 
     name: str
     station: float
+    gis: list[tuple[float, float]] = field(default_factory=list)
 
 
 _GATE_TYPE_NAMES: dict[int, str] = {
@@ -1933,14 +1935,22 @@ class GeometryFile:
                 shape="Ogee" if is_ogee else "Broad Crested",
             )
 
-        # -- gate opening names (one IW Gate Opening= line per opening) ------
-        # Each line: IW Gate Opening=<index>,<name>,<n_gis_points>
-        all_opening_names: list[str] = []
-        for ln in lines:
+        # -- gate openings (one IW Gate Opening= line per opening) ------------
+        # Format: IW Gate Opening=<index>,<name>,<n_gis_points>
+        # When n_gis_points > 0 the next line holds n_gis_points (x, y) pairs
+        # in 16-char fixed-width columns.
+        _GIS_COL = 16
+        all_openings: list[tuple[str, list[tuple[float, float]]]] = []
+        for i, ln in enumerate(lines):
             if ln.startswith("IW Gate Opening="):
                 op_parts = ln[len("IW Gate Opening="):].split(",")
-                if len(op_parts) >= 2:
-                    all_opening_names.append(op_parts[1].strip())
+                oname = op_parts[1].strip() if len(op_parts) >= 2 else ""
+                n_gis = int(op_parts[2].strip()) if len(op_parts) >= 3 and op_parts[2].strip() else 0
+                gis: list[tuple[float, float]] = []
+                if n_gis > 0 and i + 1 < len(lines):
+                    flat = _parse_block([lines[i + 1]], n_gis * 2, _GIS_COL)
+                    gis = [(flat[j], flat[j + 1]) for j in range(0, len(flat) - 1, 2)]
+                all_openings.append((oname, gis))
 
         # -- gate groups (IW Gate Name blocks) -----------------------------
         gate_groups: list[GateGroup] = []
@@ -1963,13 +1973,11 @@ class GeometryFile:
             openings: list[GateOpening] = []
             for k in range(n_openings):
                 o_idx = opening_offset + k
-                oname = (
-                    all_opening_names[o_idx]
-                    if o_idx < len(all_opening_names)
-                    else ""
+                oname, ogis = (
+                    all_openings[o_idx] if o_idx < len(all_openings) else ("", [])
                 )
                 st = stations[k] if k < len(stations) else 0.0
-                openings.append(GateOpening(name=oname, station=st))
+                openings.append(GateOpening(name=oname, station=st, gis=ogis))
             opening_offset += n_openings
 
             gate_type_code = int(_cf(data_parts, 8))
