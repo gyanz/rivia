@@ -901,6 +901,138 @@ class TestStructuresNitInline:
         g = GeometryFile(NIT)
         assert len(g.structures.inlines) == 1
 
+    def _iw(self):
+        from math import isnan
+        g = GeometryFile(NIT)
+        return g.structures.inlines[0], isnan
+
+    def test_pilot_flow(self):
+        iw, _ = self._iw()
+        assert iw.pilot_flow == 0.0
+
+    def test_crest_profile_length(self):
+        iw, _ = self._iw()
+        assert len(iw.crest_profile) == 6
+
+    def test_crest_profile_values(self):
+        iw, _ = self._iw()
+        # fixture: 0/13.5, 57/13.5, 61/9.5, 190/9.5, 194/13.5, 1000/13.5
+        assert iw.crest_profile[0] == (0.0, 13.5)
+        assert iw.crest_profile[2] == (61.0, 9.5)
+        assert iw.crest_profile[5] == (1000.0, 13.5)
+
+    def test_weir_parsed(self):
+        iw, isnan = self._iw()
+        assert iw.weir is not None
+
+    def test_weir_dist(self):
+        iw, _ = self._iw()
+        assert iw.weir.dist == 20.0
+
+    def test_weir_width_and_coef(self):
+        iw, _ = self._iw()
+        assert iw.weir.width == 50.0
+        assert iw.weir.coefficient == 3.95
+
+    def test_weir_shape_ogee(self):
+        iw, _ = self._iw()
+        assert iw.weir.shape == "Ogee"
+
+    def test_weir_spillway_and_design_head(self):
+        iw, _ = self._iw()
+        assert iw.weir.spillway_approach_height == 24.0
+        assert iw.weir.design_energy_head == 3.0
+
+    def test_weir_min_elevation_nan(self):
+        from math import isnan
+        iw, _ = self._iw()
+        assert isnan(iw.weir.min_elevation)
+
+    def test_gate_group_count(self):
+        iw, _ = self._iw()
+        assert len(iw.gate_groups) == 3
+
+    def test_gate_group_names(self):
+        iw, _ = self._iw()
+        names = [gg.name for gg in iw.gate_groups]
+        assert names[0] == "Left Group"
+        assert names[1] == "Center Group"
+        assert names[2] == "Right Group"
+
+    def test_gate_coefficient(self):
+        iw, _ = self._iw()
+        # Left Group GCoef = 0.8
+        assert iw.gate_groups[0].gate_coefficient == 0.8
+
+    def test_gate_exponents(self):
+        iw, _ = self._iw()
+        gg = iw.gate_groups[0]
+        assert gg.trunnion_exponent == 0.16
+        assert gg.opening_exponent == 0.72
+        assert gg.height_exponent == 0.62
+
+    def test_gate_type_radial(self):
+        iw, _ = self._iw()
+        assert iw.gate_groups[0].gate_type == "radial"
+
+    def test_gate_openings_count(self):
+        iw, _ = self._iw()
+        # each gate group has 5 openings
+        assert len(iw.gate_groups[0].openings) == 5
+
+    def test_gate_opening_stations(self):
+        iw, _ = self._iw()
+        # Left Group stations: 220, 255, 290, 325, 360
+        stations = [op.station for op in iw.gate_groups[0].openings]
+        assert stations == [220.0, 255.0, 290.0, 325.0, 360.0]
+
+    def test_weir_shape_ogee(self):
+        iw, _ = self._iw()
+        # nit_inline radial gate groups overflow as ogee
+        assert iw.gate_groups[0].weir_shape == "Ogee"
+
+    def test_weir_shape_broad_crested(self):
+        from raspy.model.geometry import GateGroup
+        g = GateGroup(
+            name="test", width=10.0, height=5.0, invert=0.0,
+            gate_coefficient=0.6, trunnion_exponent=0.16,
+            opening_exponent=0.72, height_exponent=0.62,
+            gate_type="sluice", weir_coefficient=2.6,
+            is_ogee=False, spillway_approach_height=0.0,
+            design_energy_head=0.0, trunnion_height=0.0,
+            orifice_coefficient=0.8, head_reference=0,
+            radial_coefficient=0.0, is_sharp_crested=False,
+            use_weir_param1=False, use_weir_param2=False,
+            use_weir_param3=False,
+        )
+        assert g.weir_shape == "Broad Crested"
+
+    def test_weir_shape_sharp_crested(self):
+        from raspy.model.geometry import GateGroup
+        g = GateGroup(
+            name="test", width=10.0, height=5.0, invert=0.0,
+            gate_coefficient=0.6, trunnion_exponent=0.16,
+            opening_exponent=0.72, height_exponent=0.62,
+            gate_type="sluice", weir_coefficient=2.6,
+            is_ogee=False, spillway_approach_height=0.0,
+            design_energy_head=0.0, trunnion_height=0.0,
+            orifice_coefficient=0.8, head_reference=0,
+            radial_coefficient=0.0, is_sharp_crested=True,
+            use_weir_param1=False, use_weir_param2=False,
+            use_weir_param3=False,
+        )
+        assert g.weir_shape == "Sharp Crested"
+
+    def test_Cu_alias(self):
+        iw, _ = self._iw()
+        g = iw.gate_groups[0]
+        assert g.Cu == g.gate_coefficient
+
+    def test_Cs_alias(self):
+        iw, _ = self._iw()
+        g = iw.gate_groups[0]
+        assert g.Cs == g.orifice_coefficient
+
 
 # ---------------------------------------------------------------------------
 # Round-trip: 3reach_lat fixture

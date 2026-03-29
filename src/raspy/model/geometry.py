@@ -441,11 +441,13 @@ class GateGroup:
         width:                    Gate width — ``Wd`` (index 1).
         height:                   Gate height — ``H`` (index 2).
         invert:                   Gate invert elevation — ``Inv`` (index 3).
-        sluice_coefficient:       Sluice/orifice discharge coefficient —
-                                  ``GCoef`` (index 4).
-        exp_trunnion:             Trunnion exponent — ``Exp_T`` (index 5).
-        exp_opening:              Opening exponent — ``Exp_O`` (index 6).
-        exp_height:               Height exponent — ``Exp_H`` (index 7).
+        gate_coefficient:         Gate discharge coefficient (applies to all
+                                  gate types) — ``GCoef`` (index 4).  The HDF
+                                  version names this field
+                                  ``sluice_coefficient``.
+        trunnion_exponent:        Trunnion arm exponent — ``Exp_T`` (index 5).
+        opening_exponent:         Gate opening exponent — ``Exp_O`` (index 6).
+        height_exponent:          Gate height exponent — ``Exp_H`` (index 7).
         gate_type:                Gate type string — ``Type`` (index 8):
                                   ``'sluice'``, ``'radial'``,
                                   ``'overflow_closed_top'``,
@@ -475,10 +477,10 @@ class GateGroup:
     width: float
     height: float
     invert: float
-    sluice_coefficient: float
-    exp_trunnion: float
-    exp_opening: float
-    exp_height: float
+    gate_coefficient: float
+    trunnion_exponent: float
+    opening_exponent: float
+    height_exponent: float
     gate_type: str
     weir_coefficient: float
     is_ogee: bool
@@ -493,6 +495,35 @@ class GateGroup:
     use_weir_param2: bool
     use_weir_param3: bool
     openings: list[GateOpening] = field(default_factory=list)
+
+    @property
+    def weir_shape(self) -> str:
+        """Shape of the overflow weir crest.
+
+        Returns ``'Ogee'``, ``'Sharp Crested'``, or ``'Broad Crested'``
+        based on the ``is_ogee`` and ``is_sharp_crested`` flags.
+        """
+        if self.is_ogee:
+            return "Ogee"
+        if self.is_sharp_crested:
+            return "Sharp Crested"
+        return "Broad Crested"
+
+    @property
+    def Cu(self) -> float:
+        """Unsubmerged discharge coefficient (alias for ``gate_coefficient``).
+
+        Typical range 0.5–0.7 for sluice and radial gates.
+        """
+        return self.gate_coefficient
+
+    @property
+    def Cs(self) -> float:
+        """Submerged discharge coefficient (alias for ``orifice_coefficient``).
+
+        Typical value ~0.8; applied when tailwater submerges the gate opening.
+        """
+        return self.orifice_coefficient
 
 
 @dataclass
@@ -518,17 +549,32 @@ class Weir:
          ``.g**`` file and add parsing when found.
 
     Attributes:
-        width:             Weir width (``WD``, index 1).
-        coefficient:       Weir discharge coefficient (``Coef``, index 2).
-        shape:             ``'Broad Crested'`` or ``'Ogee'`` (``Is_Ogee``, index 6).
-        max_submergence:   Maximum submergence ratio (``MaxSub``, index 4).
-        min_elevation:     Minimum weir crest elevation (``Min_El``, index 5);
-                           ``nan`` when blank.
-        skew:              Weir skew angle in degrees (``Skew``, index 3).
-        us_slope:          Upstream face slope H:V; ``nan`` — not in text format.
-        ds_slope:          Downstream face slope H:V; ``nan`` — not in text format.
-        use_water_surface: Use water surface as weir reference head; always
-                           ``False`` — not in text format.
+        width:                    Weir width (``WD``, index 1).
+        coefficient:              Weir discharge coefficient (``Coef``, index 2).
+        shape:                    ``'Broad Crested'`` or ``'Ogee'``
+                                  (``Is_Ogee``, index 6).
+        max_submergence:          Maximum submergence ratio (``MaxSub``,
+                                  index 4).
+        min_elevation:            Minimum weir crest elevation (``Min_El``,
+                                  index 5); ``nan`` when blank.
+        skew:                     Weir skew angle in degrees (``Skew``,
+                                  index 3).
+        dist:                     Distance from the upstream XS to the weir
+                                  face (index 0 of the ``IW Dist`` data line);
+                                  ``nan`` for bridges and laterals (not stored
+                                  in those formats).
+        spillway_approach_height: Spillway approach height — ``SpillHt``
+                                  (index 7 of the ``IW Dist`` data line);
+                                  ``nan`` for bridges and laterals.
+        design_energy_head:       Design energy head — ``DesHd`` (index 8 of
+                                  the ``IW Dist`` data line); ``nan`` for
+                                  bridges and laterals.
+        us_slope:                 Upstream face slope H:V; ``nan`` — not in
+                                  text format.
+        ds_slope:                 Downstream face slope H:V; ``nan`` — not in
+                                  text format.
+        use_water_surface:        Use water surface as weir reference head;
+                                  always ``False`` — not in text format.
     """
 
     width: float
@@ -537,6 +583,9 @@ class Weir:
     max_submergence: float
     min_elevation: float
     skew: float
+    dist: float = nan
+    spillway_approach_height: float = nan
+    design_energy_head: float = nan
     us_slope: float = nan
     ds_slope: float = nan
     use_water_surface: bool = False
@@ -601,6 +650,10 @@ class Inline(Structure):
 
     - ``description``: text-file-specific field from the
       ``BEGIN/END DESCRIPTION`` block; no equivalent in HDF.
+    - ``pilot_flow``: minimum flow through the structure when all gates are
+      fully closed — from ``IW Pilot Flow=``; no equivalent in HDF.
+    - ``crest_profile``: station/elevation pairs defining the weir crest
+      geometry — from the ``#Inline Weir SE=`` block; no equivalent in HDF.
 
     Attributes:
         location:        ``(river, reach, rs)`` of this structure.
@@ -612,6 +665,10 @@ class Inline(Structure):
                          if no ``IW Dist`` line is present.
         gate_groups:     Gate group definitions from ``IW Gate Name`` blocks.
         description:     Node description from ``BEGIN/END DESCRIPTION``.
+        pilot_flow:      Minimum (pilot) flow through the structure —
+                         ``IW Pilot Flow=``; ``0.0`` when absent.
+        crest_profile:   Weir crest station/elevation pairs from the
+                         ``#Inline Weir SE=`` block; empty list when absent.
     """
 
     location: tuple[str, str, str] = ("", "", "")
@@ -620,6 +677,8 @@ class Inline(Structure):
     weir: Weir | None = None
     gate_groups: list[GateGroup] = field(default_factory=list)
     description: str = ""
+    pilot_flow: float = 0.0
+    crest_profile: list[tuple[float, float]] = field(default_factory=list)
 
 
 @dataclass
@@ -1893,6 +1952,35 @@ class GeometryFile:
         if desc_s is not None and desc_e is not None and desc_e > desc_s:
             description = "\n".join(lines[desc_s + 1 : desc_e]).strip()
 
+        # -- pilot flow (IW Pilot Flow=) -----------------------------------
+        pilot_flow = 0.0
+        for ln in lines:
+            if ln.startswith("IW Pilot Flow="):
+                val = ln[len("IW Pilot Flow="):].strip()
+                try:
+                    pilot_flow = float(val)
+                except ValueError:
+                    pass
+                break
+
+        # -- weir crest profile (#Inline Weir SE=) -------------------------
+        crest_profile: list[tuple[float, float]] = []
+        iw_se_i = next(
+            (i for i, ln in enumerate(lines) if ln.startswith("#Inline Weir SE=")),
+            None,
+        )
+        if iw_se_i is not None and iw_se_i + 1 < len(lines):
+            count_str = lines[iw_se_i][len("#Inline Weir SE="):].strip()
+            try:
+                n_pairs = int(count_str)
+            except ValueError:
+                n_pairs = 0
+            if n_pairs > 0:
+                flat = _parse_block(lines[iw_se_i + 1:], n_pairs * 2, _COL)
+                crest_profile = [
+                    (flat[j], flat[j + 1]) for j in range(0, len(flat) - 1, 2)
+                ]
+
         # -- helper --------------------------------------------------------
         def _cf(parts: list[str], idx: int, default: float = 0.0) -> float:
             """Parse comma-split field at *idx* to float; return *default* on blank."""
@@ -1925,7 +2013,7 @@ class GeometryFile:
         )
         if iw_dist_i is not None and iw_dist_i + 1 < len(lines):
             parts = lines[iw_dist_i + 1].split(",")
-            is_ogee = int(_cf(parts, 6))
+            is_ogee = int(_cf(parts, 6)) == -1
             weir = Weir(
                 width=_cf(parts, 1),
                 coefficient=_cf(parts, 2),
@@ -1933,6 +2021,9 @@ class GeometryFile:
                 max_submergence=_cf(parts, 4),
                 min_elevation=_cf_nan(parts, 5),
                 shape="Ogee" if is_ogee else "Broad Crested",
+                dist=_cf(parts, 0),
+                spillway_approach_height=_cf(parts, 7),
+                design_energy_head=_cf(parts, 8),
             )
 
         # -- gate openings (one IW Gate Opening= line per opening) ------------
@@ -1957,7 +2048,7 @@ class GeometryFile:
         gate_header_indices = [
             i for i, ln in enumerate(lines) if ln.startswith("IW Gate Name")
         ]
-        opening_offset = 0
+        opening_iter = iter(all_openings)
         for gate_i in gate_header_indices:
             if gate_i + 1 >= len(lines):
                 continue
@@ -1972,13 +2063,9 @@ class GeometryFile:
 
             openings: list[GateOpening] = []
             for k in range(n_openings):
-                o_idx = opening_offset + k
-                oname, ogis = (
-                    all_openings[o_idx] if o_idx < len(all_openings) else ("", [])
-                )
+                oname, ogis = next(opening_iter, ("", []))
                 st = stations[k] if k < len(stations) else 0.0
                 openings.append(GateOpening(name=oname, station=st, gis=ogis))
-            opening_offset += n_openings
 
             gate_type_code = int(_cf(data_parts, 8))
             gate_groups.append(
@@ -1987,10 +2074,10 @@ class GeometryFile:
                     width=_cf(data_parts, 1),
                     height=_cf(data_parts, 2),
                     invert=_cf(data_parts, 3),
-                    sluice_coefficient=_cf(data_parts, 4),
-                    exp_trunnion=_cf(data_parts, 5),
-                    exp_opening=_cf(data_parts, 6),
-                    exp_height=_cf(data_parts, 7),
+                    gate_coefficient=_cf(data_parts, 4),
+                    trunnion_exponent=_cf(data_parts, 5),
+                    opening_exponent=_cf(data_parts, 6),
+                    height_exponent=_cf(data_parts, 7),
                     gate_type=_GATE_TYPE_NAMES.get(gate_type_code, str(gate_type_code)),
                     weir_coefficient=_cf(data_parts, 9),
                     is_ogee=int(_cf(data_parts, 10)) == -1,
@@ -2019,6 +2106,8 @@ class GeometryFile:
             weir=weir,
             gate_groups=gate_groups,
             description=description,
+            pilot_flow=pilot_flow,
+            crest_profile=crest_profile,
         )
 
     def _parse_bridge(
@@ -2086,7 +2175,7 @@ class GeometryFile:
                 except (ValueError, TypeError):
                     return nan
 
-            is_ogee = int(_cf(9))
+            is_ogee = int(_cf(9)) == -1
             weir = Weir(
                 width=_cf(1),
                 coefficient=_cf(2),
