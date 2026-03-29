@@ -59,7 +59,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from math import ceil, nan
+from math import ceil, isnan, nan
 from pathlib import Path
 from typing import Generic, TypeVar, overload
 
@@ -571,6 +571,88 @@ class Inline(Structure):
     description: str = ""
 
 
+@dataclass
+class Bridge(Structure):
+    """Bridge or culvert (node types 3 / 2) parsed from a ``.g**`` text geometry file.
+
+    Mirrors :class:`raspy.hdf._geometry.Bridge`.  Inherits ``mode``,
+    ``upstream_type``, ``downstream_type``, and ``centerline`` from
+    :class:`Structure`.
+
+    Differences vs the HDF version:
+
+    - ``weir``: populated from the ``Deck Dist`` data line when present;
+      ``us_slope``, ``ds_slope``, and ``use_water_surface`` are always
+      ``nan`` / ``False`` — not stored in the text format.
+    - ``gate_groups``: always ``[]`` — the bridge/culvert text format uses
+      ``Bridge Culvert`` hydraulics, not ``IW Gate Name`` blocks.
+    - ``description``: text-file-specific field from
+      ``BEGIN/END DESCRIPTION``; no equivalent in HDF.
+
+    Attributes:
+        location:        ``(river, reach, rs)`` of this structure.
+        upstream_node:   ``(river, reach, rs)`` of the nearest upstream XS;
+                         ``("", "", "")`` when none found.
+        downstream_node: ``(river, reach, rs)`` of the nearest downstream XS;
+                         ``("", "", "")`` when none found.
+        weir:            Overflow weir data from the ``Deck Dist`` line;
+                         ``None`` if the line is absent.
+        gate_groups:     Always ``[]``.
+        description:     Node description from ``BEGIN/END DESCRIPTION``.
+    """
+
+    location: tuple[str, str, str] = ("", "", "")
+    upstream_node: tuple[str, str, str] = ("", "", "")
+    downstream_node: tuple[str, str, str] = ("", "", "")
+    weir: Weir | None = None
+    gate_groups: list[GateGroup] = field(default_factory=list)
+    description: str = ""
+
+
+@dataclass
+class Lateral(Structure):
+    """Lateral structure (node type 6) parsed from a ``.g**`` text geometry file.
+
+    Mirrors :class:`raspy.hdf._geometry.Lateral`.  Inherits ``mode``,
+    ``upstream_type``, ``downstream_type``, and ``centerline`` from
+    :class:`Structure`.
+
+    Differences vs the HDF version:
+
+    - ``downstream_node``: HDF stores the name of the connected Storage Area
+      or 2-D Flow Area.  The text format stores a connected river+reach via
+      ``Lateral Weir End=river,reach,rs,...``; this field holds
+      ``"river reach"`` (stripped, space-joined).  Empty string when the
+      ``Lateral Weir End=`` line is absent.
+    - ``weir``: built from individual ``Lateral Weir WD=``,
+      ``Lateral Weir Coef=``, and ``Lateral Weir WSCriteria=`` lines;
+      ``skew=0``, ``min_elevation=nan``, ``us_slope/ds_slope=nan``.
+    - ``gate_groups``: always ``[]`` — lateral structures in the text format
+      use ``Lateral Weir`` hydraulics, not ``IW Gate Name`` blocks.
+    - ``description``: text-file-specific field from
+      ``BEGIN/END DESCRIPTION``; no equivalent in HDF.
+
+    Attributes:
+        location:        ``(river, reach, rs)`` of this structure.
+        upstream_node:   ``(river, reach, rs)`` of the nearest upstream XS;
+                         ``("", "", "")`` when none found.
+        downstream_node: Connected river+reach as ``"river reach"``
+                         (from ``Lateral Weir End=``); empty string when
+                         absent.
+        weir:            Overflow weir data from ``Lateral Weir`` lines;
+                         ``None`` if no ``Lateral Weir WD=`` line is present.
+        gate_groups:     Always ``[]``.
+        description:     Node description from ``BEGIN/END DESCRIPTION``.
+    """
+
+    location: tuple[str, str, str] = ("", "", "")
+    upstream_node: tuple[str, str, str] = ("", "", "")
+    downstream_node: str = ""
+    weir: Weir | None = None
+    gate_groups: list[GateGroup] = field(default_factory=list)
+    description: str = ""
+
+
 # ---------------------------------------------------------------------------
 # Structure containers
 # ---------------------------------------------------------------------------
@@ -632,35 +714,62 @@ class StructureIndex(Generic[_T]):
 class ModelStructureCollection:
     """Structure collection parsed from a HEC-RAS text geometry file.
 
-    Currently covers inline structures (node type 5).  Bridges, culverts,
-    and lateral structures are stored verbatim and not yet parsed.
+    Covers inline structures (node type 5), bridges/culverts (types 3/2),
+    and lateral structures (type 6).
 
-    Access structures via the typed property:
+    Access structures via the typed properties:
 
     .. code-block:: python
 
         g = GeometryFile("model.g01")
         for key, iw in g.structures.inlines.items():
             print(key, iw.gate_groups)
+        for key, br in g.structures.bridges.items():
+            print(key, br.weir)
+        for key, lat in g.structures.laterals.items():
+            print(key, lat.downstream_node)
     """
 
-    def __init__(self, inlines: list[tuple[str, Inline]]) -> None:
+    def __init__(
+        self,
+        inlines: list[tuple[str, Inline]],
+        bridges: list[tuple[str, Bridge]],
+        laterals: list[tuple[str, Lateral]],
+    ) -> None:
         self._inlines: StructureIndex[Inline] = StructureIndex(inlines)
+        self._bridges: StructureIndex[Bridge] = StructureIndex(bridges)
+        self._laterals: StructureIndex[Lateral] = StructureIndex(laterals)
 
     @property
     def inlines(self) -> StructureIndex[Inline]:
-        """All inline structures keyed by ``'River Reach RS'``."""
+        """All inline structures (type 5) keyed by ``'River Reach RS'``."""
         return self._inlines
+
+    @property
+    def bridges(self) -> StructureIndex[Bridge]:
+        """All bridges and culverts (types 3 and 2) keyed by ``'River Reach RS'``."""
+        return self._bridges
+
+    @property
+    def laterals(self) -> StructureIndex[Lateral]:
+        """All lateral structures (type 6) keyed by ``'River Reach RS'``."""
+        return self._laterals
 
     @property
     def summary(self) -> dict[str, int]:
         """Count of each parsed structure type."""
-        return {"inlines": len(self._inlines)}
+        return {
+            "inlines": len(self._inlines),
+            "bridges": len(self._bridges),
+            "laterals": len(self._laterals),
+        }
 
     def __repr__(self) -> str:
         return (
             f"ModelStructureCollection("
-            f"inlines={len(self._inlines)})"
+            f"inlines={len(self._inlines)}, "
+            f"bridges={len(self._bridges)}, "
+            f"laterals={len(self._laterals)})"
         )
 
 
@@ -1624,9 +1733,16 @@ class GeometryFile:
     def _build_structures(self) -> ModelStructureCollection:
         """Scan all reaches and build the :class:`ModelStructureCollection`."""
         inlines: list[tuple[str, Inline]] = []
+        bridges: list[tuple[str, Bridge]] = []
+        laterals: list[tuple[str, Lateral]] = []
         for river, reach in self.reaches:
             for node_type, rs in self.node_rs_list(river, reach):
-                if node_type != NODE_INLINE_STRUCTURE:
+                if node_type not in (
+                    NODE_CULVERT,
+                    NODE_BRIDGE,
+                    NODE_INLINE_STRUCTURE,
+                    NODE_LATERAL_STRUCTURE,
+                ):
                     continue
                 start = self._find_node_start(river, reach, rs)
                 if start is None:
@@ -1635,12 +1751,23 @@ class GeometryFile:
                 upstream_node, downstream_node = self._adjacent_xs_nodes(
                     river, reach, rs
                 )
-                iw = self._parse_inline_structure(
-                    river, reach, rs, start, end, upstream_node, downstream_node
-                )
                 key = f"{river} {reach} {rs}"
-                inlines.append((key, iw))
-        return ModelStructureCollection(inlines)
+                if node_type == NODE_INLINE_STRUCTURE:
+                    iw = self._parse_inline_structure(
+                        river, reach, rs, start, end, upstream_node, downstream_node
+                    )
+                    inlines.append((key, iw))
+                elif node_type in (NODE_CULVERT, NODE_BRIDGE):
+                    br = self._parse_bridge(
+                        river, reach, rs, start, end, upstream_node, downstream_node
+                    )
+                    bridges.append((key, br))
+                elif node_type == NODE_LATERAL_STRUCTURE:
+                    lat = self._parse_lateral(
+                        river, reach, rs, start, end, upstream_node
+                    )
+                    laterals.append((key, lat))
+        return ModelStructureCollection(inlines, bridges, laterals)
 
     def _adjacent_xs_nodes(
         self, river: str, reach: str, rs: str
@@ -1825,6 +1952,181 @@ class GeometryFile:
             downstream_node=downstream_node,
             weir=weir,
             gate_groups=gate_groups,
+            description=description,
+        )
+
+    def _parse_bridge(
+        self,
+        river: str,
+        reach: str,
+        rs: str,
+        start: int,
+        end: int,
+        upstream_node: tuple[str, str, str],
+        downstream_node: tuple[str, str, str],
+    ) -> Bridge:
+        """Parse one bridge or culvert node block into a :class:`Bridge`.
+
+        Parameters
+        ----------
+        river, reach, rs:
+            Node identity.
+        start, end:
+            Line-index range of the node block (``self._lines[start:end]``).
+        upstream_node, downstream_node:
+            Adjacent XS tuples from :meth:`_adjacent_xs_nodes`.
+        """
+        lines = [ln.rstrip("\n") for ln in self._lines[start:end]]
+
+        # -- description ---------------------------------------------------
+        description = ""
+        desc_s = next(
+            (i for i, ln in enumerate(lines) if ln.strip() == "BEGIN DESCRIPTION:"),
+            None,
+        )
+        desc_e = next(
+            (i for i, ln in enumerate(lines) if ln.strip() == "END DESCRIPTION:"),
+            None,
+        )
+        if desc_s is not None and desc_e is not None and desc_e > desc_s:
+            description = "\n".join(lines[desc_s + 1 : desc_e]).strip()
+
+        # -- weir from Deck Dist data line ---------------------------------
+        # Header: "Deck Dist Width WeirC Skew NumUp NumDn MinLoCord MaxHiCord
+        #          MaxSubmerge Is_Ogee"
+        # Data:    col[0]=dist, col[1]=width, col[2]=coef, col[3]=skew,
+        #          col[4]=numUp, col[5]=numDn, col[6]=minLoCord, col[7]=maxHiCord,
+        #          col[8]=maxSubmerge, col[9]=is_ogee
+        weir: Weir | None = None
+        deck_hdr_i = next(
+            (i for i, ln in enumerate(lines) if ln.startswith("Deck Dist")),
+            None,
+        )
+        if deck_hdr_i is not None and deck_hdr_i + 1 < len(lines):
+            parts = lines[deck_hdr_i + 1].split(",")
+
+            def _cf(idx: int, default: float = 0.0) -> float:
+                if idx >= len(parts):
+                    return default
+                s = parts[idx].strip()
+                return float(s) if s else default
+
+            def _cf_nan(idx: int) -> float:
+                if idx >= len(parts):
+                    return nan
+                s = parts[idx].strip()
+                try:
+                    return float(s)
+                except (ValueError, TypeError):
+                    return nan
+
+            is_ogee = int(_cf(9))
+            weir = Weir(
+                width=_cf(1),
+                coefficient=_cf(2),
+                skew=_cf(3),
+                max_submergence=_cf_nan(8),
+                min_elevation=nan,
+                shape="Ogee" if is_ogee else "Broad Crested",
+            )
+
+        _empty: tuple[str, str, str] = ("", "", "")
+        return Bridge(
+            mode="",
+            upstream_type="XS" if upstream_node != _empty else "",
+            downstream_type="XS" if downstream_node != _empty else "",
+            location=(river, reach, rs),
+            upstream_node=upstream_node,
+            downstream_node=downstream_node,
+            weir=weir,
+            description=description,
+        )
+
+    def _parse_lateral(
+        self,
+        river: str,
+        reach: str,
+        rs: str,
+        start: int,
+        end: int,
+        upstream_node: tuple[str, str, str],
+    ) -> Lateral:
+        """Parse one lateral structure node block into a :class:`Lateral`.
+
+        Parameters
+        ----------
+        river, reach, rs:
+            Node identity.
+        start, end:
+            Line-index range of the node block (``self._lines[start:end]``).
+        upstream_node:
+            Adjacent upstream XS tuple from :meth:`_adjacent_xs_nodes`.
+        """
+        lines = [ln.rstrip("\n") for ln in self._lines[start:end]]
+
+        # -- description ---------------------------------------------------
+        description = ""
+        desc_s = next(
+            (i for i, ln in enumerate(lines) if ln.strip() == "BEGIN DESCRIPTION:"),
+            None,
+        )
+        desc_e = next(
+            (i for i, ln in enumerate(lines) if ln.strip() == "END DESCRIPTION:"),
+            None,
+        )
+        if desc_s is not None and desc_e is not None and desc_e > desc_s:
+            description = "\n".join(lines[desc_s + 1 : desc_e]).strip()
+
+        # -- downstream connection (Lateral Weir End=river,reach,rs,...) ---
+        downstream_node = ""
+        for ln in lines:
+            if ln.startswith("Lateral Weir End="):
+                parts = ln[len("Lateral Weir End="):].split(",")
+                if len(parts) >= 2:
+                    lat_river = parts[0].strip()
+                    lat_reach = parts[1].strip()
+                    downstream_node = f"{lat_river} {lat_reach}".strip()
+                break
+
+        # -- weir from individual Lateral Weir lines -----------------------
+        def _get_float(prefix: str, default: float = nan) -> float:
+            for ln in lines:
+                if ln.startswith(prefix):
+                    s = ln[len(prefix):].strip().rstrip(",").strip()
+                    try:
+                        return float(s)
+                    except ValueError:
+                        return default
+            return default
+
+        weir: Weir | None = None
+        wd = _get_float("Lateral Weir WD=")
+        coef = _get_float("Lateral Weir Coef=")
+        if not isnan(wd):  # Lateral Weir WD= line was found
+            ws_criteria = _get_float("Lateral Weir WSCriteria=", default=0.0)
+            use_ws = (ws_criteria == -1)
+            # Lateral Weir Type= 0=broad crested, 1=ogee (not commonly set)
+            lat_type = _get_float("Lateral Weir Type=", default=0.0)
+            shape = "Ogee" if int(lat_type) == 1 else "Broad Crested"
+            weir = Weir(
+                width=wd,
+                coefficient=coef if not isnan(coef) else 0.0,
+                skew=0.0,
+                max_submergence=nan,
+                min_elevation=nan,
+                shape=shape,
+                use_water_surface=use_ws,
+            )
+
+        _empty: tuple[str, str, str] = ("", "", "")
+        return Lateral(
+            mode="",
+            upstream_type="XS" if upstream_node != _empty else "",
+            downstream_type="XS" if downstream_node else "",
+            location=(river, reach, rs),
+            upstream_node=upstream_node,
+            downstream_node=downstream_node,
+            weir=weir,
             description=description,
         )
 
