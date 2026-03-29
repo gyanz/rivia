@@ -59,8 +59,9 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from math import ceil
+from math import ceil, nan
 from pathlib import Path
+from typing import Generic, TypeVar, overload
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -96,6 +97,8 @@ _NODE_TYPE_NAMES: dict[int, str] = {
 _KEY_NODE = "Type RM Length L Ch R"
 _KEY_REACH = "River Reach"
 _KEY_JUNCT = "Junct Name"
+
+_T = TypeVar("_T")
 
 # ---------------------------------------------------------------------------
 # Formatting helpers (same algorithm as flow_steady)
@@ -391,6 +394,202 @@ class CrossSection:
     htab_count: int | None = None
 
 
+# ---------------------------------------------------------------------------
+# Structure dataclasses (inline structures from text geometry files)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class GateOpening:
+    """One gate opening within a gate group.
+
+    Attributes:
+        name:    Opening name from ``IW Gate Opening=`` line; empty string
+                 when the line is absent.
+        station: Lateral station of the gate opening (8-char fixed-width column).
+    """
+
+    name: str
+    station: float
+
+
+@dataclass
+class GateGroup:
+    """One gate group in an inline structure (``IW Gate Name`` block).
+
+    Attributes:
+        name:                Group name (first comma field of the data line).
+        width:               Gate width (``Wd``).
+        height:              Gate height (``H``).
+        invert:              Gate invert elevation (``Inv``).
+        sluice_coefficient:  Sluice gate coefficient (``GCoef``, index 4).
+        radial_coefficient:  Radial gate exponent / coefficient (``Exp_H``, index 7).
+        weir_coefficient:    Weir discharge coefficient (``WCoef``, index 9).
+        spillway_shape:      ``'Broad Crested'`` or ``'Ogee'`` (``Is_Ogee``, index 10).
+        openings:            Individual gate openings (stations + names).
+    """
+
+    name: str
+    width: float
+    height: float
+    invert: float
+    sluice_coefficient: float
+    radial_coefficient: float
+    weir_coefficient: float
+    spillway_shape: str
+    openings: list[GateOpening] = field(default_factory=list)
+
+
+@dataclass
+class InlineWeir:
+    """Overflow weir parameters from the ``IW Dist`` block.
+
+    Unlike the HDF :class:`~raspy.hdf._geometry.Weir`, this is always
+    populated when an ``IW Dist`` line exists, even when ``mode`` is empty.
+
+    Attributes:
+        width:            Weir width (``WD``, index 1).
+        coefficient:      Weir discharge coefficient (``Coef``, index 2).
+        shape:            ``'Broad Crested'`` or ``'Ogee'`` (``Is_Ogee``, index 6).
+        max_submergence:  Maximum submergence ratio (``MaxSub``, index 4).
+        min_elevation:    Minimum weir crest elevation (``Min_El``, index 5);
+                          ``nan`` when blank.
+        skew:             Weir skew angle in degrees (``Skew``, index 3).
+    """
+
+    width: float
+    coefficient: float
+    shape: str
+    max_submergence: float
+    min_elevation: float
+    skew: float
+
+
+@dataclass
+class InlineStructure:
+    """Parsed data for one inline structure (node type 5) from a ``.g**`` file.
+
+    Mirrors :class:`~raspy.hdf._geometry.Inline` in structure, but sourced
+    from the text geometry file rather than the HDF.  No GIS centerline is
+    available from the text format.
+
+    Attributes:
+        mode:              Always ``''`` (text files carry no Mode field).
+        upstream_type:     Always ``'XS'`` (inline structures sit between XSs).
+        downstream_type:   Always ``'XS'``.
+        location:          ``(river, reach, rs)`` of the inline node itself.
+        upstream_node:     ``(river, reach, rs)`` of the nearest upstream XS.
+        downstream_node:   ``(river, reach, rs)`` of the nearest downstream XS.
+        weir:              Overflow weir data from ``IW Dist`` block; ``None``
+                           if no ``IW Dist`` line is present.
+        gate_groups:       Gate group definitions from ``IW Gate Name`` blocks.
+        description:       Node description from ``BEGIN/END DESCRIPTION`` block.
+    """
+
+    mode: str
+    upstream_type: str
+    downstream_type: str
+    location: tuple[str, str, str]
+    upstream_node: tuple[str, str, str] | None
+    downstream_node: tuple[str, str, str] | None
+    weir: InlineWeir | None
+    gate_groups: list[GateGroup] = field(default_factory=list)
+    description: str = ""
+
+
+# ---------------------------------------------------------------------------
+# Structure containers
+# ---------------------------------------------------------------------------
+
+
+class StructureIndex(Generic[_T]):
+    """Read-only ordered mapping from a string key to a structure object.
+
+    Supports both string key (``"River Reach RS"``) and integer positional
+    index.  Mirrors the interface of :class:`~raspy.hdf._geometry.StructureIndex`.
+    """
+
+    def __init__(self, items: list[tuple[str, _T]]) -> None:
+        self._keys: list[str] = [k for k, _ in items]
+        self._values: list[_T] = [v for _, v in items]
+        self._map: dict[str, _T] = {k: v for k, v in items}
+
+    def __len__(self) -> int:
+        return len(self._keys)
+
+    def __iter__(self):
+        return iter(self._keys)
+
+    def __contains__(self, key: object) -> bool:
+        if isinstance(key, int):
+            return 0 <= key < len(self._values)
+        return key in self._map
+
+    @overload
+    def __getitem__(self, key: str) -> _T: ...
+
+    @overload
+    def __getitem__(self, key: int) -> _T: ...
+
+    def __getitem__(self, key):  # type: ignore[override]
+        if isinstance(key, int):
+            return self._values[key]
+        return self._map[key]
+
+    def __repr__(self) -> str:
+        return (
+            f"{self.__class__.__name__}"
+            f"({list(zip(self._keys, self._values, strict=True))})"
+        )
+
+    def keys(self) -> list[str]:
+        """Ordered list of string keys."""
+        return list(self._keys)
+
+    def values(self) -> list[_T]:
+        """Ordered list of structure objects."""
+        return list(self._values)
+
+    def items(self) -> list[tuple[str, _T]]:
+        """Ordered ``(key, structure)`` pairs."""
+        return list(zip(self._keys, self._values, strict=True))
+
+
+class ModelStructureCollection:
+    """Structure collection parsed from a HEC-RAS text geometry file.
+
+    Currently covers inline structures (node type 5).  Bridges, culverts,
+    and lateral structures are stored verbatim and not yet parsed.
+
+    Access structures via the typed property:
+
+    .. code-block:: python
+
+        g = GeometryFile("model.g01")
+        for key, iw in g.structures.inlines.items():
+            print(key, iw.gate_groups)
+    """
+
+    def __init__(self, inlines: list[tuple[str, InlineStructure]]) -> None:
+        self._inlines: StructureIndex[InlineStructure] = StructureIndex(inlines)
+
+    @property
+    def inlines(self) -> StructureIndex[InlineStructure]:
+        """All inline structures keyed by ``'River Reach RS'``."""
+        return self._inlines
+
+    @property
+    def summary(self) -> dict[str, int]:
+        """Count of each parsed structure type."""
+        return {"inlines": len(self._inlines)}
+
+    def __repr__(self) -> str:
+        return (
+            f"ModelStructureCollection("
+            f"inlines={len(self._inlines)})"
+        )
+
+
 logger = logging.getLogger("raspy.model")
 
 # ---------------------------------------------------------------------------
@@ -421,6 +620,7 @@ class GeometryFile:
         with open(self._path, encoding="utf-8", errors="replace") as fh:
             self._lines: list[str] = fh.readlines()
         self._modified: bool = False
+        self._structures_cache: ModelStructureCollection | None = None
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -1326,6 +1526,233 @@ class GeometryFile:
             self._splice(insert_at, 0, [line])
 
     # ------------------------------------------------------------------
+    # Structure parsing (inline structures)
+    # ------------------------------------------------------------------
+
+    @property
+    def structures(self) -> ModelStructureCollection:
+        """Structure collection parsed from this geometry file.
+
+        Returns a :class:`ModelStructureCollection` whose ``inlines`` property
+        holds all inline structures keyed by ``'River Reach RS'``.
+        The result is cached; invalidated automatically on :meth:`save`.
+
+        Example::
+
+            g = GeometryFile("model.g01")
+            for key, iw in g.structures.inlines.items():
+                print(key, [gg.name for gg in iw.gate_groups])
+        """
+        if self._structures_cache is None:
+            self._structures_cache = self._build_structures()
+        return self._structures_cache
+
+    def _build_structures(self) -> ModelStructureCollection:
+        """Scan all reaches and build the :class:`ModelStructureCollection`."""
+        inlines: list[tuple[str, InlineStructure]] = []
+        for river, reach in self.reaches:
+            for node_type, rs in self.node_rs_list(river, reach):
+                if node_type != NODE_INLINE_STRUCTURE:
+                    continue
+                start = self._find_node_start(river, reach, rs)
+                if start is None:
+                    continue
+                end = self._find_node_end(start)
+                upstream_node, downstream_node = self._adjacent_xs_nodes(
+                    river, reach, rs
+                )
+                iw = self._parse_inline_structure(
+                    river, reach, rs, start, end, upstream_node, downstream_node
+                )
+                key = f"{river} {reach} {rs}"
+                inlines.append((key, iw))
+        return ModelStructureCollection(inlines)
+
+    def _adjacent_xs_nodes(
+        self, river: str, reach: str, rs: str
+    ) -> tuple[tuple[str, str, str] | None, tuple[str, str, str] | None]:
+        """Return the nearest upstream and downstream XS nodes flanking *rs*.
+
+        HEC-RAS lists nodes from upstream (high RS) to downstream (low RS).
+        Walking backward in the list finds the upstream XS; forward finds the
+        downstream XS.
+
+        Returns ``(upstream, downstream)`` tuples of ``(river, reach, rs)``
+        or ``None`` when no adjacent XS exists.
+        """
+        nodes = self.node_rs_list(river, reach)
+        rs_norm = self._normalize_rs(rs)
+        idx = next(
+            (
+                i
+                for i, (nt, r) in enumerate(nodes)
+                if self._normalize_rs(r) == rs_norm
+            ),
+            None,
+        )
+        if idx is None:
+            return None, None
+        upstream: tuple[str, str, str] | None = None
+        for i in range(idx - 1, -1, -1):
+            if nodes[i][0] == NODE_XS:
+                upstream = (river, reach, nodes[i][1])
+                break
+        downstream: tuple[str, str, str] | None = None
+        for i in range(idx + 1, len(nodes)):
+            if nodes[i][0] == NODE_XS:
+                downstream = (river, reach, nodes[i][1])
+                break
+        return upstream, downstream
+
+    def _parse_inline_structure(
+        self,
+        river: str,
+        reach: str,
+        rs: str,
+        start: int,
+        end: int,
+        upstream_node: tuple[str, str, str] | None,
+        downstream_node: tuple[str, str, str] | None,
+    ) -> InlineStructure:
+        """Parse one inline-structure node block into an :class:`InlineStructure`.
+
+        Parameters
+        ----------
+        river, reach, rs:
+            Node identity.
+        start, end:
+            Line-index range of the node block (``self._lines[start:end]``).
+        upstream_node, downstream_node:
+            Adjacent XS tuples from :meth:`_adjacent_xs_nodes`.
+        """
+        lines = [ln.rstrip("\n") for ln in self._lines[start:end]]
+
+        # -- description ---------------------------------------------------
+        description = ""
+        desc_s = next(
+            (i for i, ln in enumerate(lines) if ln.strip() == "BEGIN DESCRIPTION:"),
+            None,
+        )
+        desc_e = next(
+            (i for i, ln in enumerate(lines) if ln.strip() == "END DESCRIPTION:"),
+            None,
+        )
+        if desc_s is not None and desc_e is not None and desc_e > desc_s:
+            description = "\n".join(lines[desc_s + 1 : desc_e]).strip()
+
+        # -- helper --------------------------------------------------------
+        def _cf(parts: list[str], idx: int, default: float = 0.0) -> float:
+            """Parse comma-split field at *idx* to float; return *default* on blank."""
+            if idx >= len(parts):
+                return default
+            s = parts[idx].strip()
+            if not s:
+                return default
+            try:
+                return float(s)
+            except ValueError:
+                return default
+
+        def _cf_nan(parts: list[str], idx: int) -> float:
+            """Like ``_cf`` but returns ``nan`` for blank fields."""
+            if idx >= len(parts):
+                return nan
+            s = parts[idx].strip()
+            if not s:
+                return nan
+            try:
+                return float(s)
+            except ValueError:
+                return nan
+
+        # -- overflow weir (IW Dist) ---------------------------------------
+        weir: InlineWeir | None = None
+        iw_dist_i = next(
+            (i for i, ln in enumerate(lines) if ln.startswith("IW Dist,")), None
+        )
+        if iw_dist_i is not None and iw_dist_i + 1 < len(lines):
+            parts = lines[iw_dist_i + 1].split(",")
+            is_ogee = int(_cf(parts, 6))
+            weir = InlineWeir(
+                width=_cf(parts, 1),
+                coefficient=_cf(parts, 2),
+                skew=_cf(parts, 3),
+                max_submergence=_cf(parts, 4),
+                min_elevation=_cf_nan(parts, 5),
+                shape="Ogee" if is_ogee else "Broad Crested",
+            )
+
+        # -- gate opening names (IW Gate Opening=n,name,flag,...) ----------
+        iw_open_i = next(
+            (i for i, ln in enumerate(lines) if ln.startswith("IW Gate Opening=")),
+            None,
+        )
+        all_opening_names: list[str] = []
+        if iw_open_i is not None:
+            raw = lines[iw_open_i][len("IW Gate Opening="):]
+            op_parts = raw.split(",")
+            # op_parts[0] = count; then pairs: name, flag
+            for k in range(1, len(op_parts), 2):
+                all_opening_names.append(op_parts[k].strip())
+
+        # -- gate groups (IW Gate Name blocks) -----------------------------
+        gate_groups: list[GateGroup] = []
+        gate_header_indices = [
+            i for i, ln in enumerate(lines) if ln.startswith("IW Gate Name")
+        ]
+        opening_offset = 0
+        for gate_i in gate_header_indices:
+            if gate_i + 1 >= len(lines):
+                continue
+            data_parts = lines[gate_i + 1].split(",")
+            name = data_parts[0].strip() if data_parts else ""
+            n_openings = int(_cf(data_parts, 13))
+
+            # Station line: fixed-width 8-char columns, immediately after data line
+            stations: list[float] = []
+            if n_openings > 0 and gate_i + 2 < len(lines):
+                stations = _parse_block([lines[gate_i + 2]], n_openings, _COL)
+
+            openings: list[GateOpening] = []
+            for k in range(n_openings):
+                o_idx = opening_offset + k
+                oname = (
+                    all_opening_names[o_idx]
+                    if o_idx < len(all_opening_names)
+                    else ""
+                )
+                st = stations[k] if k < len(stations) else 0.0
+                openings.append(GateOpening(name=oname, station=st))
+            opening_offset += n_openings
+
+            is_ogee_g = int(_cf(data_parts, 10))
+            gate_groups.append(
+                GateGroup(
+                    name=name,
+                    width=_cf(data_parts, 1),
+                    height=_cf(data_parts, 2),
+                    invert=_cf(data_parts, 3),
+                    sluice_coefficient=_cf(data_parts, 4),
+                    radial_coefficient=_cf(data_parts, 7),
+                    weir_coefficient=_cf(data_parts, 9),
+                    spillway_shape="Ogee" if is_ogee_g else "Broad Crested",
+                    openings=openings,
+                )
+            )
+
+        return InlineStructure(
+            mode="",
+            upstream_type="XS" if upstream_node is not None else "",
+            downstream_type="XS" if downstream_node is not None else "",
+            location=(river, reach, rs),
+            upstream_node=upstream_node,
+            downstream_node=downstream_node,
+            weir=weir,
+            gate_groups=gate_groups,
+            description=description,
+        )
+
+    # ------------------------------------------------------------------
     # Raw node access (for structures)
     # ------------------------------------------------------------------
 
@@ -1380,10 +1807,8 @@ class GeometryFile:
             )
         names: list[str] = []
         for i, line in enumerate(lines):
-            if line.startswith("IW Gate Name"):
-                # Next line: name is the first comma-separated field
-                if i + 1 < len(lines):
-                    names.append(lines[i + 1].split(",", 1)[0].strip())
+            if line.startswith("IW Gate Name") and i + 1 < len(lines):
+                names.append(lines[i + 1].split(",", 1)[0].strip())
         return names
 
     def node_type(self, river: str, reach: str, rs: str) -> int | None:
@@ -1412,3 +1837,4 @@ class GeometryFile:
         with open(dest, "w", encoding="utf-8") as fh:
             fh.writelines(self._lines)
         self._modified = False
+        self._structures_cache = None
