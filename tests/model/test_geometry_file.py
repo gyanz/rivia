@@ -25,15 +25,21 @@ from pathlib import Path
 
 import pytest
 
+from math import isnan
+
 from raspy.model.geometry import (
+    Bridge,
     CrossSection,
     GeometryFile,
     IneffArea,
+    Lateral,
     ManningEntry,
     NODE_BRIDGE,
     NODE_CULVERT,
     NODE_INLINE_STRUCTURE,
+    NODE_LATERAL_STRUCTURE,
     NODE_XS,
+    Weir,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -41,6 +47,7 @@ EX1 = FIXTURES / "ex1.g01"
 CONSPAN = FIXTURES / "conspan.g01"
 BEAVER = FIXTURES / "beaver.g01"
 NIT = FIXTURES / "nit_inline.g01"
+LAT3 = FIXTURES / "3reach_lat.g01"
 
 
 @pytest.fixture()
@@ -674,3 +681,238 @@ class TestBeaverBridge:
         bridge_rs = next(rs for ntype, rs in nodes if ntype == NODE_BRIDGE)
         lines = g.get_node_lines("Beaver Creek", "Kentwood", bridge_rs)
         assert len(lines) > 5
+
+
+# ---------------------------------------------------------------------------
+# structures property — Bridge (type 3) from beaver.g01
+# ---------------------------------------------------------------------------
+
+
+class TestStructuresBridge:
+    def test_summary_one_bridge(self):
+        g = GeometryFile(BEAVER)
+        assert g.structures.summary == {"inlines": 0, "bridges": 1, "laterals": 0}
+
+    def test_bridge_type(self):
+        g = GeometryFile(BEAVER)
+        _, br = g.structures.bridges.items()[0]
+        assert isinstance(br, Bridge)
+
+    def test_bridge_key(self):
+        g = GeometryFile(BEAVER)
+        keys = g.structures.bridges.keys()
+        assert keys == ["Beaver Creek Kentwood 5.4"]
+
+    def test_bridge_location(self):
+        g = GeometryFile(BEAVER)
+        br = g.structures.bridges["Beaver Creek Kentwood 5.4"]
+        assert br.location == ("Beaver Creek", "Kentwood", "5.4")
+
+    def test_bridge_adjacent_xs(self):
+        g = GeometryFile(BEAVER)
+        br = g.structures.bridges["Beaver Creek Kentwood 5.4"]
+        assert br.upstream_node == ("Beaver Creek", "Kentwood", "5.41")
+        assert br.downstream_node == ("Beaver Creek", "Kentwood", "5.39")
+
+    def test_bridge_connection_types(self):
+        g = GeometryFile(BEAVER)
+        br = g.structures.bridges["Beaver Creek Kentwood 5.4"]
+        assert br.upstream_type == "XS"
+        assert br.downstream_type == "XS"
+
+    def test_bridge_weir(self):
+        g = GeometryFile(BEAVER)
+        br = g.structures.bridges["Beaver Creek Kentwood 5.4"]
+        assert isinstance(br.weir, Weir)
+        assert br.weir.width == 40.0
+        assert br.weir.coefficient == 2.6
+        assert br.weir.shape == "Broad Crested"
+        assert br.weir.max_submergence == pytest.approx(0.95)
+        assert isnan(br.weir.min_elevation)
+        assert br.weir.skew == 0.0
+        assert isnan(br.weir.us_slope)
+        assert isnan(br.weir.ds_slope)
+        assert br.weir.use_water_surface is False
+
+    def test_bridge_gate_groups_empty(self):
+        g = GeometryFile(BEAVER)
+        br = g.structures.bridges["Beaver Creek Kentwood 5.4"]
+        assert br.gate_groups == []
+
+    def test_bridge_cached(self):
+        g = GeometryFile(BEAVER)
+        assert g.structures is g.structures
+
+
+# ---------------------------------------------------------------------------
+# structures property — Bridge from culvert (type 2) in conspan.g01
+# ---------------------------------------------------------------------------
+
+
+class TestStructuresCulvert:
+    def test_summary_one_bridge(self):
+        g = GeometryFile(CONSPAN)
+        assert g.structures.summary == {"inlines": 0, "bridges": 1, "laterals": 0}
+
+    def test_culvert_key(self):
+        g = GeometryFile(CONSPAN)
+        assert g.structures.bridges.keys() == ["Spring Creek Culvrt Reach 20.237"]
+
+    def test_culvert_location(self):
+        g = GeometryFile(CONSPAN)
+        br = g.structures.bridges["Spring Creek Culvrt Reach 20.237"]
+        assert br.location == ("Spring Creek", "Culvrt Reach", "20.237")
+
+    def test_culvert_adjacent_xs(self):
+        g = GeometryFile(CONSPAN)
+        br = g.structures.bridges["Spring Creek Culvrt Reach 20.237"]
+        assert br.upstream_node == ("Spring Creek", "Culvrt Reach", "20.238")
+        assert br.downstream_node == ("Spring Creek", "Culvrt Reach", "20.227")
+
+    def test_culvert_node_type_still_culvert(self):
+        g = GeometryFile(CONSPAN)
+        assert g.node_type("Spring Creek", "Culvrt Reach", "20.237") == NODE_CULVERT
+
+
+# ---------------------------------------------------------------------------
+# structures property — multi-reach file (3reach_lat.g01)
+# ---------------------------------------------------------------------------
+
+
+class TestStructures3Reach:
+    def test_summary(self):
+        g = GeometryFile(LAT3)
+        assert g.structures.summary == {"inlines": 0, "bridges": 3, "laterals": 1}
+
+    def test_bridge_count(self):
+        g = GeometryFile(LAT3)
+        assert len(g.structures.bridges) == 3
+
+    def test_bridge_keys(self):
+        g = GeometryFile(LAT3)
+        keys = g.structures.bridges.keys()
+        assert "Butte Cr. Butte Cr. 0.22" in keys
+        assert "Fall River Upper Reach 10.1" in keys
+        assert "Fall River Lower Reach 9.55" in keys
+
+    def test_bridge_description(self):
+        g = GeometryFile(LAT3)
+        br = g.structures.bridges["Butte Cr. Butte Cr. 0.22"]
+        assert br.description == "bridge crossing"
+
+    def test_culvert_in_bridge_index(self):
+        # Type 2 (culvert) and type 3 (bridge) both go into .bridges
+        g = GeometryFile(LAT3)
+        br = g.structures.bridges["Fall River Upper Reach 10.1"]
+        assert br.description == "Culvert crossing"
+        assert g.node_type("Fall River", "Upper Reach", "10.1") == NODE_CULVERT
+
+    def test_bridge_weir_values(self):
+        g = GeometryFile(LAT3)
+        br = g.structures.bridges["Butte Cr. Butte Cr. 0.22"]
+        assert br.weir.width == 100.0
+        assert br.weir.coefficient == pytest.approx(2.6)
+        assert br.weir.max_submergence == pytest.approx(0.99)
+
+
+# ---------------------------------------------------------------------------
+# structures property — Lateral (type 6) from 3reach_lat.g01
+# ---------------------------------------------------------------------------
+
+
+class TestStructuresLateral:
+    def test_lateral_count(self):
+        g = GeometryFile(LAT3)
+        assert len(g.structures.laterals) == 1
+
+    def test_lateral_type(self):
+        g = GeometryFile(LAT3)
+        _, lat = g.structures.laterals.items()[0]
+        assert isinstance(lat, Lateral)
+
+    def test_lateral_key(self):
+        g = GeometryFile(LAT3)
+        assert g.structures.laterals.keys() == ["Fall River Upper Reach 10.25"]
+
+    def test_lateral_location(self):
+        g = GeometryFile(LAT3)
+        lat = g.structures.laterals["Fall River Upper Reach 10.25"]
+        assert lat.location == ("Fall River", "Upper Reach", "10.25")
+
+    def test_lateral_upstream_node(self):
+        g = GeometryFile(LAT3)
+        lat = g.structures.laterals["Fall River Upper Reach 10.25"]
+        assert lat.upstream_node == ("Fall River", "Upper Reach", "10.3")
+
+    def test_lateral_downstream_node(self):
+        g = GeometryFile(LAT3)
+        lat = g.structures.laterals["Fall River Upper Reach 10.25"]
+        assert lat.downstream_node == "Butte Cr. Butte Cr."
+
+    def test_lateral_connection_types(self):
+        g = GeometryFile(LAT3)
+        lat = g.structures.laterals["Fall River Upper Reach 10.25"]
+        assert lat.upstream_type == "XS"
+        assert lat.downstream_type == "XS"
+
+    def test_lateral_weir(self):
+        g = GeometryFile(LAT3)
+        lat = g.structures.laterals["Fall River Upper Reach 10.25"]
+        assert isinstance(lat.weir, Weir)
+        assert lat.weir.width == 10.0
+        assert lat.weir.coefficient == pytest.approx(3.0)
+        assert lat.weir.shape == "Broad Crested"
+        assert isnan(lat.weir.max_submergence)
+        assert isnan(lat.weir.min_elevation)
+        assert lat.weir.skew == 0.0
+        assert isnan(lat.weir.us_slope)
+        assert isnan(lat.weir.ds_slope)
+
+    def test_lateral_use_water_surface(self):
+        # WSCriteria=-1 means use water surface
+        g = GeometryFile(LAT3)
+        lat = g.structures.laterals["Fall River Upper Reach 10.25"]
+        assert lat.weir.use_water_surface is True
+
+    def test_lateral_gate_groups_empty(self):
+        g = GeometryFile(LAT3)
+        lat = g.structures.laterals["Fall River Upper Reach 10.25"]
+        assert lat.gate_groups == []
+
+    def test_lateral_node_type(self):
+        g = GeometryFile(LAT3)
+        assert (
+            g.node_type("Fall River", "Upper Reach", "10.25")
+            == NODE_LATERAL_STRUCTURE
+        )
+
+
+# ---------------------------------------------------------------------------
+# structures property — no structures (inline-only file)
+# ---------------------------------------------------------------------------
+
+
+class TestStructuresNitInline:
+    def test_no_bridges_or_laterals(self):
+        g = GeometryFile(NIT)
+        assert g.structures.summary == {"inlines": 1, "bridges": 0, "laterals": 0}
+
+    def test_inline_still_parsed(self):
+        g = GeometryFile(NIT)
+        assert len(g.structures.inlines) == 1
+
+
+# ---------------------------------------------------------------------------
+# Round-trip: 3reach_lat fixture
+# ---------------------------------------------------------------------------
+
+
+class TestRoundTripLat3:
+    def test_roundtrip(self, tmp_path):
+        orig = LAT3.read_bytes()
+        dst = tmp_path / LAT3.name
+        import shutil as _shutil
+        _shutil.copy(LAT3, dst)
+        g = GeometryFile(dst)
+        g.save()
+        assert dst.read_bytes() == orig
