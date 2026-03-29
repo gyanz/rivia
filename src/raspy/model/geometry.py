@@ -415,22 +415,58 @@ class GateOpening:
     station: float
 
 
+_GATE_TYPE_NAMES: dict[int, str] = {
+    0: "sluice",
+    1: "radial",
+    2: "overflow_closed_top",
+    3: "overflow_open",
+    4: "user_defined_curves",
+}
+
+
 @dataclass
 class GateGroup:
     """One gate group in an inline structure (``IW Gate Name`` block).
 
-    Consistent with :class:`raspy.hdf._geometry.GateGroup`.
+    Field order follows the comma-delimited ``IW Gate Name`` data line::
+
+        name,Wd,H,Inv,GCoef,Exp_T,Exp_O,Exp_H,Type,WCoef,Is_Ogee,
+        SpillHt,DesHd,#Openings,trunnion_height,orifice_coef,
+        head_ref,radial_coef,,is_sharp_crested,weir_p1,weir_p2,weir_p3
 
     Attributes:
-        name:                Group name (first comma field of the data line).
-        width:               Gate width (``Wd``).
-        height:              Gate height (``H``).
-        invert:              Gate invert elevation (``Inv``).
-        sluice_coefficient:  Sluice gate coefficient (``GCoef``, index 4).
-        radial_coefficient:  Radial gate exponent / coefficient (``Exp_H``, index 7).
-        weir_coefficient:    Weir discharge coefficient (``WCoef``, index 9).
-        spillway_shape:      ``'Broad Crested'`` or ``'Ogee'`` (``Is_Ogee``, index 10).
-        openings:            Individual gate openings (stations + names).
+        name:                     Group name (index 0).
+        width:                    Gate width — ``Wd`` (index 1).
+        height:                   Gate height — ``H`` (index 2).
+        invert:                   Gate invert elevation — ``Inv`` (index 3).
+        sluice_coefficient:       Sluice/orifice discharge coefficient —
+                                  ``GCoef`` (index 4).
+        exp_trunnion:             Trunnion exponent — ``Exp_T`` (index 5).
+        exp_opening:              Opening exponent — ``Exp_O`` (index 6).
+        exp_height:               Height exponent — ``Exp_H`` (index 7).
+        gate_type:                Gate type string — ``Type`` (index 8):
+                                  ``'sluice'``, ``'radial'``,
+                                  ``'overflow_closed_top'``,
+                                  ``'overflow_open'``, or
+                                  ``'user_defined_curves'``.
+        weir_coefficient:         Overflow weir coefficient — ``WCoef``
+                                  (index 9).
+        is_ogee:                  ``True`` when ``Is_Ogee`` (index 10) is
+                                  ``-1`` (ogee crest shape).
+        spillway_approach_height: Spillway approach height — ``SpillHt``
+                                  (index 11).
+        design_energy_head:       Design energy head — ``DesHd`` (index 12).
+        trunnion_height:          Trunnion height (index 14).
+        orifice_coefficient:      Orifice coefficient (index 15).
+        head_reference:           Head reference point — 0 = sill,
+                                  1 = centre of opening (index 16).
+        radial_coefficient:       Radial (Tainter) gate discharge coefficient
+                                  (index 17).
+        is_sharp_crested:         ``True`` when index 19 is ``-1``.
+        use_weir_param1:          ``True`` when index 20 is ``-1``.
+        use_weir_param2:          ``True`` when index 21 is ``-1``.
+        use_weir_param3:          ``True`` when index 22 is ``-1``.
+        openings:                 Individual gate openings (stations + names).
     """
 
     name: str
@@ -438,9 +474,22 @@ class GateGroup:
     height: float
     invert: float
     sluice_coefficient: float
-    radial_coefficient: float
+    exp_trunnion: float
+    exp_opening: float
+    exp_height: float
+    gate_type: str
     weir_coefficient: float
-    spillway_shape: str
+    is_ogee: bool
+    spillway_approach_height: float
+    design_energy_head: float
+    trunnion_height: float
+    orifice_coefficient: float
+    head_reference: int
+    radial_coefficient: float
+    is_sharp_crested: bool
+    use_weir_param1: bool
+    use_weir_param2: bool
+    use_weir_param3: bool
     openings: list[GateOpening] = field(default_factory=list)
 
 
@@ -1884,18 +1933,14 @@ class GeometryFile:
                 shape="Ogee" if is_ogee else "Broad Crested",
             )
 
-        # -- gate opening names (IW Gate Opening=n,name,flag,...) ----------
-        iw_open_i = next(
-            (i for i, ln in enumerate(lines) if ln.startswith("IW Gate Opening=")),
-            None,
-        )
+        # -- gate opening names (one IW Gate Opening= line per opening) ------
+        # Each line: IW Gate Opening=<index>,<name>,<n_gis_points>
         all_opening_names: list[str] = []
-        if iw_open_i is not None:
-            raw = lines[iw_open_i][len("IW Gate Opening="):]
-            op_parts = raw.split(",")
-            # op_parts[0] = count; then pairs: name, flag
-            for k in range(1, len(op_parts), 2):
-                all_opening_names.append(op_parts[k].strip())
+        for ln in lines:
+            if ln.startswith("IW Gate Opening="):
+                op_parts = ln[len("IW Gate Opening="):].split(",")
+                if len(op_parts) >= 2:
+                    all_opening_names.append(op_parts[1].strip())
 
         # -- gate groups (IW Gate Name blocks) -----------------------------
         gate_groups: list[GateGroup] = []
@@ -1927,7 +1972,7 @@ class GeometryFile:
                 openings.append(GateOpening(name=oname, station=st))
             opening_offset += n_openings
 
-            is_ogee_g = int(_cf(data_parts, 10))
+            gate_type_code = int(_cf(data_parts, 8))
             gate_groups.append(
                 GateGroup(
                     name=name,
@@ -1935,9 +1980,22 @@ class GeometryFile:
                     height=_cf(data_parts, 2),
                     invert=_cf(data_parts, 3),
                     sluice_coefficient=_cf(data_parts, 4),
-                    radial_coefficient=_cf(data_parts, 7),
+                    exp_trunnion=_cf(data_parts, 5),
+                    exp_opening=_cf(data_parts, 6),
+                    exp_height=_cf(data_parts, 7),
+                    gate_type=_GATE_TYPE_NAMES.get(gate_type_code, str(gate_type_code)),
                     weir_coefficient=_cf(data_parts, 9),
-                    spillway_shape="Ogee" if is_ogee_g else "Broad Crested",
+                    is_ogee=int(_cf(data_parts, 10)) == -1,
+                    spillway_approach_height=_cf(data_parts, 11),
+                    design_energy_head=_cf(data_parts, 12),
+                    trunnion_height=_cf(data_parts, 14),
+                    orifice_coefficient=_cf(data_parts, 15),
+                    head_reference=int(_cf(data_parts, 16)),
+                    radial_coefficient=_cf(data_parts, 17),
+                    is_sharp_crested=int(_cf(data_parts, 19)) == -1,
+                    use_weir_param1=int(_cf(data_parts, 20)) == -1,
+                    use_weir_param2=int(_cf(data_parts, 21)) == -1,
+                    use_weir_param3=int(_cf(data_parts, 22)) == -1,
                     openings=openings,
                 )
             )
