@@ -30,6 +30,7 @@ from math import isnan
 from raspy.model.geometry import (
     Bridge,
     CrossSection,
+    CulvertGroup,
     GeometryFile,
     IneffArea,
     Lateral,
@@ -39,6 +40,8 @@ from raspy.model.geometry import (
     NODE_INLINE_STRUCTURE,
     NODE_LATERAL_STRUCTURE,
     NODE_XS,
+    Pier,
+    Roadway,
     Weir,
 )
 
@@ -1048,3 +1051,347 @@ class TestRoundTripLat3:
         g = GeometryFile(dst)
         g.save()
         assert dst.read_bytes() == orig
+
+
+# ---------------------------------------------------------------------------
+# Roadway geometry — beaver.g01 bridge (type 3, RS 5.4)
+# ---------------------------------------------------------------------------
+
+
+class TestBridgeRoadway:
+    """Deck geometry arrays parsed from beaver.g01.
+
+    Deck Dist data: 30,40,2.6,0, 6, 6, , , 0.95, 0, 0,0,,
+    Up/Dn stations: 0 450 450 647 647 2000
+    Up/Dn hi-chord: 216.93 × 6
+    Up/Dn lo-chord: 200 200 215.7 215.7 200 200
+    """
+
+    def _br(self):
+        g = GeometryFile(BEAVER)
+        return g.structures.bridges["Beaver Creek Kentwood 5.4"]
+
+    def test_roadway_present(self):
+        assert isinstance(self._br().roadway, Roadway)
+
+    def test_roadway_dist(self):
+        assert self._br().roadway.dist == pytest.approx(30.0)
+
+    def test_roadway_width(self):
+        assert self._br().roadway.width == pytest.approx(40.0)
+
+    def test_roadway_weir_coefficient(self):
+        assert self._br().roadway.weir_coefficient == pytest.approx(2.6)
+
+    def test_roadway_shape(self):
+        assert self._br().roadway.shape == "Broad Crested"
+
+    def test_roadway_max_submergence(self):
+        assert self._br().roadway.max_submergence == pytest.approx(0.95)
+
+    def test_roadway_min_lo_chord_nan(self):
+        assert isnan(self._br().roadway.min_lo_chord)
+
+    def test_roadway_max_hi_chord_nan(self):
+        assert isnan(self._br().roadway.max_hi_chord)
+
+    def test_roadway_stations_up_count(self):
+        assert len(self._br().roadway.stations_up) == 6
+
+    def test_roadway_stations_up_values(self):
+        assert self._br().roadway.stations_up == pytest.approx([0, 450, 450, 647, 647, 2000])
+
+    def test_roadway_hi_chord_up(self):
+        hi = self._br().roadway.hi_chord_up
+        assert len(hi) == 6
+        assert all(v == pytest.approx(216.93) for v in hi)
+
+    def test_roadway_lo_chord_up(self):
+        lo = self._br().roadway.lo_chord_up
+        assert lo == pytest.approx([200, 200, 215.7, 215.7, 200, 200])
+
+    def test_roadway_stations_dn_equals_up(self):
+        rw = self._br().roadway
+        assert rw.stations_dn == pytest.approx(rw.stations_up)
+
+    def test_roadway_hi_chord_dn_equals_up(self):
+        rw = self._br().roadway
+        assert rw.hi_chord_dn == pytest.approx(rw.hi_chord_up)
+
+    def test_htab_hw_max(self):
+        assert self._br().htab_hw_max == pytest.approx(225.0)
+
+    def test_htab_tw_max(self):
+        assert self._br().htab_tw_max == pytest.approx(220.0)
+
+    def test_htab_max_flow(self):
+        assert self._br().htab_max_flow == pytest.approx(50000.0)
+
+
+# ---------------------------------------------------------------------------
+# Pier geometry — beaver.g01 bridge (9 pier groups)
+# ---------------------------------------------------------------------------
+
+
+class TestBridgePiers:
+    """Pier groups from beaver.g01 bridge.
+
+    9 piers at stations 470..630 (step 20), each with 2 up and 2 dn elements.
+    Upstream widths  [1.25, 1.25], elevations [202.7, 215.7].
+    Downstream same.
+    """
+
+    def _br(self):
+        g = GeometryFile(BEAVER)
+        return g.structures.bridges["Beaver Creek Kentwood 5.4"]
+
+    def test_pier_count(self):
+        assert len(self._br().piers) == 9
+
+    def test_pier_type(self):
+        assert isinstance(self._br().piers[0], Pier)
+
+    def test_first_pier_upstream_station(self):
+        assert self._br().piers[0].upstream_station == pytest.approx(470.0)
+
+    def test_last_pier_upstream_station(self):
+        assert self._br().piers[-1].upstream_station == pytest.approx(630.0)
+
+    def test_pier_upstream_count(self):
+        assert self._br().piers[0].upstream_count == 2
+
+    def test_pier_downstream_count(self):
+        assert self._br().piers[0].downstream_count == 2
+
+    def test_pier_upstream_widths(self):
+        assert self._br().piers[0].upstream_widths == pytest.approx([1.25, 1.25])
+
+    def test_pier_upstream_elevations(self):
+        assert self._br().piers[0].upstream_elevations == pytest.approx([202.7, 215.7])
+
+    def test_pier_downstream_widths(self):
+        assert self._br().piers[0].downstream_widths == pytest.approx([1.25, 1.25])
+
+    def test_pier_downstream_elevations(self):
+        assert self._br().piers[0].downstream_elevations == pytest.approx([202.7, 215.7])
+
+    def test_pier_skew_zero(self):
+        assert self._br().piers[0].skew == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Culvert parsing — conspan.g01 (type 2, RS 20.237, Con Span barrel)
+# ---------------------------------------------------------------------------
+
+
+class TestCulvertParsing:
+    """Culvert= line parsed from conspan.g01.
+
+    Culvert=9,6,28,50,0.013,0.5,1,61,3,25.1,1000,25,1000,Culvert # 1 , 0 ,5
+    Culvert Bottom n=0.03
+    Culvert Bottom Depth=0.5
+    """
+
+    def _br(self):
+        g = GeometryFile(CONSPAN)
+        return g.structures.bridges["Spring Creek Culvrt Reach 20.237"]
+
+    def test_culvert_count(self):
+        assert len(self._br().culvert_groups) == 1
+
+    def test_culvert_type(self):
+        assert isinstance(self._br().culvert_groups[0], CulvertGroup)
+
+    def test_culvert_shape_code(self):
+        assert self._br().culvert_groups[0].shape_code == 9
+
+    def test_culvert_shape_name(self):
+        assert self._br().culvert_groups[0].shape_name == "Con Span"
+
+    def test_culvert_name(self):
+        assert self._br().culvert_groups[0].name == "Culvert # 1"
+
+    def test_culvert_span(self):
+        assert self._br().culvert_groups[0].span == pytest.approx(6.0)
+
+    def test_culvert_rise(self):
+        assert self._br().culvert_groups[0].rise == pytest.approx(28.0)
+
+    def test_culvert_length(self):
+        assert self._br().culvert_groups[0].length == pytest.approx(50.0)
+
+    def test_culvert_n_top(self):
+        assert self._br().culvert_groups[0].n_top == pytest.approx(0.013)
+
+    def test_culvert_entrance_loss(self):
+        assert self._br().culvert_groups[0].entrance_loss == pytest.approx(0.5)
+
+    def test_culvert_us_invert(self):
+        assert self._br().culvert_groups[0].upstream_invert == pytest.approx(25.1)
+
+    def test_culvert_us_station(self):
+        assert self._br().culvert_groups[0].upstream_station == pytest.approx(1000.0)
+
+    def test_culvert_ds_invert(self):
+        assert self._br().culvert_groups[0].downstream_invert == pytest.approx(25.0)
+
+    def test_culvert_ds_station(self):
+        assert self._br().culvert_groups[0].downstream_station == pytest.approx(1000.0)
+
+    def test_culvert_chart_number(self):
+        assert self._br().culvert_groups[0].chart_number == 5
+
+    def test_culvert_n_bottom(self):
+        assert self._br().culvert_groups[0].n_bottom == pytest.approx(0.03)
+
+    def test_culvert_depth_n_bottom(self):
+        assert self._br().culvert_groups[0].depth_n_bottom == pytest.approx(0.5)
+
+    def test_roadway_stations_up(self):
+        rw = self._br().roadway
+        assert len(rw.stations_up) == 8
+        assert rw.stations_up[0] == pytest.approx(856.0)
+        assert rw.stations_up[-1] == pytest.approx(1150.0)
+
+    def test_roadway_hi_chord_up(self):
+        rw = self._br().roadway
+        assert rw.hi_chord_up[0] == pytest.approx(36.1)
+        assert rw.hi_chord_up[-1] == pytest.approx(37.2)
+
+    def test_roadway_lo_chord_up_blank(self):
+        # conspan lo-chord row is all spaces → parsed as empty list
+        assert self._br().roadway.lo_chord_up == []
+
+    def test_roadway_min_lo_chord(self):
+        assert self._br().roadway.min_lo_chord == pytest.approx(33.7)
+
+
+# ---------------------------------------------------------------------------
+# Multiple barrel culvert — 3reach_lat.g01 (Fall River / Upper Reach / 10.1)
+# ---------------------------------------------------------------------------
+
+
+class TestMultipleBarrelCulvert:
+    """Culvert= + Multiple Barrel Culv= from 3reach_lat.g01.
+
+    Culvert=1,8,,100,...  → Circular, 1 barrel
+    Multiple Barrel Culv=2,8,6,100,...  → Box, 2 barrels
+    """
+
+    def _br(self):
+        g = GeometryFile(LAT3)
+        return g.structures.bridges["Fall River Upper Reach 10.1"]
+
+    def test_culvert_count(self):
+        assert len(self._br().culvert_groups) == 2
+
+    def test_first_culvert_shape(self):
+        assert self._br().culvert_groups[0].shape_code == 1
+        assert self._br().culvert_groups[0].shape_name == "Circular"
+
+    def test_first_culvert_n_bottom(self):
+        assert self._br().culvert_groups[0].n_bottom == pytest.approx(0.013)
+
+    def test_second_culvert_shape(self):
+        assert self._br().culvert_groups[1].shape_code == 2
+        assert self._br().culvert_groups[1].shape_name == "Box"
+
+    def test_second_culvert_num_barrels(self):
+        assert self._br().culvert_groups[1].num_barrels == 2
+
+    def test_second_culvert_n_bottom(self):
+        assert self._br().culvert_groups[1].n_bottom == pytest.approx(0.013)
+
+    def test_htab_hw_max(self):
+        assert self._br().htab_hw_max == pytest.approx(90.0)
+
+    def test_no_piers(self):
+        assert self._br().piers == []
+
+
+# ---------------------------------------------------------------------------
+# Pier in 3reach_lat.g01 bridge (Butte Cr. / Butte Cr. / 0.22)
+# ---------------------------------------------------------------------------
+
+
+class TestBridgePiers3Reach:
+    """Bridge with 1 pier group in 3reach_lat.g01.
+
+    Pier at station 267, 2 upstream + 2 downstream elements.
+    Up widths [2, 2], up elevations [65, 80].
+    """
+
+    def _br(self):
+        g = GeometryFile(LAT3)
+        return g.structures.bridges["Butte Cr. Butte Cr. 0.22"]
+
+    def test_pier_count(self):
+        assert len(self._br().piers) == 1
+
+    def test_pier_station(self):
+        assert self._br().piers[0].upstream_station == pytest.approx(267.0)
+        assert self._br().piers[0].downstream_station == pytest.approx(267.0)
+
+    def test_pier_counts(self):
+        assert self._br().piers[0].upstream_count == 2
+        assert self._br().piers[0].downstream_count == 2
+
+    def test_pier_widths(self):
+        assert self._br().piers[0].upstream_widths == pytest.approx([2.0, 2.0])
+
+    def test_pier_elevations(self):
+        assert self._br().piers[0].upstream_elevations == pytest.approx([65.0, 80.0])
+
+    def test_htab_hw_max(self):
+        assert self._br().htab_hw_max == pytest.approx(90.0)
+
+    def test_htab_tw_max(self):
+        assert self._br().htab_tw_max == pytest.approx(88.0)
+
+    def test_no_culverts(self):
+        assert self._br().culvert_groups == []
+
+
+# ---------------------------------------------------------------------------
+# Lateral extended fields — 3reach_lat.g01 (Fall River / Upper Reach / 10.25)
+# ---------------------------------------------------------------------------
+
+
+class TestLateralExtended:
+    """New Lateral fields parsed from 3reach_lat.g01.
+
+    Lateral Weir Pos= 0
+    Lateral Weir Distance=10
+    Lateral Weir Flap Gates= 0
+    Lateral Weir TW Multiple XS=0
+    Lateral Weir SE= 6  → (0,90),(10,90),(10,82),(100,82),(100,90),(110,90)
+    """
+
+    def _lat(self):
+        g = GeometryFile(LAT3)
+        return g.structures.laterals["Fall River Upper Reach 10.25"]
+
+    def test_pos_left_bank(self):
+        assert self._lat().pos == 0
+
+    def test_distance(self):
+        assert self._lat().distance == pytest.approx(10.0)
+
+    def test_flap_gates_false(self):
+        assert self._lat().flap_gates is False
+
+    def test_tw_multiple_xs_false(self):
+        assert self._lat().tw_multiple_xs is False
+
+    def test_crest_profile_count(self):
+        assert len(self._lat().crest_profile) == 6
+
+    def test_crest_profile_first(self):
+        assert self._lat().crest_profile[0] == pytest.approx((0.0, 90.0))
+
+    def test_crest_profile_third(self):
+        # station=10, elev=82 (weir dips here)
+        assert self._lat().crest_profile[2] == pytest.approx((10.0, 82.0))
+
+    def test_crest_profile_last(self):
+        assert self._lat().crest_profile[-1] == pytest.approx((110.0, 90.0))

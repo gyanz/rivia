@@ -57,6 +57,7 @@ Derived from format inspection of HEC-RAS 6.6 example files and
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from dataclasses import dataclass, field
 from math import ceil, isnan, nan
@@ -92,6 +93,19 @@ _NODE_TYPE_NAMES: dict[int, str] = {
     NODE_MULTIPLE_OPENING: "MultipleOpening",
     NODE_INLINE_STRUCTURE: "InlineStructure",
     NODE_LATERAL_STRUCTURE: "LateralStructure",
+}
+
+#: Culvert shape codes from ``Culvert=`` data line (index 0).
+_CULVERT_SHAPES: dict[int, str] = {
+    1: "Circular",
+    2: "Box",
+    3: "Pipe Arch",
+    4: "Ellipse",
+    5: "Arch",
+    6: "Semi-Circle",
+    7: "Low Profile Arch",
+    8: "High Profile Arch",
+    9: "Con Span",
 }
 
 _KEY_NODE = "Type RM Length L Ch R"
@@ -592,6 +606,167 @@ class Weir:
 
 
 @dataclass
+class CulvertGroup:
+    """One culvert barrel definition from a ``Culvert=`` line.
+
+    Field order matches the comma-separated data on the ``Culvert=`` line::
+
+        shape, span, rise, length, n, Ke, exit_loss, inlet_type, outlet_type,
+        us_invert, us_station, ds_invert, ds_station, name, ?, chart_number
+
+    Attributes:
+        name:           Culvert identifier (index 13), e.g. ``'Culvert # 1'``.
+        shape_code:     Shape code (index 0) — see :data:`_CULVERT_SHAPES`.
+        shape_name:     Human-readable shape, e.g. ``'Circular'``, ``'Box'``.
+        span:           Width or diameter (index 1).
+        rise:           Height (index 2); ``0.0`` when blank.
+        length:         Barrel length (index 3).
+        n_top:          Manning's roughness coefficient (index 4).
+        entrance_loss:  Entrance loss coefficient Ke (index 5).
+        exit_loss:      Exit loss coefficient (index 6).
+        inlet_type:     Inlet control type code (index 7).
+        outlet_type:    Outlet control type code (index 8).
+        upstream_invert:   Upstream invert elevation (index 9).
+        upstream_station:  Upstream station location (index 10).
+        downstream_invert: Downstream invert elevation (index 11).
+        downstream_station: Downstream station location (index 12).
+        chart_number:   Inlet control chart number (index 15).
+        num_barrels:    Number of barrels — from ``BC Culvert Barrel=`` line;
+                        ``1`` when that line is absent.
+        n_bottom:       Bottom Manning's n — from ``Culvert Bottom n=``;
+                        ``None`` when absent.
+        depth_n_bottom: Bottom fill depth — from ``Culvert Bottom Depth=``;
+                        ``None`` when absent.
+
+    .. TODO: ``Multiple Barrel Culv=`` uses a different field layout
+       (no ``us_station`` / ``ds_station`` columns; barrel stations appear on
+       the next line as ``num_barrels`` upstream + ``num_barrels`` downstream
+       values in 8-char fixed-width columns).  These station values are
+       currently not parsed.
+    """
+
+    name: str
+    shape_code: int
+    shape_name: str
+    span: float
+    rise: float
+    length: float
+    n_top: float
+    entrance_loss: float
+    exit_loss: float
+    inlet_type: int
+    outlet_type: int
+    upstream_invert: float
+    upstream_station: float
+    downstream_invert: float
+    downstream_station: float
+    chart_number: int
+    num_barrels: int = 1
+    n_bottom: float | None = None
+    depth_n_bottom: float | None = None
+
+
+@dataclass
+class Pier:
+    """One pier group from a ``Pier Skew, UpSta & Num, DnSta & Num=`` block.
+
+    The header line carries the skew, station, and count; four fixed-width
+    blocks (8-char columns, up to 10 per row) immediately follow::
+
+        upstream_count   widths
+        upstream_count   elevations
+        downstream_count widths
+        downstream_count elevations
+
+    Attributes:
+        skew:                 Pier skew angle in degrees; ``0.0`` when blank.
+        upstream_station:     Station of the upstream pier face.
+        upstream_count:       Number of upstream pier elements.
+        downstream_station:   Station of the downstream pier face.
+        downstream_count:     Number of downstream pier elements.
+        upstream_widths:      Width of each upstream pier element.
+        upstream_elevations:  Top-of-pier elevation for each upstream element.
+        downstream_widths:    Width of each downstream pier element.
+        downstream_elevations: Top-of-pier elevation for each downstream element.
+    """
+
+    skew: float
+    upstream_station: float
+    upstream_count: int
+    downstream_station: float
+    downstream_count: int
+    upstream_widths: list[float]
+    upstream_elevations: list[float]
+    downstream_widths: list[float]
+    downstream_elevations: list[float]
+
+
+@dataclass
+class Roadway:
+    """Deck/roadway geometry from the ``Deck Dist Width WeirC ...`` block.
+
+    The header ``Deck Dist Width WeirC Skew NumUp NumDn MinLoCord MaxHiCord
+    MaxSubmerge Is_Ogee`` is followed by a comma-separated data line and then
+    six fixed-width blocks (8-char columns, up to 10 values per row):
+
+    - *numUp* upstream deck stations
+    - *numUp* upstream high-chord (top of deck) elevations
+    - *numUp* upstream low-chord (soffit) elevations
+    - *numDn* downstream versions of the above (same layout)
+
+    ``lo_chord_up`` / ``lo_chord_dn`` will be an empty list when the
+    corresponding block is all-blank (some culvert files omit low-chord data).
+
+    Attributes:
+        dist:             Distance from the upstream cross section to the
+                          bridge face (index 0).
+        width:            Deck/roadway width (index 1).
+        weir_coefficient: Overflow weir discharge coefficient (index 2).
+        skew:             Bridge skew angle in degrees (index 3).
+        max_submergence:  Maximum submergence ratio (index 8); ``nan`` when
+                          blank.
+        shape:            Overflow weir crest shape — ``'Broad Crested'`` or
+                          ``'Ogee'`` (from Is_Ogee flag, index 9).
+        min_lo_chord:     Minimum low-chord elevation (index 6); ``nan`` when
+                          blank.
+        max_hi_chord:     Maximum high-chord elevation (index 7); ``nan`` when
+                          blank.
+        stations_up:      Upstream deck station values.
+        hi_chord_up:      Upstream high-chord (top of deck) elevations.
+        lo_chord_up:      Upstream low-chord (soffit) elevations; empty list
+                          when the block is all-blank.
+        stations_dn:      Downstream deck station values.
+        hi_chord_dn:      Downstream high-chord elevations.
+        lo_chord_dn:      Downstream low-chord elevations; empty list when
+                          all-blank.
+
+    .. TODO: The ``Bridge Culvert-`` flags line (immediately before
+       ``Deck Dist``) encodes open-deck / culvert-only options and is not yet
+       parsed.
+    .. TODO: ``BR Coef=`` (bridge loss coefficients — momentum/energy method,
+       Yarnell K factor, etc.) is not yet parsed.
+    .. TODO: ``WSPro=`` (water surface profile method options) is not yet
+       parsed.
+    .. TODO: ``BC Design=`` (design flow parameters) is not yet parsed.
+    """
+
+    dist: float
+    width: float
+    weir_coefficient: float
+    skew: float
+    max_submergence: float
+    shape: str
+    min_lo_chord: float
+    max_hi_chord: float
+    stations_up: list[float] = field(default_factory=list)
+    hi_chord_up: list[float] = field(default_factory=list)
+    lo_chord_up: list[float] = field(default_factory=list)
+    stations_dn: list[float] = field(default_factory=list)
+    hi_chord_dn: list[float] = field(default_factory=list)
+    lo_chord_dn: list[float] = field(default_factory=list)
+
+
+@dataclass
 class Structure:
     """Base class for one HEC-RAS structure parsed from a text geometry file.
 
@@ -691,10 +866,16 @@ class Bridge(Structure):
 
     Differences vs the HDF version:
 
-    - ``weir``: populated from the ``Deck Dist`` data line when present;
-      ``us_slope``, ``ds_slope``, and ``use_water_surface`` are always
-      ``nan`` / ``False`` — not stored in the text format.
-    - ``gate_groups``: always ``[]`` — the bridge/culvert text format uses
+    - ``weir``: populated from the ``Deck Dist`` data line scalar fields
+      (width, coefficient, skew, max_submergence, shape); ``us_slope``,
+      ``ds_slope``, and ``use_water_surface`` are always ``nan`` / ``False``
+      — not stored in the text format.  Redundant with ``roadway`` scalars.
+    - ``roadway``: full deck geometry including upstream/downstream station,
+      high-chord, and low-chord arrays; ``None`` when no ``Deck Dist`` line
+      is present.
+    - ``culvert_groups``: barrel definitions from ``Culvert=`` lines.
+    - ``piers``: pier groups from ``Pier Skew, ...`` blocks.
+    - ``gate_groups``: always ``[]`` — bridge/culvert format uses
       ``Bridge Culvert`` hydraulics, not ``IW Gate Name`` blocks.
     - ``description``: text-file-specific field from
       ``BEGIN/END DESCRIPTION``; no equivalent in HDF.
@@ -705,10 +886,22 @@ class Bridge(Structure):
                          ``("", "", "")`` when none found.
         downstream_node: ``(river, reach, rs)`` of the nearest downstream XS;
                          ``("", "", "")`` when none found.
-        weir:            Overflow weir data from the ``Deck Dist`` line;
+        weir:            Overflow weir scalars from the ``Deck Dist`` line;
                          ``None`` if the line is absent.
         gate_groups:     Always ``[]``.
         description:     Node description from ``BEGIN/END DESCRIPTION``.
+        roadway:         Full deck geometry (stations, hi/lo chords) from the
+                         ``Deck Dist`` block; ``None`` when absent.
+        culvert_groups:  Barrel definitions from ``Culvert=`` lines.
+        piers:           Pier groups from ``Pier Skew, ...`` blocks.
+        node_name:       Node name from ``Node Name=``; empty string when
+                         absent.
+        htab_hw_max:     Max headwater elevation from ``BC HTab HWMax=``;
+                         ``None`` when absent.
+        htab_tw_max:     Max tailwater elevation from ``BC HTab TWMax=``;
+                         ``None`` when absent.
+        htab_max_flow:   Max flow from ``BC HTab MaxFlow=``; ``None`` when
+                         absent.
     """
 
     location: tuple[str, str, str] = ("", "", "")
@@ -717,6 +910,13 @@ class Bridge(Structure):
     weir: Weir | None = None
     gate_groups: list[GateGroup] = field(default_factory=list)
     description: str = ""
+    roadway: Roadway | None = None
+    culvert_groups: list[CulvertGroup] = field(default_factory=list)
+    piers: list[Pier] = field(default_factory=list)
+    node_name: str = ""
+    htab_hw_max: float | None = None
+    htab_tw_max: float | None = None
+    htab_max_flow: float | None = None
 
 
 @dataclass
@@ -753,6 +953,28 @@ class Lateral(Structure):
                          ``None`` if no ``Lateral Weir WD=`` line is present.
         gate_groups:     Always ``[]``.
         description:     Node description from ``BEGIN/END DESCRIPTION``.
+        pos:             Bank side of the weir — ``0`` = left, ``1`` = right
+                         (from ``Lateral Weir Pos=``).
+        distance:        Setback distance from the upstream cross section
+                         (from ``Lateral Weir Distance=``); ``nan`` when
+                         absent.
+        crest_profile:   Weir crest station/elevation pairs from the
+                         ``Lateral Weir SE=`` block; empty list when absent.
+        flap_gates:      ``True`` when ``Lateral Weir Flap Gates= -1`` or
+                         ``1``; ``False`` when ``0`` or absent.
+        tw_multiple_xs:  ``True`` when tailwater uses multiple XS averaging
+                         (``Lateral Weir TW Multiple XS=`` non-zero).
+
+    .. TODO: ``Lateral Weir Hagers EQN=`` (Hager's weir equation on/off flag
+       and six coefficients) is not yet parsed.
+    .. TODO: ``Lateral Weir SS=`` (upstream and downstream side slopes) is not
+       yet parsed.
+    .. TODO: ``Lateral Weir Connection Pos and Dist=`` (connection-point
+       position code and distance) is not yet parsed.
+    .. TODO: ``Lateral Weir Centerline=`` (GIS centreline point count and
+       coordinate block) is not yet parsed.
+    .. TODO: ``LW Div RC=`` (diversion rating-curve flag and label) is not yet
+       parsed.
     """
 
     location: tuple[str, str, str] = ("", "", "")
@@ -761,6 +983,11 @@ class Lateral(Structure):
     weir: Weir | None = None
     gate_groups: list[GateGroup] = field(default_factory=list)
     description: str = ""
+    pos: int = 0
+    distance: float = nan
+    crest_profile: list[tuple[float, float]] = field(default_factory=list)
+    flap_gates: bool = False
+    tw_multiple_xs: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -2133,6 +2360,27 @@ class GeometryFile:
         """
         lines = [ln.rstrip("\n") for ln in self._lines[start:end]]
 
+        # Shared float-parsing helper (takes the current parts list as arg
+        # to avoid closure rebinding issues across multiple blocks).
+        def _f(parts: list[str], idx: int, default: float = 0.0) -> float:
+            if idx >= len(parts):
+                return default
+            s = parts[idx].strip()
+            try:
+                return float(s) if s else default
+            except ValueError:
+                return default
+
+        def _fn(parts: list[str], idx: int) -> float:
+            """Like _f but returns nan for blank/missing."""
+            if idx >= len(parts):
+                return nan
+            s = parts[idx].strip()
+            try:
+                return float(s)
+            except (ValueError, TypeError):
+                return nan
+
         # -- description ---------------------------------------------------
         description = ""
         desc_s = next(
@@ -2146,44 +2394,255 @@ class GeometryFile:
         if desc_s is not None and desc_e is not None and desc_e > desc_s:
             description = "\n".join(lines[desc_s + 1 : desc_e]).strip()
 
-        # -- weir from Deck Dist data line ---------------------------------
+        # -- node name (Node Name= line, if present) -----------------------
+        node_name = ""
+        for ln in lines:
+            if ln.startswith("Node Name="):
+                node_name = ln[len("Node Name="):].strip()
+                break
+
+        # -- roadway / deck geometry (Deck Dist ... block) -----------------
         # Header: "Deck Dist Width WeirC Skew NumUp NumDn MinLoCord MaxHiCord
         #          MaxSubmerge Is_Ogee"
-        # Data:    col[0]=dist, col[1]=width, col[2]=coef, col[3]=skew,
-        #          col[4]=numUp, col[5]=numDn, col[6]=minLoCord, col[7]=maxHiCord,
-        #          col[8]=maxSubmerge, col[9]=is_ogee
+        # Data line columns (0-based):
+        #   0=dist, 1=width, 2=coef, 3=skew, 4=numUp, 5=numDn,
+        #   6=minLoCord, 7=maxHiCord, 8=maxSubmerge, 9=is_ogee
+        # After the data line: numUp stations, numUp hi-chords, numUp lo-chords,
+        #   then numDn stations, numDn hi-chords, numDn lo-chords
+        #   (all 8-char fixed-width columns, up to 10 per row).
+        roadway: Roadway | None = None
         weir: Weir | None = None
         deck_hdr_i = next(
             (i for i, ln in enumerate(lines) if ln.startswith("Deck Dist")),
             None,
         )
         if deck_hdr_i is not None and deck_hdr_i + 1 < len(lines):
-            parts = lines[deck_hdr_i + 1].split(",")
+            dp = lines[deck_hdr_i + 1].split(",")
+            dist = _f(dp, 0)
+            width = _f(dp, 1)
+            coef = _f(dp, 2)
+            skew = _f(dp, 3)
+            num_up = int(_f(dp, 4))
+            num_dn = int(_f(dp, 5))
+            min_lo = _fn(dp, 6)
+            max_hi = _fn(dp, 7)
+            max_sub = _fn(dp, 8)
+            is_ogee = int(_f(dp, 9)) == -1
+            shape = "Ogee" if is_ogee else "Broad Crested"
 
-            def _cf(idx: int, default: float = 0.0) -> float:
-                if idx >= len(parts):
-                    return default
-                s = parts[idx].strip()
-                return float(s) if s else default
+            row_off = deck_hdr_i + 2  # first fixed-width row
+            rows_up = _row_count(num_up, _COLS_STAE)
+            stations_up = _parse_block(lines[row_off: row_off + rows_up], num_up)
+            row_off += rows_up
+            hi_up = _parse_block(lines[row_off: row_off + rows_up], num_up)
+            row_off += rows_up
+            lo_up = _parse_block(lines[row_off: row_off + rows_up], num_up)
+            row_off += rows_up
 
-            def _cf_nan(idx: int) -> float:
-                if idx >= len(parts):
-                    return nan
-                s = parts[idx].strip()
-                try:
-                    return float(s)
-                except (ValueError, TypeError):
-                    return nan
+            rows_dn = _row_count(num_dn, _COLS_STAE)
+            stations_dn = _parse_block(lines[row_off: row_off + rows_dn], num_dn)
+            row_off += rows_dn
+            hi_dn = _parse_block(lines[row_off: row_off + rows_dn], num_dn)
+            row_off += rows_dn
+            lo_dn = _parse_block(lines[row_off: row_off + rows_dn], num_dn)
 
-            is_ogee = int(_cf(9)) == -1
-            weir = Weir(
-                width=_cf(1),
-                coefficient=_cf(2),
-                skew=_cf(3),
-                max_submergence=_cf_nan(8),
-                min_elevation=nan,
-                shape="Ogee" if is_ogee else "Broad Crested",
+            roadway = Roadway(
+                dist=dist,
+                width=width,
+                weir_coefficient=coef,
+                skew=skew,
+                max_submergence=max_sub,
+                shape=shape,
+                min_lo_chord=min_lo,
+                max_hi_chord=max_hi,
+                stations_up=stations_up,
+                hi_chord_up=hi_up,
+                lo_chord_up=lo_up,
+                stations_dn=stations_dn,
+                hi_chord_dn=hi_dn,
+                lo_chord_dn=lo_dn,
             )
+            weir = Weir(
+                width=width,
+                coefficient=coef,
+                skew=skew,
+                max_submergence=max_sub,
+                min_elevation=nan,
+                shape=shape,
+            )
+
+        # -- culvert_groups (Culvert= and Multiple Barrel Culv= lines) ------
+        culvert_groups: list[CulvertGroup] = []
+        i = 0
+        while i < len(lines):
+            ln = lines[i]
+            if ln.startswith("Culvert="):
+                cp = ln[len("Culvert="):].split(",")
+                shape_code = int(_f(cp, 0)) if cp[0].strip() else 0
+                sname = _CULVERT_SHAPES.get(shape_code, f"Unknown ({shape_code})")
+                chart = (
+                    int(_f(cp, 15))
+                    if len(cp) > 15 and cp[15].strip()
+                    else 0
+                )
+                culvert_group = CulvertGroup(
+                    name=cp[13].strip() if len(cp) > 13 else "",
+                    shape_code=shape_code,
+                    shape_name=sname,
+                    span=_f(cp, 1),
+                    rise=_f(cp, 2),
+                    length=_f(cp, 3),
+                    n_top=_f(cp, 4),
+                    entrance_loss=_f(cp, 5),
+                    exit_loss=_f(cp, 6),
+                    inlet_type=int(_f(cp, 7)),
+                    outlet_type=int(_f(cp, 8)),
+                    upstream_invert=_f(cp, 9),
+                    upstream_station=_f(cp, 10),
+                    downstream_invert=_f(cp, 11),
+                    downstream_station=_f(cp, 12),
+                    chart_number=chart,
+                )
+                # Consume immediately-following optional parameter lines
+                j = i + 1
+                while j < i + 5 and j < len(lines):
+                    nxt = lines[j]
+                    if nxt.startswith("Culvert Bottom n="):
+                        with contextlib.suppress(ValueError):
+                            culvert_group.n_bottom = float(
+                                nxt[len("Culvert Bottom n="):].strip()
+                            )
+                        j += 1
+                    elif nxt.startswith("Culvert Bottom Depth="):
+                        with contextlib.suppress(ValueError):
+                            culvert_group.depth_n_bottom = float(
+                                nxt[len("Culvert Bottom Depth="):].strip()
+                            )
+                        j += 1
+                    elif nxt.startswith("BC Culvert Barrel="):
+                        bp = nxt[len("BC Culvert Barrel="):].split(",")
+                        with contextlib.suppress(ValueError, IndexError):
+                            culvert_group.num_barrels = int(bp[0].strip())
+                        j += 1
+                    else:
+                        break
+                culvert_groups.append(culvert_group)
+                i = j
+            elif ln.startswith("Multiple Barrel Culv="):
+                # Field layout differs from Culvert=: no us_station/ds_station
+                # columns; num_barrels is at index 11; the next line contains
+                # num_barrels upstream + num_barrels downstream station values
+                # in 8-char fixed-width columns (not yet parsed — see TODO in
+                # CulvertGroup docstring).
+                mp = ln[len("Multiple Barrel Culv="):].split(",")
+                shape_code = int(_f(mp, 0)) if mp[0].strip() else 0
+                sname = _CULVERT_SHAPES.get(shape_code, f"Unknown ({shape_code})")
+                num_barrels_m = (
+                    int(_f(mp, 11)) if len(mp) > 11 and mp[11].strip() else 1
+                )
+                chart = (
+                    int(_f(mp, 14)) if len(mp) > 14 and mp[14].strip() else 0
+                )
+                culvert_group = CulvertGroup(
+                    name=mp[12].strip() if len(mp) > 12 else "",
+                    shape_code=shape_code,
+                    shape_name=sname,
+                    span=_f(mp, 1),
+                    rise=_f(mp, 2),
+                    length=_f(mp, 3),
+                    n_top=_f(mp, 4),
+                    entrance_loss=_f(mp, 5),
+                    exit_loss=_f(mp, 6),
+                    inlet_type=int(_f(mp, 7)),
+                    outlet_type=int(_f(mp, 8)),
+                    upstream_invert=_f(mp, 9),
+                    upstream_station=0.0,   # station data is on next line
+                    downstream_invert=_f(mp, 10),
+                    downstream_station=0.0,  # station data is on next line
+                    chart_number=chart,
+                    num_barrels=num_barrels_m,
+                )
+                # Skip the station line (num_barrels * 2 values) and optional
+                # Culvert Bottom n= line
+                j = i + 1
+                non_data = ("Culvert", "BC ", "Pier ", "BR ")
+                if j < len(lines) and not lines[j].startswith(non_data):
+                    j += 1  # station data line
+                while j < i + 5 and j < len(lines):
+                    nxt = lines[j]
+                    if nxt.startswith("Culvert Bottom n="):
+                        with contextlib.suppress(ValueError):
+                            culvert_group.n_bottom = float(
+                                nxt[len("Culvert Bottom n="):].strip()
+                            )
+                        j += 1
+                    elif nxt.startswith("Culvert Bottom Depth="):
+                        with contextlib.suppress(ValueError):
+                            culvert_group.depth_n_bottom = float(
+                                nxt[len("Culvert Bottom Depth="):].strip()
+                            )
+                        j += 1
+                    else:
+                        break
+                culvert_groups.append(culvert_group)
+                i = j
+            else:
+                i += 1
+
+        # -- piers (Pier Skew, UpSta & Num, DnSta & Num= blocks) ----------
+        piers: list[Pier] = []
+        i = 0
+        while i < len(lines):
+            ln = lines[i]
+            if ln.startswith("Pier Skew, UpSta & Num, DnSta & Num="):
+                pp = ln[ln.index("=") + 1:].split(",")
+                skew_p = _f(pp, 0)
+                up_sta = _f(pp, 1)
+                up_num = int(_f(pp, 2))
+                dn_sta = _f(pp, 3)
+                dn_num = int(_f(pp, 4))
+
+                row_i = i + 1
+                rows_up = _row_count(up_num, _COLS_STAE)
+                up_widths = _parse_block(lines[row_i: row_i + rows_up], up_num)
+                row_i += rows_up
+                up_elev = _parse_block(lines[row_i: row_i + rows_up], up_num)
+                row_i += rows_up
+                rows_dn = _row_count(dn_num, _COLS_STAE)
+                dn_widths = _parse_block(lines[row_i: row_i + rows_dn], dn_num)
+                row_i += rows_dn
+                dn_elev = _parse_block(lines[row_i: row_i + rows_dn], dn_num)
+                row_i += rows_dn
+
+                piers.append(Pier(
+                    skew=skew_p,
+                    upstream_station=up_sta,
+                    upstream_count=up_num,
+                    downstream_station=dn_sta,
+                    downstream_count=dn_num,
+                    upstream_widths=up_widths,
+                    upstream_elevations=up_elev,
+                    downstream_widths=dn_widths,
+                    downstream_elevations=dn_elev,
+                ))
+                i = row_i
+            else:
+                i += 1
+
+        # -- HTab parameters -----------------------------------------------
+        htab_hw_max: float | None = None
+        htab_tw_max: float | None = None
+        htab_max_flow: float | None = None
+        for ln in lines:
+            if ln.startswith("BC HTab HWMax="):
+                with contextlib.suppress(ValueError):
+                    htab_hw_max = float(ln[len("BC HTab HWMax="):].strip())
+            elif ln.startswith("BC HTab TWMax="):
+                with contextlib.suppress(ValueError):
+                    htab_tw_max = float(ln[len("BC HTab TWMax="):].strip())
+            elif ln.startswith("BC HTab MaxFlow="):
+                with contextlib.suppress(ValueError):
+                    htab_max_flow = float(ln[len("BC HTab MaxFlow="):].strip())
 
         _empty: tuple[str, str, str] = ("", "", "")
         return Bridge(
@@ -2195,6 +2654,13 @@ class GeometryFile:
             downstream_node=downstream_node,
             weir=weir,
             description=description,
+            roadway=roadway,
+            culvert_groups=culvert_groups,
+            piers=piers,
+            node_name=node_name,
+            htab_hw_max=htab_hw_max,
+            htab_tw_max=htab_tw_max,
+            htab_max_flow=htab_max_flow,
         )
 
     def _parse_lateral(
@@ -2243,7 +2709,7 @@ class GeometryFile:
                     downstream_node = f"{lat_river} {lat_reach}".strip()
                 break
 
-        # -- weir from individual Lateral Weir lines -----------------------
+        # -- scalar Lateral Weir fields ------------------------------------
         def _get_float(prefix: str, default: float = nan) -> float:
             for ln in lines:
                 if ln.startswith(prefix):
@@ -2254,6 +2720,14 @@ class GeometryFile:
                         return default
             return default
 
+        pos = int(_get_float("Lateral Weir Pos=", default=0.0))
+        distance = _get_float("Lateral Weir Distance=")
+        flap_val = _get_float("Lateral Weir Flap Gates=", default=0.0)
+        flap_gates = not (isnan(flap_val) or flap_val == 0.0)
+        tw_val = _get_float("Lateral Weir TW Multiple XS=", default=0.0)
+        tw_multiple_xs = not (isnan(tw_val) or tw_val == 0.0)
+
+        # -- weir from individual Lateral Weir lines -----------------------
         weir: Weir | None = None
         wd = _get_float("Lateral Weir WD=")
         coef = _get_float("Lateral Weir Coef=")
@@ -2273,6 +2747,26 @@ class GeometryFile:
                 use_water_surface=use_ws,
             )
 
+        # -- weir crest profile (Lateral Weir SE= N block) -----------------
+        # Format: "Lateral Weir SE= N" then N pairs of (station, elevation)
+        # in 8-char fixed-width columns, up to 10 values per row.
+        crest_profile: list[tuple[float, float]] = []
+        for i, ln in enumerate(lines):
+            if ln.startswith("Lateral Weir SE="):
+                n_str = ln[len("Lateral Weir SE="):].strip()
+                try:
+                    n_pairs = int(n_str)
+                except ValueError:
+                    n_pairs = 0
+                if n_pairs > 0:
+                    n_rows = _row_count(n_pairs * 2, _COLS_STAE)
+                    flat = _parse_block(lines[i + 1: i + 1 + n_rows], n_pairs * 2)
+                    crest_profile = [
+                        (flat[j], flat[j + 1])
+                        for j in range(0, len(flat) - 1, 2)
+                    ]
+                break
+
         _empty: tuple[str, str, str] = ("", "", "")
         return Lateral(
             mode="",
@@ -2283,6 +2777,11 @@ class GeometryFile:
             downstream_node=downstream_node,
             weir=weir,
             description=description,
+            pos=pos,
+            distance=distance,
+            crest_profile=crest_profile,
+            flap_gates=flap_gates,
+            tw_multiple_xs=tw_multiple_xs,
         )
 
     # ------------------------------------------------------------------
