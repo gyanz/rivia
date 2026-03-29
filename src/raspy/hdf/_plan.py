@@ -2141,14 +2141,17 @@ class CrossSectionResultsInst(_CrossSectionResultsBase):
 
     Corresponds to :attr:`PlanHdf.cross_sections_inst` (DSS inst interval).
 
-    The result arrays have shape ``(n_profiles,)`` where index ``0`` is the
+    All result arrays have shape ``(n_profiles,)`` where index ``0`` is the
     **Max WS** profile and indices ``1:`` are the instantaneous profiles
     written at the DSS instantaneous interval.  Use
     :attr:`PlanHdf.timestamps_dss_inst` for the datetime index of indices
     ``1:``.
 
-    Available datasets: ``water_surface``, ``flow``, ``energy_grade``, and
-    any variable reachable via :meth:`additional_variable`.
+    Available top-level datasets: ``water_surface``, ``flow``,
+    ``energy_grade``.  All ``Additional Variables`` sub-group datasets are
+    exposed as named properties (e.g. :attr:`flow_total`,
+    :attr:`velocity_channel`) and are also reachable via
+    :meth:`additional_variable` for programmatic access.
 
     Parameters
     ----------
@@ -2162,13 +2165,21 @@ class CrossSectionResultsInst(_CrossSectionResultsBase):
         HDF path prefix — ``_POSTPROC_XS``.
     """
 
+    # ------------------------------------------------------------------
+    # Top-level datasets
+    # ------------------------------------------------------------------
+
     @property
     def energy_grade(self) -> np.ndarray:
-        """Energy grade line elevation.  Shape ``(n_profiles,)``.
+        """Energy grade line elevation (m).  Shape ``(n_profiles,)``.
 
         Index 0 = Max WS profile; indices 1: = instantaneous profiles.
         """
         return self._load("Energy Grade")
+
+    # ------------------------------------------------------------------
+    # Additional Variables — generic accessor
+    # ------------------------------------------------------------------
 
     def additional_variable(self, name: str) -> np.ndarray:
         """Load one column from the ``Additional Variables`` sub-group.
@@ -2177,8 +2188,7 @@ class CrossSectionResultsInst(_CrossSectionResultsBase):
         ----------
         name:
             Dataset name inside ``Additional Variables/``, e.g.
-            ``"Flow Total"``, ``"Velocity Channel"``, ``"Conveyance Total"``,
-            ``"Water Surface Total"``.
+            ``"Flow Total"``, ``"Velocity Channel"``, ``"Conveyance Total"``.
 
         Returns
         -------
@@ -2191,6 +2201,280 @@ class CrossSectionResultsInst(_CrossSectionResultsBase):
             If *name* is not present in ``Additional Variables/``.
         """
         return self._load(f"Additional Variables/{name}")
+
+    # ------------------------------------------------------------------
+    # Additional Variables — explicit properties
+    # Each delegates to additional_variable() so caching is shared.
+    # ------------------------------------------------------------------
+
+    @property
+    def alpha(self) -> np.ndarray:
+        """Velocity-head correction factor α.  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Alpha")
+
+    @property
+    def beta(self) -> np.ndarray:
+        """Momentum correction factor β.  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Beta")
+
+    @property
+    def area_flow_channel(self) -> np.ndarray:
+        """Channel flow area (m²).  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Area Flow Channel")
+
+    @property
+    def area_flow_left_ob(self) -> np.ndarray:
+        """Left overbank flow area (m²).  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Area Flow Left OB")
+
+    @property
+    def area_flow_right_ob(self) -> np.ndarray:
+        """Right overbank flow area (m²).  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Area Flow Right OB")
+
+    @property
+    def area_flow_total(self) -> np.ndarray:
+        """Total flow area (m²).  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Area Flow Total")
+
+    @property
+    def area_ineffective_channel(self) -> np.ndarray:
+        """Channel area including ineffective zones (m²).  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Area including Ineffective Channel")
+
+    @property
+    def area_ineffective_left_ob(self) -> np.ndarray:
+        """Left overbank area including ineffective zones (m²).  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Area including Ineffective Left OB")
+
+    @property
+    def area_ineffective_right_ob(self) -> np.ndarray:
+        """Right overbank area including ineffective zones (m²).  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Area including Ineffective Right OB")
+
+    @property
+    def area_ineffective_total(self) -> np.ndarray:
+        """Total area including ineffective zones (m²).  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Area including Ineffective Total")
+
+    @property
+    def conveyance_channel(self) -> np.ndarray:
+        """Channel conveyance (m³/s).  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Conveyance Channel")
+
+    @property
+    def conveyance_left_ob(self) -> np.ndarray:
+        """Left overbank conveyance (m³/s).  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Conveyance Left OB")
+
+    @property
+    def conveyance_right_ob(self) -> np.ndarray:
+        """Right overbank conveyance (m³/s).  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Conveyance Right OB")
+
+    @property
+    def conveyance_total(self) -> np.ndarray:
+        """Total conveyance (m³/s).  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Conveyance Total")
+
+    @property
+    def critical_energy_grade(self) -> np.ndarray:
+        """Critical energy grade line elevation (m).  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Critical Energy Grade")
+
+    @property
+    def critical_water_surface(self) -> np.ndarray:
+        """Critical water surface elevation (m).  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Critical Water Surface")
+
+    @property
+    def eg_slope(self) -> np.ndarray:
+        """Energy grade slope (m/m).  Shape ``(n_profiles,)``."""
+        return self.additional_variable("EG Slope")
+
+    @property
+    def friction_slope(self) -> np.ndarray:
+        """Friction slope (m/m).  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Friction Slope")
+
+    @property
+    def flow_channel(self) -> np.ndarray:
+        """Channel flow (m³/s).  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Flow Channel")
+
+    @property
+    def flow_left_ob(self) -> np.ndarray:
+        """Left overbank flow (m³/s).  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Flow Left OB")
+
+    @property
+    def flow_right_ob(self) -> np.ndarray:
+        """Right overbank flow (m³/s).  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Flow Right OB")
+
+    @property
+    def flow_total(self) -> np.ndarray:
+        """Total flow (m³/s).  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Flow Total")
+
+    @property
+    def hydraulic_depth_channel(self) -> np.ndarray:
+        """Channel hydraulic depth (m).  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Hydraulic Depth Channel")
+
+    @property
+    def hydraulic_depth_left_ob(self) -> np.ndarray:
+        """Left overbank hydraulic depth (m).  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Hydraulic Depth Left OB")
+
+    @property
+    def hydraulic_depth_right_ob(self) -> np.ndarray:
+        """Right overbank hydraulic depth (m).  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Hydraulic Depth Right OB")
+
+    @property
+    def hydraulic_depth_total(self) -> np.ndarray:
+        """Total hydraulic depth (m).  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Hydraulic Depth Total")
+
+    @property
+    def hydraulic_radius_channel(self) -> np.ndarray:
+        """Channel hydraulic radius (m).  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Hydraulic Radius Channel")
+
+    @property
+    def hydraulic_radius_left_ob(self) -> np.ndarray:
+        """Left overbank hydraulic radius (m).  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Hydraulic Radius Left OB")
+
+    @property
+    def hydraulic_radius_right_ob(self) -> np.ndarray:
+        """Right overbank hydraulic radius (m).  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Hydraulic Radius Right OB")
+
+    @property
+    def hydraulic_radius_total(self) -> np.ndarray:
+        """Total hydraulic radius (m).  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Hydraulic Radius Total")
+
+    @property
+    def mannings_n_channel(self) -> np.ndarray:
+        """Weighted/composite channel Manning's n.  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Manning n Channel")
+
+    @property
+    def mannings_n_left_ob(self) -> np.ndarray:
+        """Left overbank Manning's n.  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Manning n Left OB")
+
+    @property
+    def mannings_n_right_ob(self) -> np.ndarray:
+        """Right overbank Manning's n.  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Manning n Right OB")
+
+    @property
+    def mannings_n_total(self) -> np.ndarray:
+        """Total weighted Manning's n.  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Manning n Total")
+
+    @property
+    def max_depth_total(self) -> np.ndarray:
+        """Total maximum water depth (m).  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Maximum Depth Total")
+
+    @property
+    def shear(self) -> np.ndarray:
+        """Bed shear stress (N/m²).  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Shear")
+
+    @property
+    def top_width_channel(self) -> np.ndarray:
+        """Channel top width (m).  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Top Width Channel")
+
+    @property
+    def top_width_channel_with_ineffective(self) -> np.ndarray:
+        """Channel top width including ineffective areas (m).  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Top Width Channel including Ineffective")
+
+    @property
+    def top_width_left_ob(self) -> np.ndarray:
+        """Left overbank top width (m).  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Top Width Left OB")
+
+    @property
+    def top_width_left_ob_with_ineffective(self) -> np.ndarray:
+        """Left overbank top width including ineffective areas (m).  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Top Width Left OB including Ineffective")
+
+    @property
+    def top_width_right_ob(self) -> np.ndarray:
+        """Right overbank top width (m).  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Top Width Right OB")
+
+    @property
+    def top_width_right_ob_with_ineffective(self) -> np.ndarray:
+        """Right overbank top width including ineffective areas (m).  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Top Width Right OB including Ineffective")
+
+    @property
+    def top_width_total(self) -> np.ndarray:
+        """Total top width (m).  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Top Width Total")
+
+    @property
+    def top_width_total_with_ineffective(self) -> np.ndarray:
+        """Total top width including ineffective areas (m).  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Top Width Total including Ineffective")
+
+    @property
+    def velocity_channel(self) -> np.ndarray:
+        """Channel velocity (m/s).  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Velocity Channel")
+
+    @property
+    def velocity_left_ob(self) -> np.ndarray:
+        """Left overbank velocity (m/s).  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Velocity Left OB")
+
+    @property
+    def velocity_right_ob(self) -> np.ndarray:
+        """Right overbank velocity (m/s).  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Velocity Right OB")
+
+    @property
+    def velocity_total(self) -> np.ndarray:
+        """Total velocity (m/s).  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Velocity Total")
+
+    @property
+    def water_surface_total(self) -> np.ndarray:
+        """Total stage / water surface elevation (m).  Shape ``(n_profiles,)``.
+
+        Sourced from ``Additional Variables/Water Surface Total``.  Equivalent
+        to :attr:`water_surface` for most configurations.
+        """
+        return self.additional_variable("Water Surface Total")
+
+    @property
+    def wetted_perimeter_channel(self) -> np.ndarray:
+        """Channel wetted perimeter (m).  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Wetted Perimeter Channel")
+
+    @property
+    def wetted_perimeter_left_ob(self) -> np.ndarray:
+        """Left overbank wetted perimeter (m).  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Wetted Perimeter Left OB")
+
+    @property
+    def wetted_perimeter_right_ob(self) -> np.ndarray:
+        """Right overbank wetted perimeter (m).  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Wetted Perimeter Right OB")
+
+    @property
+    def wetted_perimeter_total(self) -> np.ndarray:
+        """Total wetted perimeter (m).  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Wetted Perimeter Total")
 
 
 class CrossSectionResultsCollection(CrossSectionCollection):
