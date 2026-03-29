@@ -77,9 +77,23 @@ _DSS_TIME_STAMP_DS = f"{_DSS_ROOT}/Time Date Stamp"
 _TS_XS = f"{_TS_ROOT}/Cross Sections"
 _DSS_XS = f"{_DSS_ROOT}/Cross Sections"
 
+_POSTPROC_PROFILE_DATES = (
+    "Results/Post Process/Steady/Output/Output Blocks"
+    "/Base Output/Post Process/Post Process Profiles/Profile Dates"
+)
+_POSTPROC_XS = (
+    "Results/Post Process/Steady/Output/Output Blocks"
+    "/Base Output/Post Process/Post Process Profiles/Cross Sections"
+)
+_POSTPROC_GEOM_ATTRS = (
+    "Results/Post Process/Steady/Output/Geometry Info"
+    "/Cross Section Attributes"
+)
 
 # Timestamp format written by HEC-RAS (e.g. "03Jan2000 00:00:00")
 _RAS_TS_FMT = "%d%b%Y %H:%M:%S"
+# Timestamp format used in Post Process Profile Dates (e.g. "01JAN2026 0002")
+_POSTPROC_TS_FMT = "%d%b%Y %H%M"
 
 
 # ---------------------------------------------------------------------------
@@ -1996,32 +2010,22 @@ class PlanStructureCollection(StructureCollection):
 # ---------------------------------------------------------------------------
 
 
-class CrossSectionResults(CrossSection):
-    """Geometry *and* time-series results for one HEC-RAS 1-D cross section.
+class _CrossSectionResultsBase(CrossSection):
+    """Private base for all three cross-section result variants.
 
-    Inherits all geometry fields from :class:`~raspy.hdf.CrossSection`.
+    Holds the HDF handle, column index, and result-group root; provides the
+    shared ``_load`` helper, ``water_surface``, and ``flow`` properties that
+    are present in every output block.
 
-    Result datasets are stored as ``(n_t, n_xs)`` matrices shared across all
-    cross sections; each instance holds its column index and loads only its
-    own slice on demand.
-
-    Parameters
-    ----------
-    geom:
-        Geometry object from :class:`CrossSectionCollection`.
-    hdf:
-        Open ``h5py.File`` — kept alive by the parent ``PlanHdf`` context.
-    index:
-        Column index of this XS in the ``(n_t, n_xs)`` result datasets.
-    root:
-        HDF path prefix for the result group
-        (Base Output or DSS Hydrograph Output).
+    Concrete subclasses add the properties that are specific to their output
+    block (:class:`CrossSectionResults`, :class:`CrossSectionResultsDss`,
+    :class:`CrossSectionResultsInst`).
     """
 
     def __init__(
         self,
         geom: CrossSection,
-        hdf: h5py.File,
+        hdf: "h5py.File",
         index: int,
         root: str,
     ) -> None:
@@ -2048,6 +2052,7 @@ class CrossSectionResults(CrossSection):
         self._cache: dict[str, np.ndarray] = {}
 
     def _load(self, dataset: str) -> np.ndarray:
+        """Load column ``self._index`` from ``{root}/{dataset}``, cached."""
         if dataset not in self._cache:
             ds = self._hdf.get(f"{self._root}/{dataset}")
             if ds is None:
@@ -2056,10 +2061,6 @@ class CrossSectionResults(CrossSection):
                 )
             self._cache[dataset] = np.array(ds[:, self._index])
         return self._cache[dataset]
-
-    # ------------------------------------------------------------------
-    # Time-series properties (available in both Base Output and DSS)
-    # ------------------------------------------------------------------
 
     @property
     def water_surface(self) -> np.ndarray:
@@ -2071,68 +2072,173 @@ class CrossSectionResults(CrossSection):
         """Flow time series.  Shape ``(n_t,)``."""
         return self._load("Flow")
 
+
+class CrossSectionResults(_CrossSectionResultsBase):
+    """Geometry *and* results for one XS from the **Base Output** block.
+
+    Corresponds to :attr:`PlanHdf.cross_sections` (mapping output interval).
+    All variables written by HEC-RAS at the mapping interval are exposed.
+
+    Parameters
+    ----------
+    geom:
+        Geometry object from :class:`CrossSectionCollection`.
+    hdf:
+        Open ``h5py.File`` — kept alive by the parent ``PlanHdf`` context.
+    index:
+        Column index of this XS in the ``(n_t, n_xs)`` result datasets.
+    root:
+        HDF path prefix — ``_TS_XS``.
+    """
+
     @property
     def flow_volume_cumulative(self) -> np.ndarray:
         """Cumulative flow volume time series.  Shape ``(n_t,)``."""
         return self._load("Flow Volume Cumulative")
 
-    # ------------------------------------------------------------------
-    # Additional properties (Base Output / mapping interval only)
-    # ------------------------------------------------------------------
+    @property
+    def flow_lateral(self) -> np.ndarray:
+        """Lateral flow time series.  Shape ``(n_t,)``."""
+        return self._load("Flow Lateral")
 
     @property
-    def flow_lateral(self) -> np.ndarray | None:
-        """Lateral flow time series, or ``None`` if absent.  Shape ``(n_t,)``."""
-        try:
-            return self._load("Flow Lateral")
-        except KeyError:
-            return None
+    def velocity_channel(self) -> np.ndarray:
+        """Channel velocity time series.  Shape ``(n_t,)``."""
+        return self._load("Velocity Channel")
 
     @property
-    def velocity_channel(self) -> np.ndarray | None:
-        """Channel velocity time series, or ``None`` if absent.  Shape ``(n_t,)``."""
-        try:
-            return self._load("Velocity Channel")
-        except KeyError:
-            return None
+    def velocity_total(self) -> np.ndarray:
+        """Total velocity time series.  Shape ``(n_t,)``."""
+        return self._load("Velocity Total")
+
+
+class CrossSectionResultsDss(_CrossSectionResultsBase):
+    """Geometry *and* results for one XS from the **DSS Hydrograph Output** block.
+
+    Corresponds to :attr:`PlanHdf.cross_sections_dss` (hydrograph output interval).
+    Available datasets: ``water_surface``, ``flow``, ``flow_volume_cumulative``.
+
+    Parameters
+    ----------
+    geom:
+        Geometry object from :class:`CrossSectionCollection`.
+    hdf:
+        Open ``h5py.File`` — kept alive by the parent ``PlanHdf`` context.
+    index:
+        Column index of this XS in the ``(n_t, n_xs)`` result datasets.
+    root:
+        HDF path prefix — ``_DSS_XS``.
+    """
 
     @property
-    def velocity_total(self) -> np.ndarray | None:
-        """Total velocity time series, or ``None`` if absent.  Shape ``(n_t,)``."""
-        try:
-            return self._load("Velocity Total")
-        except KeyError:
-            return None
+    def flow_volume_cumulative(self) -> np.ndarray:
+        """Cumulative flow volume time series.  Shape ``(n_t,)``."""
+        return self._load("Flow Volume Cumulative")
+
+
+class CrossSectionResultsInst(_CrossSectionResultsBase):
+    """Geometry *and* results for one XS from the **Post Process Profiles** block.
+
+    Corresponds to :attr:`PlanHdf.cross_sections_inst` (DSS inst interval).
+
+    The result arrays have shape ``(n_profiles,)`` where index ``0`` is the
+    **Max WS** profile and indices ``1:`` are the instantaneous profiles
+    written at the DSS instantaneous interval.  Use
+    :attr:`PlanHdf.timestamps_dss_inst` for the datetime index of indices
+    ``1:``.
+
+    Available datasets: ``water_surface``, ``flow``, ``energy_grade``, and
+    any variable reachable via :meth:`additional_variable`.
+
+    Parameters
+    ----------
+    geom:
+        Geometry object from :class:`CrossSectionCollection`.
+    hdf:
+        Open ``h5py.File`` — kept alive by the parent ``PlanHdf`` context.
+    index:
+        Column index of this XS in the ``(n_profiles, n_xs)`` result datasets.
+    root:
+        HDF path prefix — ``_POSTPROC_XS``.
+    """
+
+    @property
+    def energy_grade(self) -> np.ndarray:
+        """Energy grade line elevation.  Shape ``(n_profiles,)``.
+
+        Index 0 = Max WS profile; indices 1: = instantaneous profiles.
+        """
+        return self._load("Energy Grade")
+
+    def additional_variable(self, name: str) -> np.ndarray:
+        """Load one column from the ``Additional Variables`` sub-group.
+
+        Parameters
+        ----------
+        name:
+            Dataset name inside ``Additional Variables/``, e.g.
+            ``"Flow Total"``, ``"Velocity Channel"``, ``"Conveyance Total"``,
+            ``"Water Surface Total"``.
+
+        Returns
+        -------
+        ndarray, shape ``(n_profiles,)``
+            Index 0 = Max WS profile; indices 1: = instantaneous profiles.
+
+        Raises
+        ------
+        KeyError
+            If *name* is not present in ``Additional Variables/``.
+        """
+        return self._load(f"Additional Variables/{name}")
 
 
 class CrossSectionResultsCollection(CrossSectionCollection):
     """Plan-enriched cross section collection with time-series results.
 
-    Each item is a :class:`CrossSectionResults` that combines geometry
-    fields with lazy result access.
+    Parameterised over the concrete result class and the HDF path used to
+    map cross sections to column indices, so one implementation serves all
+    three output blocks.
 
     Parameters
     ----------
     hdf:
         Open ``h5py.File`` handle.
     root:
-        HDF path to the cross section result group — either
-        ``_TS_XS`` (Base Output, mapping interval) or
-        ``_DSS_XS`` (DSS Hydrograph Output).
+        HDF path to the cross section result group:
+        ``_TS_XS``, ``_DSS_XS``, or ``_POSTPROC_XS``.
+    result_cls:
+        Concrete result class to instantiate per cross section —
+        :class:`CrossSectionResults`, :class:`CrossSectionResultsDss`, or
+        :class:`CrossSectionResultsInst`.
+    attrs_path:
+        HDF path to the ``Cross Section Attributes`` structured array used
+        to map ``(river, reach, station)`` → column index.  Defaults to
+        ``f"{root}/Cross Section Attributes"``, which is correct for Base
+        Output and DSS blocks.  Pass ``_POSTPROC_GEOM_ATTRS`` for the Post
+        Process block, where attributes live outside the XS result group.
     """
 
-    def __init__(self, hdf: h5py.File, root: str) -> None:
+    def __init__(
+        self,
+        hdf: "h5py.File",
+        root: str,
+        result_cls: type[_CrossSectionResultsBase] = CrossSectionResults,
+        attrs_path: str | None = None,
+    ) -> None:
         super().__init__(hdf)
         self._root = root
-        self._result_items: dict[str, CrossSectionResults] | None = None
+        self._result_cls = result_cls
+        self._attrs_path = attrs_path or f"{root}/Cross Section Attributes"
+        self._result_items: dict[str, _CrossSectionResultsBase] | None = None
 
-    def _load_results(self) -> dict[str, CrossSectionResults]:
+    def _load_results(self) -> dict[str, _CrossSectionResultsBase]:
         if self._result_items is not None:
             return self._result_items
 
         geom_items = CrossSectionCollection._load(self)
 
-        attrs_ds = self._hdf.get(f"{self._root}/Cross Section Attributes")
+        attrs_ds = self._hdf.get(self._attrs_path)
         if attrs_ds is None:
             self._result_items = {}
             return self._result_items
@@ -2140,7 +2246,6 @@ class CrossSectionResultsCollection(CrossSectionCollection):
         result_attrs = np.array(attrs_ds)
         fn = attrs_ds.dtype.names
 
-        # Build (river, reach, station) → column-index mapping
         result_index: dict[tuple[str, str, str], int] = {}
         for i, row in enumerate(result_attrs):
             r  = _decode(row["River"])   if "River"   in fn else ""
@@ -2148,25 +2253,25 @@ class CrossSectionResultsCollection(CrossSectionCollection):
             st = _decode(row["Station"]) if "Station" in fn else ""
             result_index[(r, rc, st)] = i
 
-        items: dict[str, CrossSectionResults] = {}
+        items: dict[str, _CrossSectionResultsBase] = {}
         for key, geom in geom_items.items():
             idx = result_index.get((geom.river, geom.reach, geom.rs))
             if idx is not None:
-                items[key] = CrossSectionResults(
-                    geom, self._hdf, idx, self._root
-                )
+                items[key] = self._result_cls(geom, self._hdf, idx, self._root)
 
         self._result_items = items
         return self._result_items
 
     @overload
-    def __getitem__(self, key: int) -> CrossSectionResults: ...
+    def __getitem__(self, key: int) -> _CrossSectionResultsBase: ...
     @overload
-    def __getitem__(self, key: str) -> CrossSectionResults: ...
+    def __getitem__(self, key: str) -> _CrossSectionResultsBase: ...
     @overload
-    def __getitem__(self, key: tuple[str, str, str]) -> CrossSectionResults: ...
+    def __getitem__(self, key: tuple[str, str, str]) -> _CrossSectionResultsBase: ...
 
-    def __getitem__(self, key: int | str | tuple[str, str, str]) -> CrossSectionResults:
+    def __getitem__(
+        self, key: int | str | tuple[str, str, str]
+    ) -> _CrossSectionResultsBase:
         items = self._load_results()
         if isinstance(key, int):
             keys = list(items)
@@ -2194,7 +2299,7 @@ class CrossSectionResultsCollection(CrossSectionCollection):
     def __len__(self) -> int:
         return len(self._load_results())
 
-    def __iter__(self) -> Iterator[CrossSectionResults]:
+    def __iter__(self) -> Iterator[_CrossSectionResultsBase]:
         return iter(self._load_results().values())
 
     @property
@@ -2249,6 +2354,7 @@ class PlanHdf(GeometryHdf):
         self._plan_structures: PlanStructureCollection | None = None
         self._plan_cross_sections: CrossSectionResultsCollection | None = None
         self._plan_cross_sections_dss: CrossSectionResultsCollection | None = None
+        self._plan_cross_sections_inst: CrossSectionResultsCollection | None = None
 
     # ------------------------------------------------------------------
     # File metadata
@@ -2397,6 +2503,60 @@ class PlanHdf(GeometryHdf):
             return None
         return len(ds)
 
+    @property
+    def n_dss_inst(self) -> int | None:
+        """Number of instantaneous profile time steps, or ``None`` if absent.
+
+        Read from ``Profile Dates`` in the Post Process Profiles group.
+        The first entry (``"Max WS"``) is excluded from the count; only
+        actual datetime-stamped profiles are counted.
+        """
+        ds = self._hdf.get(_POSTPROC_PROFILE_DATES)
+        if ds is None:
+            return None
+        return max(0, len(ds) - 1)
+
+    @property
+    def interval_dss_inst(self) -> float | None:
+        """Instantaneous profile output interval in seconds, or ``None`` if absent.
+
+        Derived from the difference between the first two actual profile
+        timestamps in ``Profile Dates`` (i.e. entries at indices 1 and 2,
+        skipping the ``"Max WS"`` entry at index 0).
+        """
+        ds = self._hdf.get(_POSTPROC_PROFILE_DATES)
+        if ds is None or len(ds) < 3:
+            return None
+        t1 = pd.to_datetime(ds[1].decode(), format=_POSTPROC_TS_FMT)
+        t2 = pd.to_datetime(ds[2].decode(), format=_POSTPROC_TS_FMT)
+        return (t2 - t1).total_seconds()
+
+    @property
+    def timestamps_dss_inst(self) -> pd.DatetimeIndex:
+        """Instantaneous profile output timestamps as a ``pd.DatetimeIndex``.
+
+        Parsed from ``Profile Dates`` in the Post Process Profiles group,
+        skipping the first entry (``"Max WS"``).  Format: ``"DDMONYYYY HHMM"``
+        (e.g. ``"01JAN2026 0002"``).
+
+        Use ``cross_sections_inst[xs].water_surface[1:]`` (or ``[1:n+1]``)
+        to align result arrays with this index; index ``0`` of the result
+        arrays holds the Max WS profile value.
+
+        Raises
+        ------
+        KeyError
+            If the Post Process Profiles group is absent from this HDF file.
+        """
+        ds = self._hdf.get(_POSTPROC_PROFILE_DATES)
+        if ds is None:
+            raise KeyError(
+                f"Profile Dates not found at '{_POSTPROC_PROFILE_DATES}'. "
+                "Ensure this plan has Post Process steady results."
+            )
+        raw = np.array(ds[1:]).astype(str)
+        return pd.to_datetime(raw, format=_POSTPROC_TS_FMT)
+
     # ------------------------------------------------------------------
     # Collections (override GeometryHdf equivalents with results-aware types)
     # ------------------------------------------------------------------
@@ -2451,7 +2611,7 @@ class PlanHdf(GeometryHdf):
         """
         if self._plan_cross_sections is None:
             self._plan_cross_sections = CrossSectionResultsCollection(
-                self._hdf, _TS_XS
+                self._hdf, _TS_XS, result_cls=CrossSectionResults,
             )
         return self._plan_cross_sections
 
@@ -2459,17 +2619,38 @@ class PlanHdf(GeometryHdf):
     def cross_sections_dss(self) -> CrossSectionResultsCollection:
         """1-D cross sections with geometry and DSS Hydrograph Output results.
 
-        Results are at the hydrograph output interval
-        (:attr:`timestamps_dss`).  Available variables:
-        ``water_surface``, ``flow``, ``flow_volume_cumulative``.
-        ``flow_lateral``, ``velocity_channel``, and ``velocity_total``
-        return ``None`` (not stored in DSS output).
+        Items are :class:`CrossSectionResultsDss` instances.
+        Results are at the hydrograph output interval (:attr:`timestamps_dss`).
+        Available variables: ``water_surface``, ``flow``,
+        ``flow_volume_cumulative``.
         """
         if self._plan_cross_sections_dss is None:
             self._plan_cross_sections_dss = CrossSectionResultsCollection(
-                self._hdf, _DSS_XS
+                self._hdf, _DSS_XS, result_cls=CrossSectionResultsDss,
             )
         return self._plan_cross_sections_dss
+
+    @property
+    def cross_sections_inst(self) -> CrossSectionResultsCollection:
+        """1-D cross sections with geometry and Post Process Profiles results.
+
+        Items are :class:`CrossSectionResultsInst` instances.
+        Results are at the DSS instantaneous profile interval
+        (:attr:`timestamps_dss_inst`).
+
+        Each result array has shape ``(n_profiles,)`` where index ``0`` is
+        the **Max WS** profile and indices ``1:`` are the instantaneous
+        profiles.  Available variables: ``water_surface``, ``flow``,
+        ``energy_grade``, plus any ``Additional Variables`` dataset via
+        :meth:`~CrossSectionResultsInst.additional_variable`.
+        """
+        if self._plan_cross_sections_inst is None:
+            self._plan_cross_sections_inst = CrossSectionResultsCollection(
+                self._hdf, _POSTPROC_XS,
+                result_cls=CrossSectionResultsInst,
+                attrs_path=_POSTPROC_GEOM_ATTRS,
+            )
+        return self._plan_cross_sections_inst
 
     @property
     def sa2d_connections(self) -> dict[str, SA2DConnection]:
