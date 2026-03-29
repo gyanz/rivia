@@ -403,6 +403,8 @@ class CrossSection:
 class GateOpening:
     """One gate opening within a gate group.
 
+    Consistent with :class:`raspy.hdf._geometry.GateOpening`.
+
     Attributes:
         name:    Opening name from ``IW Gate Opening=`` line; empty string
                  when the line is absent.
@@ -416,6 +418,8 @@ class GateOpening:
 @dataclass
 class GateGroup:
     """One gate group in an inline structure (``IW Gate Name`` block).
+
+    Consistent with :class:`raspy.hdf._geometry.GateGroup`.
 
     Attributes:
         name:                Group name (first comma field of the data line).
@@ -441,20 +445,39 @@ class GateGroup:
 
 
 @dataclass
-class InlineWeir:
+class Weir:
     """Overflow weir parameters from the ``IW Dist`` block.
 
-    Unlike the HDF :class:`~raspy.hdf._geometry.Weir`, this is always
-    populated when an ``IW Dist`` line exists, even when ``mode`` is empty.
+    Mirrors :class:`raspy.hdf._geometry.Weir` in field names.  Key
+    differences vs the HDF version:
+
+    - Always populated when an ``IW Dist`` line exists, even when *mode* is
+      empty (the HDF version returns ``None`` for ``mode=''``).
+    - ``us_slope``, ``ds_slope``: not present in the ``IW Dist`` text line;
+      stored as ``nan``.
+
+      .. TODO: Check whether HEC-RAS stores US/DS slope elsewhere in the
+         text geometry file (e.g. a secondary ``IW Dist`` continuation line
+         or a ``Spillway`` block) and parse them if found.
+
+    - ``use_water_surface``: not stored in the text geometry format; always
+      ``False``.
+
+      .. TODO: Identify whether this flag is persisted anywhere in the
+         ``.g**`` file and add parsing when found.
 
     Attributes:
-        width:            Weir width (``WD``, index 1).
-        coefficient:      Weir discharge coefficient (``Coef``, index 2).
-        shape:            ``'Broad Crested'`` or ``'Ogee'`` (``Is_Ogee``, index 6).
-        max_submergence:  Maximum submergence ratio (``MaxSub``, index 4).
-        min_elevation:    Minimum weir crest elevation (``Min_El``, index 5);
-                          ``nan`` when blank.
-        skew:             Weir skew angle in degrees (``Skew``, index 3).
+        width:             Weir width (``WD``, index 1).
+        coefficient:       Weir discharge coefficient (``Coef``, index 2).
+        shape:             ``'Broad Crested'`` or ``'Ogee'`` (``Is_Ogee``, index 6).
+        max_submergence:   Maximum submergence ratio (``MaxSub``, index 4).
+        min_elevation:     Minimum weir crest elevation (``Min_El``, index 5);
+                           ``nan`` when blank.
+        skew:              Weir skew angle in degrees (``Skew``, index 3).
+        us_slope:          Upstream face slope H:V; ``nan`` — not in text format.
+        ds_slope:          Downstream face slope H:V; ``nan`` — not in text format.
+        use_water_surface: Use water surface as weir reference head; always
+                           ``False`` — not in text format.
     """
 
     width: float
@@ -463,36 +486,87 @@ class InlineWeir:
     max_submergence: float
     min_elevation: float
     skew: float
+    us_slope: float = nan
+    ds_slope: float = nan
+    use_water_surface: bool = False
 
 
 @dataclass
-class InlineStructure:
-    """Parsed data for one inline structure (node type 5) from a ``.g**`` file.
+class Structure:
+    """Base class for one HEC-RAS structure parsed from a text geometry file.
 
-    Mirrors :class:`~raspy.hdf._geometry.Inline` in structure, but sourced
-    from the text geometry file rather than the HDF.  No GIS centerline is
-    available from the text format.
+    Mirrors :class:`raspy.hdf._geometry.Structure` in field names.  Key
+    difference:
+
+    - ``centerline``: the text geometry file carries no GIS centreline
+      coordinates for structures; always an empty list.  The HDF version
+      stores an ``(n_pts, 2)`` numpy array.
+
+      .. TODO: Investigate whether centreline coordinates can be recovered
+         from the ``*.rasmap`` file or the HDF geometry file alongside the
+         text file, and populate this field when available.
 
     Attributes:
-        mode:              Always ``''`` (text files carry no Mode field).
-        upstream_type:     Always ``'XS'`` (inline structures sit between XSs).
-        downstream_type:   Always ``'XS'``.
-        location:          ``(river, reach, rs)`` of the inline node itself.
-        upstream_node:     ``(river, reach, rs)`` of the nearest upstream XS.
-        downstream_node:   ``(river, reach, rs)`` of the nearest downstream XS.
-        weir:              Overflow weir data from ``IW Dist`` block; ``None``
-                           if no ``IW Dist`` line is present.
-        gate_groups:       Gate group definitions from ``IW Gate Name`` blocks.
-        description:       Node description from ``BEGIN/END DESCRIPTION`` block.
+        mode:           HEC-RAS mode string (e.g. ``'Weir/Gate/Culverts'``).
+                        Always ``''`` for inline structures — not stored in
+                        the text format.
+
+                        .. TODO: Check whether ``Mode=`` or equivalent is
+                           written to the ``.g**`` file for any structure type
+                           and parse it when found.
+
+        upstream_type:  Connection type on the upstream side (``'XS'``,
+                        ``'SA'``, ``'2D'``, or ``'--'``).  Always ``'XS'``
+                        for inline structures.
+        downstream_type: Connection type on the downstream side.
+        centerline:     GIS centreline as ``[(x, y), ...]``; always ``[]``
+                        from text files.
     """
 
     mode: str
     upstream_type: str
     downstream_type: str
-    location: tuple[str, str, str]
-    upstream_node: tuple[str, str, str] | None
-    downstream_node: tuple[str, str, str] | None
-    weir: InlineWeir | None
+    centerline: list[tuple[float, float]] = field(default_factory=list)
+
+
+@dataclass
+class Inline(Structure):
+    """Inline structure (node type 5) parsed from a ``.g**`` text geometry file.
+
+    Mirrors :class:`raspy.hdf._geometry.Inline`.  Inherits ``mode``,
+    ``upstream_type``, ``downstream_type``, and ``centerline`` from
+    :class:`Structure`.
+
+    Differences vs the HDF version:
+
+    - ``upstream_node`` / ``downstream_node``: use ``("", "", "")`` as the
+      no-value sentinel (same as HDF), populated by walking ``node_rs_list``
+      to find the nearest flanking cross sections.
+    - ``weir``: populated from ``IW Dist`` even when ``mode`` is ``''``
+      (HDF returns ``None`` for ``mode=''``).
+
+      .. TODO: Align weir-presence logic with HDF once ``mode`` parsing
+         is implemented (see :class:`Structure` TODO).
+
+    - ``description``: text-file-specific field from the
+      ``BEGIN/END DESCRIPTION`` block; no equivalent in HDF.
+
+    Attributes:
+        location:        ``(river, reach, rs)`` of this structure.
+        upstream_node:   ``(river, reach, rs)`` of the nearest upstream XS;
+                         ``("", "", "")`` when none found.
+        downstream_node: ``(river, reach, rs)`` of the nearest downstream XS;
+                         ``("", "", "")`` when none found.
+        weir:            Overflow weir data from ``IW Dist`` block; ``None``
+                         if no ``IW Dist`` line is present.
+        gate_groups:     Gate group definitions from ``IW Gate Name`` blocks.
+        description:     Node description from ``BEGIN/END DESCRIPTION``.
+    """
+
+    location: tuple[str, str, str] = ("", "", "")
+    upstream_node: tuple[str, str, str] = ("", "", "")
+    downstream_node: tuple[str, str, str] = ("", "", "")
+    weir: Weir | None = None
     gate_groups: list[GateGroup] = field(default_factory=list)
     description: str = ""
 
@@ -570,11 +644,11 @@ class ModelStructureCollection:
             print(key, iw.gate_groups)
     """
 
-    def __init__(self, inlines: list[tuple[str, InlineStructure]]) -> None:
-        self._inlines: StructureIndex[InlineStructure] = StructureIndex(inlines)
+    def __init__(self, inlines: list[tuple[str, Inline]]) -> None:
+        self._inlines: StructureIndex[Inline] = StructureIndex(inlines)
 
     @property
-    def inlines(self) -> StructureIndex[InlineStructure]:
+    def inlines(self) -> StructureIndex[Inline]:
         """All inline structures keyed by ``'River Reach RS'``."""
         return self._inlines
 
@@ -1549,7 +1623,7 @@ class GeometryFile:
 
     def _build_structures(self) -> ModelStructureCollection:
         """Scan all reaches and build the :class:`ModelStructureCollection`."""
-        inlines: list[tuple[str, InlineStructure]] = []
+        inlines: list[tuple[str, Inline]] = []
         for river, reach in self.reaches:
             for node_type, rs in self.node_rs_list(river, reach):
                 if node_type != NODE_INLINE_STRUCTURE:
@@ -1570,16 +1644,17 @@ class GeometryFile:
 
     def _adjacent_xs_nodes(
         self, river: str, reach: str, rs: str
-    ) -> tuple[tuple[str, str, str] | None, tuple[str, str, str] | None]:
+    ) -> tuple[tuple[str, str, str], tuple[str, str, str]]:
         """Return the nearest upstream and downstream XS nodes flanking *rs*.
 
         HEC-RAS lists nodes from upstream (high RS) to downstream (low RS).
         Walking backward in the list finds the upstream XS; forward finds the
         downstream XS.
 
-        Returns ``(upstream, downstream)`` tuples of ``(river, reach, rs)``
-        or ``None`` when no adjacent XS exists.
+        Returns ``(upstream, downstream)`` tuples of ``(river, reach, rs)``.
+        Each tuple is ``("", "", "")`` when no adjacent XS exists on that side.
         """
+        _empty: tuple[str, str, str] = ("", "", "")
         nodes = self.node_rs_list(river, reach)
         rs_norm = self._normalize_rs(rs)
         idx = next(
@@ -1591,13 +1666,13 @@ class GeometryFile:
             None,
         )
         if idx is None:
-            return None, None
-        upstream: tuple[str, str, str] | None = None
+            return _empty, _empty
+        upstream: tuple[str, str, str] = _empty
         for i in range(idx - 1, -1, -1):
             if nodes[i][0] == NODE_XS:
                 upstream = (river, reach, nodes[i][1])
                 break
-        downstream: tuple[str, str, str] | None = None
+        downstream: tuple[str, str, str] = _empty
         for i in range(idx + 1, len(nodes)):
             if nodes[i][0] == NODE_XS:
                 downstream = (river, reach, nodes[i][1])
@@ -1611,10 +1686,10 @@ class GeometryFile:
         rs: str,
         start: int,
         end: int,
-        upstream_node: tuple[str, str, str] | None,
-        downstream_node: tuple[str, str, str] | None,
-    ) -> InlineStructure:
-        """Parse one inline-structure node block into an :class:`InlineStructure`.
+        upstream_node: tuple[str, str, str],
+        downstream_node: tuple[str, str, str],
+    ) -> Inline:
+        """Parse one inline-structure node block into an :class:`Inline`.
 
         Parameters
         ----------
@@ -1666,14 +1741,14 @@ class GeometryFile:
                 return nan
 
         # -- overflow weir (IW Dist) ---------------------------------------
-        weir: InlineWeir | None = None
+        weir: Weir | None = None
         iw_dist_i = next(
             (i for i, ln in enumerate(lines) if ln.startswith("IW Dist,")), None
         )
         if iw_dist_i is not None and iw_dist_i + 1 < len(lines):
             parts = lines[iw_dist_i + 1].split(",")
             is_ogee = int(_cf(parts, 6))
-            weir = InlineWeir(
+            weir = Weir(
                 width=_cf(parts, 1),
                 coefficient=_cf(parts, 2),
                 skew=_cf(parts, 3),
@@ -1740,10 +1815,11 @@ class GeometryFile:
                 )
             )
 
-        return InlineStructure(
+        _empty: tuple[str, str, str] = ("", "", "")
+        return Inline(
             mode="",
-            upstream_type="XS" if upstream_node is not None else "",
-            downstream_type="XS" if downstream_node is not None else "",
+            upstream_type="XS" if upstream_node != _empty else "",
+            downstream_type="XS" if downstream_node != _empty else "",
             location=(river, reach, rs),
             upstream_node=upstream_node,
             downstream_node=downstream_node,
