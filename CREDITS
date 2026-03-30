@@ -12,3 +12,11 @@ Peña-Castellanos.
   Repository      : original repository no longer publicly available
 
 We are grateful for his pioneering work on HEC-RAS COM automation in Python.
+
+ras-commander — William (Bill) Katzenmeyer
+----------------------------------
+The RASMapper result export pipeline in rivia.model and rivia.geo was informed by ideas and
+knowledge shared by Bill, including insights from his ras-commander repository and his direct
+technical guidance on RASMapper's internal algorithm and source code.
+
+We are grateful for his generosity in sharing his expertise.
