@@ -14,7 +14,7 @@ build/
 *.tar.gz
 
 # setuptools-scm generated version file
-src/raspy/_version.py
+src/rivia/_version.py
 
 # Testing
 .pytest_cache/
@@ -37,6 +37,7 @@ docs/api/generated/
 .vscode/
 .idea/
 *.swp
+*.swo
 
 # OS
 Thumbs.db
