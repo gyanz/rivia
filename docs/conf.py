@@ -15,6 +15,7 @@ autodoc_mock_imports = [
     "win32gui",
     "win32process",
     "pywintypes",
+    "psutil",
 ]
 
 # -- Project information -----------------------------------------------------
