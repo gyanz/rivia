@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "rivia"
 dynamic = ["version"]
-description = "A modern Python interface for HEC-RAS hydraulic modeling software"
+description = "A modern Python interface for HEC-RAS Visualization, Information, and Automation"
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.10"
