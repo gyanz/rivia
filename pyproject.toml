@@ -30,8 +30,8 @@ dependencies = [
     "scipy",
     "pandas",
     "h5py",
-    "pywin32",
-    "psutil",
+    "pywin32; sys_platform == 'win32'",
+    "psutil; sys_platform == 'win32'",
     "pydantic>=2",
 ]
 
