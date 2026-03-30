@@ -9,6 +9,7 @@ raspy
    guide/introduction
    guide/installation
    guide/quickstart
+   guide/readdata
 
 .. toctree::
    :maxdepth: 2
