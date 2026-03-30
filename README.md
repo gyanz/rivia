@@ -7,6 +7,11 @@ A modern, modular Python library for interacting with [HEC-RAS](https://www.hec.
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/platform-Windows-lightgrey.svg)](https://www.hec.usace.army.mil/software/hec-ras/)
+[![Documentation](https://readthedocs.org/projects/rivia/badge/?version=latest)](https://rivia.readthedocs.io/en/latest/)
+
+## Documentation
+
+Full documentation is available at [rivia.readthedocs.io](https://rivia.readthedocs.io).
 
 ## Overview
 
