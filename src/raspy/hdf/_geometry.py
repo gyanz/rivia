@@ -946,7 +946,7 @@ class FlowArea:
         -----
         Derived from ``_build_fp_face_connectivity`` and
         ``_sort_fp_faces_by_angle`` in
-        ``archive/DLLs/RasMapperLib/MeshFV2D.cs`` (HEC-RAS 6.6).
+        ``RasMapperLib/MeshFV2D.cs`` (HEC-RAS 6.6).
         """
         cache_key = "_facepoint_face_orientation"
         if cache_key in self._cache:

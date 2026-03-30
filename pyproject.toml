@@ -11,7 +11,7 @@ license = "Apache-2.0"
 requires-python = ">=3.10"
 authors = [
     { name = "Gyan Basyal" },
-    { name = "WEST Consultants, Inc.", email = "info@westconsultants.com" },
+    { name = "WEST Consultants, Inc." },
 ]
 keywords = ["hec-ras", "hydraulics", "hydrology", "modeling", "water-resources"]
 classifiers = [

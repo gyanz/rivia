@@ -52,7 +52,7 @@ def rasmap_raster(
     """Rasterize HEC-RAS 2D mesh results using the RASMapper-exact algorithm.
 
     Implements the pixel-perfect pipeline reverse-engineered from
-    ``archive/DLLs/RasMapperLib/`` (decompiled C# source, HEC-RAS 6.6).
+    ``RasMapperLib/`` (decompiled C# source, HEC-RAS 6.6).
     Produces output matching
     RASMapper's ``"Horizontal"``, ``"Sloping Cell Corners"``, and
     ``"Sloping Cell Corners + Face Centers"`` render modes.

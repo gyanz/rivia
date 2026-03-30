@@ -19,7 +19,7 @@ pip install raspy[geo]
 ## Development install
 
 ```bash
-git clone https://github.com/gbasyal/raspy.git
+git clone https://github.com/gyanz/raspy.git
 cd raspy
 pip install -e ".[dev,geo,docs]"
 ```

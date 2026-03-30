@@ -7,7 +7,7 @@ pixel-interpolation loop.
 
 Reference
 ---------
-``archive/DLLs/RasMapperLib/`` — decompiled C# source of ``RasMapperLib.dll``
+``RasMapperLib/`` — decompiled C# source of ``RasMapperLib.dll``
 (HEC-RAS 6.6).  Key files: ``MeshFV2D.cs``, ``Renderer.cs``,
 ``RASGeometryMapPoints.cs``, ``FaceVelocityCoef.cs``.  Validated pixel-perfect
 against RASMapper VRT exports (median |diff| = 0.000000 across all test plans).
@@ -63,7 +63,7 @@ _MIN_WS_PLOT_TOLERANCE = 0.001  # matches C# RASResults.MinWSPlotTolerance
 _NODATA = -9999.0
 
 # HydraulicConnection enum values — mirror C# RasMapperLib.Mesh.HydraulicConnection
-# (archive/DLLs/RasMapperLib/RasMapperLib.Mesh/HydraulicConnection.cs)
+# (RasMapperLib/RasMapperLib.Mesh/HydraulicConnection.cs)
 HC_NONE                  = 0  # disconnected: dry cell, boundary, or both below sill
 HC_BACKFILL              = 1  # connected: WSE gradient opposes bed-elevation gradient
 HC_DOWNHILL_DEEP         = 2  # connected: higher-cell depth >= 2 × bed-elevation diff
@@ -111,7 +111,7 @@ def compute_face_wss(
     """Step A — hydraulic connectivity and per-face WSE values.
 
     Replicates ``ComputeFaceWaterSurfaces`` → ``ComputeFaceWSsNew`` from
-    ``archive/DLLs/RasMapperLib/RasMapperLib/MeshFV2D.cs``.
+    ``RasMapperLib/RasMapperLib/MeshFV2D.cs``.
 
     For each face the function determines the hydraulic-connection type
     (``face_hconn``, one of the ``HC_*`` constants) and the WSE to assign to
@@ -395,7 +395,7 @@ def _compute_face_midsides(
     """Precompute face application points (midsides) for PlanarRegressionZ.
 
     Replicates the non-cached ``GetFaceMidSide`` path from
-    ``archive/DLLs/RasMapperLib/MeshFV2D.cs``
+    ``RasMapperLib/MeshFV2D.cs``
     (``USE_FACE_MIDSIDE_CACHING = false``).
 
     For **internal faces** (both cells real, i.e. cell index >= 0): finds the
@@ -513,7 +513,7 @@ def _planar_z_intercept(
     using Cramer's rule (``c = det_c / det``).
 
     Matches ``PlanarRegressionZ`` in
-    ``archive/DLLs/RasMapperLib/MeshFV2D.cs``.
+    ``RasMapperLib/MeshFV2D.cs``.
 
     Parameters
     ----------
@@ -639,7 +639,7 @@ def _compute_facepoint_wse_nb(
     """Step B — arc-based per-facepoint WSE via PlanarRegressionZ.
 
     Replicates ``ComputeFacePointWSs`` from
-    ``archive/DLLs/RasMapperLib/MeshFV2D.cs`` exactly, including the arc
+    ``RasMapperLib/MeshFV2D.cs`` exactly, including the arc
     decomposition at wet/dry boundaries.
 
     **Arc-based algorithm** (``MeshFV2D.cs:9483``)
@@ -910,7 +910,7 @@ def _cw_ccw_neighbors(
 
     Returns -1 for a neighbor that doesn't exist.
     Mirrors ``FaceVelocityCoef`` helper in
-    ``archive/DLLs/RasMapperLib/MeshFV2D.cs``.
+    ``RasMapperLib/MeshFV2D.cs``.
     """
     start = cell_face_info[cell_idx, 0]
     count = cell_face_info[cell_idx, 1]
@@ -943,7 +943,7 @@ def reconstruct_face_velocities(
     tangential component via a 3-face C-stencil.
 
     Replicates ``ReconstructFaceVelocitiesLeastSquares`` from
-    ``archive/DLLs/RasMapperLib/MeshFV2D.cs``.
+    ``RasMapperLib/MeshFV2D.cs``.
 
     Algorithm
     ---------
@@ -1220,7 +1220,7 @@ def _compute_facepoint_velocities_nb(
 
     Writes directly into ``fp_vel_data`` (shape ``(total_fp_face_entries, 2)``,
     pre-zeroed).  Mirrors ``ComputeVertexVelocities`` in
-    ``archive/DLLs/RasMapperLib/MeshFV2D.cs``.
+    ``RasMapperLib/MeshFV2D.cs``.
     """
     n_fp = len(fp_face_info)
 
@@ -1335,7 +1335,7 @@ def compute_facepoint_velocities(
     """Step 3 — inverse-face-length weighted facepoint velocity averaging.
 
     Replicates ``ComputeVertexVelocities`` from
-    ``archive/DLLs/RasMapperLib/MeshFV2D.cs``.
+    ``RasMapperLib/MeshFV2D.cs``.
 
     **Goal**
 
@@ -1468,7 +1468,7 @@ def replace_face_velocities_sloped(
     """Step 3.5 — replace face velocity with average of endpoint facepoint velocities.
 
     Replicates ``ReplaceFaceVelocitiesSloped`` from
-    ``archive/DLLs/RasMapperLib/MeshFV2D.cs``.
+    ``RasMapperLib/MeshFV2D.cs``.
 
     For every face ``f`` with endpoint facepoints ``fpA`` and ``fpB``:
 
@@ -1647,7 +1647,7 @@ def _donate(fp_weights: np.ndarray) -> np.ndarray:
     weight is conserved.
 
     Matches ``redistribute_weights_to_edge_midpoints`` in
-    ``archive/DLLs/RasMapperLib/RASGeometryMapPoints.cs``.
+    ``RasMapperLib/RASGeometryMapPoints.cs``.
 
     Parameters
     ----------
@@ -2104,7 +2104,7 @@ def build_cell_id_raster(
     Only wet cells (``wet_mask[c] == True``) are rasterized.
 
     Mirrors ``RasterizePolygon.ComputeCells``
-    (``archive/DLLs/RasMapperLib/RasterizePolygon.cs``) called from
+    (``RasMapperLib/RasterizePolygon.cs``) called from
     ``MeshFV2D.cs``.
 
     **Scan-line path** (``use_scanline=True``, default)
@@ -2304,7 +2304,7 @@ def compute_cell_flat_velocities(
     """Whole-cell least-squares velocity for small (flat) cells.
 
     Mirrors ``MeshFV2D.ComputeCellValue_FacePerpLeastSquares`` from
-    ``archive/DLLs/RasMapperLib/MeshFV2D.cs``, called by
+    ``RasMapperLib/MeshFV2D.cs``, called by
     ``ComputeFromFacePerpValues(FlatMeshMap, ...)`` in ``Renderer.cs``.
 
     RASMapper classifies each cell as *flat* when its plan-view area is at or
@@ -2899,7 +2899,7 @@ def _rasterize_rasmap(
     """Step 4 — pixel-level barycentric interpolation for all wet cells.
 
     Replicates ``PaintCell_8Stencil`` / ``PaintCell_8Stencil_RebalanceWeights``
-    from ``archive/DLLs/RasMapperLib/Renderer.cs``.
+    from ``RasMapperLib/Renderer.cs``.
 
     **Algorithm**
 
