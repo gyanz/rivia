@@ -1,29 +1,26 @@
-# Reading Model Data
+# Data Access
 
-raspy provides three distinct ways to access HEC-RAS results, each suited to
-different data sources and use cases.
+raspy exposes HEC-RAS data through four entry points depending on the source:
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│  Data source          │  Entry point              │  What you get       │
-├─────────────────────────────────────────────────────────────────────────┤
-│  Text files (.prj/.p*/.g*/.u*) │ model.project/plan/geom/flow │ dataclasses │
-│                       │                           │                     │
-│  Plan HDF (.px.hdf)   │  model.hdf                │  NumPy / DataFrame  │
-│    └─ 2D mesh results │    .flow_areas[name]       │  arrays + DataFrames│
-│    └─ 1D XS results   │    .cross_sections["R Rc RS"|i|(r,rc,rs)] │      │
-│    └─ structures      │    .structures[name|i|(r,rc,rs)]  │            │
-│    └─ storage areas   │    .storage_areas[name]   │                     │
-│                       │                           │                     │
-│  DSS file (.dss)      │  model.dss                │  pd.Series          │
-│    └─ XS time series  │    .flow(river, reach, rs)│  (full run period)  │
-│    └─ inline struct.  │    .stage_hw(...)         │                     │
-│                       │                           │                     │
-│  Geometry HDF (*.gx.hdf) │ GeometryHdf(path)     │  NumPy arrays       │
-│    └─ mesh geometry   │    .flow_areas[name]      │  (no results)       │
-│    └─ structures      │    .structures[name]      │                     │
-│    └─ cross sections  │    .cross_sections[key]   │                     │
-└─────────────────────────────────────────────────────────────────────────┘
+```{list-table}
+:header-rows: 1
+:widths: 30 35 35
+
+* - Data source
+  - Entry point
+  - What you get
+* - Text files (`.prj` / `.p*` / `.g*` / `.u*`)
+  - `model.project` / `model.plan` / `model.geom` / `model.flow`
+  - Python dataclasses, readable and writable
+* - Plan HDF (`.px.hdf`) — 2D mesh results, 1D XS, structures, storage areas
+  - `model.hdf` → `PlanHdf`
+  - NumPy arrays, pandas DataFrames
+* - DSS file (`.dss`) — XS and inline structure time series
+  - `model.dss` → `DssReader`
+  - `pd.Series` (spans full period across restart runs)
+* - Geometry HDF (`.gx.hdf`) — mesh geometry only, no results
+  - `GeometryHdf(path)`
+  - NumPy arrays
 ```
 
 ## When to use which
@@ -36,7 +33,7 @@ different data sources and use cases.
 | Read/edit boundary conditions and flow hydrographs | `model.flow` |
 | 2D mesh results (WSE, velocity) at specific timesteps | `model.hdf.flow_areas` |
 | Maximum/minimum summary over all timesteps | `model.hdf.flow_areas` |
-| 1D cross-section results from a single run | `model.hdf.cross_sections` |
+| 1D cross-section results from the latest run | `model.hdf.cross_sections` |
 | 1D results spanning multiple restart-file runs | `model.dss` |
 | Inline/lateral structure results | `model.hdf.structures` or `model.dss` |
 | Mesh geometry only (no results) | `GeometryHdf` directly |
@@ -109,19 +106,21 @@ geom.structures.laterals         # StructureIndex[Lateral]
 
 ### `model.flow` — flow file
 
-`model.flow` returns a `SteadyFlowFile` or `UnsteadyFlowEditor` depending on
-the active plan.
+`model.flow` returns an `UnsteadyFlowEditor`.
 
 ```python
-flow = model.flow
+flow = model.flow   # UnsteadyFlowEditor
 
-# Unsteady
 flow.flow_hydrographs            # list[FlowHydrograph]
 flow.lateral_inflows             # list[LateralInflow]
 flow.gate_boundaries             # list[GateBoundary]
 
-flow.get_flow_hydrograph("Butte Cr", "Upper", "7")       # → list[float]
-flow.set_flow_hydrograph("Butte Cr", "Upper", "7", vals) # edit in place
+flow.set_flow_hydrograph(0, vals)                             # edit by index
+flow.set_flow_hydrograph_at("Butte Cr", "Upper", "7", vals)  # edit by location
+
+flow.set_lateral_inflow(0, vals)                              # edit by index
+flow.set_lateral_inflow_at("Butte Cr", "Upper", "50", vals)  # edit by location
+flow.set_all_lateral_inflows([vals0, vals1])                  # edit all at once
 flow.save()
 ```
 
@@ -251,6 +250,12 @@ inl.total_flow                                    # total flow
 
 `model.dss` returns a `DssReader` that reads directly from the DSS file
 written alongside the unsteady simulation (`.dss`).
+
+```{note}
+Only a limited set of output variables is currently supported (cross-section
+flow/stage and inline structure flow/stage).  More variables will be added in
+future updates.
+```
 
 The key difference from `model.hdf.cross_sections`: the DSS file **accumulates
 across restart runs**, so it covers the full simulation period even when the

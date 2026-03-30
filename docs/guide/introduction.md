@@ -21,6 +21,20 @@ results, and exporting geospatial rasters — all from a single Python environme
 
 ---
 
+---
+
+## What it is not
+
+- **Not a HEC product** — raspy is an independent, community-developed tool and is not affiliated with, endorsed by, or supported by the U.S. Army Corps of Engineers or the Hydrologic Engineering Center.  It is designed to help researchers and engineers use HEC-RAS programmatically for research and automation work.
+- **Not a GUI replacement** — it does not replicate RASMapper's interactive editing, schematic editor, or profile plot tools.
+- **Not a mesh generator** — creating or modifying 2D mesh geometry (cell layout, breaklines) requires HEC-RAS or RASMapper directly.
+- **Not a full HEC-RAS API** — only a targeted subset of input/output operations is exposed; not every field in every file type is accessible.
+- **Not cross-platform** — raspy is Windows-only because HEC-RAS itself is Windows-only.
+- **Not a hydraulic solver** — it orchestrates HEC-RAS but does not perform hydraulic computations itself.
+- **Limited model modification** — input file editing is intentionally narrow in scope, covering only the operations needed for automation workflows and hydraulic research (e.g. scripting parameter sweeps, modifying boundary conditions and Manning's n).  Building or substantially restructuring a model should be done in HEC-RAS directly.
+
+---
+
 ## Licensing
 
 raspy is released under the **Apache License 2.0**.
