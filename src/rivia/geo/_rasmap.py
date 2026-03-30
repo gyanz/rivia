@@ -671,7 +671,7 @@ def _compute_facepoint_wse_nb(
         ``(n_fp, 2)`` — facepoint XY coordinates.
     fp_face_info:
         ``(n_fp, 2)`` int32 — ``[start, count]`` into ``fp_face_values``.
-        From :attr:`~raspy.hdf.FlowArea.facepoint_face_orientation_info`.
+        From :attr:`~rivia.hdf.FlowArea.facepoint_face_orientation_info`.
         **Faces must be in angle-sorted CCW order** (as stored in the HDF
         ``FacePoints Face and Orientation`` datasets).
     fp_face_values:
@@ -862,7 +862,7 @@ def compute_facepoint_wse(
         ``(n_fp, 2)`` — facepoint XY coordinates.
     fp_face_info:
         ``(n_fp, 2)`` int32 — ``[start, count]`` into ``fp_face_values``.
-        From :attr:`~raspy.hdf.FlowArea.facepoint_face_orientation_info`.
+        From :attr:`~rivia.hdf.FlowArea.facepoint_face_orientation_info`.
     fp_face_values:
         ``(total, 2)`` int32 — ``[face_idx, orientation]`` in CCW angle order.
     face_facepoint_indexes:
@@ -1000,7 +1000,7 @@ def reconstruct_face_velocities(
         Signed face-normal velocity scalars read directly from the HDF result.
     face_normals_2d : ndarray, shape ``(n_faces, 2)``
         Unit normal vectors ``[nx, ny]`` for each face.
-        Pass ``face_normals[:, :2]`` from :attr:`~raspy.hdf.FlowArea.face_normals`.
+        Pass ``face_normals[:, :2]`` from :attr:`~rivia.hdf.FlowArea.face_normals`.
     face_connected : ndarray, shape ``(n_faces,)``, bool
         ``True`` for faces that are hydraulically connected (wet) for this
         timestep.  Obtained from :func:`compute_face_wss`.
@@ -1009,11 +1009,11 @@ def reconstruct_face_velocities(
         ``-1`` indicates no neighbour (boundary face).
     cell_face_info : ndarray, shape ``(n_cells, 2)``
         ``[start, count]`` — index into *cell_face_values* for each cell's
-        face list.  From :attr:`~raspy.hdf.FlowArea.cell_face_info`.
+        face list.  From :attr:`~rivia.hdf.FlowArea.cell_face_info`.
     cell_face_values : ndarray, shape ``(total, 2)``
         ``[face_idx, orientation]`` — the ordered face ring for each cell,
         used to find CW/CCW neighbors.
-        From :attr:`~raspy.hdf.FlowArea.cell_face_values`.
+        From :attr:`~rivia.hdf.FlowArea.cell_face_values`.
 
     Returns
     -------
@@ -1399,7 +1399,7 @@ def compute_facepoint_velocities(
         ``(n_faces,)`` bool — from :func:`compute_face_wss`.
     face_lengths:
         ``(n_faces,)`` — face plan-view lengths.
-        Use ``face_normals[:, 2]`` from :attr:`~raspy.hdf.FlowArea.face_normals`.
+        Use ``face_normals[:, 2]`` from :attr:`~rivia.hdf.FlowArea.face_normals`.
     face_facepoint_indexes:
         ``(n_faces, 2)`` — ``[fpA, fpB]``.
     face_cell_indexes:
@@ -1408,7 +1408,7 @@ def compute_facepoint_velocities(
         ``(n_cells,)`` — water-surface elevation per cell.
     fp_face_info, fp_face_values:
         Angle-sorted facepoint-to-face CSR arrays from
-        :attr:`~raspy.hdf.FlowArea.facepoint_face_orientation`.
+        :attr:`~rivia.hdf.FlowArea.facepoint_face_orientation`.
         The angular order is required here so that arc traversal visits
         faces in consistent counter-clockwise order.
     face_value_a, face_value_b:
@@ -2131,7 +2131,7 @@ def build_cell_id_raster(
     Parameters
     ----------
     cell_polygons:
-        From :attr:`~raspy.hdf.FlowArea.cell_polygons`.  Each element is
+        From :attr:`~rivia.hdf.FlowArea.cell_polygons`.  Each element is
         ``(n_vertices, 2)`` XY coordinates.  Empty arrays are skipped.
     wet_mask:
         ``(n_cells,)`` bool — which cells have water.
@@ -3003,7 +3003,7 @@ def _rasterize_rasmap(
     cell_wse:
         ``(n_cells,)`` — water-surface elevation per cell.
     cell_face_info, cell_face_values:
-        From :attr:`~raspy.hdf.FlowArea.cell_face_info`.
+        From :attr:`~rivia.hdf.FlowArea.cell_face_info`.
     face_facepoint_indexes:
         ``(n_faces, 2)``.
     face_cell_indexes:

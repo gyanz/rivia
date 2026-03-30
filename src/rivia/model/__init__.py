@@ -101,9 +101,9 @@ __all__ = [
     "INL_GATE_OPENING",
 ]
 
-logger = logging.getLogger("raspy.model")
+logger = logging.getLogger("rivia.model")
 
-EXT_BACKUP_FILE = "raspy_bkup"
+EXT_BACKUP_FILE = "rivia_bkup"
 
 
 class Model(MapperExtension):
@@ -252,19 +252,19 @@ class Model(MapperExtension):
 
     @property
     def hdf(self):
-        """Lazily opened HDF file as a :class:`raspy.hdf.PlanHdf` or
-        :class:`raspy.hdf.GeometryHdf`.
+        """Lazily opened HDF file as a :class:`rivia.hdf.PlanHdf` or
+        :class:`rivia.hdf.GeometryHdf`.
 
-        Returns a cached :class:`~raspy.hdf.PlanHdf` when the plan HDF file
+        Returns a cached :class:`~rivia.hdf.PlanHdf` when the plan HDF file
         exists and opens without error.  If the plan HDF is missing or cannot
-        be opened, returns a **fresh** (uncached) :class:`~raspy.hdf.GeometryHdf`
+        be opened, returns a **fresh** (uncached) :class:`~rivia.hdf.GeometryHdf`
         from the geometry HDF instead — useful when the plan has not yet been run.
 
         The ``PlanHdf`` handle is kept open until :meth:`reload` is called or
         the object is closed directly.  The ``GeometryHdf`` fallback is not
         cached; each access that requires the fallback opens a new handle.
         """
-        from raspy.hdf import GeometryHdf, PlanHdf
+        from rivia.hdf import GeometryHdf, PlanHdf
 
         if self._hdf is None:
             plan_path = self.plan_hdf_file

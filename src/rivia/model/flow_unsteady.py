@@ -24,7 +24,7 @@ from math import ceil
 from pathlib import Path
 from typing import Literal
 
-logger = logging.getLogger("raspy.model")
+logger = logging.getLogger("rivia.model")
 
 # Scalar or sequence accepted by all set_* methods.
 # A bare float/int is broadcast to fill the current time-series length.

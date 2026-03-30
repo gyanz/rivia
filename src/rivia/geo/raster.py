@@ -8,9 +8,9 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 
-from raspy.utils import assert_path_writable, log_call, timed
+from rivia.utils import assert_path_writable, log_call, timed
 
-logger = logging.getLogger("raspy.geo")
+logger = logging.getLogger("rivia.geo")
 
 if TYPE_CHECKING:
     import rasterio.io
@@ -141,41 +141,41 @@ def rasmap_raster(
     cell_min_elevation:
         ``(n_cells + n_ghost,)`` minimum bed elevation per cell including
         ghost (virtual boundary) cell rows.  Must be the full unsliced array
-        (:attr:`~raspy.hdf.FlowArea.cell_min_elevation` returns only real
+        (:attr:`~rivia.hdf.FlowArea.cell_min_elevation` returns only real
         cells — pass the raw HDF dataset or append ghost rows).  Ghost rows
         have ``NaN`` in HEC-RAS output.  The extra rows are required because
-        :func:`~raspy.geo._rasmap.compute_face_wss` indexes into this array
+        :func:`~rivia.geo._rasmap.compute_face_wss` indexes into this array
         using ``face_cell_indexes`` which contains ghost cell indices on the
         cellB side of perimeter faces.
     face_min_elevation:
         ``(n_faces,)`` minimum bed elevation at each face
-        (:attr:`~raspy.hdf.FlowArea.face_min_elevation`).
+        (:attr:`~rivia.hdf.FlowArea.face_min_elevation`).
     face_cell_indexes:
         ``(n_faces, 2)`` — ``[cellA, cellB]``
-        (:attr:`~raspy.hdf.FlowArea.face_cell_indexes`).
+        (:attr:`~rivia.hdf.FlowArea.face_cell_indexes`).
     cell_face_info:
         ``(n_cells, 2)`` ``[start, count]``
-        (first element of :attr:`~raspy.hdf.FlowArea.cell_face_info` tuple).
+        (first element of :attr:`~rivia.hdf.FlowArea.cell_face_info` tuple).
     cell_face_values:
         ``(total, 2)`` ``[face_idx, orientation]``
-        (second element of :attr:`~raspy.hdf.FlowArea.cell_face_info` tuple).
+        (second element of :attr:`~rivia.hdf.FlowArea.cell_face_info` tuple).
     face_facepoint_indexes:
-        ``(n_faces, 2)`` (:attr:`~raspy.hdf.FlowArea.face_facepoint_indexes`).
+        ``(n_faces, 2)`` (:attr:`~rivia.hdf.FlowArea.face_facepoint_indexes`).
     fp_coords:
-        ``(n_fp, 2)`` (:attr:`~raspy.hdf.FlowArea.facepoint_coordinates`).
+        ``(n_fp, 2)`` (:attr:`~rivia.hdf.FlowArea.facepoint_coordinates`).
     face_normals:
         ``(n_faces, 3)`` ``[nx, ny, length]``
-        (:attr:`~raspy.hdf.FlowArea.face_normals`).  Columns 0–1 are used as
+        (:attr:`~rivia.hdf.FlowArea.face_normals`).  Columns 0–1 are used as
         unit normal vectors; column 2 as face lengths.
     fp_face_info:
         ``(n_fp, 2)`` angle-sorted CSR start/count from
-        :attr:`~raspy.hdf.FlowArea.facepoint_face_orientation`.
+        :attr:`~rivia.hdf.FlowArea.facepoint_face_orientation`.
     fp_face_values:
         ``(total, 2)`` angle-sorted ``[face_idx, orientation]`` from
-        :attr:`~raspy.hdf.FlowArea.facepoint_face_orientation`.
+        :attr:`~rivia.hdf.FlowArea.facepoint_face_orientation`.
     cell_polygons:
         Per-cell polygon vertex arrays from
-        :attr:`~raspy.hdf.FlowArea.cell_polygons`.
+        :attr:`~rivia.hdf.FlowArea.cell_polygons`.
     face_normal_velocity:
         ``(n_faces,)`` signed face-normal velocity scalars.  Required for
         ``variable="velocity"``.
@@ -184,7 +184,7 @@ def rasmap_raster(
         ``rasterio.DatasetReader``; the caller must close it.
     cell_centers:
         ``(n_cells, 2)`` cell-centre XY coordinates
-        (:attr:`~raspy.hdf.FlowArea.cell_centers`).  When provided, face
+        (:attr:`~rivia.hdf.FlowArea.cell_centers`).  When provided, face
         application points for the PlanarRegressionZ in Step B are computed
         as the intersection of the cell-centre-to-cell-centre line with each
         face chord (the RASMapper-exact ``GetFaceMidSide`` algorithm).  When
@@ -192,7 +192,7 @@ def rasmap_raster(
         instead, which is adequate for orthogonal meshes.
     cell_surface_area:
         ``(n_cells,)`` plan-view cell areas in model area units
-        (:attr:`~raspy.hdf.FlowArea.cell_surface_area`).  Used to split cells
+        (:attr:`~rivia.hdf.FlowArea.cell_surface_area`).  Used to split cells
         into "flat" (area ≤ ``pixel_size² × 5``) and "sloping" groups,
         matching RASMapper's ``SplitCellsOnThreshold`` /
         ``PixelRenderingCutoff = 5`` logic.  When ``None`` all cells are
@@ -243,7 +243,7 @@ def rasmap_raster(
         *nodata*.  Has no effect when *perimeter* is ``None``.
     perimeter:
         ``(n_pts, 2)`` boundary polygon used for extent and clipping.
-        Pass :attr:`~raspy.hdf.FlowArea.perimeter` here.  When ``None`` the
+        Pass :attr:`~rivia.hdf.FlowArea.perimeter` here.  When ``None`` the
         bounding box of *fp_coords* is used for the grid extent and no
         polygon clipping is applied.
     use_numba:
@@ -276,10 +276,10 @@ def rasmap_raster(
     except ImportError as exc:
         raise ImportError(
             "rasmap_raster requires rasterio.  "
-            "Install it with: pip install raspy[geo]"
+            "Install it with: pip install rivia[geo]"
         ) from exc
 
-    from raspy.geo import _rasmap
+    from rivia.geo import _rasmap
 
     # -- 0. Guards ----------------------------------------------------------
     if variable == "wse":

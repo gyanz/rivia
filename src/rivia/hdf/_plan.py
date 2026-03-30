@@ -6,7 +6,7 @@ Plan HDF files embed the same ``Geometry/`` group as geometry HDF files
 ``PlanHdf`` inherits ``GeometryHdf`` so all geometry accessors are available.
 ``FlowAreaResults`` extends ``FlowArea`` with lazy time-series properties,
 summary DataFrames, and computed depth / velocity methods.  Raster export
-methods delegate to ``raspy.geo`` via a deferred import so this module is
+methods delegate to ``rivia.geo`` via a deferred import so this module is
 fully usable without rasterio or scipy installed.
 
 Derived from archive/ras_tools/r2d/ras_io.py and
@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Any, Literal, overload
 import numpy as np
 import pandas as pd
 
-from raspy.utils import log_call, timed
+from rivia.utils import log_call, timed
 
 from ._base import _HdfFile
 from ._geometry import (
@@ -48,7 +48,7 @@ if TYPE_CHECKING:
     import h5py
     import rasterio.io
 
-logger = logging.getLogger("raspy.hdf")
+logger = logging.getLogger("rivia.hdf")
 
 
 # ---------------------------------------------------------------------------
@@ -510,7 +510,7 @@ class FlowAreaResults(FlowArea):
             ``[Vx, Vy]`` velocity at each face midpoint.
             Disconnected (dry) faces receive ``[0, 0]``.
         """
-        from raspy.geo import _rasmap
+        from rivia.geo import _rasmap
 
         cell_wse = np.array(self.water_surface[timestep, :])
         face_normal_vel = np.array(self.face_velocity[timestep, :])
@@ -535,11 +535,11 @@ class FlowAreaResults(FlowArea):
         Implements the RASMapper-exact pipeline (Steps A + 2 + 3):
 
         * **Step A** — hydraulic connectivity
-          (:func:`~raspy.geo._rasmap.compute_face_wss`).
+          (:func:`~rivia.geo._rasmap.compute_face_wss`).
         * **Step 2** — C-stencil face velocity reconstruction
-          (:func:`~raspy.geo._rasmap.reconstruct_face_velocities`).
+          (:func:`~rivia.geo._rasmap.reconstruct_face_velocities`).
         * **Step 3** — inverse-face-length weighted facepoint averaging
-          (:func:`~raspy.geo._rasmap.compute_facepoint_velocities`).
+          (:func:`~rivia.geo._rasmap.compute_facepoint_velocities`).
           Each facepoint has one arc-context velocity vector per adjacent
           face; these are averaged to produce a single ``[Vx, Vy]`` per
           facepoint.
@@ -558,7 +558,7 @@ class FlowAreaResults(FlowArea):
             ``[Vx, Vy]`` velocity at each mesh corner.
             Facepoints adjacent only to dry faces receive ``[0, 0]``.
         """
-        from raspy.geo import _rasmap
+        from rivia.geo import _rasmap
 
         cell_wse = np.array(self.water_surface[timestep, :])
         face_normal_vel = np.array(self.face_velocity[timestep, :])
@@ -669,7 +669,7 @@ class FlowAreaResults(FlowArea):
                 "Install it with:  pip install matplotlib"
             ) from exc
 
-        from raspy.geo import raster as _raster
+        from rivia.geo import raster as _raster
 
         # -- 1. BFS neighbourhood (with ring tracking) -------------------
         cell_face_info, cell_face_values = self.cell_face_info
@@ -986,7 +986,7 @@ class FlowAreaResults(FlowArea):
 
 
     # ------------------------------------------------------------------
-    # Raster export - delegates to raspy.geo (deferred import)
+    # Raster export - delegates to rivia.geo (deferred import)
     # ------------------------------------------------------------------
 
     @log_call(logging.INFO)
@@ -1084,7 +1084,7 @@ class FlowAreaResults(FlowArea):
             If ``variable="velocity"`` or ``variable="velocity_vector"`` and ``timestep=None``.
             If neither *reference_raster* nor *cell_size* is provided.
         """
-        from raspy.geo import raster as _raster
+        from rivia.geo import raster as _raster
 
         if variable in ("velocity", "velocity_vector") and timestep is None:
             raise ValueError(
@@ -1279,7 +1279,7 @@ class FlowAreaResultsCollection(FlowAreaCollection):
 class StorageAreaResults(StorageArea):
     """Geometry *and* time-series results for one storage area.
 
-    Inherits all geometry properties from :class:`~raspy.hdf.StorageArea`
+    Inherits all geometry properties from :class:`~rivia.hdf.StorageArea`
     (:attr:`boundary`, :attr:`volume_elevation`, :meth:`volume_at_elevation`, etc.).
 
     Time-series properties return ``numpy`` arrays (storage areas are scalar
@@ -1469,7 +1469,7 @@ class StorageAreaResults(StorageArea):
 class StorageAreaResultsCollection(StorageAreaCollection):
     """Collection of :class:`StorageAreaResults` backed by a plan HDF file.
 
-    Overrides :class:`~raspy.hdf.StorageAreaCollection` to return
+    Overrides :class:`~rivia.hdf.StorageAreaCollection` to return
     ``StorageAreaResults`` with both geometry *and* plan results.
     """
 
@@ -1687,7 +1687,7 @@ class _StructureResultsMixin:
 class SA2DConnectionResults(_StructureResultsMixin, SA2DConnection):
     """Geometry *and* time-series results for one HEC-RAS SA/2D connection.
 
-    Inherits geometry from :class:`~raspy.hdf.SA2DConnection` and shared HDF
+    Inherits geometry from :class:`~rivia.hdf.SA2DConnection` and shared HDF
     result access (``structure_variables``, ``total_flow``, ``stage_hw``,
     ``stage_tw``, ``weir_variables``, ``gate_flow``) from
     :class:`_StructureResultsMixin`.
@@ -1695,7 +1695,7 @@ class SA2DConnectionResults(_StructureResultsMixin, SA2DConnection):
     Parameters
     ----------
     geom:
-        Geometry object from :class:`~raspy.hdf.StructureCollection`.
+        Geometry object from :class:`~rivia.hdf.StructureCollection`.
     group:
         ``h5py.Group`` at ``-/SA 2D Area Conn/<plan_name>``.
     """
@@ -1775,7 +1775,7 @@ class SA2DConnectionResults(_StructureResultsMixin, SA2DConnection):
 class InlineResults(_StructureResultsMixin, Inline):
     """Geometry *and* time-series results for one HEC-RAS inline structure.
 
-    Inherits geometry from :class:`~raspy.hdf.Inline` and shared HDF result
+    Inherits geometry from :class:`~rivia.hdf.Inline` and shared HDF result
     access from :class:`_StructureResultsMixin`.
 
     The HDF group is at
@@ -1784,7 +1784,7 @@ class InlineResults(_StructureResultsMixin, Inline):
     Parameters
     ----------
     geom:
-        Geometry object from :class:`~raspy.hdf.StructureCollection`.
+        Geometry object from :class:`~rivia.hdf.StructureCollection`.
     group:
         ``h5py.Group`` at the inline structure result path.
     """
@@ -1814,7 +1814,7 @@ class InlineResults(_StructureResultsMixin, Inline):
 class LateralResults(_StructureResultsMixin, Lateral):
     """Geometry *and* time-series results for one HEC-RAS lateral structure.
 
-    Inherits geometry from :class:`~raspy.hdf.Lateral` and shared HDF result
+    Inherits geometry from :class:`~rivia.hdf.Lateral` and shared HDF result
     access from :class:`_StructureResultsMixin`.
 
     The HDF group is at
@@ -1826,7 +1826,7 @@ class LateralResults(_StructureResultsMixin, Lateral):
     Parameters
     ----------
     geom:
-        Geometry object from :class:`~raspy.hdf.StructureCollection`.
+        Geometry object from :class:`~rivia.hdf.StructureCollection`.
     group:
         ``h5py.Group`` at the lateral structure result path.
     """
@@ -1888,7 +1888,7 @@ class LateralResults(_StructureResultsMixin, Lateral):
 class BridgeResults(_StructureResultsMixin, Bridge):
     """Geometry *and* time-series results for one HEC-RAS bridge structure.
 
-    Inherits geometry from :class:`~raspy.hdf.Bridge` and shared HDF result
+    Inherits geometry from :class:`~rivia.hdf.Bridge` and shared HDF result
     access from :class:`_StructureResultsMixin`.
 
     The HDF group is at
@@ -1897,7 +1897,7 @@ class BridgeResults(_StructureResultsMixin, Bridge):
     Parameters
     ----------
     geom:
-        Geometry object from :class:`~raspy.hdf.StructureCollection`.
+        Geometry object from :class:`~rivia.hdf.StructureCollection`.
     group:
         ``h5py.Group`` at the bridge result path.
     """
@@ -1927,7 +1927,7 @@ class BridgeResults(_StructureResultsMixin, Bridge):
 class PlanStructureCollection(StructureCollection):
     """Plan-enriched structure collection: all structure types with results.
 
-    Overrides :class:`~raspy.hdf.StructureCollection` so each item carries
+    Overrides :class:`~rivia.hdf.StructureCollection` so each item carries
     both geometry attributes *and* time-series result access:
 
     * :class:`SA2DConnection` → :class:`SA2DConnectionResults`
@@ -2871,10 +2871,10 @@ class PlanHdf(GeometryHdf):
         * :class:`LateralResults` — lateral structures
         * :class:`BridgeResults` — bridge structures
 
-        Use :attr:`~raspy.hdf.StructureCollection.connections`,
-        :attr:`~raspy.hdf.StructureCollection.inlines`,
-        :attr:`~raspy.hdf.StructureCollection.laterals`, and
-        :attr:`~raspy.hdf.StructureCollection.bridges` for filtered access.
+        Use :attr:`~rivia.hdf.StructureCollection.connections`,
+        :attr:`~rivia.hdf.StructureCollection.inlines`,
+        :attr:`~rivia.hdf.StructureCollection.laterals`, and
+        :attr:`~rivia.hdf.StructureCollection.bridges` for filtered access.
         """
         if self._plan_structures is None:
             self._plan_structures = PlanStructureCollection(self._hdf)

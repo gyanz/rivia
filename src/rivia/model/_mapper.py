@@ -8,8 +8,8 @@ executables — and :class:`MapperExtension`, a mixin that adds ``store_map`` /
 Two executables are used depending on the ``render_mode`` argument:
 
 - ``RasMapperStoreMap.exe`` (``render_mode`` is ``"sloping"``, ``"hybrid"``, or
-  ``"horizontal"``): the primary map-store tool, shipped with ``raspy`` in
-  ``src/raspy/bin/``.  Properly initialises RasMapperLib ``SharedData``
+  ``"horizontal"``): the primary map-store tool, shipped with ``rivia`` in
+  ``src/rivia/bin/``.  Properly initialises RasMapperLib ``SharedData``
   render-mode state before rendering, enabling deterministic, fully-specified
   output.  The render mode that matches RasMapper's output depends on the
   ``<RenderMode>`` configured in the project's ``.rasmap`` file.  Also supports
@@ -50,7 +50,7 @@ from ..com.ras import installed_ras_directory
 from ..utils.fs import assert_path_writable
 from ..utils.helpers import log_call, timed
 
-logger = logging.getLogger("raspy.model")
+logger = logging.getLogger("rivia.model")
 
 __all__ = [
     "MapperExtension",
@@ -312,7 +312,7 @@ class VrtMap:
 
 
 class MapperExtension:
-    """Mixin that adds RasMapper stored-map export to :class:`raspy.model.Model`.
+    """Mixin that adds RasMapper stored-map export to :class:`rivia.model.Model`.
 
     Renders hydraulic result maps via ``RasMapperStoreMap.exe`` (primary, when
     ``render_mode`` is set) or ``RasProcess.exe`` (fallback, ``render_mode=None``),
@@ -566,7 +566,7 @@ class MapperExtension:
             state before executing the same underlying map-generation engine.
             The mode that matches RasMapper's output depends on the
             ``<RenderMode>`` configured in the project's ``.rasmap`` file.
-            Requires ``RasMapperStoreMap.exe`` in ``src/raspy/bin/`` when not
+            Requires ``RasMapperStoreMap.exe`` in ``src/rivia/bin/`` when not
             ``None``.
         use_depth_weights:
             When ``True``, face weights in the ``hybrid`` stencil are
@@ -693,7 +693,7 @@ class MapperExtension:
             raise FileNotFoundError(
                 f"RasMapperStoreMap.exe not found at {_stub_exe}.\n"
                 "Build tools/RasMapperStoreMap with 'dotnet build -c Release' "
-                "and copy RasMapperStoreMap.exe to src/raspy/bin/."
+                "and copy RasMapperStoreMap.exe to src/rivia/bin/."
             )
 
         result_hdf = _resolve(self.plan_hdf_file)
@@ -838,7 +838,7 @@ class MapperExtension:
                         "appear on stdout (stub falls back to no-op reporter).",
                         program_dir,
                     )
-                # Translate raspy's public name back to the RasMapperLib string.
+                # Translate rivia's public name back to the RasMapperLib string.
                 _render_mode_arg = (
                     "slopingPretty" if render_mode == "hybrid" else render_mode
                 )

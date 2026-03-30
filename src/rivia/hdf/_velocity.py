@@ -3,7 +3,7 @@
 This module contains pure-numpy functions for cell-centre WLS velocity
 reconstruction.  They are called by ``FlowAreaResults`` which provides the
 mesh geometry arrays.  Face and facepoint velocity reconstruction uses the
-RASMapper-exact pipeline in ``raspy.geo._rasmap``.
+RASMapper-exact pipeline in ``rivia.geo._rasmap``.
 
 Background
 ----------
@@ -52,7 +52,7 @@ import logging
 
 import numpy as np
 
-logger = logging.getLogger("raspy.hdf")
+logger = logging.getLogger("rivia.hdf")
 
 # ---------------------------------------------------------------------------
 # Single-cell helpers (used internally and exposed for testing)

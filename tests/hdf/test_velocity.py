@@ -1,11 +1,11 @@
-"""Tests for raspy.hdf._velocity (pure-numpy WLS functions)."""
+"""Tests for rivia.hdf._velocity (pure-numpy WLS functions)."""
 
 from __future__ import annotations
 
 import numpy as np
 import pytest
 
-from raspy.hdf._velocity import (
+from rivia.hdf._velocity import (
     _estimate_face_wse_average,
     _estimate_face_wse_sloped,
     _interpolate_face_flow_area,

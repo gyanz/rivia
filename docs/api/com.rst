@@ -1,9 +1,9 @@
-raspy.com
+rivia.com
 =========
 
 COM interface to run and control HEC-RAS. Windows only; requires ``pywin32``.
 
-.. automodule:: raspy.com
+.. automodule:: rivia.com
    :members:
 
 .. rubric:: Submodules
@@ -12,6 +12,6 @@ COM interface to run and control HEC-RAS. Windows only; requires ``pywin32``.
    :toctree: generated
    :recursive:
 
-   raspy.com.controller
-   raspy.com.ras
-   raspy.com.registry
+   rivia.com.controller
+   rivia.com.ras
+   rivia.com.registry

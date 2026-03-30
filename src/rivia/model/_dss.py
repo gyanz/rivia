@@ -55,7 +55,7 @@ from .geometry import NODE_INLINE_STRUCTURE, NODE_XS
 if TYPE_CHECKING:
     from . import Model
 
-logger = logging.getLogger("raspy.model")
+logger = logging.getLogger("rivia.model")
 
 #: Type for a single window bound: flat string, ``(date, time)`` tuple, datetime, or None.
 _WindowBound = str | tuple[str, str] | datetime | None

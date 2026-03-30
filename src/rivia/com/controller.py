@@ -11,7 +11,7 @@ from ._ver400 import Controller as C400, RASEvents as E400
 from ._ver500 import Controller as C500, RASEvents as E500
 from ._ver503 import Controller as C503, RASEvents as E503
 
-logger = logging.getLogger("raspy.com")
+logger = logging.getLogger("rivia.com")
 
 
 class HecRasComputeError(RuntimeError):

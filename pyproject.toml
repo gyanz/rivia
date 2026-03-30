@@ -3,7 +3,7 @@ requires = ["setuptools>=75.0", "setuptools-scm"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "raspy"
+name = "rivia"
 dynamic = ["version"]
 description = "A modern Python interface for HEC-RAS hydraulic modeling software"
 readme = "README.md"
@@ -57,15 +57,15 @@ docs = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/gyanz/raspy"
-Repository = "https://github.com/gyanz/raspy"
-Issues = "https://github.com/gyanz/raspy/issues"
+Homepage = "https://github.com/gyanz/rivia"
+Repository = "https://github.com/gyanz/rivia"
+Issues = "https://github.com/gyanz/rivia/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-raspy = ["bin/*.exe"]
+rivia = ["bin/*.exe"]
 
 [tool.ruff]
 target-version = "py310"
@@ -94,6 +94,6 @@ testpaths = ["tests"]
 addopts = "-x --tb=short"
 
 [tool.setuptools_scm]
-# Write version to src/raspy/_version.py so it is available at runtime
+# Write version to src/rivia/_version.py so it is available at runtime
 # without requiring the package to be installed.
-write_to = "src/raspy/_version.py"
+write_to = "src/rivia/_version.py"

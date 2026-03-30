@@ -9,7 +9,7 @@ import logging
 from pathlib import Path
 from typing import Literal
 
-logger = logging.getLogger("raspy.model")
+logger = logging.getLogger("rivia.model")
 
 
 class ProjectFile:

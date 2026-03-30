@@ -1,6 +1,6 @@
 # Data Access
 
-raspy exposes HEC-RAS data through four entry points depending on the source:
+rivia exposes HEC-RAS data through four entry points depending on the source:
 
 ```{list-table}
 :header-rows: 1
@@ -41,7 +41,7 @@ raspy exposes HEC-RAS data through four entry points depending on the source:
 
 ## Text Input Files
 
-raspy exposes the four HEC-RAS text input files as lazily loaded objects on `Model`.
+rivia exposes the four HEC-RAS text input files as lazily loaded objects on `Model`.
 
 ```
 model.project  → ProjectFile    .prj  — project index: plan list, unit system, file paths
@@ -322,7 +322,7 @@ GeometryHdf
 ```
 
 ```python
-from raspy.hdf import GeometryHdf
+from rivia.hdf import GeometryHdf
 
 geom = GeometryHdf("model.g01.hdf")
 area = geom.flow_areas["Perimeter 1"]   # FlowArea (geometry only)

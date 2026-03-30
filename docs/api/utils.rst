@@ -1,9 +1,9 @@
-raspy.utils
+rivia.utils
 ===========
 
 Shared helpers: path handling, validation, logging.
 
-.. automodule:: raspy.utils
+.. automodule:: rivia.utils
    :members:
 
 .. rubric:: Submodules
@@ -12,5 +12,5 @@ Shared helpers: path handling, validation, logging.
    :toctree: generated
    :recursive:
 
-   raspy.utils.fs
-   raspy.utils.helpers
+   rivia.utils.fs
+   rivia.utils.helpers

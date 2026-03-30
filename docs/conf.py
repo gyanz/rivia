@@ -5,7 +5,7 @@ import sys
 from importlib.metadata import version as _get_version, PackageNotFoundError
 from pathlib import Path
 
-# Add src/ to sys.path so autodoc can import raspy without installing it.
+# Add src/ to sys.path so autodoc can import rivia without installing it.
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
 # Mock Windows-only modules so autodoc works on Linux (e.g. Read the Docs).
@@ -18,12 +18,12 @@ autodoc_mock_imports = [
 ]
 
 # -- Project information -----------------------------------------------------
-project = "raspy"
+project = "rivia"
 copyright = "2025, Gyan Basyal and WEST Consultants, Inc."
 author = "Gyan Basyal and WEST Consultants, Inc."
 
 try:
-    release = _get_version("raspy")
+    release = _get_version("rivia")
 except PackageNotFoundError:
     release = "0.0.0.dev0"
 
@@ -62,7 +62,7 @@ intersphinx_mapping = {
 
 # -- Options for HTML output -------------------------------------------------
 html_theme = "furo"
-html_title = "raspy"
+html_title = "rivia"
 html_theme_options = {
     "sidebar_hide_name": False,
     "navigation_with_keys": True,

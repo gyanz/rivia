@@ -544,7 +544,7 @@ class GateGroup:
 class Weir:
     """Overflow weir parameters from the ``IW Dist`` block.
 
-    Mirrors :class:`raspy.hdf._geometry.Weir` in field names.  Key
+    Mirrors :class:`rivia.hdf._geometry.Weir` in field names.  Key
     differences vs the HDF version:
 
     - Always populated when an ``IW Dist`` line exists, even when *mode* is
@@ -770,7 +770,7 @@ class Roadway:
 class Structure:
     """Base class for one HEC-RAS structure parsed from a text geometry file.
 
-    Mirrors :class:`raspy.hdf._geometry.Structure` in field names.  Key
+    Mirrors :class:`rivia.hdf._geometry.Structure` in field names.  Key
     difference:
 
     - ``centerline``: the text geometry file carries no GIS centreline
@@ -808,7 +808,7 @@ class Structure:
 class Inline(Structure):
     """Inline structure (node type 5) parsed from a ``.g**`` text geometry file.
 
-    Mirrors :class:`raspy.hdf._geometry.Inline`.  Inherits ``mode``,
+    Mirrors :class:`rivia.hdf._geometry.Inline`.  Inherits ``mode``,
     ``upstream_type``, ``downstream_type``, and ``centerline`` from
     :class:`Structure`.
 
@@ -860,7 +860,7 @@ class Inline(Structure):
 class Bridge(Structure):
     """Bridge or culvert (node types 3 / 2) parsed from a ``.g**`` text geometry file.
 
-    Mirrors :class:`raspy.hdf._geometry.Bridge`.  Inherits ``mode``,
+    Mirrors :class:`rivia.hdf._geometry.Bridge`.  Inherits ``mode``,
     ``upstream_type``, ``downstream_type``, and ``centerline`` from
     :class:`Structure`.
 
@@ -923,7 +923,7 @@ class Bridge(Structure):
 class Lateral(Structure):
     """Lateral structure (node type 6) parsed from a ``.g**`` text geometry file.
 
-    Mirrors :class:`raspy.hdf._geometry.Lateral`.  Inherits ``mode``,
+    Mirrors :class:`rivia.hdf._geometry.Lateral`.  Inherits ``mode``,
     ``upstream_type``, ``downstream_type``, and ``centerline`` from
     :class:`Structure`.
 
@@ -999,7 +999,7 @@ class StructureIndex(Generic[_T]):
     """Read-only ordered mapping from a string key to a structure object.
 
     Supports both string key (``"River Reach RS"``) and integer positional
-    index.  Mirrors the interface of :class:`~raspy.hdf._geometry.StructureIndex`.
+    index.  Mirrors the interface of :class:`~rivia.hdf._geometry.StructureIndex`.
     """
 
     def __init__(self, items: list[tuple[str, _T]]) -> None:
@@ -1110,7 +1110,7 @@ class ModelStructureCollection:
         )
 
 
-logger = logging.getLogger("raspy.model")
+logger = logging.getLogger("rivia.model")
 
 # ---------------------------------------------------------------------------
 # GeometryFile

@@ -1,15 +1,15 @@
 # Derived from PyRAS by Gonzalo Peña-Castellanos
 # Original author: Gonzalo Peña-Castellanos (https://github.com/goanpeca)
 # Original repository no longer publicly available.
-# Modifications made for raspy.
+# Modifications made for rivia.
 
 import logging
 import os.path as osp
 
-from raspy.utils.helpers import ensure_dir as _create_dir
-from raspy.utils.helpers import fix_ras_dates as _fix_dates
+from rivia.utils.helpers import ensure_dir as _create_dir
+from rivia.utils.helpers import fix_ras_dates as _fix_dates
 
-logger = logging.getLogger("raspy.com")
+logger = logging.getLogger("rivia.com")
 
 
 class ControllerDeprecated(object):

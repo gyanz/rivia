@@ -1,11 +1,11 @@
-"""Tests for raspy.hdf._geometry (GeometryHdf, FlowAreaCollection, FlowArea)."""
+"""Tests for rivia.hdf._geometry (GeometryHdf, FlowAreaCollection, FlowArea)."""
 
 from __future__ import annotations
 
 import numpy as np
 import pytest
 
-from raspy.hdf import GeometryHdf, PlanHdf
+from rivia.hdf import GeometryHdf, PlanHdf
 
 from .conftest import skip_if_no_example, EXAMPLE_PLAN_HDF
 

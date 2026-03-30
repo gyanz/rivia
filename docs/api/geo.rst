@@ -1,10 +1,10 @@
-raspy.geo
+rivia.geo
 =========
 
 Geospatial operations: mesh interpolation, raster export.
-Requires ``geopandas`` and ``rasterio`` (install with ``pip install raspy[geo]``).
+Requires ``geopandas`` and ``rasterio`` (install with ``pip install rivia[geo]``).
 
-.. automodule:: raspy.geo
+.. automodule:: rivia.geo
    :members:
 
 .. rubric:: Submodules
@@ -13,4 +13,4 @@ Requires ``geopandas`` and ``rasterio`` (install with ``pip install raspy[geo]``
    :toctree: generated
    :recursive:
 
-   raspy.geo.raster
+   rivia.geo.raster

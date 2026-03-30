@@ -1,13 +1,13 @@
 # Derived from PyRAS by Gonzalo Peña-Castellanos
 # Original author: Gonzalo Peña-Castellanos (https://github.com/goanpeca)
 # Original repository no longer publicly available.
-# Modifications made for raspy.
+# Modifications made for rivia.
 
 import logging
 
 from . import _ver500
 
-logger = logging.getLogger("raspy.com")
+logger = logging.getLogger("rivia.com")
 
 
 class Controller(_ver500.Controller):

@@ -7,7 +7,7 @@ all associated files and results through a single object.
 ## 1. Opening a project
 
 ```python
-from raspy.model import Model
+from rivia.model import Model
 
 model = Model("path/to/project.prj", ras_version=None, backup=False)
 print(model.version)          # e.g. "6.30"
@@ -33,14 +33,14 @@ targeting HEC-RAS 6.7.
 
 ```{warning}
 When `backup=True` is used and the Python process terminates abnormally
-(crash, forced kill, IDE restart), raspy backup files are left on disk.
+(crash, forced kill, IDE restart), rivia backup files are left on disk.
 The next time a `Model` instance is created for that project, those backup
 files are automatically restored — **overwriting the current HEC-RAS input
 files**.  Any edits made to the project in HEC-RAS or a text editor after
 the abnormal exit will be silently lost.
 
 If you suspect stale backup files are present, you may either delete them
-manually or open the project with raspy so that the backup files are
+manually or open the project with rivia so that the backup files are
 ingested and the session closes normally.
 ```
 
@@ -58,7 +58,7 @@ reflect the newly active plan.
 ## 3. Reloading after changes
 
 `model.reload()` must be called after editing any input file to make
-HEC-RAS and raspy pick up the changes.  It closes and discards the cached
+HEC-RAS and rivia pick up the changes.  It closes and discards the cached
 `plan`, `hdf`, and project handles, then re-opens the project via COM.
 
 The input files are accessed as:

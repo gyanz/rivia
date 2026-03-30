@@ -26,7 +26,7 @@ from xml.etree.ElementTree import Element, SubElement, tostring
 
 import numpy as np
 
-logger = logging.getLogger("raspy.hdf")
+logger = logging.getLogger("rivia.hdf")
 
 __all__ = ["export_terrain"]
 

@@ -1,4 +1,4 @@
-"""Shared helper functions used across raspy subpackages."""
+"""Shared helper functions used across rivia subpackages."""
 
 import datetime as dt
 import functools
@@ -55,7 +55,7 @@ def timed(level: int = TIMER):
 
     Examples
     --------
-    >>> from raspy.utils import timed
+    >>> from rivia.utils import timed
     >>> import logging
     >>> @timed(logging.INFO)
     ... def my_func(): ...
@@ -92,7 +92,7 @@ def log_call(level: int = logging.INFO):
 
     Examples
     --------
-    >>> from raspy.utils import log_call
+    >>> from rivia.utils import log_call
     >>> import logging
     >>> @log_call(logging.INFO)
     ... def my_func(): ...

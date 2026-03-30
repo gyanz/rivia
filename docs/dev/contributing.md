@@ -3,7 +3,7 @@
 ## Environment setup
 
 ```bash
-conda activate raspy-dev
+conda activate rivia-dev
 pip install -e ".[dev,geo,docs]"
 ```
 
@@ -17,7 +17,7 @@ pytest tests/ -x --tb=short
 
 ```bash
 ruff check src/
-mypy src/raspy
+mypy src/rivia
 ```
 
 ## Building docs

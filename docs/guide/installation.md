@@ -1,11 +1,11 @@
 # Installation
 
-raspy requires Python 3.10+ and runs on **Windows only** (HEC-RAS is Windows-only).
+rivia requires Python 3.10+ and runs on **Windows only** (HEC-RAS is Windows-only).
 
 ## From PyPI
 
 ```bash
-pip install raspy
+pip install rivia
 ```
 
 ## With geospatial extras
@@ -13,13 +13,13 @@ pip install raspy
 The `geo` subpackage requires `geopandas` and `rasterio`:
 
 ```bash
-pip install raspy[geo]
+pip install rivia[geo]
 ```
 
 ## Development install
 
 ```bash
-git clone https://github.com/gyanz/raspy.git
-cd raspy
+git clone https://github.com/gyanz/rivia.git
+cd rivia
 pip install -e ".[dev,geo,docs]"
 ```

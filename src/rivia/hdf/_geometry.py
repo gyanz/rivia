@@ -25,7 +25,7 @@ from ._base import _HdfFile
 if TYPE_CHECKING:
     import h5py
 
-logger = logging.getLogger("raspy.hdf")
+logger = logging.getLogger("rivia.hdf")
 
 # ---------------------------------------------------------------------------
 # HDF path constants
@@ -748,7 +748,7 @@ class FlowArea:
     ) -> dict:
         """Check all mesh cells against HEC-RAS geometric validity rules.
 
-        Calls :func:`raspy.geo.mesh_validation.check_mesh_cells` with the
+        Calls :func:`rivia.geo.mesh_validation.check_mesh_cells` with the
         HDF arrays for this flow area.
 
         Parameters
@@ -763,10 +763,10 @@ class FlowArea:
         -------
         dict
             Full validation report.  Pass to
-            :func:`raspy.geo.mesh_validation.print_mesh_report` for a
+            :func:`rivia.geo.mesh_validation.print_mesh_report` for a
             human-readable summary.
         """
-        from raspy.geo.mesh_validation import check_mesh_cells
+        from rivia.geo.mesh_validation import check_mesh_cells
 
         cfi, cfv = self.cell_face_info
         peri_info, peri_vals = self.face_perimeter
@@ -2021,7 +2021,7 @@ class SA2DConnection(Structure):
 
     Notes
     -----
-    Plan-result groups (see :class:`~raspy.hdf.SA2DConnectionResults`) may
+    Plan-result groups (see :class:`~rivia.hdf.SA2DConnectionResults`) may
     use a different naming convention: for 2D↔2D connections HEC-RAS prefixes
     the flow area name (e.g. geometry ``"Lower Levee"`` → plan result
     ``"BaldEagleCr Lower Levee"``).

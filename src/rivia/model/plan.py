@@ -9,7 +9,7 @@ from pathlib import Path
 from ..utils.helpers import check_sim_date as _check_sim_date
 from ..utils.helpers import check_sim_time as _check_sim_time
 
-logger = logging.getLogger("raspy.model")
+logger = logging.getLogger("rivia.model")
 
 _MONTHS = {"JAN", "FEB", "MAR", "APR", "MAY", "JUN",
            "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"}

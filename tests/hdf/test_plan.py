@@ -1,4 +1,4 @@
-"""Tests for raspy.hdf._plan (PlanHdf, FlowAreaResults)."""
+"""Tests for rivia.hdf._plan (PlanHdf, FlowAreaResults)."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from raspy.hdf import PlanHdf
+from rivia.hdf import PlanHdf
 
 from .conftest import skip_if_no_example, EXAMPLE_PLAN_HDF
 

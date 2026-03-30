@@ -1,10 +1,10 @@
-"""Tests for raspy.hdf._base."""
+"""Tests for rivia.hdf._base."""
 
 from __future__ import annotations
 
 import pytest
 
-from raspy.hdf._base import _resolve_hdf_path
+from rivia.hdf._base import _resolve_hdf_path
 
 
 class TestResolveHdfPath:
@@ -33,20 +33,20 @@ class TestResolveHdfPath:
 
 class TestHdfFileLifecycle:
     def test_file_not_found_raises(self, tmp_path):
-        from raspy.hdf._base import _HdfFile
+        from rivia.hdf._base import _HdfFile
 
         with pytest.raises(FileNotFoundError):
             _HdfFile(tmp_path / "nonexistent.p01.hdf")
 
     def test_context_manager_closes_file(self, synthetic_plan_hdf):
-        from raspy.hdf import PlanHdf
+        from rivia.hdf import PlanHdf
 
         with PlanHdf(synthetic_plan_hdf) as hdf:
             assert hdf._hdf.id.valid
         assert not hdf._hdf.id.valid
 
     def test_explicit_close(self, synthetic_plan_hdf):
-        from raspy.hdf import PlanHdf
+        from rivia.hdf import PlanHdf
 
         hdf = PlanHdf(synthetic_plan_hdf)
         assert hdf._hdf.id.valid
@@ -54,7 +54,7 @@ class TestHdfFileLifecycle:
         assert not hdf._hdf.id.valid
 
     def test_suffix_auto_appended(self, synthetic_plan_hdf):
-        from raspy.hdf import PlanHdf
+        from rivia.hdf import PlanHdf
 
         # Pass path without .hdf — it points to a file that doesn't exist,
         # but we just want to confirm the suffix logic; use the full path.

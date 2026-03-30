@@ -1,4 +1,4 @@
-"""Shared fixtures for raspy.hdf tests.
+"""Shared fixtures for rivia.hdf tests.
 
 The real HEC-RAS example HDF is used for integration tests.
 Synthetic in-memory HDF fixtures are used for unit tests so they run

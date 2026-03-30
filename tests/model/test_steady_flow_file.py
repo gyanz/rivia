@@ -1,4 +1,4 @@
-"""Tests for raspy.model.flow_steady — SteadyFlowFile.
+"""Tests for rivia.model.flow_steady — SteadyFlowFile.
 
 Fixtures (real steady flow files from HEC-RAS 6.6 example projects):
   baxter.f01    — 3 profiles ("Big","Bigger","Biggest"), 3 River Rch & RM
@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from raspy.model.flow_steady import SteadyBoundary, SteadyFlowFile
+from rivia.model.flow_steady import SteadyBoundary, SteadyFlowFile
 
 FIXTURES = Path(__file__).parent / "fixtures"
 BAXTER = FIXTURES / "baxter.f01"

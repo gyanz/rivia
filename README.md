@@ -1,4 +1,6 @@
-# raspy
+# RIVIA
+
+**RAS Interface for Visualization, Information, and Automation**
 
 A modern, modular Python library for interacting with [HEC-RAS](https://www.hec.usace.army.mil/software/hec-ras/) hydraulic modeling software.
 
@@ -8,7 +10,7 @@ A modern, modular Python library for interacting with [HEC-RAS](https://www.hec.
 
 ## Overview
 
-`raspy` provides a clean, Pythonic interface for working with HEC-RAS projects:
+`rivia` provides a clean, Pythonic interface for working with HEC-RAS projects:
 
 - **Control HEC-RAS** via COM automation — open projects, switch plans, run simulations
 - **Read and write** HEC-RAS text input files (`.prj`, `.g*`, `.p*`, `.f*`, `.u*`)
@@ -25,19 +27,19 @@ A modern, modular Python library for interacting with [HEC-RAS](https://www.hec.
 ## Installation
 
 ```bash
-pip install raspy
+pip install rivia
 ```
 
 With geospatial extras (required for raster export):
 
 ```bash
-pip install raspy[geo]
+pip install rivia[geo]
 ```
 
 ## Quick Example
 
 ```python
-from raspy.model import Model
+from rivia.model import Model
 
 # Open a HEC-RAS project
 model = Model("path/to/project.prj")
@@ -49,8 +51,8 @@ model.change_plan(short_id="BC")
 model.change_plan(index=0)
 
 # Read HDF results
-area = model.hdf.flow_area_results["Perimeter 1"]
-wse_max = area.max_water_surface()
+area = model.hdf.flow_areas["Perimeter 1"]
+wse_max = area.max_water_surface
 
 # Export a WSE raster
 vrt = model.export_wse(timestep=None, render_mode="sloping")
@@ -60,7 +62,7 @@ print(vrt.path)
 ## Package Structure
 
 ```
-raspy/
+rivia/
 ├── com/       # COM interface to run/control HEC-RAS
 ├── model/     # Model - primary project interface; read/write text input files, read HDF results
 ├── hdf/       # Read HEC-RAS HDF5 geometry and result files
@@ -71,8 +73,8 @@ raspy/
 ## Development
 
 ```bash
-git clone https://github.com/gyanz/raspy.git
-cd raspy
+git clone https://github.com/gyanz/rivia.git
+cd rivia
 pip install -e ".[dev,geo,docs]"
 
 # Run tests
@@ -82,7 +84,7 @@ pytest tests/ -x --tb=short
 ruff check src/
 
 # Type check
-mypy src/raspy
+mypy src/rivia
 
 # Build docs
 sphinx-build -b html docs docs/_build/html

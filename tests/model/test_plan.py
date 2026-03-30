@@ -1,4 +1,4 @@
-"""Tests for raspy.model.plan.PlanFile.
+"""Tests for rivia.model.plan.PlanFile.
 
 Fixtures are real plan files copied from HEC-RAS 6.6 example projects:
   - baxter_steady.p01         Steady flow plan (Program Version=5.00)
@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from raspy.model.plan import PlanFile
+from rivia.model.plan import PlanFile
 
 FIXTURES = Path(__file__).parent / "fixtures"
 BAXTER = FIXTURES / "baxter_steady.p01"

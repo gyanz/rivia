@@ -1,4 +1,4 @@
-"""Tests for raspy.model.geometry — GeometryFile.
+"""Tests for rivia.model.geometry — GeometryFile.
 
 Fixtures (real HEC-RAS 6.6 geometry files):
 
@@ -27,7 +27,7 @@ import pytest
 
 from math import isnan
 
-from raspy.model.geometry import (
+from rivia.model.geometry import (
     Bridge,
     CrossSection,
     CulvertGroup,
@@ -995,7 +995,7 @@ class TestStructuresNitInline:
         assert iw.gate_groups[0].weir_shape == "Ogee"
 
     def test_weir_shape_broad_crested(self):
-        from raspy.model.geometry import GateGroup
+        from rivia.model.geometry import GateGroup
         g = GateGroup(
             name="test", width=10.0, height=5.0, invert=0.0,
             gate_coefficient=0.6, trunnion_exponent=0.16,
@@ -1011,7 +1011,7 @@ class TestStructuresNitInline:
         assert g.weir_shape == "Broad Crested"
 
     def test_weir_shape_sharp_crested(self):
-        from raspy.model.geometry import GateGroup
+        from rivia.model.geometry import GateGroup
         g = GateGroup(
             name="test", width=10.0, height=5.0, invert=0.0,
             gate_coefficient=0.6, trunnion_exponent=0.16,

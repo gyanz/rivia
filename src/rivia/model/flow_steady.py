@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 from math import ceil
 from pathlib import Path
 
-logger = logging.getLogger("raspy.model")
+logger = logging.getLogger("rivia.model")
 
 # ---------------------------------------------------------------------------
 # Formatting helpers (same algorithm as flow_unsteady)

@@ -40,7 +40,7 @@ def assert_path_writable(path: str | Path) -> None:
     p = Path(path).resolve()
 
     if p.exists():
-        tmp = p.with_suffix(p.suffix + ".raspy_write_check")
+        tmp = p.with_suffix(p.suffix + ".rivia_write_check")
         try:
             os.rename(p, tmp)
         except OSError as err:

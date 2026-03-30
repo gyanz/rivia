@@ -9,7 +9,7 @@ import win32con
 import win32gui
 import win32process
 
-logger = logging.getLogger("raspy.com")
+logger = logging.getLogger("rivia.com")
 
 # Map of short names to the window title substrings HEC-RAS uses for each editor.
 _WINDOW_TITLES: dict[str, str] = {
