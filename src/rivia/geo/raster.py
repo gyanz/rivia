@@ -57,9 +57,6 @@ def rasmap_raster(
     RASMapper's ``"Horizontal"``, ``"Sloping Cell Corners"``, and
     ``"Sloping Cell Corners + Face Centers"`` render modes.
 
-    See ``archive/docs/export_raster2_plan.md`` for a full description of the
-    algorithm steps.
-
     Pipeline summary
     ----------------
     **water_surface / depth — horizontal** (``render_mode="horizontal"``)

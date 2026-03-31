@@ -54,15 +54,14 @@
  *   2. Common HEC-RAS installation paths (6.6 down to 6.1)
  *
  * Source references:
- *   archive/DLLs/RasMapperLib/RasMapperLib.Scripting/StoreAllMapsCommand.cs
- *   archive/DLLs/RasMapperLib/RasMapperLib/SharedData.cs  (~line 1765, ~line 1926)
- *   archive/DLLs/RasMapperLib/RasMapperLib/RASMapper.cs   (~line 12876)
- *   archive/DLLs/RasMapperLib/RasMapperLib/PostProcessor.cs (~line 532)
- *   archive/DLLs/RasMapperLib/RasMapperLib/RASD2FlowArea.cs (~line 3834)
- *   archive/DLLs/RasMapperLib/RasMapperLib.Render/WaterSurfaceRenderer.cs (~line 2055)
- *   archive/DLLs/RasMapperLib/RasMapperLib/MapProcessingEngine.cs (~line 1346)
- *   archive/DLLs/RasMapperLib/RasMapperLib/InterpolatedLayer.cs (~line 2843)
- *   docs/rasprocess_render_mode_limitation.md
+ *   RasMapperLib/RasMapperLib.Scripting/StoreAllMapsCommand.cs
+ *   RasMapperLib/RasMapperLib/SharedData.cs  (~line 1765, ~line 1926)
+ *   RasMapperLib/RasMapperLib/RASMapper.cs   (~line 12876)
+ *   RasMapperLib/RasMapperLib/PostProcessor.cs (~line 532)
+ *   RasMapperLib/RasMapperLib/RASD2FlowArea.cs (~line 3834)
+ *   RasMapperLib/RasMapperLib.Render/WaterSurfaceRenderer.cs (~line 2055)
+ *   RasMapperLib/RasMapperLib/MapProcessingEngine.cs (~line 1346)
+ *   RasMapperLib/RasMapperLib/InterpolatedLayer.cs (~line 2843)
  */
 
 using System.Linq.Expressions;
@@ -149,7 +148,7 @@ AppDomain.CurrentDomain.AssemblyResolve += (sender, e) =>
 // Fix: load Geospatial.GDALAssist.dll ourselves and call
 // GDALSetup.InitializeMultiplatform(libDir\GDAL) before loading RasMapperLib,
 // mirroring exactly what GetProjection.cs and CreateTerrainCommand.cs do.
-// Reference: archive/DLLs/RasProcess/RasProcess/GetProjection.cs ~line 28
+// Reference: RasProcess/GetProjection.cs ~line 28
 
 var gdalDir = Path.Combine(libDir, "GDAL");
 if (Directory.Exists(gdalDir))
