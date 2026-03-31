@@ -10,6 +10,75 @@ from pathlib import Path
 _MONTHS = {"JAN", "FEB", "MAR", "APR", "MAY", "JUN",
            "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"}
 _DATE_RE = re.compile(r"^(\d{2})([A-Za-z]{3})(\d{4})$")
+_INTERVAL_RE = re.compile(r"^(\d+(?:\.\d*)?)\s*([A-Za-z]+)$")
+_INTERVAL_UNITS: dict[str, dt.timedelta] = {
+    "SEC":   dt.timedelta(seconds=1),
+    "MIN":   dt.timedelta(minutes=1),
+    "HR":    dt.timedelta(hours=1),
+    "HOUR":  dt.timedelta(hours=1),
+    "DAY":   dt.timedelta(days=1),
+    "WEEK":  dt.timedelta(weeks=1),
+    "MONTH": dt.timedelta(days=30),
+    "YEAR":  dt.timedelta(days=365),
+}
+
+
+def parse_interval(text: str | bytes) -> dt.timedelta:
+    """Parse a HEC-RAS interval string and return a :class:`datetime.timedelta`.
+
+    HEC-RAS writes interval strings as a number immediately followed by a unit
+    abbreviation, with optional whitespace between them, e.g. ``'20SEC'``,
+    ``'5MIN'``, ``'1HR'``, ``'1HOUR'``, ``'1DAY'``, ``'2WEEK'``.
+
+    Supported units (case-insensitive):
+
+    ======  =====================================
+    Unit    Timedelta
+    ======  =====================================
+    SEC     ``timedelta(seconds=n)``
+    MIN     ``timedelta(minutes=n)``
+    HR      ``timedelta(hours=n)``
+    HOUR    ``timedelta(hours=n)``
+    DAY     ``timedelta(days=n)``
+    WEEK    ``timedelta(weeks=n)``
+    MONTH   ``timedelta(days=n*30)`` (approximate)
+    YEAR    ``timedelta(days=n*365)`` (approximate)
+    ======  =====================================
+
+    Parameters
+    ----------
+    text:
+        Raw interval string from a HEC-RAS HDF attribute or plan file.
+        Bytes are decoded as UTF-8 before parsing.
+
+    Returns
+    -------
+    datetime.timedelta
+
+    Raises
+    ------
+    ValueError
+        If *text* does not match the expected ``<number><unit>`` format or
+        the unit is not recognised.
+    """
+    if isinstance(text, (bytes, bytearray)):
+        text = text.decode()
+    text = str(text).strip()
+    m = _INTERVAL_RE.match(text)
+    if not m:
+        raise ValueError(
+            f"Cannot parse interval {text!r}. "
+            "Expected a number followed by a unit, e.g. '5MIN' or '1 HOUR'."
+        )
+    value = float(m.group(1))
+    unit = m.group(2).upper()
+    unit_td = next((td for key, td in _INTERVAL_UNITS.items() if unit == key), None)
+    if unit_td is None:
+        raise ValueError(
+            f"Unrecognised interval unit {m.group(2)!r} in {text!r}. "
+            f"Supported units: {', '.join(_INTERVAL_UNITS)}."
+        )
+    return value * unit_td
 
 
 def check_sim_date(date: str) -> None:

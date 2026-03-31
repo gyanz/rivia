@@ -15,6 +15,7 @@ archive/ras_tools/r2d/ras2d_cell_velocity.py.
 
 from __future__ import annotations
 
+import datetime as dt
 import logging
 from collections.abc import Iterator
 from pathlib import Path
@@ -23,7 +24,7 @@ from typing import TYPE_CHECKING, Any, Literal, overload
 import numpy as np
 import pandas as pd
 
-from rivia.utils import log_call, timed
+from rivia.utils import log_call, parse_interval, timed
 
 from ._base import _HdfFile
 from ._geometry import (
@@ -2655,24 +2656,6 @@ class PlanHdf(GeometryHdf):
         return raw.decode() if isinstance(raw, (bytes, np.bytes_)) else str(raw)
 
     @staticmethod
-    def _parse_ras_time_interval(raw: bytes | np.bytes_ | str) -> float:
-        """Parse a HEC-RAS time-interval string to seconds.
-
-        HEC-RAS concatenates the numeric value and unit without spaces,
-        e.g. ``b'20SEC'``, ``b'5MIN'``, ``b'1HR'``, ``b'1HOUR'``,
-        ``b'1DAY'``.  Returns the equivalent number of seconds.
-        """
-        if isinstance(raw, (bytes, np.bytes_)):
-            text = raw.decode().strip()
-        else:
-            text = str(raw).strip()
-        i = 0
-        while i < len(text) and (text[i].isdigit() or text[i] in ".+-"):
-            i += 1
-        value, unit = float(text[:i]), text[i:].upper()
-        _to_seconds = {"SEC": 1, "MIN": 60, "HR": 3600, "HOUR": 3600, "DAY": 86400}
-        multiplier = next((v for k, v in _to_seconds.items() if unit.startswith(k)), 1)
-        return value * multiplier
 
     def _plan_info_attr(self, name: str) -> bytes | np.bytes_ | str | None:
         """Return a ``Plan Data/Plan Information`` attribute by name, or ``None``."""
@@ -2680,8 +2663,8 @@ class PlanHdf(GeometryHdf):
         return None if grp is None else grp.attrs.get(name)
 
     @property
-    def interval_computation(self) -> float | None:
-        """Base computation time step in seconds, or ``None`` if absent.
+    def interval_computation(self) -> dt.timedelta | None:
+        """Base computation time step, or ``None`` if absent.
 
         Read from ``Plan Data/Plan Information`` attribute
         ``Computation Time Step Base``.  HEC-RAS stores the value as a
@@ -2689,18 +2672,18 @@ class PlanHdf(GeometryHdf):
         ``'1HR'``, ``'1HOUR'``, ``'1DAY'``.
         """
         raw = self._plan_info_attr("Computation Time Step Base")
-        return None if raw is None else self._parse_ras_time_interval(raw)
+        return None if raw is None else parse_interval(raw)
 
     @property
-    def interval_mapping(self) -> float | None:
-        """Mapping output interval in seconds, or ``None`` if absent.
+    def interval_mapping(self) -> dt.timedelta | None:
+        """Mapping output interval, or ``None`` if absent.
 
         Read from ``Plan Data/Plan Information`` attribute
         ``Base Output Interval``.  HEC-RAS stores the value as a
         concatenated number-unit string, e.g. ``'5MIN'``.
         """
         raw = self._plan_info_attr("Base Output Interval")
-        return None if raw is None else self._parse_ras_time_interval(raw)
+        return None if raw is None else parse_interval(raw)
 
     @property
     def projection(self) -> str | None:
@@ -2758,8 +2741,8 @@ class PlanHdf(GeometryHdf):
         return pd.to_datetime(raw, format=_RAS_TS_FMT)
 
     @property
-    def interval_dss(self) -> float | None:
-        """DSS hydrograph output interval in seconds, or ``None`` if absent.
+    def interval_dss(self) -> dt.timedelta | None:
+        """DSS hydrograph output interval, or ``None`` if absent.
 
         Derived from the difference between the first two hydrograph
         time stamps.
@@ -2769,7 +2752,7 @@ class PlanHdf(GeometryHdf):
             return None
         raw = np.array(ds[:2]).astype(str)
         ts = pd.to_datetime(raw, format=_RAS_TS_FMT)
-        return (ts[1] - ts[0]).total_seconds()
+        return ts[1] - ts[0]
 
     @property
     def n_mapping(self) -> int | None:
@@ -2801,8 +2784,8 @@ class PlanHdf(GeometryHdf):
         return max(0, len(ds) - 1)
 
     @property
-    def interval_dss_inst(self) -> float | None:
-        """Instantaneous profile output interval in seconds, or ``None`` if absent.
+    def interval_dss_inst(self) -> dt.timedelta | None:
+        """Instantaneous profile output interval, or ``None`` if absent.
 
         Derived from the difference between the first two actual profile
         timestamps in ``Profile Dates`` (i.e. entries at indices 1 and 2,
@@ -2813,7 +2796,7 @@ class PlanHdf(GeometryHdf):
             return None
         t1 = pd.to_datetime(ds[1].decode(), format=_POSTPROC_TS_FMT)
         t2 = pd.to_datetime(ds[2].decode(), format=_POSTPROC_TS_FMT)
-        return (t2 - t1).total_seconds()
+        return t2 - t1
 
     @property
     def timestamps_dss_inst(self) -> pd.DatetimeIndex:
