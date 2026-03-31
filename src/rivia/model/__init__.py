@@ -448,7 +448,7 @@ class Model(MapperExtension):
         self.controller.hide()
 
     def run(
-        self, blocking: bool = True, hide_window: bool = False
+        self, blocking: bool = True, hide_window: bool = False, reload: bool = False
     ) -> tuple[bool, tuple[str, ...]]:
         """Run HEC-RAS computations for the current plan.
 
@@ -461,6 +461,9 @@ class Model(MapperExtension):
         hide_window : bool, optional
             If ``True``, hide the computation window before running and
             restore it afterward. Default is ``False``.
+        reload : bool, optional
+            If ``True``, call :meth:`reload` before running to refresh the
+            project from disk. Default is ``False``.
 
         Returns
         -------
@@ -474,6 +477,8 @@ class Model(MapperExtension):
         HecRasComputeError
             If HEC-RAS reports a computation failure or a COM error occurs.
         """
+        if reload:
+            self.reload()
         if self._hdf is not None:
             self._hdf.close()
             self._hdf = None
