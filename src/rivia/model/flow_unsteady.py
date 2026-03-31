@@ -854,6 +854,22 @@ class UnsteadyFlowFile:
         """HEC-RAS version string (``Program Version=``)."""
         return self._get("Program Version")
 
+    @property
+    def write_ic_file(self) -> bool | None:
+        """Whether to write an initial conditions file at the end of simulation.
+
+        Returns ``True`` if ``Write IC File at Sim End=-1``, ``False`` if
+        ``0``, or ``None`` if the key is absent (older files).
+        """
+        raw = self._get("Write IC File at Sim End")
+        if raw is None:
+            return None
+        return int(raw) == -1
+
+    @write_ic_file.setter
+    def write_ic_file(self, value: bool) -> None:
+        self._set("Write IC File at Sim End", "-1" if value else "0")
+
     def _set_restart_filename(self, filename: str) -> None:
         prefix = "Restart Filename="
         for i, line in enumerate(self._lines):
@@ -1318,6 +1334,22 @@ class UnsteadyFlowEditor:
     @property
     def program_version(self) -> str | None:
         return self._header_get("Program Version")
+
+    @property
+    def write_ic_file(self) -> bool | None:
+        """Whether to write an initial conditions file at the end of simulation.
+
+        Returns ``True`` if ``Write IC File at Sim End=-1``, ``False`` if
+        ``0``, or ``None`` if the key is absent (older files).
+        """
+        raw = self._header_get("Write IC File at Sim End")
+        if raw is None:
+            return None
+        return int(raw) == -1
+
+    @write_ic_file.setter
+    def write_ic_file(self, value: bool) -> None:
+        self._header_set("Write IC File at Sim End", "-1" if value else "0")
 
     def _header_set_restart_filename(self, filename: str) -> None:
         prefix = "Restart Filename="
