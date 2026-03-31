@@ -18,13 +18,62 @@ Derived from: ``archive/ras_tools/unsteadyFlowParser.py``
 
 from __future__ import annotations
 
+import datetime as dt
 import logging
 from dataclasses import dataclass, field
 from math import ceil
 from pathlib import Path
 from typing import Literal
 
+from rivia.utils import check_sim_date, check_sim_time, parse_interval
+
 logger = logging.getLogger("rivia.model")
+
+
+def _parse_window(
+    use_fixed_start: bool,
+    fixed_start: str,
+    interval: str,
+    n_values: int,
+) -> tuple[dt.datetime, dt.datetime] | None:
+    """Return ``(start, end)`` datetimes for a boundary with a fixed start.
+
+    Returns ``None`` when *use_fixed_start* is ``False``.
+
+    Parameters
+    ----------
+    use_fixed_start:
+        Mirror of the boundary's ``use_fixed_start`` flag.
+    fixed_start:
+        ``"DDMONYYYY,HHMM"`` or ``"DDMONYYYY,HHMMSS"`` string stored on the
+        boundary (e.g. ``"01JAN2020,0600"``).
+    interval:
+        HEC-RAS interval string (e.g. ``"5MIN"``); parsed by
+        :func:`rivia.utils.parse_interval`.
+    n_values:
+        Number of time-series values; determines the end date.
+    """
+    if not use_fixed_start:
+        return None
+    date_str, time_str = fixed_start.split(",", 1)
+    date_str = date_str.strip()
+    time_str = time_str.strip()
+    check_sim_date(date_str)
+    check_sim_time(time_str)
+    # HEC-RAS uses "2400" / "240000" to mean midnight at the end of the day
+    # (i.e. 00:00 the following day).  strptime rejects hour 24, so normalise
+    # before parsing.
+    extra_day = time_str.startswith("24")
+    if extra_day:
+        time_str = "00" + time_str[2:]
+    fmt = "%d%b%Y%H%M%S" if len(time_str) == 6 else "%d%b%Y%H%M"
+    start = dt.datetime.strptime(date_str + time_str, fmt)
+    if extra_day:
+        start += dt.timedelta(days=1)
+    if n_values == 0:
+        return start, start
+    end = start + (n_values - 1) * parse_interval(interval)
+    return start, end
 
 # Scalar or sequence accepted by all set_* methods.
 # A bare float/int is broadcast to fill the current time-series length.
@@ -250,6 +299,17 @@ class FlowHydrograph(_Boundary):
     # that we don't model explicitly (e.g. CWMS InputPosition).
     _extra_lines: list[str] = field(default_factory=list, repr=False)
 
+    @property
+    def window(self) -> tuple[dt.datetime, dt.datetime] | None:
+        """Return ``(start, end)`` as Python datetimes, or ``None``.
+
+        ``None`` is returned when ``use_fixed_start`` is ``False``.
+        The end date is ``start + len(values) * parse_interval(interval)``.
+        """
+        return _parse_window(
+            self.use_fixed_start, self.fixed_start, self.interval, len(self.values)
+        )
+
 
 @dataclass
 class LateralInflow(_Boundary):
@@ -267,6 +327,17 @@ class LateralInflow(_Boundary):
     critical_boundary_flow: str = ""
     _extra_lines: list[str] = field(default_factory=list, repr=False)
 
+    @property
+    def window(self) -> tuple[dt.datetime, dt.datetime] | None:
+        """Return ``(start, end)`` as Python datetimes, or ``None``.
+
+        ``None`` is returned when ``use_fixed_start`` is ``False``.
+        The end date is ``start + len(values) * parse_interval(interval)``.
+        """
+        return _parse_window(
+            self.use_fixed_start, self.fixed_start, self.interval, len(self.values)
+        )
+
 
 @dataclass
 class StageHydrograph(_Boundary):
@@ -279,6 +350,17 @@ class StageHydrograph(_Boundary):
     use_fixed_start: bool = False
     fixed_start: str = ","
     _extra_lines: list[str] = field(default_factory=list, repr=False)
+
+    @property
+    def window(self) -> tuple[dt.datetime, dt.datetime] | None:
+        """Return ``(start, end)`` as Python datetimes, or ``None``.
+
+        ``None`` is returned when ``use_fixed_start`` is ``False``.
+        The end date is ``start + len(values) * parse_interval(interval)``.
+        """
+        return _parse_window(
+            self.use_fixed_start, self.fixed_start, self.interval, len(self.values)
+        )
 
 
 @dataclass
