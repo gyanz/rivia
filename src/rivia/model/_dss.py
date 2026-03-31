@@ -57,6 +57,19 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("rivia.model")
 
+try:
+    from pydsstools.heclib.dss import HecDss as _HecDss
+    if logging.getLogger("pydsstools").level >= logging.CRITICAL:
+        from pydsstools.heclib.utils import dss_logging as _dss_logging
+        _dss_logging.config(level="None")
+    has_pydsstools = True
+except ImportError:
+    has_pydsstools = False
+    logger.warning(
+        "pydsstools is not installed; DssReader will not be available. "
+        "Install with: pip install pydsstools"
+    )
+
 #: Type for a single window bound: flat string, ``(date, time)`` tuple, datetime, or None.
 _WindowBound = str | tuple[str, str] | datetime | None
 
@@ -209,13 +222,11 @@ class DssReader:
             or its type is not supported (only cross sections and inline
             structures are currently handled).
         """
-        try:
-            from pydsstools.heclib.dss import HecDss
-        except ImportError as exc:
+        if not has_pydsstools:
             raise ImportError(
                 "pydsstools is required for DSS reading. "
                 "Install it with: pip install pydsstools"
-            ) from exc
+            )
 
         if not self.dss_file.is_file():
             raise FileNotFoundError(f"DSS file not found: {self.dss_file}")
@@ -277,7 +288,7 @@ class DssReader:
 
         logger.debug("DSS time window: %s", window)
 
-        with HecDss.Open(str(self.dss_file)) as fid:
+        with _HecDss.Open(str(self.dss_file)) as fid:
             ts = fid.read_ts(pathname, window=window, trim_missing=trim_missing)
 
         times = pd.DatetimeIndex([t.datetime() for t in ts.times])
