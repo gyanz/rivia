@@ -1,29 +1,27 @@
 """RasMapper integration for exporting hydraulic result rasters.
 
 Provides :class:`VrtMap` — a handle to a VRT raster exported by the map-store
-executables — and :class:`MapperExtension`, a mixin that adds ``store_map`` /
+executable — and :class:`MapperExtension`, a mixin that adds ``store_map`` /
 ``open_map`` and per-variable convenience wrappers (``export_wse``,
 ``open_wse``, etc.) to the Model class.
 
-Two executables are used depending on the ``render_mode`` argument:
+All map exports are performed by ``RasMapperStoreMap.exe``, a thin .NET stub
+shipped with ``rivia`` in ``src/rivia/bin/``.  The stub exists because
+``RasProcess.exe -Command=StoreAllMaps`` (the built-in HEC-RAS tool) has a
+hard-coded defect: it always calls ``SharedData.SetSlopingRenderingMode()``
+(JustFacepoints) before invoking the map engine, irrespective of the
+``<RenderMode>`` element in the ``.rasmap`` file.  This means ``RasProcess.exe``
+cannot produce ``horizontal`` or ``slopingPretty`` (hybrid) rasters — the
+render-mode setting is silently ignored.  ``RasMapperStoreMap.exe`` fixes this
+by reading the requested mode and calling the correct ``SharedData`` initialiser
+before executing the same underlying ``StoreAllMapsCommand``, producing output
+that is pixel-perfect against RasMapper's interactive export for all three modes.
+It also supports ``tight_extent=True`` (default), which clips output tiles to
+the model geometry footprint (2D flow areas + cross sections + storage areas),
+matching RasMapper's "Original Extent" behaviour.
 
-- ``RasMapperStoreMap.exe`` (``render_mode`` is ``"sloping"``, ``"hybrid"``, or
-  ``"horizontal"``): the primary map-store tool, shipped with ``rivia`` in
-  ``src/rivia/bin/``.  Properly initialises RasMapperLib ``SharedData``
-  render-mode state before rendering, enabling deterministic, fully-specified
-  output.  The render mode that matches RasMapper's output depends on the
-  ``<RenderMode>`` configured in the project's ``.rasmap`` file.  Also supports
-  ``tight_extent=True`` (default), which clips output tiles to the model
-  geometry footprint (2D flow areas + cross sections + storage areas), matching
-  RasMapper's "Original Extent" behaviour.
-
-- ``RasProcess.exe`` (``render_mode=None``): the legacy HEC-RAS tool, used only
-  as a fallback.  Always renders with its built-in defaults
-  (sloping/JustFacepoints) regardless of the ``<RenderMode>`` element in the
-  ``.rasmap`` file.  ``tight_extent`` is not supported in this mode.
-
-Both executables write output to ``{project_dir}/{plan_short_id}/`` by default;
-supply ``output_path`` to direct output to a different directory.
+Output goes to ``{project_dir}/{plan_short_id}/`` by default; supply
+``output_path`` to direct output to a different directory.
 
 Author: Gyan Basyal
 Year: 2026
@@ -314,9 +312,8 @@ class VrtMap:
 class MapperExtension:
     """Mixin that adds RasMapper stored-map export to :class:`rivia.model.Model`.
 
-    Renders hydraulic result maps via ``RasMapperStoreMap.exe`` (primary, when
-    ``render_mode`` is set) or ``RasProcess.exe`` (fallback, ``render_mode=None``),
-    returning results as :class:`VrtMap` handles or open ``rasterio`` datasets.
+    Renders hydraulic result maps via ``RasMapperStoreMap.exe``, returning
+    results as :class:`VrtMap` handles or open ``rasterio`` datasets.
 
     **Export workflow** — two families:
 
@@ -332,7 +329,7 @@ class MapperExtension:
     or in ``output_path`` when supplied.
 
     Variables supported: ``wse``, ``depth``, ``velocity``, ``froude``,
-    ``shear_stress``, ``dv`` (depth × velocity), ``dv2`` (depth × velocity²).
+    ``shear_stress``, ``dv`` (depth x velocity), ``dv2`` (depth x velocity²).
     """
 
     def timestep_to_profile_name(self, timestep: int | None) -> str:
@@ -527,14 +524,14 @@ class MapperExtension:
         timestep: int | None = None,
         raster_name: str | None = None,
         output_path: "Path | str | None" = None,
-        render_mode: Literal["sloping", "hybrid", "horizontal"] | None = None,
+        render_mode: Literal["sloping", "hybrid", "horizontal"] = "horizontal",
         use_depth_weights: bool = False,
         shallow_to_flat: bool = False,
         tight_extent: bool = True,
         stream_output: bool = True,
         timeout: int | None = None,
     ) -> "VrtMap":
-        """Store one hydraulic result map via RasMapperStoreMap.exe or RasProcess.exe.
+        """Store one hydraulic result map via RasMapperStoreMap.exe.
 
         Returns a :class:`VrtMap` handle to the written VRT and source tiles.
 
@@ -558,16 +555,11 @@ class MapperExtension:
             **StoreMap XML** strategy and output goes directly into that
             directory.
         render_mode:
-            Water-surface interpolation mode.  ``None`` (default) delegates to
-            ``RasProcess.exe`` directly with its built-in defaults (basic sloping,
-            cell-corner facepoints only).  Any explicit value — ``"sloping"``,
-            ``"hybrid"``, or ``"horizontal"`` — routes through
-            ``RasMapperStoreMap.exe``, which properly initialises the render-mode
-            state before executing the same underlying map-generation engine.
-            The mode that matches RasMapper's output depends on the
-            ``<RenderMode>`` configured in the project's ``.rasmap`` file.
-            Requires ``RasMapperStoreMap.exe`` in ``src/rivia/bin/`` when not
-            ``None``.
+            Water-surface interpolation mode passed to ``RasMapperStoreMap.exe``.
+            Accepted values: ``"sloping"``, ``"hybrid"``, or
+            ``"horizontal"`` (default).  The mode that matches RasMapper's interactive
+            export depends on the ``<RenderMode>`` configured in the project's
+            ``.rasmap`` file.
         use_depth_weights:
             When ``True``, face weights in the ``hybrid`` stencil are
             proportional to the face's water depth (``UseDepthWeightedFaces``).
@@ -581,8 +573,7 @@ class MapperExtension:
             the model geometry (2D flow area + cross sections + storage areas),
             pixel-aligned to the terrain grid — matching RasMapper's "Original
             Extent" behaviour.  When ``False``, output tiles cover the full
-            terrain tile extent; cells outside the model are NoData.  Requires
-            ``render_mode`` to be set (routes through ``RasMapperStoreMap.exe``).
+            terrain tile extent; cells outside the model are NoData.
         stream_output:
             When ``True`` (default) subprocess stdout/stderr are logged
             line-by-line in real time.  When ``False`` output is captured
@@ -601,13 +592,14 @@ class MapperExtension:
             If *variable* is not recognised, *raster_name* is invalid, or
             *output_path* exists but is not a directory.
         FileNotFoundError
-            If HEC-RAS is not installed, the plan HDF is missing, *output_path*
-            does not exist, or RasProcess.exe did not produce the expected VRT.
+            If HEC-RAS is not installed, ``RasMapperStoreMap.exe`` is missing,
+            the plan HDF is missing, *output_path* does not exist, or the
+            expected VRT was not produced.
         PermissionError
             If the output VRT is locked by another process (e.g. QGIS).
         RuntimeError
-            If RasProcess.exe exits with a non-zero return code or writes
-            ``"error"`` to stderr.
+            If ``RasMapperStoreMap.exe`` exits with a non-zero return code or
+            writes ``"error"`` to stderr.
         """
         # -- Variable lookup --
         variable_key = str(variable).strip().lower()
@@ -657,10 +649,6 @@ class MapperExtension:
             raise FileNotFoundError(
                 f"Could not find installed HEC-RAS directory for version {self.version}"
             )
-        ras_process = Path(program_dir) / "RasProcess.exe"
-        if not ras_process.exists():
-            raise FileNotFoundError(f"RasProcess.exe not found: {ras_process}")
-
         if render_mode is not None:
             _VALID_RENDER_MODES = {"sloping", "hybrid", "horizontal"}
             if render_mode not in _VALID_RENDER_MODES:
@@ -676,20 +664,8 @@ class MapperExtension:
                 use_depth_weights = False
                 shallow_to_flat = False
 
-        # None  → RasProcess.exe (its built-in defaults, no SharedData init)
-        # str   → RasMapperStoreMap.exe (properly initialises SharedData first)
-        if render_mode is None:
-            logger.warning(
-                "render_mode=None: using RasProcess.exe, which never initialises "
-                "SharedData render-mode state.  The output raster will use "
-                "RasMapperLib defaults (sloping/JustFacepoints) regardless of "
-                "the <RenderMode> setting in the .rasmap file.  Pass "
-                "render_mode='sloping', 'horizontal', or 'hybrid' to get "
-                "deterministic, fully-specified results."
-            )
-        _use_stub = render_mode is not None
         _stub_exe = Path(__file__).parent.parent / "bin" / "RasMapperStoreMap.exe"
-        if _use_stub and not _stub_exe.exists():
+        if not _stub_exe.exists():
             raise FileNotFoundError(
                 f"RasMapperStoreMap.exe not found at {_stub_exe}.\n"
                 "Build tools/RasMapperStoreMap with 'dotnet build -c Release' "
@@ -798,95 +774,86 @@ class MapperExtension:
                     f"{abs_output_filename_w_ext}\nClose the file before calling store_map."
                 )
 
-            if _use_stub:
-                # ── Portability warnings ──────────────────────────────────────
-                # RasMapperStoreMap.exe requires HEC-RAS 6.1+.
-                #   • StoreAllMapsCommand lives in RasMapperLib.Scripting, a
-                #     namespace that did not exist before 6.x.
-                #   • The candidate auto-discovery paths only cover 6.1–6.6;
-                #     6.0 and 5.x must supply -RasMapperLibDir explicitly and
-                #     will still likely fail at the StoreAllMapsCommand lookup.
-                if self.version < 6100:
-                    logger.warning(
-                        "RasMapperStoreMap.exe requires HEC-RAS 6.1+. "
-                        "Version %s may not have StoreAllMapsCommand in "
-                        "RasMapperLib.Scripting — the stub is likely to fail.",
-                        self.version,
-                    )
-                # SetSlopingPrettyRenderingMode was added to SharedData in
-                # roughly HEC-RAS 6.3.  Earlier 6.x builds have
-                # SetSlopingRenderingMode and SetHorizontalRenderingMode but
-                # not the three-mode pretty variant.
-                if render_mode == "hybrid" and self.version < 6300:
-                    logger.warning(
-                        "render_mode='hybrid' calls "
-                        "SharedData.SetSlopingPrettyRenderingMode(), which may "
-                        "not exist in HEC-RAS %s (introduced ~6.3). "
-                        "The stub will raise InvalidOperationException if the "
-                        "method is absent.",
-                        self.version,
-                    )
-                # ConsoleProgressReporter lives in Utility.Core.dll.  In some
-                # older HEC-RAS installs the utility assembly is named
-                # differently, so the stub falls back to ProgressReporter.None()
-                # and progress messages will not appear on stdout.
-                utility_core = Path(program_dir) / "Utility.Core.dll"
-                if not utility_core.exists():
-                    logger.warning(
-                        "Utility.Core.dll not found in %s. "
-                        "Progress messages from RasMapperStoreMap.exe will not "
-                        "appear on stdout (stub falls back to no-op reporter).",
-                        program_dir,
-                    )
-                # Translate rivia's public name back to the RasMapperLib string.
-                _render_mode_arg = (
-                    "slopingPretty" if render_mode == "hybrid" else render_mode
+            # ── Portability warnings ──────────────────────────────────────
+            # RasMapperStoreMap.exe requires HEC-RAS 6.1+.
+            #   • StoreAllMapsCommand lives in RasMapperLib.Scripting, a
+            #     namespace that did not exist before 6.x.
+            #   • The candidate auto-discovery paths only cover 6.1–6.6;
+            #     6.0 and 5.x must supply -RasMapperLibDir explicitly and
+            #     will still likely fail at the StoreAllMapsCommand lookup.
+            if self.version < 6100:
+                logger.warning(
+                    "RasMapperStoreMap.exe requires HEC-RAS 6.1+. "
+                    "Version %s may not have StoreAllMapsCommand in "
+                    "RasMapperLib.Scripting — the stub is likely to fail.",
+                    self.version,
                 )
-                cmd = [
-                    str(_stub_exe),
-                    f"-RasMapFilename={temp_rasmap}",
-                    f"-ResultFilename={result_hdf}",
-                    f"-RenderMode={_render_mode_arg}",
-                    f"-UseDepthWeightedFaces="
-                    f"{'true' if use_depth_weights else 'false'}",
-                    f"-ReduceShallowToHorizontal="
-                    f"{'true' if shallow_to_flat else 'false'}",
-                    f"-TightExtent="
-                    f"{'true' if tight_extent else 'false'}",
-                    f"-RasMapperLibDir={program_dir}",
-                ]
-            else:
-                cmd = [
-                    str(ras_process),
-                    "-Command=StoreAllMaps",
-                    f"-RasMapFilename={temp_rasmap}",
-                    f"-ResultFilename={result_hdf}",
-                ]
+            # SetSlopingPrettyRenderingMode was added to SharedData in
+            # roughly HEC-RAS 6.3.  Earlier 6.x builds have
+            # SetSlopingRenderingMode and SetHorizontalRenderingMode but
+            # not the three-mode pretty variant.
+            if render_mode == "hybrid" and self.version < 6300:
+                logger.warning(
+                    "render_mode='hybrid' calls "
+                    "SharedData.SetSlopingPrettyRenderingMode(), which may "
+                    "not exist in HEC-RAS %s (introduced ~6.3). "
+                    "The stub will raise InvalidOperationException if the "
+                    "method is absent.",
+                    self.version,
+                )
+            # ConsoleProgressReporter lives in Utility.Core.dll.  In some
+            # older HEC-RAS installs the utility assembly is named
+            # differently, so the stub falls back to ProgressReporter.None()
+            # and progress messages will not appear on stdout.
+            utility_core = Path(program_dir) / "Utility.Core.dll"
+            if not utility_core.exists():
+                logger.warning(
+                    "Utility.Core.dll not found in %s. "
+                    "Progress messages from RasMapperStoreMap.exe will not "
+                    "appear on stdout (stub falls back to no-op reporter).",
+                    program_dir,
+                )
+            # Translate rivia's public name back to the RasMapperLib string.
+            _render_mode_arg = (
+                "slopingPretty" if render_mode == "hybrid" else render_mode
+            )
+            cmd = [
+                str(_stub_exe),
+                f"-RasMapFilename={temp_rasmap}",
+                f"-ResultFilename={result_hdf}",
+                f"-RenderMode={_render_mode_arg}",
+                f"-UseDepthWeightedFaces="
+                f"{'true' if use_depth_weights else 'false'}",
+                f"-ReduceShallowToHorizontal="
+                f"{'true' if shallow_to_flat else 'false'}",
+                f"-TightExtent="
+                f"{'true' if tight_extent else 'false'}",
+                f"-RasMapperLibDir={program_dir}",
+            ]
             # Run from the HEC-RAS install directory so Windows finds native
-            # GDAL DLLs via the default DLL search path — the same CWD that
-            # RasProcess.exe uses.  Without this, P/Invoke calls inside
-            # RASResultsMap.StoreMap() can fail with NullReferenceException
-            # when processing terrain tiles that trigger GDAL native operations.
-            _cwd = program_dir if _use_stub else None
+            # GDAL DLLs via the default DLL search path.  Without this,
+            # P/Invoke calls inside RASResultsMap.StoreMap() can fail with
+            # NullReferenceException when processing terrain tiles that trigger
+            # GDAL native operations.
+            _cwd = program_dir
 
-            # Retry the stub on transient .NET exceptions (returncode=0 but
-            # a NullReferenceException or similar appears in stderr).  The
-            # root cause is concurrent HDF5 access: HEC-RAS COM keeps the
-            # plan HDF file open while MapProcessingEngine.StoreMap() runs
-            # multi-threaded reads on the same file.  Retrying after a short
-            # pause lets the competing HDF5 operation finish.
+            # Retry on transient .NET exceptions (returncode=0 but a
+            # NullReferenceException or similar appears in stderr).  The root
+            # cause is concurrent HDF5 access: HEC-RAS COM keeps the plan HDF
+            # file open while MapProcessingEngine.StoreMap() runs multi-threaded
+            # reads on the same file.  Retrying after a short pause lets the
+            # competing HDF5 operation finish.
             #
             # Permanent RasMapperLib errors (e.g. "Error loading facepoint
             # elevations") do NOT contain "Exception" and are not retried.
             # Hard failures (non-zero returncode) are never retried.
-            _max_attempts = 3 if _use_stub else 1
+            _max_attempts = 3
             for _attempt in range(1, _max_attempts + 1):
-                if _use_stub:
-                    logger.debug(
-                        "RasMapperStoreMap.exe attempt %d/%d",
-                        _attempt,
-                        _max_attempts,
-                    )
+                logger.debug(
+                    "RasMapperStoreMap.exe attempt %d/%d",
+                    _attempt,
+                    _max_attempts,
+                )
                 result = _run_subprocess(cmd, _cwd, timeout, stream_output)
                 _is_transient = (
                     result.returncode == 0
@@ -915,14 +882,15 @@ class MapperExtension:
                 else f"stdout: {result.stdout}\nstderr: {result.stderr}"
             )
             raise RuntimeError(
-                f"RasProcess failed (return code {result.returncode}).\n"
+                f"RasMapperStoreMap.exe failed (return code {result.returncode}).\n"
                 + stdout_detail
             )
 
         vrt = VrtMap(abs_output_filename_w_ext)
         if not vrt.exists():
             raise FileNotFoundError(
-                f"RasProcess completed but output VRT was not found: {abs_output_filename_w_ext}\n"
+                f"store_map completed but output VRT was not found:\n"
+                f"  {abs_output_filename_w_ext}\n"
                 f"stdout: {result.stdout}\nstderr: {result.stderr}"
             )
 
@@ -930,7 +898,7 @@ class MapperExtension:
         if missing_sources:
             missing_list = "\n  ".join(str(p) for p in missing_sources)
             raise FileNotFoundError(
-                "RasProcess completed but source rasters are missing:\n"
+                "store_map completed but source rasters are missing:\n"
                 f"  {missing_list}\n"
                 f"stdout: {result.stdout}\nstderr: {result.stderr}"
             )
@@ -959,9 +927,7 @@ class MapperExtension:
             "depth_x_velocity_sq",
         ],
         timestep: int | None,
-        render_mode: (
-            Literal["sloping", "hybrid", "horizontal"] | None
-        ) = "horizontal",
+        render_mode: Literal["sloping", "hybrid", "horizontal"] = "horizontal",
         use_depth_weights: bool = False,
         shallow_to_flat: bool = False,
         tight_extent: bool = True,
@@ -1041,9 +1007,7 @@ class MapperExtension:
         self,
         timestep: int | None,
         output_vrt: "str | Path | None" = None,
-        render_mode: (
-            Literal["sloping", "hybrid", "horizontal"] | None
-        ) = "horizontal",
+        render_mode: Literal["sloping", "hybrid", "horizontal"] = "horizontal",
         use_depth_weights: bool = False,
         shallow_to_flat: bool = False,
         tight_extent: bool = True,
@@ -1066,9 +1030,8 @@ class MapperExtension:
             Water-surface interpolation mode passed to :meth:`store_map`.
             ``"horizontal"`` (default) renders a flat per-cell water surface.
             ``"sloping"`` uses cell-corner facepoints only.  ``"hybrid"`` adds
-            face centroids with optional depth-weighted interpolation.  Any
-            explicit value routes through ``RasMapperStoreMap.exe``; the mode
-            that matches RasMapper's output depends on the project's
+            face centroids with optional depth-weighted interpolation.  The
+            mode that matches RasMapper's output depends on the project's
             ``.rasmap`` setting.
         use_depth_weights:
             When ``True``, face weights are depth-proportional.  Only
@@ -1135,9 +1098,7 @@ class MapperExtension:
     def open_wse(
         self,
         timestep: int | None,
-        render_mode: (
-            Literal["sloping", "hybrid", "horizontal"] | None
-        ) = "horizontal",
+        render_mode: Literal["sloping", "hybrid", "horizontal"] = "horizontal",
         use_depth_weights: bool = False,
         shallow_to_flat: bool = False,
         tight_extent: bool = True,
@@ -1164,9 +1125,7 @@ class MapperExtension:
         self,
         timestep: int | None,
         output_vrt: "str | Path | None" = None,
-        render_mode: (
-            Literal["sloping", "hybrid", "horizontal"] | None
-        ) = "horizontal",
+        render_mode: Literal["sloping", "hybrid", "horizontal"] = "horizontal",
         use_depth_weights: bool = False,
         shallow_to_flat: bool = False,
         tight_extent: bool = True,
@@ -1189,9 +1148,8 @@ class MapperExtension:
             Water-surface interpolation mode passed to :meth:`store_map`.
             ``"horizontal"`` (default) renders a flat per-cell water surface.
             ``"sloping"`` uses cell-corner facepoints only.  ``"hybrid"`` adds
-            face centroids with optional depth-weighted interpolation.  Any
-            explicit value routes through ``RasMapperStoreMap.exe``; the mode
-            that matches RasMapper's output depends on the project's
+            face centroids with optional depth-weighted interpolation.  The
+            mode that matches RasMapper's output depends on the project's
             ``.rasmap`` setting.
         use_depth_weights:
             When ``True``, face weights are depth-proportional.  Only
@@ -1258,9 +1216,7 @@ class MapperExtension:
     def open_depth(
         self,
         timestep: int | None,
-        render_mode: (
-            Literal["sloping", "hybrid", "horizontal"] | None
-        ) = "horizontal",
+        render_mode: Literal["sloping", "hybrid", "horizontal"] = "horizontal",
         use_depth_weights: bool = False,
         shallow_to_flat: bool = False,
         tight_extent: bool = True,
@@ -1287,9 +1243,7 @@ class MapperExtension:
         self,
         timestep: int | None,
         output_vrt: "str | Path | None" = None,
-        render_mode: (
-            Literal["sloping", "hybrid", "horizontal"] | None
-        ) = "horizontal",
+        render_mode: Literal["sloping", "hybrid", "horizontal"] = "horizontal",
         use_depth_weights: bool = False,
         shallow_to_flat: bool = False,
         tight_extent: bool = True,
@@ -1312,9 +1266,8 @@ class MapperExtension:
             Water-surface interpolation mode passed to :meth:`store_map`.
             ``"horizontal"`` (default) renders a flat per-cell water surface.
             ``"sloping"`` uses cell-corner facepoints only.  ``"hybrid"`` adds
-            face centroids with optional depth-weighted interpolation.  Any
-            explicit value routes through ``RasMapperStoreMap.exe``; the mode
-            that matches RasMapper's output depends on the project's
+            face centroids with optional depth-weighted interpolation.  The
+            mode that matches RasMapper's output depends on the project's
             ``.rasmap`` setting.
         use_depth_weights:
             When ``True``, face weights are depth-proportional.  Only
@@ -1381,9 +1334,7 @@ class MapperExtension:
     def open_velocity(
         self,
         timestep: int | None,
-        render_mode: (
-            Literal["sloping", "hybrid", "horizontal"] | None
-        ) = "horizontal",
+        render_mode: Literal["sloping", "hybrid", "horizontal"] = "horizontal",
         use_depth_weights: bool = False,
         shallow_to_flat: bool = False,
         tight_extent: bool = True,
@@ -1410,9 +1361,7 @@ class MapperExtension:
         self,
         timestep: int | None,
         output_vrt: "str | Path | None" = None,
-        render_mode: (
-            Literal["sloping", "hybrid", "horizontal"] | None
-        ) = "horizontal",
+        render_mode: Literal["sloping", "hybrid", "horizontal"] = "horizontal",
         use_depth_weights: bool = False,
         shallow_to_flat: bool = False,
         tight_extent: bool = True,
@@ -1435,9 +1384,8 @@ class MapperExtension:
             Water-surface interpolation mode passed to :meth:`store_map`.
             ``"horizontal"`` (default) renders a flat per-cell water surface.
             ``"sloping"`` uses cell-corner facepoints only.  ``"hybrid"`` adds
-            face centroids with optional depth-weighted interpolation.  Any
-            explicit value routes through ``RasMapperStoreMap.exe``; the mode
-            that matches RasMapper's output depends on the project's
+            face centroids with optional depth-weighted interpolation.  The
+            mode that matches RasMapper's output depends on the project's
             ``.rasmap`` setting.
         use_depth_weights:
             When ``True``, face weights are depth-proportional.  Only
@@ -1504,9 +1452,7 @@ class MapperExtension:
     def open_froude(
         self,
         timestep: int | None,
-        render_mode: (
-            Literal["sloping", "hybrid", "horizontal"] | None
-        ) = "horizontal",
+        render_mode: Literal["sloping", "hybrid", "horizontal"] = "horizontal",
         use_depth_weights: bool = False,
         shallow_to_flat: bool = False,
         tight_extent: bool = True,
@@ -1533,9 +1479,7 @@ class MapperExtension:
         self,
         timestep: int | None,
         output_vrt: "str | Path | None" = None,
-        render_mode: (
-            Literal["sloping", "hybrid", "horizontal"] | None
-        ) = "horizontal",
+        render_mode: Literal["sloping", "hybrid", "horizontal"] = "horizontal",
         use_depth_weights: bool = False,
         shallow_to_flat: bool = False,
         tight_extent: bool = True,
@@ -1558,9 +1502,8 @@ class MapperExtension:
             Water-surface interpolation mode passed to :meth:`store_map`.
             ``"horizontal"`` (default) renders a flat per-cell water surface.
             ``"sloping"`` uses cell-corner facepoints only.  ``"hybrid"`` adds
-            face centroids with optional depth-weighted interpolation.  Any
-            explicit value routes through ``RasMapperStoreMap.exe``; the mode
-            that matches RasMapper's output depends on the project's
+            face centroids with optional depth-weighted interpolation.  The
+            mode that matches RasMapper's output depends on the project's
             ``.rasmap`` setting.
         use_depth_weights:
             When ``True``, face weights are depth-proportional.  Only
@@ -1627,9 +1570,7 @@ class MapperExtension:
     def open_shear_stress(
         self,
         timestep: int | None,
-        render_mode: (
-            Literal["sloping", "hybrid", "horizontal"] | None
-        ) = "horizontal",
+        render_mode: Literal["sloping", "hybrid", "horizontal"] = "horizontal",
         use_depth_weights: bool = False,
         shallow_to_flat: bool = False,
         tight_extent: bool = True,
@@ -1656,9 +1597,7 @@ class MapperExtension:
         self,
         timestep: int | None,
         output_vrt: "str | Path | None" = None,
-        render_mode: (
-            Literal["sloping", "hybrid", "horizontal"] | None
-        ) = "horizontal",
+        render_mode: Literal["sloping", "hybrid", "horizontal"] = "horizontal",
         use_depth_weights: bool = False,
         shallow_to_flat: bool = False,
         tight_extent: bool = True,
@@ -1681,9 +1620,8 @@ class MapperExtension:
             Water-surface interpolation mode passed to :meth:`store_map`.
             ``"horizontal"`` (default) renders a flat per-cell water surface.
             ``"sloping"`` uses cell-corner facepoints only.  ``"hybrid"`` adds
-            face centroids with optional depth-weighted interpolation.  Any
-            explicit value routes through ``RasMapperStoreMap.exe``; the mode
-            that matches RasMapper's output depends on the project's
+            face centroids with optional depth-weighted interpolation.  The
+            mode that matches RasMapper's output depends on the project's
             ``.rasmap`` setting.
         use_depth_weights:
             When ``True``, face weights are depth-proportional.  Only
@@ -1750,9 +1688,7 @@ class MapperExtension:
     def open_dv(
         self,
         timestep: int | None,
-        render_mode: (
-            Literal["sloping", "hybrid", "horizontal"] | None
-        ) = "horizontal",
+        render_mode: Literal["sloping", "hybrid", "horizontal"] = "horizontal",
         use_depth_weights: bool = False,
         shallow_to_flat: bool = False,
         tight_extent: bool = True,
@@ -1779,9 +1715,7 @@ class MapperExtension:
         self,
         timestep: int | None,
         output_vrt: "str | Path | None" = None,
-        render_mode: (
-            Literal["sloping", "hybrid", "horizontal"] | None
-        ) = "horizontal",
+        render_mode: Literal["sloping", "hybrid", "horizontal"] = "horizontal",
         use_depth_weights: bool = False,
         shallow_to_flat: bool = False,
         tight_extent: bool = True,
@@ -1804,9 +1738,8 @@ class MapperExtension:
             Water-surface interpolation mode passed to :meth:`store_map`.
             ``"horizontal"`` (default) renders a flat per-cell water surface.
             ``"sloping"`` uses cell-corner facepoints only.  ``"hybrid"`` adds
-            face centroids with optional depth-weighted interpolation.  Any
-            explicit value routes through ``RasMapperStoreMap.exe``; the mode
-            that matches RasMapper's output depends on the project's
+            face centroids with optional depth-weighted interpolation.  The
+            mode that matches RasMapper's output depends on the project's
             ``.rasmap`` setting.
         use_depth_weights:
             When ``True``, face weights are depth-proportional.  Only
@@ -1873,9 +1806,7 @@ class MapperExtension:
     def open_dv2(
         self,
         timestep: int | None,
-        render_mode: (
-            Literal["sloping", "hybrid", "horizontal"] | None
-        ) = "horizontal",
+        render_mode: Literal["sloping", "hybrid", "horizontal"] = "horizontal",
         use_depth_weights: bool = False,
         shallow_to_flat: bool = False,
         tight_extent: bool = True,
