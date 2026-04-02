@@ -9,7 +9,9 @@ also be used standalone without a :class:`Model` instance.
 """
 
 import atexit
+import collections
 import contextlib
+import datetime as dt
 import logging
 import re
 import shutil
@@ -144,6 +146,7 @@ class Model(MapperExtension):
         self._flow: SteadyFlowFile | UnsteadyFlowEditor | None = None
         self._hdf = None
         self._dss: DssReader | None = None
+        self._run_history: collections.deque[dict] = collections.deque(maxlen=5)
 
     @property
     def version(self) -> int:
@@ -500,9 +503,39 @@ class Model(MapperExtension):
             if hide_window:
                 self.controller.Compute_ShowComputationWindow()
             raise
+        finally:
+            _ts = dt.datetime.now().isoformat(timespec="seconds")
+            _entry: dict = {
+                "plan": self.plan_hdf_file.name,
+                "timestamp": _ts,
+                "summary": None,
+            }
+            try:
+                _entry["summary"] = self.hdf.simulation_summary().to_dict()
+            except Exception as exc:
+                logger.debug("Could not capture run summary: %s", exc)
+            self._run_history.append(_entry)
         success, messages = result
         logger.debug("Compute_CurrentPlan: success=%s, messages=%s", success, messages)
         return success, messages
+
+    @property
+    def run_history(self) -> list[dict]:
+        """Last up to 5 run summaries, oldest first.
+
+        Each entry is a dict with keys:
+
+        - ``"plan"``: plan HDF filename (e.g. ``"MyModel.p01.hdf"``)
+        - ``"timestamp"``: ISO-8601 wall-clock time the run completed
+          (e.g. ``"2026-04-02T09:27:24"``)
+        - ``"summary"``: :meth:`~rivia.hdf.PlanHdf.simulation_summary`
+          output as a dict, or ``None`` if the summary could not be read
+          (e.g. run failed before writing HDF output, or steady-flow plan).
+
+        The container holds at most 5 entries; the oldest is evicted when
+        a sixth run completes.
+        """
+        return list(self._run_history)
 
     def delete_restart_files(self) -> list[Path]:
         """Delete all restart files associated with the current plan.
