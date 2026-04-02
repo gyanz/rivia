@@ -507,9 +507,14 @@ class Model(MapperExtension):
             _ts = dt.datetime.now().isoformat(timespec="seconds")
             _entry: dict = {
                 "plan": self.plan_hdf_file.name,
+                "sim_window": None,
                 "timestamp": _ts,
                 "summary": None,
             }
+            try:
+                _entry["sim_window"] = self.plan.simulation_window
+            except Exception as exc:
+                logger.debug("Could not capture simulation window: %s", exc)
             try:
                 _entry["summary"] = self.hdf.simulation_summary().to_dict()
             except Exception as exc:
