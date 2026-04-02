@@ -15,6 +15,7 @@ archive/ras_tools/r2d/ras2d_cell_velocity.py.
 
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
 import logging
 from collections.abc import Iterator
@@ -77,6 +78,11 @@ _DSS_TIME_STAMP_DS = f"{_DSS_ROOT}/Time Date Stamp"
 
 _TS_XS = f"{_TS_ROOT}/Cross Sections"
 _DSS_XS = f"{_DSS_ROOT}/Cross Sections"
+
+_RUN_SUM = "Results/Unsteady/Summary"
+_VOL_ACC = f"{_RUN_SUM}/Volume Accounting"
+_VOL_1D = f"{_VOL_ACC}/Volume Accounting 1D"
+_VOL_2D = f"{_VOL_ACC}/Volume Accounting 2D"
 
 _POSTPROC_PROFILE_DATES = (
     "Results/Post Process/Steady/Output/Output Blocks"
@@ -2597,6 +2603,259 @@ class CrossSectionResultsCollection(CrossSectionCollection):
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Simulation summary dataclasses
+# ---------------------------------------------------------------------------
+
+
+@dataclasses.dataclass
+class RunSummary:
+    """Overall run metadata from ``Results/Unsteady/Summary``.
+
+    Attributes
+    ----------
+    solution:
+        HEC-RAS solution status string, e.g.
+        ``"Unsteady Finished Successfully"`` or ``"Unsteady Went Unstable"``.
+    run_window:
+        Wall-clock window during which the simulation ran, as a raw string,
+        e.g. ``"26NOV2025 15:58:44 to 26NOV2025 16:03:41"``.
+    compute_time_total:
+        Total wall-clock computation time in ``"HH:MM:SS"`` format.
+    compute_time_dss:
+        Time spent writing DSS output in ``"HH:MM:SS"`` format.
+    max_cores:
+        Maximum number of CPU cores used.
+    max_wsel_error:
+        Maximum water-surface elevation error (model units), or ``None``
+        when the simulation went unstable before convergence.
+    time_unstable:
+        Elapsed simulation time (days) when the solution went unstable,
+        or ``None`` if the run finished successfully.
+    timestamp_unstable:
+        HEC-RAS date/time string for the instability, or ``None`` if the
+        run finished successfully (HEC-RAS writes ``"Not Applicable"``).
+    """
+
+    solution: str
+    run_window: str
+    compute_time_total: str
+    compute_time_dss: str
+    max_cores: int
+    max_wsel_error: float | None
+    time_unstable: float | None
+    timestamp_unstable: str | None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a dict with short, meaningful keys."""
+        return {
+            "solution": self.solution,
+            "run_window": self.run_window,
+            "compute_time_total": self.compute_time_total,
+            "compute_time_dss": self.compute_time_dss,
+            "max_cores": self.max_cores,
+            "max_wsel_error": self.max_wsel_error,
+            "time_unstable": self.time_unstable,
+            "timestamp_unstable": self.timestamp_unstable,
+        }
+
+
+@dataclasses.dataclass
+class VolumeAccounting:
+    """Overall volume accounting from ``Results/Unsteady/Summary/Volume Accounting``.
+
+    Covers the full model (1D + 2D combined).
+
+    Attributes
+    ----------
+    units:
+        Volume units string written by HEC-RAS, e.g. ``"Acre Feet"`` or
+        ``"1000 m^3"``.
+    vol_start:
+        Total storage volume at the start of the simulation.
+    vol_end:
+        Total storage volume at the end of the simulation.
+    inflow:
+        Total boundary flux of water into the model.
+    outflow:
+        Total boundary flux of water out of the model.
+    error:
+        Volume balance error (``vol_start + inflow - outflow - vol_end``).
+    error_pct:
+        Volume balance error as a percentage of total inflow.
+    """
+
+    units: str
+    vol_start: float
+    vol_end: float
+    inflow: float
+    outflow: float
+    error: float
+    error_pct: float
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a dict with short, meaningful keys."""
+        return {
+            "units": self.units,
+            "vol_start": self.vol_start,
+            "vol_end": self.vol_end,
+            "inflow": self.inflow,
+            "outflow": self.outflow,
+            "error": self.error,
+            "error_pct": self.error_pct,
+        }
+
+
+@dataclasses.dataclass
+class VolumeAccounting1D:
+    """1-D component volume accounting from ``Volume Accounting 1D``.
+
+    Attributes
+    ----------
+    units:
+        Volume units string, e.g. ``"Acre Feet"`` or ``"1000 m^3"``.
+    reach_vol_start:
+        Total 1-D reach storage at simulation start.
+    reach_vol_end:
+        Total 1-D reach storage at simulation end.
+    sa_vol_start:
+        Storage-area volume at simulation start.
+    sa_vol_end:
+        Storage-area volume at simulation end.
+    flow_us_in:
+        Cumulative upstream inflow across all reaches.
+    flow_ds_out:
+        Cumulative downstream outflow across all reaches.
+    hydro_lat:
+        Cumulative lateral hydrograph exchange (positive = into model).
+    hydro_sa:
+        Cumulative storage-area hydrograph exchange.
+    diversions:
+        Cumulative diversions (negative = water removed).
+    groundwater:
+        Cumulative groundwater exchange.
+    precip_excess:
+        Cumulative precipitation excess (rainfall-runoff applied to reaches).
+    """
+
+    units: str
+    reach_vol_start: float
+    reach_vol_end: float
+    sa_vol_start: float
+    sa_vol_end: float
+    flow_us_in: float
+    flow_ds_out: float
+    hydro_lat: float
+    hydro_sa: float
+    diversions: float
+    groundwater: float
+    precip_excess: float
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a dict with short, meaningful keys."""
+        return {
+            "units": self.units,
+            "reach_vol_start": self.reach_vol_start,
+            "reach_vol_end": self.reach_vol_end,
+            "sa_vol_start": self.sa_vol_start,
+            "sa_vol_end": self.sa_vol_end,
+            "flow_us_in": self.flow_us_in,
+            "flow_ds_out": self.flow_ds_out,
+            "hydro_lat": self.hydro_lat,
+            "hydro_sa": self.hydro_sa,
+            "diversions": self.diversions,
+            "groundwater": self.groundwater,
+            "precip_excess": self.precip_excess,
+        }
+
+
+@dataclasses.dataclass
+class VolumeAccounting2DArea:
+    """Volume accounting for one named 2-D flow area.
+
+    One instance per child group under
+    ``Results/Unsteady/Summary/Volume Accounting/Volume Accounting 2D``.
+
+    Attributes
+    ----------
+    units:
+        Volume units string, e.g. ``"Acre Feet"`` or ``"1000 m^3"``.
+    vol_start:
+        2-D flow area storage at simulation start.
+    vol_end:
+        2-D flow area storage at simulation end.
+    cum_inflow:
+        Cumulative inflow into this 2-D area.
+    cum_outflow:
+        Cumulative outflow out of this 2-D area.
+    error:
+        Volume balance error for this area.
+    error_pct:
+        Volume balance error as a percentage of cumulative inflow.
+    """
+
+    units: str
+    vol_start: float
+    vol_end: float
+    cum_inflow: float
+    cum_outflow: float
+    error: float
+    error_pct: float
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a dict with short, meaningful keys."""
+        return {
+            "units": self.units,
+            "vol_start": self.vol_start,
+            "vol_end": self.vol_end,
+            "cum_inflow": self.cum_inflow,
+            "cum_outflow": self.cum_outflow,
+            "error": self.error,
+            "error_pct": self.error_pct,
+        }
+
+
+@dataclasses.dataclass
+class SimulationSummary:
+    """Full unsteady simulation summary for a plan HDF file.
+
+    Aggregates all summary groups under ``Results/Unsteady/Summary``.
+
+    Attributes
+    ----------
+    run:
+        Overall run metadata (solution status, timing, stability).
+    volume:
+        Model-wide volume accounting (1D + 2D combined).
+    volume_1d:
+        Volume accounting for 1-D components only.
+    volume_2d:
+        Per-area volume accounting for each 2-D flow area.  Empty dict
+        when the model has no 2-D flow areas.
+    """
+
+    run: RunSummary
+    volume: VolumeAccounting
+    volume_1d: VolumeAccounting1D
+    volume_2d: dict[str, VolumeAccounting2DArea]
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a nested dict with short, meaningful keys.
+
+        Top-level keys: ``"run"``, ``"volume"``, ``"volume_1d"``,
+        ``"volume_2d"``.  The ``"volume_2d"`` value is a dict keyed by
+        2-D flow area name.
+        """
+        return {
+            "run": self.run.to_dict(),
+            "volume": self.volume.to_dict(),
+            "volume_1d": self.volume_1d.to_dict(),
+            "volume_2d": {
+                name: area.to_dict() for name, area in self.volume_2d.items()
+            },
+        }
+
+
 class PlanHdf(GeometryHdf):
     """Read HEC-RAS plan HDF5 output files (``*.p*.hdf``).
 
@@ -2644,6 +2903,122 @@ class PlanHdf(GeometryHdf):
     # ------------------------------------------------------------------
     # File metadata
     # ------------------------------------------------------------------
+
+    def simulation_summary(self) -> SimulationSummary:
+        """Return the full unsteady simulation summary.
+
+        Reads all groups under ``Results/Unsteady/Summary`` and returns a
+        :class:`SimulationSummary` dataclass aggregating run metadata,
+        overall volume accounting, 1-D volume accounting, and per-area
+        2-D volume accounting.
+
+        Call :meth:`SimulationSummary.to_dict` on the result for a
+        nested dict with short, meaningful keys.
+
+        Returns
+        -------
+        SimulationSummary
+
+        Raises
+        ------
+        KeyError
+            If ``Results/Unsteady/Summary`` is absent — e.g. the file is
+            a steady-flow plan or the simulation has not been run yet.
+
+        Examples
+        --------
+        ::
+
+            with PlanHdf("MyModel.p01") as hdf:
+                s = hdf.simulation_summary()
+                print(s.run.solution)
+                print(s.volume.error_pct)
+                d = s.to_dict()
+        """
+        grp = self._hdf.get(_RUN_SUM)
+        if grp is None:
+            raise KeyError(
+                f"'{_RUN_SUM}' not found. "
+                "Ensure this is an unsteady-flow plan HDF file that has been run."
+            )
+
+        def _str(attrs: Any, key: str) -> str:
+            v = attrs[key]
+            return v.decode() if isinstance(v, (bytes, np.bytes_)) else str(v)
+
+        def _float_or_none(attrs: Any, key: str) -> float | None:
+            v = float(attrs[key])
+            return None if np.isnan(v) else v
+
+        # -- RunSummary ---------------------------------------------------
+        a = grp.attrs
+        unstable_ts = _str(a, "Time Stamp Solution Went Unstable")
+        run = RunSummary(
+            solution=_str(a, "Solution"),
+            run_window=_str(a, "Run Time Window"),
+            compute_time_total=_str(a, "Computation Time Total"),
+            compute_time_dss=_str(a, "Computation Time DSS"),
+            max_cores=int(a["Maximum number of cores"]),
+            max_wsel_error=_float_or_none(a, "Maximum WSEL Error"),
+            time_unstable=_float_or_none(a, "Time Solution Went Unstable"),
+            timestamp_unstable=(
+                None if unstable_ts == "Not Applicable" else unstable_ts
+            ),
+        )
+
+        # -- VolumeAccounting (overall) -----------------------------------
+        va_grp = grp["Volume Accounting"]
+        a = va_grp.attrs
+        volume = VolumeAccounting(
+            units=_str(a, "Vol Accounting in"),
+            vol_start=float(a["Volume Starting"]),
+            vol_end=float(a["Volume Ending"]),
+            inflow=float(a["Total Boundary Flux of Water In"]),
+            outflow=float(a["Total Boundary Flux of Water Out"]),
+            error=float(a["Error"]),
+            error_pct=float(a["Error Percent"]),
+        )
+
+        # -- VolumeAccounting1D ------------------------------------------
+        a = va_grp["Volume Accounting 1D"].attrs
+        precip_key = next(k for k in a if k.startswith("Precip Excess"))
+        volume_1d = VolumeAccounting1D(
+            units=_str(a, "Vol Accounting in"),
+            reach_vol_start=float(a["Reach Start 1D"]),
+            reach_vol_end=float(a["Reach Final 1D"]),
+            sa_vol_start=float(a["SA Starting"]),
+            sa_vol_end=float(a["SA Final"]),
+            flow_us_in=float(a["Flow US In"]),
+            flow_ds_out=float(a["Flow DS Out"]),
+            hydro_lat=float(a["Hydro Lat"]),
+            hydro_sa=float(a["Hydro SA"]),
+            diversions=float(a["Diversions"]),
+            groundwater=float(a["Groundwater"]),
+            precip_excess=float(a[precip_key]),
+        )
+
+        # -- VolumeAccounting2D (optional) --------------------------------
+        volume_2d: dict[str, VolumeAccounting2DArea] = {}
+        vd_grp = va_grp.get("Volume Accounting 2D")
+        if vd_grp is not None:
+            for area_name, area_grp in vd_grp.items():
+                a = area_grp.attrs
+                volume_2d[area_name] = VolumeAccounting2DArea(
+                    units=_str(a, "Vol Accounting in"),
+                    vol_start=float(a["Vol Starting"]),
+                    vol_end=float(a["Vol Ending"]),
+                    cum_inflow=float(a["Cum Inflow"]),
+                    cum_outflow=float(a["Cum Outflow"]),
+                    error=float(a["Error"]),
+                    error_pct=float(a["Error Percent"]),
+                )
+
+        return SimulationSummary(
+            run=run,
+            volume=volume,
+            volume_1d=volume_1d,
+            volume_2d=volume_2d,
+        )
 
     @property
     def ras_version(self) -> str:
