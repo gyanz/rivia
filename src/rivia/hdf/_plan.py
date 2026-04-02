@@ -18,6 +18,7 @@ from __future__ import annotations
 import dataclasses
 import datetime as dt
 import logging
+import math
 from collections.abc import Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, overload
@@ -3019,6 +3020,174 @@ class PlanHdf(GeometryHdf):
             volume_1d=volume_1d,
             volume_2d=volume_2d,
         )
+
+    def simulation_unstable(self) -> bool:
+        """Return ``True`` if the simulation went unstable during computation.
+
+        Delegates to :meth:`simulation_summary` and checks whether HEC-RAS
+        recorded a ``time_unstable`` value in the unsteady results.
+
+        Returns
+        -------
+        bool
+            ``True`` when the solution diverged before the simulation end time;
+            ``False`` when the run completed normally.
+
+        See Also
+        --------
+        simulation_summary : Full unsteady simulation summary.
+        simulation_max_errors : Convergence and volume error metrics.
+        """
+        return self.simulation_summary().run.time_unstable is not None
+
+    def simulation_max_errors(self) -> dict[str, float]:
+        """Return key convergence and volume-balance error metrics.
+
+        Reads :meth:`simulation_summary` once and derives four scalar error
+        measures that are useful for quick quality-control checks after a run.
+
+        Returns
+        -------
+        dict[str, float]
+            A flat dictionary with the following keys:
+
+            ``"wse"``
+                Maximum water-surface elevation error across all cells
+                (model units — feet or metres).  ``None`` when the simulation
+                went unstable before the run converged.
+
+            ``"volume_error_pct"``
+                Overall volume balance error as a percentage of total inflow,
+                read directly from the HEC-RAS ``Results/Unsteady/Summary``
+                volume accounting block.
+
+            ``"volume_1d_error_pct"``
+                1-D volume balance error (%) computed from the individual
+                1-D flux terms::
+
+                    error = inflow + net_other_fluxes + (storage_start - storage_end)
+                    error_pct = error / inflow * 100
+
+                where *net_other_fluxes* = ``-flow_ds_out + hydro_lat +
+                hydro_sa + diversions + groundwater + precip_excess``
+                (``flow_ds_out`` is stored as a negative value by HEC-RAS, so
+                the sign flip converts it to a positive outflow contribution).
+                Returns ``nan`` when upstream inflow is zero.
+
+            ``"volume_2d_error_pct"``
+                Largest-magnitude 2-D volume balance error (%) across all
+                2-D flow areas, preserving the sign of the worst-case area.
+                Zero when the model has no 2-D flow areas.
+
+        See Also
+        --------
+        simulation_summary : Full unsteady simulation summary dataclass.
+        simulation_unstable : Quick stability check.
+        """
+        summary = self.simulation_summary()
+
+        v1d = summary.volume_1d
+        net_other_fluxes = (
+            -v1d.flow_ds_out
+            + v1d.hydro_lat
+            + v1d.hydro_sa
+            + v1d.diversions
+            + v1d.groundwater
+            + v1d.precip_excess
+        )
+        storage_change = (
+            v1d.reach_vol_start + v1d.sa_vol_start
+            - v1d.reach_vol_end - v1d.sa_vol_end
+        )
+        volume_1d_error_pct = (
+            (v1d.flow_us_in + net_other_fluxes + storage_change) / v1d.flow_us_in * 100
+            if v1d.flow_us_in != 0
+            else float("nan")
+        )
+
+        max_2d_error_pct = 0.0
+        for area in summary.volume_2d.values():
+            if abs(area.error_pct) > abs(max_2d_error_pct):
+                max_2d_error_pct = area.error_pct
+
+        return {
+            "wse": summary.run.max_wsel_error,
+            "volume_error_pct": summary.volume.error_pct,
+            "volume_1d_error_pct": volume_1d_error_pct,
+            "volume_2d_error_pct": max_2d_error_pct,
+        }
+
+    def simulation_exceeds_error_thresholds(
+        self,
+        wse_threshold: float = 0.5,
+        volume_error_pct_threshold: float = 1.0,
+        volume_1d_error_pct_threshold: float = 1.0,
+        volume_2d_error_pct_threshold: float = 1.0,
+    ) -> bool:
+        """Return ``True`` if any error metric exceeds its supplied threshold.
+
+        Calls :meth:`simulation_max_errors` and compares each metric against
+        the corresponding threshold.  A metric that is ``None`` or ``nan``
+        (e.g. ``wse`` when the run went unstable, or ``volume_1d_error_pct``
+        when upstream inflow is zero) is treated as exceeding its threshold,
+        since the absence of a valid value indicates a degenerate run.
+
+        Parameters
+        ----------
+        wse_threshold:
+            Maximum allowable water-surface elevation error in model units
+            (feet or metres).  Default: ``0.5``.
+        volume_error_pct_threshold:
+            Maximum allowable overall volume balance error (%).
+            Default: ``1.0``.
+        volume_1d_error_pct_threshold:
+            Maximum allowable 1-D volume balance error (%).
+            Default: ``1.0``.
+        volume_2d_error_pct_threshold:
+            Maximum allowable 2-D volume balance error (%).
+            Default: ``1.0``.
+
+        Returns
+        -------
+        bool
+            ``True`` if at least one metric exceeds (or is missing from) its
+            threshold; ``False`` if all metrics are within bounds.
+
+        Examples
+        --------
+        Use defaults for a quick pass/fail check after a run::
+
+            if hdf.simulation_exceeds_error_thresholds():
+                raise RuntimeError("Simulation errors exceed acceptable limits.")
+
+        Or supply custom thresholds::
+
+            if hdf.simulation_exceeds_error_thresholds(
+                wse_threshold=0.1, volume_error_pct_threshold=0.5
+            ):
+                logger.warning("Tight-tolerance check failed.")
+
+        See Also
+        --------
+        simulation_max_errors : Returns the raw error values.
+        simulation_unstable : Quick stability check.
+        """
+        errors = self.simulation_max_errors()
+
+        wse = errors["wse"]
+        if wse is None or math.isnan(wse) or abs(wse) > wse_threshold:
+            return True
+
+        for key, threshold in (
+            ("volume_error_pct", volume_error_pct_threshold),
+            ("volume_1d_error_pct", volume_1d_error_pct_threshold),
+            ("volume_2d_error_pct", volume_2d_error_pct_threshold),
+        ):
+            val = errors[key]
+            if math.isnan(val) or abs(val) > threshold:
+                return True
+
+        return False
 
     @property
     def ras_version(self) -> str:
