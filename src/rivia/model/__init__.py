@@ -569,7 +569,7 @@ class Model(MapperExtension):
                     "This should have been set automatically; check that the "
                     "flow file was not replaced or reloaded after chaining was enabled."
                 )
-            rst_path = self.plan_file.parent / self._chaining_restart_filename()
+            rst_path = self.plan_file.parent / self._chaining_ic_filename(end=False)
             if not rst_path.exists():
                 raise FileNotFoundError(
                     f"Chained run #{self._chaining.run_number} expects restart file "
@@ -636,7 +636,7 @@ class Model(MapperExtension):
         success, messages = result
         logger.debug("Compute_CurrentPlan: success=%s, messages=%s", success, messages)
         if self._chaining.enabled:
-            rst_name = self._chaining_restart_filename()
+            rst_name = self._chaining_ic_filename(end=True)
             self.flow.restart = rst_name
             self._flow.save()
             self._chaining.run_number += 1
@@ -714,18 +714,31 @@ class Model(MapperExtension):
             self._chaining.run_number = None
             logger.debug("Chaining disabled and state reset.")
 
-    def _chaining_restart_filename(self) -> str:
-        """Return the restart filename for the current simulation end time.
+    def _chaining_ic_filename(self, end: bool = True) -> str:
+        """Return the IC restart filename derived from the simulation window.
 
         The filename follows HEC-RAS convention::
 
-            <plan_file_name>.<end_date> <end_time>.rst
+            <plan_file_name>.<date> <time>.rst
 
-        e.g. ``"MyModel.p01.01JAN2026 2400.rst"``
+        Parameters
+        ----------
+        end:
+            If ``True`` (default), the filename is based on the simulation
+            *end* datetime — used to name the restart file written by the
+            current run.  Midnight is expressed as ``"2400"`` on the ending
+            day via :func:`~rivia.utils.normalize_sim_end_time`.
 
-        Midnight is always expressed as ``"2400"`` on the ending day: if the
-        plan's simulation window ends at ``"0000"`` the date is rolled back by
-        one day via :func:`~rivia.utils.normalize_sim_end_time`.
+            If ``False``, the filename is based on the simulation *start*
+            datetime — useful for verifying which restart file the next run
+            expects.  Midnight is expressed as ``"0000"`` on the starting day
+            via :func:`~rivia.utils.normalize_sim_start_time`.
+
+        Returns
+        -------
+        str
+            e.g. ``"MyModel.p01.01JAN2026 2400.rst"`` (end=True)
+            or   ``"MyModel.p01.02JAN2026 0000.rst"`` (end=False, same instant)
 
         Raises
         ------
@@ -736,11 +749,15 @@ class Model(MapperExtension):
         if window is None:
             raise RuntimeError(
                 f"Plan {self.plan_file.name!r} has no simulation window set; "
-                "cannot determine restart filename."
+                "cannot determine IC filename."
             )
-        (_, _), (end_date, end_time) = window
-        end_date, end_time = normalize_sim_end_time(end_date, end_time)
-        return f"{self.plan_file.name}.{end_date} {end_time}.rst"
+        if end:
+            (_, _), (date, time) = window
+            date, time = normalize_sim_end_time(date, time)
+        else:
+            (date, time), (_, _) = window
+            date, time = normalize_sim_start_time(date, time)
+        return f"{self.plan_file.name}.{date} {time}.rst"
 
     def delete_restart_files(self) -> list[Path]:
         """Delete all restart files associated with the current plan.
