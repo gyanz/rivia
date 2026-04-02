@@ -756,7 +756,7 @@ class Model(MapperExtension):
             date, time = normalize_sim_end_time(date, time)
         else:
             (date, time), (_, _) = window
-            date, time = normalize_sim_start_time(date, time)
+            date, time = normalize_sim_end_time(date, time)
         return f"{self.plan_file.name}.{date} {time}.rst"
 
     def delete_restart_files(self) -> list[Path]:
