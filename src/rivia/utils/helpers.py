@@ -180,6 +180,81 @@ def log_call(level: int = logging.INFO):
     return decorator
 
 
+def normalize_sim_end_time(date: str, time: str) -> tuple[str, str]:
+    """Normalize a HEC-RAS simulation end ``(date, time)`` pair.
+
+    HEC-RAS represents midnight as ``"2400"`` on the *ending* day, but can
+    also produce ``"0000"`` on the *following* day for the same instant.
+    Restart filenames always use the ``"2400"`` form, so when *time* is
+    ``"0000"`` this function rolls the date back by one day and substitutes
+    ``"2400"``.
+
+    Parameters
+    ----------
+    date:
+        Simulation date in ``DDMONYYYY`` format (e.g. ``"02JAN2026"``).
+    time:
+        Simulation time in ``HHMM`` format (e.g. ``"0000"`` or ``"1200"``).
+
+    Returns
+    -------
+    tuple[str, str]
+        ``(date, time)`` — adjusted when *time* is ``"0000"``, unchanged
+        otherwise.
+
+    Examples
+    --------
+    >>> normalize_sim_end_time("02JAN2026", "0000")
+    ('01JAN2026', '2400')
+    >>> normalize_sim_end_time("02JAN2026", "1200")
+    ('02JAN2026', '1200')
+    >>> normalize_sim_end_time("01JAN2026", "2400")
+    ('01JAN2026', '2400')
+    """
+    check_sim_time(time)
+    if not time.strip().startswith("00"):
+        return date, time
+    prev = dt.datetime.strptime(date.strip(), "%d%b%Y") - dt.timedelta(days=1)
+    return prev.strftime("%d%b%Y").upper(), "2400"
+
+
+def normalize_sim_start_time(date: str, time: str) -> tuple[str, str]:
+    """Normalize a HEC-RAS simulation start ``(date, time)`` pair.
+
+    HEC-RAS represents midnight as ``"2400"`` on the *ending* day, but the
+    same instant used as a *start* time should be expressed as ``"0000"`` on
+    the *following* day.  When *time* is ``"2400"`` this function advances the
+    date by one day and substitutes ``"0000"``.
+
+    Parameters
+    ----------
+    date:
+        Simulation date in ``DDMONYYYY`` format (e.g. ``"01JAN2026"``).
+    time:
+        Simulation time in ``HHMM`` format (e.g. ``"2400"`` or ``"1200"``).
+
+    Returns
+    -------
+    tuple[str, str]
+        ``(date, time)`` — adjusted when *time* is ``"2400"``, unchanged
+        otherwise.
+
+    Examples
+    --------
+    >>> normalize_sim_start_time("01JAN2026", "2400")
+    ('02JAN2026', '0000')
+    >>> normalize_sim_start_time("01JAN2026", "1200")
+    ('01JAN2026', '1200')
+    >>> normalize_sim_start_time("01JAN2026", "0000")
+    ('01JAN2026', '0000')
+    """
+    check_sim_time(time)
+    if not time.strip().startswith("24"):
+        return date, time
+    nxt = dt.datetime.strptime(date.strip(), "%d%b%Y") + dt.timedelta(days=1)
+    return nxt.strftime("%d%b%Y").upper(), "0000"
+
+
 def fix_ras_dates(dates: list) -> list[dt.datetime]:
     """Convert HEC-RAS date serial numbers to datetime objects.
 

@@ -11,6 +11,7 @@ also be used standalone without a :class:`Model` instance.
 import atexit
 import collections
 import contextlib
+import dataclasses
 import datetime as dt
 import logging
 import re
@@ -18,6 +19,7 @@ import shutil
 from pathlib import Path
 
 from .. import com
+from ..utils import normalize_sim_end_time, normalize_sim_start_time
 from ._dss import (
     INL_FLOW_GATE,
     INL_FLOW_TOTAL,
@@ -108,6 +110,51 @@ logger = logging.getLogger("rivia.model")
 EXT_BACKUP_FILE = "rivia_bkup"
 
 
+@dataclasses.dataclass
+class _ChainingState:
+    """Private state that tracks run-chaining for :class:`Model`.
+
+    Run-chaining is the pattern where a sequence of short HEC-RAS simulations
+    are linked end-to-end: each run writes a restart (``.rst``) file at its
+    simulation end time, and the following run reads that file as its initial
+    condition.  This allows long simulations to be broken into smaller windows
+    while preserving hydraulic continuity across the boundaries.
+
+    This dataclass is stored as ``Model._chaining`` and is only mutated by
+    :meth:`~Model.enable_chaining` and :meth:`~Model.run`.  All other
+    ``Model`` methods treat it as read-only.
+
+    Attributes
+    ----------
+    enabled : bool
+        ``True`` while chaining is active.  Set to ``True`` by
+        ``enable_chaining(True)`` and back to ``False`` by
+        ``enable_chaining(False)``.  When ``False`` no chaining logic runs
+        inside :meth:`~Model.run`.
+    run_number : int or None
+        Tracks how many chained runs have completed in the current sequence.
+
+        - ``None`` — chaining has never been enabled on this ``Model``
+          instance, or has been fully reset by ``enable_chaining(False)``.
+        - ``0`` — the seed run: no restart file exists yet, so only the
+          unsaved-modifications guard is active; the restart-file existence
+          check is skipped.
+        - ``≥ 1`` — a subsequent chained run: :meth:`~Model.run` verifies
+          that the restart file produced by the previous run exists on disk
+          and that the flow file has the restart flag enabled before
+          launching HEC-RAS.
+
+        The counter is initialised to ``0`` on the first ``enable_chaining(True)``
+        call and is never reset by subsequent ``enable_chaining(True)`` calls,
+        so chaining configuration can be adjusted mid-sequence without losing
+        track of the run position.  It is reset to ``None`` only by
+        ``enable_chaining(False)``.
+    """
+
+    enabled: bool = False
+    run_number: int | None = None
+
+
 class Model(MapperExtension):
     """High-level interface for working with an HEC-RAS project via the COM object.
 
@@ -147,6 +194,7 @@ class Model(MapperExtension):
         self._hdf = None
         self._dss: DssReader | None = None
         self._run_history: collections.deque[dict] = collections.deque(maxlen=5)
+        self._chaining = _ChainingState()
 
     @property
     def version(self) -> int:
@@ -481,7 +529,7 @@ class Model(MapperExtension):
             If HEC-RAS reports a computation failure or a COM error occurs.
         """
         if reload:
-            self.reload()
+            self.reload(True)
         if self._hdf is not None:
             self._hdf.close()
             self._hdf = None
@@ -495,6 +543,71 @@ class Model(MapperExtension):
             and self._flow.is_modified
         ):
             logger.warning("Flow file %s is modified but not saved.", self.flow_file.name)
+        if self._chaining.enabled:
+            if self._plan is not None and self._plan.is_modified:
+                raise RuntimeError(
+                    f"Run-chaining is active (run #{self._chaining.run_number}) "
+                    f"but plan file {self.plan_file.name!r} has unsaved modifications. "
+                    "Save or discard changes before calling run()."
+                )
+            if (
+                self._flow is not None
+                and hasattr(self._flow, "is_modified")
+                and self._flow.is_modified
+            ):
+                raise RuntimeError(
+                    f"Run-chaining is active (run #{self._chaining.run_number}) "
+                    f"but flow file {self.flow_file.name!r} has unsaved modifications. "
+                    "Save or discard changes before calling run()."
+                )
+        if self._chaining.enabled and self._chaining.run_number > 0:
+            rst_flag, _ = self.flow.restart
+            if rst_flag != 1:
+                raise RuntimeError(
+                    f"Run-chaining is active (run #{self._chaining.run_number}) "
+                    "but the restart flag is not enabled in the flow file. "
+                    "This should have been set automatically; check that the "
+                    "flow file was not replaced or reloaded after chaining was enabled."
+                )
+            rst_path = self.plan_file.parent / self._chaining_restart_filename()
+            if not rst_path.exists():
+                raise FileNotFoundError(
+                    f"Chained run #{self._chaining.run_number} expects restart file "
+                    f"{rst_path.name!r} but it does not exist in {rst_path.parent}."
+                )
+        if self.plan.is_unsteady:
+            rst_flag, rst_filename = self.flow.restart
+            if rst_flag == 1 and rst_filename is not None:
+                window = self.plan.simulation_window
+                if window is not None:
+                    m = re.search(
+                        r"\.(\d{2}[A-Za-z]{3}\d{4}) (\d{4,6})\.rst$",
+                        rst_filename,
+                    )
+                    if m is None:
+                        logger.warning(
+                            "Cannot validate restart file datetime: filename %r "
+                            "does not match the expected "
+                            "'<plan>.<date> <time>.rst' pattern.",
+                            rst_filename,
+                        )
+                    else:
+                        rst_date, rst_time = normalize_sim_start_time(
+                            m.group(1), m.group(2)
+                        )
+                        (sim_date, sim_time), _ = window
+                        sim_date, sim_time = normalize_sim_start_time(
+                            sim_date, sim_time
+                        )
+                        if (rst_date, rst_time) != (sim_date, sim_time):
+                            logger.warning(
+                                "Restart file datetime (%s %s) does not match "
+                                "simulation start (%s %s) in plan %r — verify "
+                                "the correct restart file is configured in the "
+                                "flow file.",
+                                rst_date, rst_time, sim_date, sim_time,
+                                self.plan_file.name,
+                            )
         if hide_window:
             self.controller.Compute_HideComputationWindow()
         try:
@@ -522,6 +635,16 @@ class Model(MapperExtension):
             self._run_history.append(_entry)
         success, messages = result
         logger.debug("Compute_CurrentPlan: success=%s, messages=%s", success, messages)
+        if self._chaining.enabled:
+            rst_name = self._chaining_restart_filename()
+            self.flow.restart = rst_name
+            self._flow.save()
+            self._chaining.run_number += 1
+            logger.debug(
+                "Chaining: restart set to %r; run_number now %d.",
+                rst_name,
+                self._chaining.run_number,
+            )
         return success, messages
 
     @property
@@ -541,6 +664,83 @@ class Model(MapperExtension):
         a sixth run completes.
         """
         return list(self._run_history)
+
+    def enable_chaining(self, enabled: bool) -> None:
+        """Enable or disable run-chaining for sequential simulations.
+
+        When chaining is enabled the model automatically writes a restart file
+        at the end of each run (via ``plan.write_ic_at_end``) and configures
+        the flow file to use that file as the initial condition for the next
+        run.
+
+        Parameters
+        ----------
+        enabled:
+            ``True`` to activate chaining; ``False`` to deactivate and reset
+            all chaining state.
+
+        Raises
+        ------
+        RuntimeError
+            If the current plan is not an unsteady-flow plan.
+
+        Notes
+        -----
+        Calling ``enable_chaining(True)`` multiple times is safe — the run
+        counter is not reset on repeated calls, so chaining can be
+        re-configured mid-sequence without losing track of which run is next.
+        """
+        if enabled:
+            if not self.plan.is_unsteady:
+                raise RuntimeError(
+                    "Run-chaining requires an unsteady-flow plan; "
+                    f"current plan {self.plan_file.name!r} is not unsteady."
+                )
+            self._chaining.enabled = True
+            if not self.plan.write_ic_at_end:
+                self.plan.write_ic_at_end = True
+                self.plan.save()
+                logger.debug("write_ic_at_end enabled and plan saved.")
+            if self._chaining.run_number is None:
+                self._chaining.run_number = 0
+                logger.debug("Chaining initialised; run_number=0.")
+            else:
+                logger.debug(
+                    "Chaining re-enabled; run_number preserved at %d.",
+                    self._chaining.run_number,
+                )
+        else:
+            self._chaining.enabled = False
+            self._chaining.run_number = None
+            logger.debug("Chaining disabled and state reset.")
+
+    def _chaining_restart_filename(self) -> str:
+        """Return the restart filename for the current simulation end time.
+
+        The filename follows HEC-RAS convention::
+
+            <plan_file_name>.<end_date> <end_time>.rst
+
+        e.g. ``"MyModel.p01.01JAN2026 2400.rst"``
+
+        Midnight is always expressed as ``"2400"`` on the ending day: if the
+        plan's simulation window ends at ``"0000"`` the date is rolled back by
+        one day via :func:`~rivia.utils.normalize_sim_end_time`.
+
+        Raises
+        ------
+        RuntimeError
+            If the simulation window has not been set on the plan file.
+        """
+        window = self.plan.simulation_window
+        if window is None:
+            raise RuntimeError(
+                f"Plan {self.plan_file.name!r} has no simulation window set; "
+                "cannot determine restart filename."
+            )
+        (_, _), (end_date, end_time) = window
+        end_date, end_time = normalize_sim_end_time(end_date, end_time)
+        return f"{self.plan_file.name}.{end_date} {end_time}.rst"
 
     def delete_restart_files(self) -> list[Path]:
         """Delete all restart files associated with the current plan.
