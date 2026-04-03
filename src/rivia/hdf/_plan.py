@@ -2610,7 +2610,7 @@ class CrossSectionResultsCollection(CrossSectionCollection):
 
 
 @dataclasses.dataclass
-class RunSummary:
+class RunStatus:
     """Overall run metadata from ``Results/Unsteady/Summary``.
 
     Attributes
@@ -2817,7 +2817,7 @@ class VolumeAccounting2DArea:
 
 
 @dataclasses.dataclass
-class SimulationSummary:
+class ComputeSummary:
     """Full unsteady simulation summary for a plan HDF file.
 
     Aggregates all summary groups under ``Results/Unsteady/Summary``.
@@ -2835,7 +2835,7 @@ class SimulationSummary:
         when the model has no 2-D flow areas.
     """
 
-    run: RunSummary
+    run: RunStatus
     volume: VolumeAccounting
     volume_1d: VolumeAccounting1D
     volume_2d: dict[str, VolumeAccounting2DArea]
@@ -2905,20 +2905,20 @@ class PlanHdf(GeometryHdf):
     # File metadata
     # ------------------------------------------------------------------
 
-    def simulation_summary(self) -> SimulationSummary:
+    def compute_summary(self) -> ComputeSummary:
         """Return the full unsteady simulation summary.
 
         Reads all groups under ``Results/Unsteady/Summary`` and returns a
-        :class:`SimulationSummary` dataclass aggregating run metadata,
+        :class:`ComputeSummary` dataclass aggregating run metadata,
         overall volume accounting, 1-D volume accounting, and per-area
         2-D volume accounting.
 
-        Call :meth:`SimulationSummary.to_dict` on the result for a
+        Call :meth:`ComputeSummary.to_dict` on the result for a
         nested dict with short, meaningful keys.
 
         Returns
         -------
-        SimulationSummary
+        ComputeSummary
 
         Raises
         ------
@@ -2931,7 +2931,7 @@ class PlanHdf(GeometryHdf):
         ::
 
             with PlanHdf("MyModel.p01") as hdf:
-                s = hdf.simulation_summary()
+                s = hdf.compute_summary()
                 print(s.run.solution)
                 print(s.volume.error_pct)
                 d = s.to_dict()
@@ -2951,10 +2951,10 @@ class PlanHdf(GeometryHdf):
             v = float(attrs[key])
             return None if np.isnan(v) else v
 
-        # -- RunSummary ---------------------------------------------------
+        # -- RunStatus ---------------------------------------------------
         a = grp.attrs
         unstable_ts = _str(a, "Time Stamp Solution Went Unstable")
-        run = RunSummary(
+        run = RunStatus(
             solution=_str(a, "Solution"),
             run_window=_str(a, "Run Time Window"),
             compute_time_total=_str(a, "Computation Time Total"),
@@ -3014,36 +3014,17 @@ class PlanHdf(GeometryHdf):
                     error_pct=float(a["Error Percent"]),
                 )
 
-        return SimulationSummary(
+        return ComputeSummary(
             run=run,
             volume=volume,
             volume_1d=volume_1d,
             volume_2d=volume_2d,
         )
 
-    def simulation_unstable(self) -> bool:
-        """Return ``True`` if the simulation went unstable during computation.
-
-        Delegates to :meth:`simulation_summary` and checks whether HEC-RAS
-        recorded a ``time_unstable`` value in the unsteady results.
-
-        Returns
-        -------
-        bool
-            ``True`` when the solution diverged before the simulation end time;
-            ``False`` when the run completed normally.
-
-        See Also
-        --------
-        simulation_summary : Full unsteady simulation summary.
-        simulation_max_errors : Convergence and volume error metrics.
-        """
-        return self.simulation_summary().run.time_unstable is not None
-
-    def simulation_max_errors(self) -> dict[str, float]:
+    def compute_errors(self) -> dict[str, float]:
         """Return key convergence and volume-balance error metrics.
 
-        Reads :meth:`simulation_summary` once and derives four scalar error
+        Reads :meth:`compute_summary` once and derives four scalar error
         measures that are useful for quick quality-control checks after a run.
 
         Returns
@@ -3081,10 +3062,10 @@ class PlanHdf(GeometryHdf):
 
         See Also
         --------
-        simulation_summary : Full unsteady simulation summary dataclass.
-        simulation_unstable : Quick stability check.
+        compute_summary : Full unsteady simulation summary dataclass.
+        compute_ok : Quality-control pass/fail check with threshold logging.
         """
-        summary = self.simulation_summary()
+        summary = self.compute_summary()
 
         v1d = summary.volume_1d
         net_other_fluxes = (
@@ -3117,20 +3098,24 @@ class PlanHdf(GeometryHdf):
             "volume_2d_error_pct": max_2d_error_pct,
         }
 
-    def simulation_exceeds_error_thresholds(
+    def compute_ok(
         self,
         wse_threshold: float = 0.5,
         volume_error_pct_threshold: float = 1.0,
         volume_1d_error_pct_threshold: float = 1.0,
         volume_2d_error_pct_threshold: float = 1.0,
     ) -> bool:
-        """Return ``True`` if any error metric exceeds its supplied threshold.
+        """Return ``True`` if the simulation completed stably and all error
+        metrics are within their thresholds.
 
-        Calls :meth:`simulation_max_errors` and compares each metric against
-        the corresponding threshold.  A metric that is ``None`` or ``nan``
-        (e.g. ``wse`` when the run went unstable, or ``volume_1d_error_pct``
-        when upstream inflow is zero) is treated as exceeding its threshold,
-        since the absence of a valid value indicates a degenerate run.
+        Calls :meth:`compute_summary` once and checks stability first, then
+        each error metric against its threshold.  All failures are collected
+        and logged before returning so the caller sees the complete picture in
+        one pass.
+
+        If the simulation went unstable every failure is logged at
+        ``CRITICAL``; otherwise threshold violations are logged at
+        ``WARNING``.
 
         Parameters
         ----------
@@ -3144,49 +3129,101 @@ class PlanHdf(GeometryHdf):
             Maximum allowable 1-D volume balance error (%).
             Default: ``1.0``.
         volume_2d_error_pct_threshold:
-            Maximum allowable 2-D volume balance error (%).
+            Maximum allowable 2-D volume balance error (%) per 2-D flow area.
             Default: ``1.0``.
 
         Returns
         -------
         bool
-            ``True`` if at least one metric exceeds (or is missing from) its
-            threshold; ``False`` if all metrics are within bounds.
+            ``True`` if the simulation is stable and all metrics are within
+            bounds; ``False`` otherwise.
 
         Examples
         --------
-        Use defaults for a quick pass/fail check after a run::
+        Quick pass/fail check after a run::
 
-            if hdf.simulation_exceeds_error_thresholds():
-                raise RuntimeError("Simulation errors exceed acceptable limits.")
+            if not hdf.compute_ok():
+                raise RuntimeError("Simulation quality check failed.")
 
-        Or supply custom thresholds::
+        Custom thresholds::
 
-            if hdf.simulation_exceeds_error_thresholds(
-                wse_threshold=0.1, volume_error_pct_threshold=0.5
-            ):
+            if not hdf.compute_ok(wse_threshold=0.1, volume_error_pct_threshold=0.5):
                 logger.warning("Tight-tolerance check failed.")
 
         See Also
         --------
-        simulation_max_errors : Returns the raw error values.
-        simulation_unstable : Quick stability check.
+        compute_summary : Full unsteady simulation summary.
+        compute_errors : Raw error metric values.
         """
-        errors = self.simulation_max_errors()
+        summary = self.compute_summary()
+        failures: list[str] = []
 
-        wse = errors["wse"]
+        # -- stability (checked first; drives log level for all failures) ---
+        unstable = summary.run.time_unstable is not None
+        if unstable:
+            failures.append(
+                f"simulation went unstable at t={summary.run.time_unstable}"
+            )
+
+        # -- WSE error -------------------------------------------------------
+        wse = summary.run.max_wsel_error
         if wse is None or math.isnan(wse) or abs(wse) > wse_threshold:
+            failures.append(
+                f"WSE error {wse!r} exceeds threshold {wse_threshold}"
+            )
+
+        # -- overall volume error --------------------------------------------
+        vol_err = summary.volume.error_pct
+        if math.isnan(vol_err) or abs(vol_err) > volume_error_pct_threshold:
+            failures.append(
+                f"overall volume error {vol_err:.4f}% exceeds threshold "
+                f"{volume_error_pct_threshold}%"
+            )
+
+        # -- 1-D volume error ------------------------------------------------
+        v1d = summary.volume_1d
+        net_other_fluxes = (
+            -v1d.flow_ds_out
+            + v1d.hydro_lat
+            + v1d.hydro_sa
+            + v1d.diversions
+            + v1d.groundwater
+            + v1d.precip_excess
+        )
+        storage_change = (
+            v1d.reach_vol_start + v1d.sa_vol_start
+            - v1d.reach_vol_end - v1d.sa_vol_end
+        )
+        vol_1d_err = (
+            (v1d.flow_us_in + net_other_fluxes + storage_change) / v1d.flow_us_in * 100
+            if v1d.flow_us_in != 0
+            else float("nan")
+        )
+        if math.isnan(vol_1d_err) or abs(vol_1d_err) > volume_1d_error_pct_threshold:
+            vol_1d_str = "nan" if math.isnan(vol_1d_err) else f"{vol_1d_err:.4f}%"
+            failures.append(
+                f"1D volume error {vol_1d_str} exceeds threshold "
+                f"{volume_1d_error_pct_threshold}%"
+            )
+
+        # -- 2-D volume errors (reported per area) ---------------------------
+        for area_name, area in summary.volume_2d.items():
+            exceeds = (
+                math.isnan(area.error_pct)
+                or abs(area.error_pct) > volume_2d_error_pct_threshold
+            )
+            if exceeds:
+                failures.append(
+                    f"2D area '{area_name}' volume error {area.error_pct:.4f}% "
+                    f"exceeds threshold {volume_2d_error_pct_threshold}%"
+                )
+
+        if not failures:
             return True
 
-        for key, threshold in (
-            ("volume_error_pct", volume_error_pct_threshold),
-            ("volume_1d_error_pct", volume_1d_error_pct_threshold),
-            ("volume_2d_error_pct", volume_2d_error_pct_threshold),
-        ):
-            val = errors[key]
-            if math.isnan(val) or abs(val) > threshold:
-                return True
-
+        log = logger.critical if unstable else logger.warning
+        for msg in failures:
+            log("compute_ok: %s", msg)
         return False
 
     @property

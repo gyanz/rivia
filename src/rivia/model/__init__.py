@@ -629,7 +629,7 @@ class Model(MapperExtension):
             except Exception as exc:
                 logger.debug("Could not capture simulation window: %s", exc)
             try:
-                _entry["summary"] = self.hdf.simulation_summary().to_dict()
+                _entry["summary"] = self.hdf.compute_summary().to_dict()
             except Exception as exc:
                 logger.debug("Could not capture run summary: %s", exc)
             self._run_history.append(_entry)
@@ -656,7 +656,7 @@ class Model(MapperExtension):
         - ``"plan"``: plan HDF filename (e.g. ``"MyModel.p01.hdf"``)
         - ``"timestamp"``: ISO-8601 wall-clock time the run completed
           (e.g. ``"2026-04-02T09:27:24"``)
-        - ``"summary"``: :meth:`~rivia.hdf.PlanHdf.simulation_summary`
+        - ``"summary"``: :meth:`~rivia.hdf.PlanHdf.compute_summary`
           output as a dict, or ``None`` if the summary could not be read
           (e.g. run failed before writing HDF output, or steady-flow plan).
 
