@@ -3046,14 +3046,18 @@ class PlanHdf(GeometryHdf):
                 1-D volume balance error (%) computed from the individual
                 1-D flux terms::
 
-                    error = inflow + net_other_fluxes + (storage_start - storage_end)
-                    error_pct = error / inflow * 100
+                    error = -(flow_us_in + net_other_fluxes + storage_change)
+                    supply = reach_vol_start + sa_vol_start + flow_us_in
+                             + hydro_lat + hydro_sa + diversions
+                             + groundwater + precip_excess
+                    error_pct = error / supply * 100
 
                 where *net_other_fluxes* = ``-flow_ds_out + hydro_lat +
-                hydro_sa + diversions + groundwater + precip_excess``
-                (``flow_ds_out`` is stored as a negative value by HEC-RAS, so
-                the sign flip converts it to a positive outflow contribution).
-                Returns ``nan`` when upstream inflow is zero.
+                hydro_sa + diversions + groundwater + precip_excess``.
+                ``supply`` is the total 1-D water budget (initial storage plus
+                all non-DS-outflow fluxes); for a 1D-only model this matches
+                the HEC-RAS overall ``"Error Percent"`` attribute.
+                Returns ``nan`` when total 1-D supply is zero.
 
             ``"volume_2d_error_pct"``
                 Largest-magnitude 2-D volume balance error (%) across all
@@ -3066,26 +3070,41 @@ class PlanHdf(GeometryHdf):
         compute_ok : Quality-control pass/fail check with threshold logging.
         """
         summary = self.compute_summary()
-
         v1d = summary.volume_1d
-        net_other_fluxes = (
-            -v1d.flow_ds_out
+
+        # 1-D volume balance
+        outflow = (
+            v1d.flow_ds_out - v1d.hydro_lat - v1d.hydro_sa
+            - v1d.diversions - v1d.groundwater - v1d.precip_excess
+        )
+        storage_change = (
+            (v1d.reach_vol_start + v1d.sa_vol_start)
+            - (v1d.reach_vol_end + v1d.sa_vol_end)
+        )
+        error_1d = outflow - v1d.flow_us_in - storage_change
+        supply_1d = (
+            v1d.reach_vol_start + v1d.sa_vol_start
+            + v1d.flow_us_in
             + v1d.hydro_lat
             + v1d.hydro_sa
             + v1d.diversions
             + v1d.groundwater
             + v1d.precip_excess
         )
-        storage_change = (
-            v1d.reach_vol_start + v1d.sa_vol_start
-            - v1d.reach_vol_end - v1d.sa_vol_end
-        )
         volume_1d_error_pct = (
-            (v1d.flow_us_in + net_other_fluxes + storage_change) / v1d.flow_us_in * 100
-            if v1d.flow_us_in != 0
-            else float("nan")
+            error_1d / supply_1d * 100 if supply_1d != 0 else float("nan")
         )
 
+        if (summary.volume_2d
+                and not np.isclose(error_1d, 0.0)
+                and np.isclose(v1d.flow_ds_out, 0.0)):
+            logger.warning(
+                "Model has 2-D flow areas but zero 1-D downstream outflow; "
+                "1-D error percentages may be unreliable. Setting 1-D error to zero."
+            )
+            volume_1d_error_pct = 0.0
+
+        # 2-D: worst-case area by magnitude
         max_2d_error_pct = 0.0
         for area in summary.volume_2d.values():
             if abs(area.error_pct) > abs(max_2d_error_pct):
@@ -3194,9 +3213,18 @@ class PlanHdf(GeometryHdf):
             v1d.reach_vol_start + v1d.sa_vol_start
             - v1d.reach_vol_end - v1d.sa_vol_end
         )
+        supply_1d = (
+            v1d.reach_vol_start + v1d.sa_vol_start
+            + v1d.flow_us_in
+            + v1d.hydro_lat
+            + v1d.hydro_sa
+            + v1d.diversions
+            + v1d.groundwater
+            + v1d.precip_excess
+        )
         vol_1d_err = (
-            (v1d.flow_us_in + net_other_fluxes + storage_change) / v1d.flow_us_in * 100
-            if v1d.flow_us_in != 0
+            (v1d.flow_us_in + net_other_fluxes + storage_change) / supply_1d * 100
+            if supply_1d != 0
             else float("nan")
         )
         if math.isnan(vol_1d_err) or abs(vol_1d_err) > volume_1d_error_pct_threshold:
