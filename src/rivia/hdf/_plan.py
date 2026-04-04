@@ -1358,7 +1358,7 @@ class StorageAreaResults(StorageArea):
     # ------------------------------------------------------------------
 
     @property
-    def water_surface(self) -> np.ndarray:
+    def wse(self) -> np.ndarray:
         """Water-surface elevation time series.  Shape ``(n_t,)``."""
         return self._load_flat("Water Surface")
 
@@ -1368,36 +1368,31 @@ class StorageAreaResults(StorageArea):
         return self._load_flat("Flow")
 
     # ------------------------------------------------------------------
-    # Storage Area Variables columns (Stage, flows, area, volume)
+    # Storage Area Variables columns (WSE, flows, area, volume)
     # ------------------------------------------------------------------
 
     @property
-    def stage(self) -> np.ndarray:
-        """Stage (WSE) from Storage Area Variables.  Shape ``(n_t,)``."""
-        return self._load_vars()[:, 0]
-
-    @property
-    def net_inflow(self) -> np.ndarray:
+    def inflow_net(self) -> np.ndarray:
         """Net inflow rate.  Shape ``(n_t,)``."""
         return self._load_vars()[:, 1]
 
     @property
-    def total_inflow(self) -> np.ndarray:
+    def inflow(self) -> np.ndarray:
         """Total inflow rate (sum of all inflow sources).  Shape ``(n_t,)``."""
         return self._load_vars()[:, 2]
 
     @property
-    def total_outflow(self) -> np.ndarray:
+    def outflow(self) -> np.ndarray:
         """Total outflow rate (sum of all outflow sinks).  Shape ``(n_t,)``."""
         return self._load_vars()[:, 3]
 
     @property
-    def surface_area_ts(self) -> np.ndarray:
+    def surface_area(self) -> np.ndarray:
         """Water-surface area time series (model area units).  Shape ``(n_t,)``."""
         return self._load_vars()[:, 4]
 
     @property
-    def volume_ts(self) -> np.ndarray:
+    def volume(self) -> np.ndarray:
         """Stored volume time series (model volume units).  Shape ``(n_t,)``."""
         return self._load_vars()[:, 5]
 
@@ -1454,7 +1449,7 @@ class StorageAreaResults(StorageArea):
                              "time":  [float(raw[1, self._i])]})
 
     @property
-    def max_water_surface(self) -> pd.DataFrame:
+    def max_wse(self) -> pd.DataFrame:
         """Maximum WSE.
 
         DataFrame with columns ``['value', 'time']``.
@@ -1464,8 +1459,8 @@ class StorageAreaResults(StorageArea):
         return self._load_summary("Maximum Water Surface")
 
     @property
-    def min_water_surface(self) -> pd.DataFrame:
-        """Minimum WSE.  Same column layout as :attr:`max_water_surface`."""
+    def min_wse(self) -> pd.DataFrame:
+        """Minimum WSE.  Same column layout as :attr:`max_wse`."""
         return self._load_summary("Minimum Water Surface")
 
 
@@ -1548,8 +1543,8 @@ class _StructureResultsMixin:
     """Mixin that adds ``Structure Variables`` HDF access to geometry dataclasses.
 
     All four structure result classes inherit this so ``variable_names``,
-    ``total_flow``, ``stage_hw``, ``stage_tw``, ``weir_variables``, and
-    ``gate_flow`` are implemented once and shared.
+    ``flow_total``, ``stage_hw``, ``stage_tw``, ``weir_variables``, and
+    ``flow_gate`` are implemented once and shared.
 
     Concrete subclasses must set ``self._g`` (the result ``h5py.Group``) and
     ``self._cache`` (empty ``dict``) in their ``__init__``.
@@ -1612,7 +1607,7 @@ class _StructureResultsMixin:
         return self._g["Structure Variables"]
 
     @property
-    def total_flow(self) -> np.ndarray:
+    def flow_total(self) -> np.ndarray:
         """Total flow through the structure.  Shape ``(n_t,)``."""
         return self._load("Structure Variables")[
             :, self._col_index("total flow", "flow")
@@ -1633,7 +1628,7 @@ class _StructureResultsMixin:
         ]
 
     @property
-    def total_gate_flow(self) -> np.ndarray | None:
+    def flow_gate_total(self) -> np.ndarray | None:
         """Sum of flow through all gate groups.  Shape ``(n_t,)``.
 
         Returns ``None`` when no ``Total Gate Flow`` column is present in
@@ -1646,7 +1641,7 @@ class _StructureResultsMixin:
         return self._load("Structure Variables")[:, col]
 
     @property
-    def weir_flow(self) -> np.ndarray | None:
+    def flow_weir(self) -> np.ndarray | None:
         """Weir overflow component.  Shape ``(n_t,)``.
 
         Returns ``None`` when no ``Weir Flow`` column is present in
@@ -1667,7 +1662,7 @@ class _StructureResultsMixin:
         """Detailed weir hydraulics time series, or ``None`` if absent."""
         return self._g.get("Weir Variables")
 
-    def gate_flow(self, gate_number: int) -> "h5py.Dataset":
+    def flow_gate(self, gate_number: int) -> "h5py.Dataset":
         """Gate operation dataset for gate *gate_number* (1-based).
 
         Returns a lazy ``h5py.Dataset``, shape ``(n_t, n_vars)``.
@@ -1697,7 +1692,7 @@ class SA2DConnectionResults(_StructureResultsMixin, SA2DConnection):
 
     Inherits geometry from :class:`~rivia.hdf.SA2DConnection` and shared HDF
     result access (``structure_variables``, ``total_flow``, ``stage_hw``,
-    ``stage_tw``, ``weir_variables``, ``gate_flow``) from
+    ``stage_tw``, ``weir_variables``, ``flow_gate``) from
     :class:`_StructureResultsMixin`.
 
     Parameters
@@ -2071,7 +2066,7 @@ class _CrossSectionResultsBase(CrossSection):
         return self._cache[dataset]
 
     @property
-    def water_surface(self) -> np.ndarray:
+    def wse(self) -> np.ndarray:
         """Water surface elevation time series.  Shape ``(n_t,)``."""
         return self._load("Water Surface")
 
@@ -2100,7 +2095,7 @@ class CrossSectionResults(_CrossSectionResultsBase):
     """
 
     @property
-    def flow_volume_cumulative(self) -> np.ndarray:
+    def flow_cumulative(self) -> np.ndarray:
         """Cumulative flow volume time series.  Shape ``(n_t,)``."""
         return self._load("Flow Volume Cumulative")
 
@@ -2124,7 +2119,7 @@ class CrossSectionResultsDss(_CrossSectionResultsBase):
     """Geometry *and* results for one XS from the **DSS Hydrograph Output** block.
 
     Corresponds to :attr:`PlanHdf.cross_sections_dss` (hydrograph output interval).
-    Available datasets: ``water_surface``, ``flow``, ``flow_volume_cumulative``.
+    Available datasets: ``wse``, ``flow``, ``flow_cumulative``.
 
     Parameters
     ----------
@@ -2139,7 +2134,7 @@ class CrossSectionResultsDss(_CrossSectionResultsBase):
     """
 
     @property
-    def flow_volume_cumulative(self) -> np.ndarray:
+    def flow_cumulative(self) -> np.ndarray:
         """Cumulative flow volume time series.  Shape ``(n_t,)``."""
         return self._load("Flow Volume Cumulative")
 
@@ -2226,42 +2221,42 @@ class CrossSectionResultsInst(_CrossSectionResultsBase):
         return self.additional_variable("Beta")
 
     @property
-    def area_flow_channel(self) -> np.ndarray:
+    def flow_area_channel(self) -> np.ndarray:
         """Channel flow area (m²).  Shape ``(n_profiles,)``."""
         return self.additional_variable("Area Flow Channel")
 
     @property
-    def area_flow_left_ob(self) -> np.ndarray:
+    def flow_area_left_ob(self) -> np.ndarray:
         """Left overbank flow area (m²).  Shape ``(n_profiles,)``."""
         return self.additional_variable("Area Flow Left OB")
 
     @property
-    def area_flow_right_ob(self) -> np.ndarray:
+    def flow_area_right_ob(self) -> np.ndarray:
         """Right overbank flow area (m²).  Shape ``(n_profiles,)``."""
         return self.additional_variable("Area Flow Right OB")
 
     @property
-    def area_flow_total(self) -> np.ndarray:
+    def flow_area_total(self) -> np.ndarray:
         """Total flow area (m²).  Shape ``(n_profiles,)``."""
         return self.additional_variable("Area Flow Total")
 
     @property
-    def area_ineffective_channel(self) -> np.ndarray:
+    def ineffective_area_channel(self) -> np.ndarray:
         """Channel area including ineffective zones (m²).  Shape ``(n_profiles,)``."""
         return self.additional_variable("Area including Ineffective Channel")
 
     @property
-    def area_ineffective_left_ob(self) -> np.ndarray:
+    def ineffective_area_left_ob(self) -> np.ndarray:
         """Left overbank area including ineffective zones (m²).  Shape ``(n_profiles,)``."""
         return self.additional_variable("Area including Ineffective Left OB")
 
     @property
-    def area_ineffective_right_ob(self) -> np.ndarray:
+    def ineffective_area_right_ob(self) -> np.ndarray:
         """Right overbank area including ineffective zones (m²).  Shape ``(n_profiles,)``."""
         return self.additional_variable("Area including Ineffective Right OB")
 
     @property
-    def area_ineffective_total(self) -> np.ndarray:
+    def ineffective_area_total(self) -> np.ndarray:
         """Total area including ineffective zones (m²).  Shape ``(n_profiles,)``."""
         return self.additional_variable("Area including Ineffective Total")
 
@@ -2296,7 +2291,7 @@ class CrossSectionResultsInst(_CrossSectionResultsBase):
         return self.additional_variable("Critical Water Surface")
 
     @property
-    def eg_slope(self) -> np.ndarray:
+    def energy_grade_slope(self) -> np.ndarray:
         """Energy grade slope (m/m).  Shape ``(n_profiles,)``."""
         return self.additional_variable("EG Slope")
 
@@ -2456,11 +2451,11 @@ class CrossSectionResultsInst(_CrossSectionResultsBase):
         return self.additional_variable("Velocity Total")
 
     @property
-    def water_surface_total(self) -> np.ndarray:
+    def wse_total(self) -> np.ndarray:
         """Total stage / water surface elevation (m).  Shape ``(n_profiles,)``.
 
         Sourced from ``Additional Variables/Water Surface Total``.  Equivalent
-        to :attr:`water_surface` for most configurations.
+        to :attr:`wse` for most configurations.
         """
         return self.additional_variable("Water Surface Total")
 
@@ -3415,7 +3410,7 @@ class PlanHdf(GeometryHdf):
         skipping the first entry (``"Max WS"``).  Format: ``"DDMONYYYY HHMM"``
         (e.g. ``"01JAN2026 0002"``).
 
-        Use ``cross_sections_inst[xs].water_surface[1:]`` (or ``[1:n+1]``)
+        Use ``cross_sections_inst[xs].wse[1:]`` (or ``[1:n+1]``)
         to align result arrays with this index; index ``0`` of the result
         arrays holds the Max WS profile value.
 

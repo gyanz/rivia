@@ -122,6 +122,7 @@ class DssReader:
         flow  = model.dss.flow("Canal 1", "Pool 1-4", "7")
         hw    = model.dss.stage_hw("Canal 1", "Pool 1-4", "6.9")
         gate1 = model.dss.gate_opening(1, "Canal 1", "Pool 1-4", "6.9")
+        wse   = model.dss.wse("Canal 1", "Pool 1-4", "7")
     """
 
     def __init__(self, model: Model) -> None:
@@ -358,7 +359,7 @@ class DssReader:
         start, end = window if window is not None else (None, None)
         return self.timeseries(river, reach, rs, output, start=start, end=end)
 
-    def stage(
+    def wse(
         self,
         river: str,
         reach: str,
@@ -366,7 +367,7 @@ class DssReader:
         *,
         window: tuple[_WindowBound, _WindowBound] | None = None,
     ) -> pd.Series:
-        """Return the stage (water surface elevation) time-series for a cross section.
+        """Return the water surface elevation time-series for a cross section.
 
         Parameters
         ----------
@@ -384,7 +385,7 @@ class DssReader:
         Returns
         -------
         pd.Series
-            Stage values indexed by :class:`pandas.DatetimeIndex`.
+            WSE values indexed by :class:`pandas.DatetimeIndex`.
 
         Raises
         ------
@@ -399,7 +400,7 @@ class DssReader:
             )
         if node_type != NODE_XS:
             raise ValueError(
-                f"stage() requires a cross section; "
+                f"wse() requires a cross section; "
                 f"node at river={river!r}, reach={reach!r}, rs={rs!r} "
                 f"has type {node_type!r} (expected NODE_XS={NODE_XS})."
             )
@@ -524,7 +525,7 @@ class DssReader:
             river, reach, rs, INL_GATE_OPENING, gate=gate, start=start, end=end
         )
 
-    def total_gate_flow(
+    def flow_gate_total(
         self,
         river: str,
         reach: str,
@@ -567,7 +568,7 @@ class DssReader:
             river, reach, rs, INL_FLOW_GATE, gate="GATE TOTAL", start=start, end=end
         )
 
-    def weir_flow(
+    def flow_weir(
         self,
         river: str,
         reach: str,
@@ -604,7 +605,7 @@ class DssReader:
         start, end = window if window is not None else (None, None)
         return self.timeseries(river, reach, rs, INL_FLOW_WEIR, start=start, end=end)
 
-    def flow_cum(
+    def flow_cumulative(
         self,
         river: str,
         reach: str,
@@ -645,7 +646,7 @@ class DssReader:
             )
         if node_type != NODE_XS:
             raise ValueError(
-                f"flow_cum() requires a cross section; "
+                f"flow_cumulative() requires a cross section; "
                 f"node at river={river!r}, reach={reach!r}, rs={rs!r} "
                 f"has type {node_type!r} (expected NODE_XS={NODE_XS})."
             )
