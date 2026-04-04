@@ -1,0 +1,840 @@
+"""SteadyPlanHdf - read HEC-RAS steady-flow plan HDF5 files (.p*.hdf).
+
+Steady plan HDF files embed the same ``Geometry/`` group as geometry HDF files
+*plus* ``Results/Steady/...`` profile-based output.
+
+``SteadyPlanHdf`` inherits ``GeometryHdf`` so all geometry accessors are
+available.  ``SteadyCrossSectionResults`` and ``SteadyStorageAreaResults``
+carry geometry attributes *and* steady-profile result arrays.  All result
+arrays have shape ``(n_profiles,)`` where each index corresponds to a named
+steady-flow profile (e.g. ``"Big"``, ``"Bigger"``, ``"Biggest"``).
+
+Derived from examination of HEC-RAS 6.6 steady-flow plan HDF output at
+``Results/Steady/Output/Output Blocks/Base Output/Steady Profiles/``.
+"""
+
+from __future__ import annotations
+
+import logging
+from collections.abc import Iterator
+from pathlib import Path
+from typing import TYPE_CHECKING, overload
+
+import numpy as np
+
+from ._base import _HdfFile
+from ._geometry import (
+    _SA_ROOT,
+    CrossSection,
+    CrossSectionCollection,
+    GeometryHdf,
+    StorageArea,
+    StorageAreaCollection,
+    _decode,
+)
+
+if TYPE_CHECKING:
+    import h5py
+
+logger = logging.getLogger("rivia.hdf")
+
+
+# ---------------------------------------------------------------------------
+# HDF path constants
+# ---------------------------------------------------------------------------
+
+_STEADY_ROOT = "Results/Steady/Output"
+_STEADY_GEOM_ATTRS = f"{_STEADY_ROOT}/Geometry Info/Cross Section Attributes"
+_STEADY_PROFILES_ROOT = f"{_STEADY_ROOT}/Output Blocks/Base Output/Steady Profiles"
+_STEADY_PROFILE_NAMES = f"{_STEADY_PROFILES_ROOT}/Profile Names"
+_STEADY_XS = f"{_STEADY_PROFILES_ROOT}/Cross Sections"
+_STEADY_SA = f"{_STEADY_PROFILES_ROOT}/Storage Areas"
+
+
+# ---------------------------------------------------------------------------
+# SteadyCrossSectionResults
+# ---------------------------------------------------------------------------
+
+
+class SteadyCrossSectionResults(CrossSection):
+    """Geometry *and* steady-profile results for one 1-D cross section.
+
+    Inherits all geometry attributes from :class:`~rivia.hdf.CrossSection`.
+
+    All result properties return a ``numpy`` array of shape ``(n_profiles,)``
+    where each index corresponds to a named steady-flow profile.  Use
+    :attr:`SteadyPlanHdf.profile_names` to map indices to profile names.
+
+    Parameters
+    ----------
+    geom:
+        Geometry object from :class:`~rivia.hdf.CrossSectionCollection`.
+    hdf:
+        Open ``h5py.File`` — kept alive by the parent ``SteadyPlanHdf`` context.
+    index:
+        Column index of this XS in the ``(n_profiles, n_xs)`` result datasets.
+    root:
+        HDF path prefix — ``_STEADY_XS``.
+    """
+
+    def __init__(
+        self,
+        geom: CrossSection,
+        hdf: "h5py.File",
+        index: int,
+        root: str,
+    ) -> None:
+        CrossSection.__init__(
+            self,
+            river=geom.river,
+            reach=geom.reach,
+            rs=geom.rs,
+            name=geom.name,
+            left_bank=geom.left_bank,
+            right_bank=geom.right_bank,
+            len_left=geom.len_left,
+            len_channel=geom.len_channel,
+            len_right=geom.len_right,
+            contraction=geom.contraction,
+            expansion=geom.expansion,
+            station_elevation=geom.station_elevation,
+            mannings_n=geom.mannings_n,
+            centerline=geom.centerline,
+        )
+        self._hdf = hdf
+        self._index = index
+        self._root = root
+        self._cache: dict[str, np.ndarray] = {}
+
+    # ------------------------------------------------------------------
+    # Internal loader
+    # ------------------------------------------------------------------
+
+    def _load(self, dataset: str) -> np.ndarray:
+        """Load column ``self._index`` from ``{root}/{dataset}``, cached.
+
+        Parameters
+        ----------
+        dataset:
+            Path relative to ``self._root``, e.g. ``"Water Surface"`` or
+            ``"Additional Variables/Flow Total"``.
+
+        Returns
+        -------
+        ndarray, shape ``(n_profiles,)``
+        """
+        if dataset not in self._cache:
+            ds = self._hdf.get(f"{self._root}/{dataset}")
+            if ds is None:
+                raise KeyError(
+                    f"Dataset '{dataset}' not found at '{self._root}'."
+                )
+            self._cache[dataset] = np.array(ds[:, self._index])
+        return self._cache[dataset]
+
+    # ------------------------------------------------------------------
+    # Top-level datasets
+    # ------------------------------------------------------------------
+
+    @property
+    def wse(self) -> np.ndarray:
+        """Water surface elevation.  Shape ``(n_profiles,)``."""
+        return self._load("Water Surface")
+
+    @property
+    def flow(self) -> np.ndarray:
+        """Total flow.  Shape ``(n_profiles,)``."""
+        return self._load("Flow")
+
+    @property
+    def energy_grade(self) -> np.ndarray:
+        """Energy grade line elevation.  Shape ``(n_profiles,)``."""
+        return self._load("Energy Grade")
+
+    # ------------------------------------------------------------------
+    # Additional Variables — generic accessor
+    # ------------------------------------------------------------------
+
+    def additional_variable(self, name: str) -> np.ndarray:
+        """Load one column from the ``Additional Variables`` sub-group.
+
+        Parameters
+        ----------
+        name:
+            Dataset name inside ``Additional Variables/``, e.g.
+            ``"Flow Total"``, ``"Velocity Channel"``, ``"Conveyance Total"``.
+
+        Returns
+        -------
+        ndarray, shape ``(n_profiles,)``
+
+        Raises
+        ------
+        KeyError
+            If *name* is not present in ``Additional Variables/``.
+        """
+        return self._load(f"Additional Variables/{name}")
+
+    # ------------------------------------------------------------------
+    # Additional Variables — explicit properties
+    # ------------------------------------------------------------------
+
+    @property
+    def alpha(self) -> np.ndarray:
+        """Velocity-head correction factor α.  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Alpha")
+
+    @property
+    def beta(self) -> np.ndarray:
+        """Momentum correction factor β.  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Beta")
+
+    @property
+    def flow_area_channel(self) -> np.ndarray:
+        """Channel flow area.  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Area Flow Channel")
+
+    @property
+    def flow_area_left_ob(self) -> np.ndarray:
+        """Left overbank flow area.  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Area Flow Left OB")
+
+    @property
+    def flow_area_right_ob(self) -> np.ndarray:
+        """Right overbank flow area.  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Area Flow Right OB")
+
+    @property
+    def flow_area_total(self) -> np.ndarray:
+        """Total flow area.  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Area Flow Total")
+
+    @property
+    def ineffective_area_channel(self) -> np.ndarray:
+        """Channel area including ineffective zones.  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Area including Ineffective Channel")
+
+    @property
+    def ineffective_area_left_ob(self) -> np.ndarray:
+        """Left overbank area including ineffective zones.  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Area including Ineffective Left OB")
+
+    @property
+    def ineffective_area_right_ob(self) -> np.ndarray:
+        """Right overbank area including ineffective zones.  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Area including Ineffective Right OB")
+
+    @property
+    def ineffective_area_total(self) -> np.ndarray:
+        """Total area including ineffective zones.  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Area including Ineffective Total")
+
+    @property
+    def conveyance_channel(self) -> np.ndarray:
+        """Channel conveyance.  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Conveyance Channel")
+
+    @property
+    def conveyance_left_ob(self) -> np.ndarray:
+        """Left overbank conveyance.  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Conveyance Left OB")
+
+    @property
+    def conveyance_right_ob(self) -> np.ndarray:
+        """Right overbank conveyance.  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Conveyance Right OB")
+
+    @property
+    def conveyance_total(self) -> np.ndarray:
+        """Total conveyance.  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Conveyance Total")
+
+    @property
+    def critical_energy_grade(self) -> np.ndarray:
+        """Critical energy grade line elevation.  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Critical Energy Grade")
+
+    @property
+    def critical_water_surface(self) -> np.ndarray:
+        """Critical water surface elevation.  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Critical Water Surface")
+
+    @property
+    def energy_grade_slope(self) -> np.ndarray:
+        """Energy grade slope (m/m or ft/ft).  Shape ``(n_profiles,)``."""
+        return self.additional_variable("EG Slope")
+
+    @property
+    def friction_slope(self) -> np.ndarray:
+        """Friction slope.  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Friction Slope")
+
+    @property
+    def flow_channel(self) -> np.ndarray:
+        """Channel flow.  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Flow Channel")
+
+    @property
+    def flow_left_ob(self) -> np.ndarray:
+        """Left overbank flow.  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Flow Left OB")
+
+    @property
+    def flow_right_ob(self) -> np.ndarray:
+        """Right overbank flow.  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Flow Right OB")
+
+    @property
+    def flow_total(self) -> np.ndarray:
+        """Total flow.  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Flow Total")
+
+    @property
+    def hydraulic_depth_channel(self) -> np.ndarray:
+        """Channel hydraulic depth.  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Hydraulic Depth Channel")
+
+    @property
+    def hydraulic_depth_left_ob(self) -> np.ndarray:
+        """Left overbank hydraulic depth.  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Hydraulic Depth Left OB")
+
+    @property
+    def hydraulic_depth_right_ob(self) -> np.ndarray:
+        """Right overbank hydraulic depth.  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Hydraulic Depth Right OB")
+
+    @property
+    def hydraulic_depth_total(self) -> np.ndarray:
+        """Total hydraulic depth.  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Hydraulic Depth Total")
+
+    @property
+    def hydraulic_radius_channel(self) -> np.ndarray:
+        """Channel hydraulic radius.  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Hydraulic Radius Channel")
+
+    @property
+    def hydraulic_radius_left_ob(self) -> np.ndarray:
+        """Left overbank hydraulic radius.  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Hydraulic Radius Left OB")
+
+    @property
+    def hydraulic_radius_right_ob(self) -> np.ndarray:
+        """Right overbank hydraulic radius.  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Hydraulic Radius Right OB")
+
+    @property
+    def hydraulic_radius_total(self) -> np.ndarray:
+        """Total hydraulic radius.  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Hydraulic Radius Total")
+
+    @property
+    def mannings_n_channel(self) -> np.ndarray:
+        """Weighted/composite channel Manning's n.  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Manning n Channel")
+
+    @property
+    def mannings_n_left_ob(self) -> np.ndarray:
+        """Left overbank Manning's n.  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Manning n Left OB")
+
+    @property
+    def mannings_n_right_ob(self) -> np.ndarray:
+        """Right overbank Manning's n.  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Manning n Right OB")
+
+    @property
+    def mannings_n_total(self) -> np.ndarray:
+        """Total weighted Manning's n.  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Manning n Total")
+
+    @property
+    def max_depth_total(self) -> np.ndarray:
+        """Total maximum water depth.  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Maximum Depth Total")
+
+    @property
+    def shear(self) -> np.ndarray:
+        """Bed shear stress.  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Shear")
+
+    @property
+    def top_width_channel(self) -> np.ndarray:
+        """Channel top width.  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Top Width Channel")
+
+    @property
+    def top_width_channel_with_ineffective(self) -> np.ndarray:
+        """Channel top width including ineffective areas.  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Top Width Channel including Ineffective")
+
+    @property
+    def top_width_left_ob(self) -> np.ndarray:
+        """Left overbank top width.  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Top Width Left OB")
+
+    @property
+    def top_width_left_ob_with_ineffective(self) -> np.ndarray:
+        """Left overbank top width including ineffective areas.  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Top Width Left OB including Ineffective")
+
+    @property
+    def top_width_right_ob(self) -> np.ndarray:
+        """Right overbank top width.  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Top Width Right OB")
+
+    @property
+    def top_width_right_ob_with_ineffective(self) -> np.ndarray:
+        """Right overbank top width including ineffective areas.  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Top Width Right OB including Ineffective")
+
+    @property
+    def top_width_total(self) -> np.ndarray:
+        """Total top width.  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Top Width Total")
+
+    @property
+    def top_width_total_with_ineffective(self) -> np.ndarray:
+        """Total top width including ineffective areas.  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Top Width Total including Ineffective")
+
+    @property
+    def velocity_channel(self) -> np.ndarray:
+        """Channel velocity.  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Velocity Channel")
+
+    @property
+    def velocity_left_ob(self) -> np.ndarray:
+        """Left overbank velocity.  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Velocity Left OB")
+
+    @property
+    def velocity_right_ob(self) -> np.ndarray:
+        """Right overbank velocity.  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Velocity Right OB")
+
+    @property
+    def velocity_total(self) -> np.ndarray:
+        """Total velocity.  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Velocity Total")
+
+    @property
+    def wse_total(self) -> np.ndarray:
+        """Total stage / water surface elevation from ``Additional Variables``.
+
+        Sourced from ``Additional Variables/Water Surface Total``.  Equivalent
+        to :attr:`wse` for most configurations.
+        Shape ``(n_profiles,)``.
+        """
+        return self.additional_variable("Water Surface Total")
+
+    @property
+    def wetted_perimeter_channel(self) -> np.ndarray:
+        """Channel wetted perimeter.  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Wetted Perimeter Channel")
+
+    @property
+    def wetted_perimeter_left_ob(self) -> np.ndarray:
+        """Left overbank wetted perimeter.  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Wetted Perimeter Left OB")
+
+    @property
+    def wetted_perimeter_right_ob(self) -> np.ndarray:
+        """Right overbank wetted perimeter.  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Wetted Perimeter Right OB")
+
+    @property
+    def wetted_perimeter_total(self) -> np.ndarray:
+        """Total wetted perimeter.  Shape ``(n_profiles,)``."""
+        return self.additional_variable("Wetted Perimeter Total")
+
+
+# ---------------------------------------------------------------------------
+# SteadyCrossSectionResultsCollection
+# ---------------------------------------------------------------------------
+
+
+class SteadyCrossSectionResultsCollection(CrossSectionCollection):
+    """Steady-plan cross section collection with profile results.
+
+    Combines geometry from ``Geometry/Cross Sections`` with steady-flow
+    result data from ``Results/Steady/Output/...``.  Each item is a
+    :class:`SteadyCrossSectionResults` instance.
+
+    Parameters
+    ----------
+    hdf:
+        Open ``h5py.File`` handle.
+    """
+
+    def __init__(self, hdf: "h5py.File") -> None:
+        super().__init__(hdf)
+        self._result_items: dict[str, SteadyCrossSectionResults] | None = None
+
+    def _load_results(self) -> dict[str, SteadyCrossSectionResults]:
+        if self._result_items is not None:
+            return self._result_items
+
+        geom_items = CrossSectionCollection._load(self)
+
+        attrs_ds = self._hdf.get(_STEADY_GEOM_ATTRS)
+        if attrs_ds is None:
+            self._result_items = {}
+            return self._result_items
+
+        result_attrs = np.array(attrs_ds)
+        fn = attrs_ds.dtype.names
+
+        result_index: dict[tuple[str, str, str], int] = {}
+        for i, row in enumerate(result_attrs):
+            r  = _decode(row["River"])   if "River"   in fn else ""
+            rc = _decode(row["Reach"])   if "Reach"   in fn else ""
+            st = _decode(row["Station"]) if "Station" in fn else ""
+            result_index[(r, rc, st)] = i
+
+        items: dict[str, SteadyCrossSectionResults] = {}
+        for key, geom in geom_items.items():
+            idx = result_index.get((geom.river, geom.reach, geom.rs))
+            if idx is not None:
+                items[key] = SteadyCrossSectionResults(
+                    geom, self._hdf, idx, _STEADY_XS
+                )
+
+        self._result_items = items
+        return self._result_items
+
+    @overload
+    def __getitem__(self, key: int) -> SteadyCrossSectionResults: ...
+    @overload
+    def __getitem__(self, key: str) -> SteadyCrossSectionResults: ...
+    @overload
+    def __getitem__(self, key: tuple[str, str, str]) -> SteadyCrossSectionResults: ...
+
+    def __getitem__(
+        self, key: int | str | tuple[str, str, str]
+    ) -> SteadyCrossSectionResults:
+        items = self._load_results()
+        if isinstance(key, int):
+            keys = list(items)
+            try:
+                return items[keys[key]]
+            except IndexError:
+                raise IndexError(
+                    f"Index {key} out of range (n={len(items)})"
+                ) from None
+        if isinstance(key, tuple):
+            str_key = self._loc_index.get(key)
+            if str_key is None:
+                raise KeyError(f"Cross section {key!r} not found.")
+            if str_key not in items:
+                raise KeyError(
+                    f"Cross section {key!r} has no results in this plan."
+                )
+            return items[str_key]
+        if key not in items:
+            raise KeyError(
+                f"Cross section {key!r} not found. Available: {self.names}"
+            )
+        return items[key]
+
+    def __len__(self) -> int:
+        return len(self._load_results())
+
+    def __iter__(self) -> Iterator[SteadyCrossSectionResults]:
+        return iter(self._load_results().values())
+
+    @property
+    def names(self) -> list[str]:
+        """Keys of all cross sections with steady results."""
+        return list(self._load_results().keys())
+
+
+# ---------------------------------------------------------------------------
+# SteadyStorageAreaResults
+# ---------------------------------------------------------------------------
+
+
+class SteadyStorageAreaResults(StorageArea):
+    """Geometry *and* steady-profile results for one storage area.
+
+    Inherits all geometry properties from :class:`~rivia.hdf.StorageArea`.
+
+    All result properties return a ``numpy`` array of shape ``(n_profiles,)``
+    where each index corresponds to a named steady-flow profile.  Use
+    :attr:`SteadyPlanHdf.profile_names` to map indices to profile names.
+
+    Parameters
+    ----------
+    sa:
+        Parent geometry object whose fields are copied into this instance.
+    sa_index:
+        0-based column index of this SA in the ``(n_profiles, n_sa)`` datasets
+        ``Water Surface`` and ``Flow`` stored under
+        ``Results/Steady/.../Storage Areas``.
+    sa_group:
+        ``h5py.Group`` at ``Results/Steady/.../Steady Profiles/Storage Areas``,
+        or ``None`` when the plan has no storage-area results.
+    """
+
+    def __init__(
+        self,
+        sa: StorageArea,
+        sa_index: int,
+        sa_group: "h5py.Group | None",
+    ) -> None:
+        super().__init__(
+            name=sa.name,
+            mode=sa.mode,
+            boundary=sa.boundary,
+            volume_elevation=sa.volume_elevation,
+        )
+        self._i = sa_index
+        self._g = sa_group
+        self._sub = sa_group.get(sa.name) if sa_group else None
+        self._cache: dict[str, np.ndarray] = {}
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _load_flat(self, key: str) -> np.ndarray:
+        """Load column *i* from a flat ``(n_profiles, n_sa)`` dataset."""
+        if key not in self._cache:
+            if self._g is None:
+                raise KeyError(
+                    f"No steady results for storage area {self.name!r}. "
+                    "Has the plan been computed?"
+                )
+            self._cache[key] = np.array(self._g[key])[:, self._i]
+        return self._cache[key]
+
+    def _load_vars(self) -> np.ndarray:
+        """Load and cache the ``(n_profiles, n_cols)`` Storage Area Variables array."""
+        if "_vars" not in self._cache:
+            if self._sub is None or "Storage Area Variables" not in self._sub:
+                raise KeyError(
+                    f"'Storage Area Variables' not found for storage area "
+                    f"{self.name!r}."
+                )
+            self._cache["_vars"] = np.array(self._sub["Storage Area Variables"])
+        return self._cache["_vars"]
+
+    # ------------------------------------------------------------------
+    # Flat profile results (one value per profile)
+    # ------------------------------------------------------------------
+
+    @property
+    def wse(self) -> np.ndarray:
+        """Water-surface elevation.  Shape ``(n_profiles,)``."""
+        return self._load_flat("Water Surface")
+
+    @property
+    def flow(self) -> np.ndarray:
+        """Net flow.  Shape ``(n_profiles,)``."""
+        return self._load_flat("Flow")
+
+    # ------------------------------------------------------------------
+    # Connection flows
+    # ------------------------------------------------------------------
+
+    @property
+    def connections(self) -> np.ndarray | None:
+        """Flow from each named connection.
+
+        Shape ``(n_profiles, n_conns)``, or ``None`` when absent.
+        Column names are in :attr:`connection_names`.
+        """
+        if "_conns" not in self._cache:
+            if self._sub is None:
+                return None
+            ds = self._sub.get("Connections to Storage Area")
+            if ds is None:
+                return None
+            self._cache["_conns"] = np.array(ds)
+        return self._cache["_conns"]
+
+    @property
+    def connection_names(self) -> list[str]:
+        """Names of the inflow connection sources.
+
+        Falls back to index-based names if the attribute is absent.
+        """
+        if self._sub is None:
+            return []
+        ds = self._sub.get("Connections to Storage Area")
+        if ds is None:
+            return []
+        attr = ds.attrs.get("Connections")
+        if attr is None:
+            n = ds.shape[1] if ds.ndim > 1 else 1
+            return [f"connection_{i}" for i in range(n)]
+        return [_decode(v) for v in attr]
+
+
+# ---------------------------------------------------------------------------
+# SteadyStorageAreaResultsCollection
+# ---------------------------------------------------------------------------
+
+
+class SteadyStorageAreaResultsCollection(StorageAreaCollection):
+    """Collection of :class:`SteadyStorageAreaResults` backed by a steady plan HDF.
+
+    Overrides :class:`~rivia.hdf.StorageAreaCollection` to return
+    ``SteadyStorageAreaResults`` with both geometry *and* steady results.
+    """
+
+    def _load(self) -> dict[str, SteadyStorageAreaResults]:  # type: ignore[override]
+        if self._items is not None:
+            return self._items  # type: ignore[return-value]
+
+        if _SA_ROOT not in self._hdf:
+            self._items = {}
+            return self._items  # type: ignore[return-value]
+
+        root = self._hdf[_SA_ROOT]
+        attrs = np.array(root["Attributes"])
+        poly_info = np.array(root["Polygon Info"])
+        poly_pts = np.array(root["Polygon Points"])
+        ve_info = np.array(root["Volume Elevation Info"])
+        ve_vals = np.array(root["Volume Elevation Values"])
+
+        sa_group = self._hdf.get(_STEADY_SA)
+
+        items: dict[str, SteadyStorageAreaResults] = {}
+        for i, row in enumerate(attrs):
+            name = _decode(row["Name"])
+            mode = _decode(row["Mode"])
+
+            start_pt = int(poly_info[i, 0])
+            n_pts = int(poly_info[i, 1])
+            boundary = poly_pts[start_pt : start_pt + n_pts].astype(float)
+
+            ve_start = int(ve_info[i, 0])
+            ve_count = int(ve_info[i, 1])
+            volume_elevation = ve_vals[ve_start : ve_start + ve_count].astype(float)
+
+            sa_geom = StorageArea(
+                name=name,
+                mode=mode,
+                boundary=boundary,
+                volume_elevation=volume_elevation,
+            )
+            items[name] = SteadyStorageAreaResults(sa_geom, i, sa_group)
+
+        self._items = items  # type: ignore[assignment]
+        return self._items  # type: ignore[return-value]
+
+
+# ---------------------------------------------------------------------------
+# SteadyPlanHdf - public entry point
+# ---------------------------------------------------------------------------
+
+
+class SteadyPlanHdf(GeometryHdf):
+    """Read HEC-RAS steady-flow plan HDF5 output files (``*.p*.hdf``).
+
+    A steady plan HDF file contains the same ``Geometry/`` data as a geometry
+    HDF file, *plus* ``Results/Steady/...`` profile-based output.
+
+    Results are indexed by steady-flow profile name (e.g. ``"Big"``,
+    ``"Bigger"``, ``"Biggest"``).  Each result array has shape
+    ``(n_profiles,)`` where each index corresponds to a profile.
+
+    Parameters
+    ----------
+    filename:
+        Path to the plan HDF file.  The ``.hdf`` suffix is appended
+        automatically if absent.
+
+    Examples
+    --------
+    ::
+
+        with SteadyPlanHdf("Baxter.p01") as hdf:
+            profiles = hdf.profile_names          # ["Big", "Bigger", "Biggest"]
+            xs = hdf.cross_sections["Baxter River Lower Reach 27470."]
+            wse = xs.wse                           # shape (3,)
+            vel = xs.velocity_channel              # shape (3,)
+
+            sa = hdf.storage_areas["Northside"]
+            sa_wse = sa.wse                        # shape (3,)
+    """
+
+    def __init__(self, filename: str | Path) -> None:
+        super().__init__(filename)
+        self._steady_cross_sections: SteadyCrossSectionResultsCollection | None = None
+        self._steady_storage_areas: SteadyStorageAreaResultsCollection | None = None
+
+    # ------------------------------------------------------------------
+    # File metadata
+    # ------------------------------------------------------------------
+
+    @property
+    def profile_names(self) -> list[str]:
+        """Steady-flow profile names written by HEC-RAS.
+
+        Returns
+        -------
+        list[str]
+            Ordered list of profile names, e.g. ``["Big", "Bigger", "Biggest"]``.
+            The index of each name corresponds to the first axis of all result
+            arrays.
+
+        Raises
+        ------
+        KeyError
+            If ``Results/Steady`` is absent — e.g. the plan has not been run
+            or this is not a steady-flow plan.
+        """
+        ds = self._hdf.get(_STEADY_PROFILE_NAMES)
+        if ds is None:
+            raise KeyError(
+                f"'{_STEADY_PROFILE_NAMES}' not found. "
+                "Ensure this is a steady-flow plan HDF file that has been run."
+            )
+        return [_decode(v) for v in np.array(ds)]
+
+    @property
+    def ras_version(self) -> str:
+        """HEC-RAS version string from the plan HDF root attribute.
+
+        Returns the ``File Version`` root attribute, e.g.
+        ``'HEC-RAS 6.6 September 2024'``.
+        """
+        raw = self._hdf.attrs["File Version"]
+        return raw.decode() if isinstance(raw, (bytes, bytes)) else str(raw)
+
+    @property
+    def projection(self) -> str | None:
+        """WKT projection string stored in the plan HDF root, or ``None``.
+
+        Returns ``None`` when the attribute is absent (older files or models
+        without a defined projection).
+        """
+        raw = self._hdf.attrs.get("Projection")
+        if raw is None:
+            return None
+        return raw.decode() if isinstance(raw, (bytes, bytes)) else str(raw)
+
+    # ------------------------------------------------------------------
+    # Collections (override GeometryHdf equivalents with results-aware types)
+    # ------------------------------------------------------------------
+
+    @property
+    def cross_sections(self) -> SteadyCrossSectionResultsCollection:
+        """1-D cross sections with geometry and steady-profile results."""
+        if self._steady_cross_sections is None:
+            self._steady_cross_sections = SteadyCrossSectionResultsCollection(
+                self._hdf
+            )
+        return self._steady_cross_sections
+
+    @property
+    def storage_areas(self) -> SteadyStorageAreaResultsCollection:
+        """Storage areas with geometry and steady-profile results."""
+        if self._steady_storage_areas is None:
+            self._steady_storage_areas = SteadyStorageAreaResultsCollection(
+                self._hdf
+            )
+        return self._steady_storage_areas

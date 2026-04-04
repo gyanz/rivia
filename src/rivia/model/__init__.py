@@ -303,26 +303,34 @@ class Model(MapperExtension):
 
     @property
     def hdf(self):
-        """Lazily opened HDF file as a :class:`rivia.hdf.PlanHdf` or
-        :class:`rivia.hdf.GeometryHdf`.
+        """Lazily opened HDF file for the current plan.
 
-        Returns a cached :class:`~rivia.hdf.PlanHdf` when the plan HDF file
-        exists and opens without error.  If the plan HDF is missing or cannot
-        be opened, returns a **fresh** (uncached) :class:`~rivia.hdf.GeometryHdf`
-        from the geometry HDF instead — useful when the plan has not yet been run.
+        Dispatches to the appropriate class based on plan type:
 
-        The ``PlanHdf`` handle is kept open until :meth:`reload` is called or
-        the object is closed directly.  The ``GeometryHdf`` fallback is not
-        cached; each access that requires the fallback opens a new handle.
+        * Steady flow (``plan.is_steady``) → :class:`~rivia.hdf.SteadyPlanHdf`
+        * Unsteady flow (``plan.is_unsteady``) → :class:`~rivia.hdf.UnsteadyPlanHdf`
+        * Unknown / plan not yet run → :class:`~rivia.hdf.GeometryHdf` (uncached fallback)
+
+        The plan HDF handle is kept open until :meth:`reload` is called or the
+        object is closed directly.  The ``GeometryHdf`` fallback is not cached;
+        each access that requires the fallback opens a new handle.
         """
-        from rivia.hdf import GeometryHdf, PlanHdf
+        from rivia.hdf import GeometryHdf, SteadyPlanHdf, UnsteadyPlanHdf
 
         if self._hdf is None:
             plan_path = self.plan_hdf_file
             try:
                 if not plan_path.exists():
                     raise FileNotFoundError(plan_path)
-                self._hdf = PlanHdf(plan_path)
+                if self.plan.is_steady:
+                    self._hdf = SteadyPlanHdf(plan_path)
+                elif self.plan.is_unsteady:
+                    self._hdf = UnsteadyPlanHdf(plan_path)
+                else:
+                    raise ValueError(
+                        f"Cannot determine plan type from flow file "
+                        f"{self.plan.flow_file!r}."
+                    )
             except Exception:
                 return GeometryHdf(self.geom_hdf_file)
         return self._hdf
@@ -656,7 +664,7 @@ class Model(MapperExtension):
         - ``"plan"``: plan HDF filename (e.g. ``"MyModel.p01.hdf"``)
         - ``"timestamp"``: ISO-8601 wall-clock time the run completed
           (e.g. ``"2026-04-02T09:27:24"``)
-        - ``"summary"``: :meth:`~rivia.hdf.PlanHdf.compute_summary`
+        - ``"summary"``: :meth:`~rivia.hdf.UnsteadyPlanHdf.compute_summary`
           output as a dict, or ``None`` if the summary could not be read
           (e.g. run failed before writing HDF output, or steady-flow plan).
 

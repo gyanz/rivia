@@ -1,9 +1,9 @@
-"""PlanHdf - read HEC-RAS plan HDF5 files (.p*.hdf).
+"""UnsteadyUnsteadyPlanHdf - read HEC-RAS unsteady plan HDF5 files (.p*.hdf).
 
 Plan HDF files embed the same ``Geometry/`` group as geometry HDF files
 *plus* ``Results/Unsteady/...`` time-series and summary output.
 
-``PlanHdf`` inherits ``GeometryHdf`` so all geometry accessors are available.
+``UnsteadyUnsteadyPlanHdf`` inherits ``GeometryHdf`` so all geometry accessors are available.
 ``FlowAreaResults`` extends ``FlowArea`` with lazy time-series properties,
 summary DataFrames, and computed depth / velocity methods.  Raster export
 methods delegate to ``rivia.geo`` via a deferred import so this module is
@@ -2079,7 +2079,7 @@ class _CrossSectionResultsBase(CrossSection):
 class CrossSectionResults(_CrossSectionResultsBase):
     """Geometry *and* results for one XS from the **Base Output** block.
 
-    Corresponds to :attr:`PlanHdf.cross_sections` (mapping output interval).
+    Corresponds to :attr:`UnsteadyPlanHdf.cross_sections` (mapping output interval).
     All variables written by HEC-RAS at the mapping interval are exposed.
 
     Parameters
@@ -2087,7 +2087,7 @@ class CrossSectionResults(_CrossSectionResultsBase):
     geom:
         Geometry object from :class:`CrossSectionCollection`.
     hdf:
-        Open ``h5py.File`` — kept alive by the parent ``PlanHdf`` context.
+        Open ``h5py.File`` — kept alive by the parent ``UnsteadyPlanHdf`` context.
     index:
         Column index of this XS in the ``(n_t, n_xs)`` result datasets.
     root:
@@ -2118,7 +2118,7 @@ class CrossSectionResults(_CrossSectionResultsBase):
 class CrossSectionResultsDss(_CrossSectionResultsBase):
     """Geometry *and* results for one XS from the **DSS Hydrograph Output** block.
 
-    Corresponds to :attr:`PlanHdf.cross_sections_dss` (hydrograph output interval).
+    Corresponds to :attr:`UnsteadyPlanHdf.cross_sections_dss` (hydrograph output interval).
     Available datasets: ``wse``, ``flow``, ``flow_cumulative``.
 
     Parameters
@@ -2126,7 +2126,7 @@ class CrossSectionResultsDss(_CrossSectionResultsBase):
     geom:
         Geometry object from :class:`CrossSectionCollection`.
     hdf:
-        Open ``h5py.File`` — kept alive by the parent ``PlanHdf`` context.
+        Open ``h5py.File`` — kept alive by the parent ``UnsteadyPlanHdf`` context.
     index:
         Column index of this XS in the ``(n_t, n_xs)`` result datasets.
     root:
@@ -2142,12 +2142,12 @@ class CrossSectionResultsDss(_CrossSectionResultsBase):
 class CrossSectionResultsInst(_CrossSectionResultsBase):
     """Geometry *and* results for one XS from the **Post Process Profiles** block.
 
-    Corresponds to :attr:`PlanHdf.cross_sections_inst` (DSS inst interval).
+    Corresponds to :attr:`UnsteadyPlanHdf.cross_sections_inst` (DSS inst interval).
 
     All result arrays have shape ``(n_profiles,)`` where index ``0`` is the
     **Max WS** profile and indices ``1:`` are the instantaneous profiles
     written at the DSS instantaneous interval.  Use
-    :attr:`PlanHdf.timestamps_dss_inst` for the datetime index of indices
+    :attr:`UnsteadyPlanHdf.timestamps_dss_inst` for the datetime index of indices
     ``1:``.
 
     Available top-level datasets: ``water_surface``, ``flow``,
@@ -2161,7 +2161,7 @@ class CrossSectionResultsInst(_CrossSectionResultsBase):
     geom:
         Geometry object from :class:`CrossSectionCollection`.
     hdf:
-        Open ``h5py.File`` — kept alive by the parent ``PlanHdf`` context.
+        Open ``h5py.File`` — kept alive by the parent ``UnsteadyPlanHdf`` context.
     index:
         Column index of this XS in the ``(n_profiles, n_xs)`` result datasets.
     root:
@@ -2595,7 +2595,7 @@ class CrossSectionResultsCollection(CrossSectionCollection):
 
 
 # ---------------------------------------------------------------------------
-# PlanHdf - public entry point
+# UnsteadyPlanHdf - public entry point
 # ---------------------------------------------------------------------------
 
 
@@ -2852,7 +2852,7 @@ class ComputeSummary:
         }
 
 
-class PlanHdf(GeometryHdf):
+class UnsteadyPlanHdf(GeometryHdf):
     """Read HEC-RAS plan HDF5 output files (``*.p*.hdf``).
 
     A plan HDF file contains the same ``Geometry/`` data as a geometry HDF
@@ -2868,7 +2868,7 @@ class PlanHdf(GeometryHdf):
     --------
     ::
 
-        with PlanHdf("MyModel.p01") as hdf:
+        with UnsteadyPlanHdf("MyModel.p01") as hdf:
             ts   = hdf.timestamps_mapping
             area = hdf.flow_areas["spillway"]
 
@@ -2925,7 +2925,7 @@ class PlanHdf(GeometryHdf):
         --------
         ::
 
-            with PlanHdf("MyModel.p01") as hdf:
+            with UnsteadyPlanHdf("MyModel.p01") as hdf:
                 s = hdf.compute_summary()
                 print(s.run.solution)
                 print(s.volume.error_pct)

@@ -21,7 +21,14 @@ from ._geometry import (
     StructureIndex,
     Weir,
 )
-from ._plan import (
+from ._steady_plan import (
+    SteadyCrossSectionResults,
+    SteadyCrossSectionResultsCollection,
+    SteadyPlanHdf,
+    SteadyStorageAreaResults,
+    SteadyStorageAreaResultsCollection,
+)
+from ._unsteady_plan import (
     BridgeResults,
     CrossSectionResults,
     CrossSectionResultsCollection,
@@ -31,7 +38,7 @@ from ._plan import (
     FlowAreaResultsCollection,
     InlineResults,
     LateralResults,
-    PlanHdf,
+    UnsteadyPlanHdf,
     PlanStructureCollection,
     SA2DConnectionResults,
     StorageAreaResults,
@@ -40,7 +47,12 @@ from ._plan import (
 
 __all__ = [
     "GeometryHdf",
-    "PlanHdf",
+    "SteadyPlanHdf",
+    "SteadyCrossSectionResults",
+    "SteadyCrossSectionResultsCollection",
+    "SteadyStorageAreaResults",
+    "SteadyStorageAreaResultsCollection",
+    "UnsteadyPlanHdf",
     "CrossSection",
     "CrossSectionCollection",
     "CrossSectionResults",
