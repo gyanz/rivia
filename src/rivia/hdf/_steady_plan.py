@@ -4,10 +4,17 @@ Steady plan HDF files embed the same ``Geometry/`` group as geometry HDF files
 *plus* ``Results/Steady/...`` profile-based output.
 
 ``SteadyPlanHdf`` inherits ``GeometryHdf`` so all geometry accessors are
-available.  ``SteadyCrossSectionResults`` and ``SteadyStorageAreaResults``
-carry geometry attributes *and* steady-profile result arrays.  All result
-arrays have shape ``(n_profiles,)`` where each index corresponds to a named
-steady-flow profile (e.g. ``"Big"``, ``"Bigger"``, ``"Biggest"``).
+available.  ``SteadyCrossSectionResults``, ``SteadyStorageAreaResults``, and
+``SteadyLateralResults`` carry geometry attributes *and* steady-profile result
+arrays.  All result arrays have shape ``(n_profiles,)`` (or ``(n_profiles,
+n_segments)`` for segment-level lateral data) where the first axis corresponds
+to a named steady-flow profile (e.g. ``"Big"``, ``"Bigger"``, ``"Biggest"``).
+
+Bridge, culvert, and inline structure nodes in HEC-RAS 1D steady flow do not
+produce separate result datasets in the HDF file; their results are embedded in
+the adjacent upstream/downstream cross-section output.  ``SteadyPlanHdf``
+therefore returns plain geometry objects (no result access) for those types.
+Only :class:`SteadyLateralResults` carries dedicated result data.
 
 Derived from examination of HEC-RAS 6.6 steady-flow plan HDF output at
 ``Results/Steady/Output/Output Blocks/Base Output/Steady Profiles/``.
@@ -28,8 +35,11 @@ from ._geometry import (
     CrossSection,
     CrossSectionCollection,
     GeometryHdf,
+    Lateral,
     StorageArea,
     StorageAreaCollection,
+    Structure,
+    StructureCollection,
     _decode,
 )
 
@@ -49,6 +59,7 @@ _STEADY_PROFILES_ROOT = f"{_STEADY_ROOT}/Output Blocks/Base Output/Steady Profil
 _STEADY_PROFILE_NAMES = f"{_STEADY_PROFILES_ROOT}/Profile Names"
 _STEADY_XS = f"{_STEADY_PROFILES_ROOT}/Cross Sections"
 _STEADY_SA = f"{_STEADY_PROFILES_ROOT}/Storage Areas"
+_STEADY_LATERAL = f"{_STEADY_PROFILES_ROOT}/Lateral Structures"
 
 
 # ---------------------------------------------------------------------------
@@ -727,6 +738,280 @@ class SteadyStorageAreaResultsCollection(StorageAreaCollection):
 
 
 # ---------------------------------------------------------------------------
+# SteadyLateralResults
+# ---------------------------------------------------------------------------
+
+
+class SteadyLateralResults(Lateral):
+    """Geometry *and* steady-profile results for one lateral structure.
+
+    Inherits all geometry attributes from :class:`~rivia.hdf.Lateral`.
+
+    All result properties return ``numpy`` arrays.  Scalar results (one value
+    per profile) have shape ``(n_profiles,)``.  Segment-level results have
+    shape ``(n_profiles, n_segments)`` or ``(n_segments,)`` for static arrays.
+
+    .. note::
+        Bridge, culvert, and inline structure nodes do not have separate result
+        datasets in HEC-RAS 1D steady-flow HDF files.
+        :class:`SteadyStructureCollection` returns plain geometry objects for
+        those types.
+
+    Parameters
+    ----------
+    geom:
+        Geometry object from :class:`~rivia.hdf.StructureCollection`.
+    group:
+        ``h5py.Group`` at
+        ``Results/Steady/.../Steady Profiles/Lateral Structures/<name>``.
+    """
+
+    def __init__(self, geom: Lateral, group: "h5py.Group") -> None:
+        Lateral.__init__(
+            self,
+            mode=geom.mode,
+            upstream_type=geom.upstream_type,
+            downstream_type=geom.downstream_type,
+            centerline=geom.centerline,
+            location=geom.location,
+            upstream_node=geom.upstream_node,
+            downstream_node=geom.downstream_node,
+            weir=geom.weir,
+            gate_groups=geom.gate_groups,
+        )
+        self._g = group
+        self._cache: dict[str, np.ndarray] = {}
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _load(self, key: str) -> np.ndarray:
+        """Load ``{group}/{key}`` as a numpy array, cached."""
+        if key not in self._cache:
+            ds = self._g.get(key)
+            if ds is None:
+                raise KeyError(f"Dataset '{key}' not found in lateral group.")
+            self._cache[key] = np.array(ds)
+        return self._cache[key]
+
+    def _load_seg(self, key: str) -> np.ndarray:
+        """Load ``HW TW Segments/{key}`` as a numpy array, cached."""
+        cache_key = f"_seg_{key}"
+        if cache_key not in self._cache:
+            ds = self._g.get(f"HW TW Segments/{key}")
+            if ds is None:
+                raise KeyError(
+                    f"Dataset 'HW TW Segments/{key}' not found in lateral group."
+                )
+            self._cache[cache_key] = np.array(ds)
+        return self._cache[cache_key]
+
+    def _col_index(self, *candidates: str) -> int:
+        """Column index of first ``Structure Variables`` column whose name
+        contains any *candidates* (case-insensitive)."""
+        names_lower = [n.lower() for n in self.variable_names]
+        for cand in candidates:
+            cand_l = cand.lower()
+            for i, n in enumerate(names_lower):
+                if cand_l in n:
+                    return i
+        raise KeyError(
+            f"No column matching {candidates!r} in {self.variable_names!r}"
+        )
+
+    # ------------------------------------------------------------------
+    # Structure Variables
+    # ------------------------------------------------------------------
+
+    @property
+    def variable_names(self) -> list[str]:
+        """Column names from the ``Structure Variables`` ``Variable_Unit`` attribute.
+
+        Falls back to ``col_0``, ``col_1``, ... when the attribute is absent.
+        """
+        ds = self._g["Structure Variables"]
+        attr = ds.attrs.get("Variable_Unit")
+        if attr is not None:
+            return [_decode(v[0]) for v in attr]
+        return [f"col_{i}" for i in range(ds.shape[1])]
+
+    @property
+    def structure_variables(self) -> np.ndarray:
+        """All structure variables.  Shape ``(n_profiles, n_vars)``.
+
+        Column names are in :attr:`variable_names`.
+        """
+        return self._load("Structure Variables")
+
+    @property
+    def flow_total(self) -> np.ndarray:
+        """Total flow through the structure.  Shape ``(n_profiles,)``."""
+        return self._load("Structure Variables")[
+            :, self._col_index("total flow", "flow")
+        ]
+
+    @property
+    def flow_weir(self) -> np.ndarray:
+        """Weir flow component.  Shape ``(n_profiles,)``."""
+        return self._load("Structure Variables")[
+            :, self._col_index("weir flow")
+        ]
+
+    @property
+    def stage_hw(self) -> np.ndarray:
+        """Headwater stage (weighted average along structure).  Shape ``(n_profiles,)``."""
+        return self._load("Structure Variables")[
+            :, self._col_index("stage hw", "hw", "headwater")
+        ]
+
+    @property
+    def stage_tw(self) -> np.ndarray:
+        """Tailwater stage.  Shape ``(n_profiles,)``."""
+        return self._load("Structure Variables")[
+            :, self._col_index("stage tw", "tw", "tailwater")
+        ]
+
+    @property
+    def flow_hw_us(self) -> np.ndarray:
+        """Flow at the upstream bounding cross section.  Shape ``(n_profiles,)``."""
+        return self._load("Structure Variables")[
+            :, self._col_index("flow hw us")
+        ]
+
+    @property
+    def flow_hw_ds(self) -> np.ndarray:
+        """Flow at the downstream bounding cross section.  Shape ``(n_profiles,)``."""
+        return self._load("Structure Variables")[
+            :, self._col_index("flow hw ds")
+        ]
+
+    @property
+    def stage_hw_us(self) -> np.ndarray:
+        """Stage at the upstream bounding cross section.  Shape ``(n_profiles,)``."""
+        return self._load("Structure Variables")[
+            :, self._col_index("stage hw us")
+        ]
+
+    @property
+    def stage_hw_ds(self) -> np.ndarray:
+        """Stage at the downstream bounding cross section.  Shape ``(n_profiles,)``."""
+        return self._load("Structure Variables")[
+            :, self._col_index("stage hw ds")
+        ]
+
+    # ------------------------------------------------------------------
+    # Weir Variables (per HW-TW segment)
+    # ------------------------------------------------------------------
+
+    @property
+    def weir_variables(self) -> np.ndarray | None:
+        """Detailed weir hydraulics per HW-TW segment, or ``None`` if absent.
+
+        Shape ``(n_profiles, n_segments)``.
+        """
+        ds = self._g.get("Weir Variables")
+        if ds is None:
+            return None
+        if "_wv" not in self._cache:
+            self._cache["_wv"] = np.array(ds)
+        return self._cache["_wv"]
+
+    # ------------------------------------------------------------------
+    # HW TW Segments
+    # ------------------------------------------------------------------
+
+    @property
+    def segment_stations(self) -> np.ndarray:
+        """Lateral structure chainage station for each HW-TW segment.
+
+        Shape ``(n_segments,)``.
+        """
+        return self._load_seg("HW TW Station")
+
+    @property
+    def segment_headwater_rs(self) -> np.ndarray:
+        """Headwater reach station (RS) for each HW-TW segment.
+
+        Shape ``(n_segments,)``, dtype byte-string — decode with
+        ``seg.astype(str)`` if needed.
+        """
+        return self._load_seg("Headwater River Stations")
+
+    @property
+    def segment_flow(self) -> np.ndarray:
+        """Flow through each HW-TW segment per profile.
+
+        Shape ``(n_profiles, n_segments)``.
+        """
+        return self._load_seg("Flow")
+
+    @property
+    def segment_wse_hw(self) -> np.ndarray:
+        """Headwater water-surface elevation at each segment per profile.
+
+        Shape ``(n_profiles, n_segments)``.
+        """
+        return self._load_seg("Water Surface HW")
+
+    @property
+    def segment_wse_tw(self) -> np.ndarray:
+        """Tailwater water-surface elevation at each segment per profile.
+
+        Shape ``(n_profiles, n_segments)``.
+        """
+        return self._load_seg("Water Surface TW")
+
+
+# ---------------------------------------------------------------------------
+# SteadyStructureCollection
+# ---------------------------------------------------------------------------
+
+
+class SteadyStructureCollection(StructureCollection):
+    """Steady-plan structure collection.
+
+    Upgrades :class:`~rivia.hdf.Lateral` geometry objects to
+    :class:`SteadyLateralResults` when a matching result group exists under
+    ``Results/Steady/.../Steady Profiles/Lateral Structures``.
+
+    All other structure types (Bridge, Culvert, Inline) are returned as plain
+    geometry objects — HEC-RAS 1D steady-flow HDF files do not store separate
+    result datasets for those node types.
+    """
+
+    def _load(self) -> dict[str, Structure]:  # type: ignore[override]
+        if self._items is not None:
+            return self._items
+
+        import h5py as _h5
+
+        geom_items = StructureCollection._load(self)
+
+        lateral_root = self._hdf.get(_STEADY_LATERAL)
+        lateral_groups: dict[str, "h5py.Group"] = (
+            {k: v for k, v in lateral_root.items() if isinstance(v, _h5.Group)}
+            if lateral_root is not None
+            else {}
+        )
+
+        items: dict[str, Structure] = {}
+        for key, geom in geom_items.items():
+            if isinstance(geom, Lateral):
+                plan_key = " ".join(geom.location)
+                grp = lateral_groups.get(plan_key)
+                items[key] = (
+                    SteadyLateralResults(geom, grp) if grp is not None else geom
+                )
+            else:
+                # Bridge, Culvert, Inline: no separate steady result datasets
+                items[key] = geom
+
+        self._items = items
+        return self._items
+
+
+# ---------------------------------------------------------------------------
 # SteadyPlanHdf - public entry point
 # ---------------------------------------------------------------------------
 
@@ -765,6 +1050,7 @@ class SteadyPlanHdf(GeometryHdf):
         super().__init__(filename)
         self._steady_cross_sections: SteadyCrossSectionResultsCollection | None = None
         self._steady_storage_areas: SteadyStorageAreaResultsCollection | None = None
+        self._steady_structures: SteadyStructureCollection | None = None
 
     # ------------------------------------------------------------------
     # File metadata
@@ -838,3 +1124,17 @@ class SteadyPlanHdf(GeometryHdf):
                 self._hdf
             )
         return self._steady_storage_areas
+
+    @property
+    def structures(self) -> SteadyStructureCollection:
+        """All structures with geometry and, where available, steady-profile results.
+
+        :class:`~rivia.hdf.Lateral` items are upgraded to
+        :class:`SteadyLateralResults` when result data is present.
+        :class:`~rivia.hdf.Bridge`, culvert, and inline structure items are
+        returned as plain geometry objects — HEC-RAS 1D steady-flow HDF files
+        do not store separate result datasets for those node types.
+        """
+        if self._steady_structures is None:
+            self._steady_structures = SteadyStructureCollection(self._hdf)
+        return self._steady_structures

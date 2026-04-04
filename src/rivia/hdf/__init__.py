@@ -24,9 +24,11 @@ from ._geometry import (
 from ._steady_plan import (
     SteadyCrossSectionResults,
     SteadyCrossSectionResultsCollection,
+    SteadyLateralResults,
     SteadyPlanHdf,
     SteadyStorageAreaResults,
     SteadyStorageAreaResultsCollection,
+    SteadyStructureCollection,
 )
 from ._unsteady_plan import (
     BridgeResults,
@@ -50,8 +52,10 @@ __all__ = [
     "SteadyPlanHdf",
     "SteadyCrossSectionResults",
     "SteadyCrossSectionResultsCollection",
+    "SteadyLateralResults",
     "SteadyStorageAreaResults",
     "SteadyStorageAreaResultsCollection",
+    "SteadyStructureCollection",
     "UnsteadyPlanHdf",
     "CrossSection",
     "CrossSectionCollection",
