@@ -736,6 +736,27 @@ class SteadyStorageAreaResultsCollection(StorageAreaCollection):
         self._items = items  # type: ignore[assignment]
         return self._items  # type: ignore[return-value]
 
+    def __getitem__(self, key: int | str) -> SteadyStorageAreaResults:
+        items = self._load()
+        if isinstance(key, int):
+            keys = list(items)
+            try:
+                return items[keys[key]]
+            except IndexError:
+                raise IndexError(
+                    f"Index {key} out of range (n={len(items)})"
+                ) from None
+        if key not in items:
+            raise KeyError(
+                f"Storage area {key!r} not found. Available: {self.names}"
+            )
+        return items[key]
+
+    @property
+    def names(self) -> list[str]:
+        """Names of all storage areas in the collection."""
+        return list(self._load().keys())
+
 
 # ---------------------------------------------------------------------------
 # SteadyLateralResults
