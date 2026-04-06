@@ -4,13 +4,13 @@ from ._geometry import (
     BoundaryConditionCollection,
     BoundaryConditionLine,
     Bridge,
-    CrossSection,
-    CrossSectionCollection,
     FlowArea,
     FlowAreaCollection,
     GateGroup,
-    GateOpening,
     GeometryHdf,
+    HdfCrossSection,
+    HdfCrossSectionCollection,
+    HdfGateOpening,
     Inline,
     Lateral,
     SA2DConnection,
@@ -21,6 +21,11 @@ from ._geometry import (
     StructureIndex,
     Weir,
 )
+
+# Backward-compatible aliases (deprecated — use Hdf-prefixed names)
+CrossSection = HdfCrossSection
+CrossSectionCollection = HdfCrossSectionCollection
+GateOpening = HdfGateOpening
 from ._steady_plan import (
     SteadyCrossSectionResults,
     SteadyCrossSectionResultsCollection,
@@ -32,20 +37,26 @@ from ._steady_plan import (
 )
 from ._unsteady_plan import (
     BridgeResults,
-    CrossSectionResults,
-    CrossSectionResultsCollection,
-    CrossSectionResultsDss,
-    CrossSectionResultsInst,
     FlowAreaResults,
     FlowAreaResultsCollection,
     InlineResults,
     LateralResults,
-    UnsteadyPlanHdf,
     PlanStructureCollection,
     SA2DConnectionResults,
     StorageAreaResults,
     StorageAreaResultsCollection,
+    UnsteadyCrossSectionResults,
+    UnsteadyCrossSectionResultsCollection,
+    UnsteadyCrossSectionResultsDss,
+    UnsteadyCrossSectionResultsInst,
+    UnsteadyPlanHdf,
 )
+
+# Backward-compatible aliases for renamed unsteady results classes
+CrossSectionResults = UnsteadyCrossSectionResults
+CrossSectionResultsDss = UnsteadyCrossSectionResultsDss
+CrossSectionResultsInst = UnsteadyCrossSectionResultsInst
+CrossSectionResultsCollection = UnsteadyCrossSectionResultsCollection
 
 __all__ = [
     "GeometryHdf",
@@ -57,12 +68,15 @@ __all__ = [
     "SteadyStorageAreaResultsCollection",
     "SteadyStructureCollection",
     "UnsteadyPlanHdf",
-    "CrossSection",
-    "CrossSectionCollection",
-    "CrossSectionResults",
-    "CrossSectionResultsDss",
-    "CrossSectionResultsInst",
-    "CrossSectionResultsCollection",
+    # HDF geometry classes
+    "HdfCrossSection",
+    "HdfCrossSectionCollection",
+    "HdfGateOpening",
+    # Unsteady results classes
+    "UnsteadyCrossSectionResults",
+    "UnsteadyCrossSectionResultsDss",
+    "UnsteadyCrossSectionResultsInst",
+    "UnsteadyCrossSectionResultsCollection",
     "FlowAreaCollection",
     "FlowAreaResultsCollection",
     "FlowArea",
@@ -87,5 +101,8 @@ __all__ = [
     "StructureIndex",
     "Weir",
     "GateGroup",
+    # Backward-compatible aliases
+    "CrossSection",
+    "CrossSectionCollection",
     "GateOpening",
 ]

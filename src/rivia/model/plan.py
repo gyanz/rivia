@@ -52,6 +52,9 @@ class PlanFile:
             self._lines: list[str] = fh.readlines()
         self._modified: bool = False
 
+    def __repr__(self) -> str:
+        return f"PlanFile({self._path.name!r}, title={self.plan_title!r})"
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------

@@ -32,8 +32,8 @@ import numpy as np
 from ._base import _HdfFile
 from ._geometry import (
     _SA_ROOT,
-    CrossSection,
-    CrossSectionCollection,
+    HdfCrossSection,
+    HdfCrossSectionCollection,
     GeometryHdf,
     Lateral,
     StorageArea,
@@ -67,10 +67,10 @@ _STEADY_LATERAL = f"{_STEADY_PROFILES_ROOT}/Lateral Structures"
 # ---------------------------------------------------------------------------
 
 
-class SteadyCrossSectionResults(CrossSection):
+class SteadyCrossSectionResults(HdfCrossSection):
     """Geometry *and* steady-profile results for one 1-D cross section.
 
-    Inherits all geometry attributes from :class:`~rivia.hdf.CrossSection`.
+    Inherits all geometry attributes from :class:`~rivia.hdf.HdfCrossSection`.
 
     All result properties return a ``numpy`` array of shape ``(n_profiles,)``
     where each index corresponds to a named steady-flow profile.  Use
@@ -79,7 +79,7 @@ class SteadyCrossSectionResults(CrossSection):
     Parameters
     ----------
     geom:
-        Geometry object from :class:`~rivia.hdf.CrossSectionCollection`.
+        Geometry object from :class:`~rivia.hdf.HdfCrossSectionCollection`.
     hdf:
         Open ``h5py.File`` — kept alive by the parent ``SteadyPlanHdf`` context.
     index:
@@ -90,12 +90,12 @@ class SteadyCrossSectionResults(CrossSection):
 
     def __init__(
         self,
-        geom: CrossSection,
+        geom: HdfCrossSection,
         hdf: "h5py.File",
         index: int,
         root: str,
     ) -> None:
-        CrossSection.__init__(
+        HdfCrossSection.__init__(
             self,
             river=geom.river,
             reach=geom.reach,
@@ -466,7 +466,7 @@ class SteadyCrossSectionResults(CrossSection):
 # ---------------------------------------------------------------------------
 
 
-class SteadyCrossSectionResultsCollection(CrossSectionCollection):
+class SteadyCrossSectionResultsCollection(HdfCrossSectionCollection):
     """Steady-plan cross section collection with profile results.
 
     Combines geometry from ``Geometry/Cross Sections`` with steady-flow
@@ -487,7 +487,7 @@ class SteadyCrossSectionResultsCollection(CrossSectionCollection):
         if self._result_items is not None:
             return self._result_items
 
-        geom_items = CrossSectionCollection._load(self)
+        geom_items = HdfCrossSectionCollection._load(self)
 
         attrs_ds = self._hdf.get(_STEADY_GEOM_ATTRS)
         if attrs_ds is None:

@@ -32,8 +32,8 @@ from ._base import _HdfFile
 from ._geometry import (
     _SA_ROOT,
     Bridge,
-    CrossSection,
-    CrossSectionCollection,
+    HdfCrossSection,
+    HdfCrossSectionCollection,
     FlowArea,
     FlowAreaCollection,
     GeometryHdf,
@@ -146,6 +146,12 @@ class FlowAreaResults(FlowArea):
         super().__init__(geom_group, name, n_cells)
         self._ts = ts_group
         self._sum = sum_group
+
+    def __repr__(self) -> str:
+        return (
+            f"FlowAreaResults({self.name!r},"
+            f" cells={self.n_cells}, faces={self.n_faces})"
+        )
 
     # ------------------------------------------------------------------
     # Lazy time-series (h5py.Dataset - slice to control memory)
@@ -2009,11 +2015,11 @@ class PlanStructureCollection(StructureCollection):
 
 
 # ---------------------------------------------------------------------------
-# CrossSectionResults / CrossSectionResultsCollection
+# UnsteadyCrossSectionResults / UnsteadyCrossSectionResultsCollection
 # ---------------------------------------------------------------------------
 
 
-class _CrossSectionResultsBase(CrossSection):
+class _CrossSectionResultsBase(HdfCrossSection):
     """Private base for all three cross-section result variants.
 
     Holds the HDF handle, column index, and result-group root; provides the
@@ -2021,18 +2027,19 @@ class _CrossSectionResultsBase(CrossSection):
     are present in every output block.
 
     Concrete subclasses add the properties that are specific to their output
-    block (:class:`CrossSectionResults`, :class:`CrossSectionResultsDss`,
-    :class:`CrossSectionResultsInst`).
+    block (:class:`UnsteadyCrossSectionResults`,
+    :class:`UnsteadyCrossSectionResultsDss`,
+    :class:`UnsteadyCrossSectionResultsInst`).
     """
 
     def __init__(
         self,
-        geom: CrossSection,
+        geom: HdfCrossSection,
         hdf: "h5py.File",
         index: int,
         root: str,
     ) -> None:
-        CrossSection.__init__(
+        HdfCrossSection.__init__(
             self,
             river=geom.river,
             reach=geom.reach,
@@ -2076,7 +2083,7 @@ class _CrossSectionResultsBase(CrossSection):
         return self._load("Flow")
 
 
-class CrossSectionResults(_CrossSectionResultsBase):
+class UnsteadyCrossSectionResults(_CrossSectionResultsBase):
     """Geometry *and* results for one XS from the **Base Output** block.
 
     Corresponds to :attr:`UnsteadyPlanHdf.cross_sections` (mapping output interval).
@@ -2085,7 +2092,7 @@ class CrossSectionResults(_CrossSectionResultsBase):
     Parameters
     ----------
     geom:
-        Geometry object from :class:`CrossSectionCollection`.
+        Geometry object from :class:`HdfCrossSectionCollection`.
     hdf:
         Open ``h5py.File`` — kept alive by the parent ``UnsteadyPlanHdf`` context.
     index:
@@ -2115,7 +2122,7 @@ class CrossSectionResults(_CrossSectionResultsBase):
         return self._load("Velocity Total")
 
 
-class CrossSectionResultsDss(_CrossSectionResultsBase):
+class UnsteadyCrossSectionResultsDss(_CrossSectionResultsBase):
     """Geometry *and* results for one XS from the **DSS Hydrograph Output** block.
 
     Corresponds to :attr:`UnsteadyPlanHdf.cross_sections_dss` (hydrograph output interval).
@@ -2124,7 +2131,7 @@ class CrossSectionResultsDss(_CrossSectionResultsBase):
     Parameters
     ----------
     geom:
-        Geometry object from :class:`CrossSectionCollection`.
+        Geometry object from :class:`HdfCrossSectionCollection`.
     hdf:
         Open ``h5py.File`` — kept alive by the parent ``UnsteadyPlanHdf`` context.
     index:
@@ -2139,7 +2146,7 @@ class CrossSectionResultsDss(_CrossSectionResultsBase):
         return self._load("Flow Volume Cumulative")
 
 
-class CrossSectionResultsInst(_CrossSectionResultsBase):
+class UnsteadyCrossSectionResultsInst(_CrossSectionResultsBase):
     """Geometry *and* results for one XS from the **Post Process Profiles** block.
 
     Corresponds to :attr:`UnsteadyPlanHdf.cross_sections_inst` (DSS inst interval).
@@ -2159,7 +2166,7 @@ class CrossSectionResultsInst(_CrossSectionResultsBase):
     Parameters
     ----------
     geom:
-        Geometry object from :class:`CrossSectionCollection`.
+        Geometry object from :class:`HdfCrossSectionCollection`.
     hdf:
         Open ``h5py.File`` — kept alive by the parent ``UnsteadyPlanHdf`` context.
     index:
@@ -2480,7 +2487,7 @@ class CrossSectionResultsInst(_CrossSectionResultsBase):
         return self.additional_variable("Wetted Perimeter Total")
 
 
-class CrossSectionResultsCollection(CrossSectionCollection):
+class UnsteadyCrossSectionResultsCollection(HdfCrossSectionCollection):
     """Plan-enriched cross section collection with time-series results.
 
     Parameterised over the concrete result class and the HDF path used to
@@ -2496,8 +2503,9 @@ class CrossSectionResultsCollection(CrossSectionCollection):
         ``_TS_XS``, ``_DSS_XS``, or ``_POSTPROC_XS``.
     result_cls:
         Concrete result class to instantiate per cross section —
-        :class:`CrossSectionResults`, :class:`CrossSectionResultsDss`, or
-        :class:`CrossSectionResultsInst`.
+        :class:`UnsteadyCrossSectionResults`,
+        :class:`UnsteadyCrossSectionResultsDss`, or
+        :class:`UnsteadyCrossSectionResultsInst`.
     attrs_path:
         HDF path to the ``Cross Section Attributes`` structured array used
         to map ``(river, reach, station)`` → column index.  Defaults to
@@ -2510,7 +2518,7 @@ class CrossSectionResultsCollection(CrossSectionCollection):
         self,
         hdf: "h5py.File",
         root: str,
-        result_cls: type[_CrossSectionResultsBase] = CrossSectionResults,
+        result_cls: type[_CrossSectionResultsBase] = UnsteadyCrossSectionResults,
         attrs_path: str | None = None,
     ) -> None:
         super().__init__(hdf)
@@ -2523,7 +2531,7 @@ class CrossSectionResultsCollection(CrossSectionCollection):
         if self._result_items is not None:
             return self._result_items
 
-        geom_items = CrossSectionCollection._load(self)
+        geom_items = HdfCrossSectionCollection._load(self)
 
         attrs_ds = self._hdf.get(self._attrs_path)
         if attrs_ds is None:
@@ -2892,9 +2900,9 @@ class UnsteadyPlanHdf(GeometryHdf):
         self._plan_flow_areas: FlowAreaResultsCollection | None = None
         self._plan_storage_areas: StorageAreaResultsCollection | None = None
         self._plan_structures: PlanStructureCollection | None = None
-        self._plan_cross_sections: CrossSectionResultsCollection | None = None
-        self._plan_cross_sections_dss: CrossSectionResultsCollection | None = None
-        self._plan_cross_sections_inst: CrossSectionResultsCollection | None = None
+        self._plan_cross_sections: UnsteadyCrossSectionResultsCollection | None = None
+        self._plan_cross_sections_dss: UnsteadyCrossSectionResultsCollection | None = None
+        self._plan_cross_sections_inst: UnsteadyCrossSectionResultsCollection | None = None
 
     # ------------------------------------------------------------------
     # File metadata
@@ -3468,7 +3476,7 @@ class UnsteadyPlanHdf(GeometryHdf):
         return self._plan_structures
 
     @property
-    def cross_sections(self) -> CrossSectionResultsCollection:
+    def cross_sections(self) -> UnsteadyCrossSectionResultsCollection:
         """1-D cross sections with geometry and Base Output results.
 
         Results are at the mapping output interval
@@ -3481,31 +3489,31 @@ class UnsteadyPlanHdf(GeometryHdf):
         (fewer variables but finer timestep when DSS output was enabled).
         """
         if self._plan_cross_sections is None:
-            self._plan_cross_sections = CrossSectionResultsCollection(
-                self._hdf, _TS_XS, result_cls=CrossSectionResults,
+            self._plan_cross_sections = UnsteadyCrossSectionResultsCollection(
+                self._hdf, _TS_XS, result_cls=UnsteadyCrossSectionResults,
             )
         return self._plan_cross_sections
 
     @property
-    def cross_sections_dss(self) -> CrossSectionResultsCollection:
+    def cross_sections_dss(self) -> UnsteadyCrossSectionResultsCollection:
         """1-D cross sections with geometry and DSS Hydrograph Output results.
 
-        Items are :class:`CrossSectionResultsDss` instances.
+        Items are :class:`UnsteadyCrossSectionResultsDss` instances.
         Results are at the hydrograph output interval (:attr:`timestamps_dss`).
         Available variables: ``water_surface``, ``flow``,
         ``flow_volume_cumulative``.
         """
         if self._plan_cross_sections_dss is None:
-            self._plan_cross_sections_dss = CrossSectionResultsCollection(
-                self._hdf, _DSS_XS, result_cls=CrossSectionResultsDss,
+            self._plan_cross_sections_dss = UnsteadyCrossSectionResultsCollection(
+                self._hdf, _DSS_XS, result_cls=UnsteadyCrossSectionResultsDss,
             )
         return self._plan_cross_sections_dss
 
     @property
-    def cross_sections_inst(self) -> CrossSectionResultsCollection:
+    def cross_sections_inst(self) -> UnsteadyCrossSectionResultsCollection:
         """1-D cross sections with geometry and Post Process Profiles results.
 
-        Items are :class:`CrossSectionResultsInst` instances.
+        Items are :class:`UnsteadyCrossSectionResultsInst` instances.
         Results are at the DSS instantaneous profile interval
         (:attr:`timestamps_dss_inst`).
 
@@ -3513,12 +3521,12 @@ class UnsteadyPlanHdf(GeometryHdf):
         the **Max WS** profile and indices ``1:`` are the instantaneous
         profiles.  Available variables: ``water_surface``, ``flow``,
         ``energy_grade``, plus any ``Additional Variables`` dataset via
-        :meth:`~CrossSectionResultsInst.additional_variable`.
+        :meth:`~UnsteadyCrossSectionResultsInst.additional_variable`.
         """
         if self._plan_cross_sections_inst is None:
-            self._plan_cross_sections_inst = CrossSectionResultsCollection(
+            self._plan_cross_sections_inst = UnsteadyCrossSectionResultsCollection(
                 self._hdf, _POSTPROC_XS,
-                result_cls=CrossSectionResultsInst,
+                result_cls=UnsteadyCrossSectionResultsInst,
                 attrs_path=_POSTPROC_GEOM_ATTRS,
             )
         return self._plan_cross_sections_inst

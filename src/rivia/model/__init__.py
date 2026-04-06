@@ -17,6 +17,10 @@ import logging
 import re
 import shutil
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from rivia.hdf import SteadyPlanHdf, UnsteadyPlanHdf
 
 from .. import com
 from ..utils import normalize_sim_end_time, normalize_sim_start_time
@@ -66,6 +70,7 @@ from .project import ProjectFile
 
 __all__ = [
     "Model",
+    "PlanSummary",
     "PlanFile",
     "ProjectFile",
     "GeometryFile",
@@ -111,48 +116,30 @@ EXT_BACKUP_FILE = "rivia_bkup"
 
 
 @dataclasses.dataclass
-class _ChainingState:
-    """Private state that tracks run-chaining for :class:`Model`.
+class PlanSummary:
+    """Lightweight summary of one plan in a project.
 
-    Run-chaining is the pattern where a sequence of short HEC-RAS simulations
-    are linked end-to-end: each run writes a restart (``.rst``) file at its
-    simulation end time, and the following run reads that file as its initial
-    condition.  This allows long simulations to be broken into smaller windows
-    while preserving hydraulic continuity across the boundaries.
-
-    This dataclass is stored as ``Model._chaining`` and is only mutated by
-    :meth:`~Model.enable_chaining` and :meth:`~Model.run`.  All other
-    ``Model`` methods treat it as read-only.
+    Returned by :attr:`Model.plans`.
 
     Attributes
     ----------
-    enabled : bool
-        ``True`` while chaining is active.  Set to ``True`` by
-        ``enable_chaining(True)`` and back to ``False`` by
-        ``enable_chaining(False)``.  When ``False`` no chaining logic runs
-        inside :meth:`~Model.run`.
-    run_number : int or None
-        Tracks how many chained runs have completed in the current sequence.
-
-        - ``None`` — chaining has never been enabled on this ``Model``
-          instance, or has been fully reset by ``enable_chaining(False)``.
-        - ``0`` — the seed run: no restart file exists yet, so only the
-          unsaved-modifications guard is active; the restart-file existence
-          check is skipped.
-        - ``≥ 1`` — a subsequent chained run: :meth:`~Model.run` verifies
-          that the restart file produced by the previous run exists on disk
-          and that the flow file has the restart flag enabled before
-          launching HEC-RAS.
-
-        The counter is initialised to ``0`` on the first ``enable_chaining(True)``
-        call and is never reset by subsequent ``enable_chaining(True)`` calls,
-        so chaining configuration can be adjusted mid-sequence without losing
-        track of the run position.  It is reset to ``None`` only by
-        ``enable_chaining(False)``.
+    index:
+        Zero-based position in the project's plan list.
+    title:
+        ``Plan Title=`` string from the plan file, or ``None``.
+    short_id:
+        ``Short Identifier=`` string from the plan file, or ``None``.
+    path:
+        Full path to the plan file.
+    active:
+        ``True`` for the plan currently loaded by HEC-RAS.
     """
 
-    enabled: bool = False
-    run_number: int | None = None
+    index: int
+    title: str | None
+    short_id: str | None
+    path: Path
+    active: bool
 
 
 class Model(MapperExtension):
@@ -231,7 +218,13 @@ class Model(MapperExtension):
 
     @property
     def flow_file(self) -> Path:
-        """Return the current flow file path."""
+        """Return the current flow file path.
+
+        Raises
+        ------
+        ValueError
+            If the plan file has no ``Flow File=`` entry or the entry is blank.
+        """
         plan_file = self.plan_file
         with open(plan_file) as fid:
             for line in fid:
@@ -239,6 +232,9 @@ class Model(MapperExtension):
                     ext = line.split("=")[1].strip()
                     if ext:
                         return plan_file.with_suffix(f".{ext}")
+        raise ValueError(
+            f"Plan file {plan_file.name!r} has no 'Flow File=' entry."
+        )
 
     @property
     def project(self) -> ProjectFile:
@@ -302,37 +298,45 @@ class Model(MapperExtension):
         return self._flow
 
     @property
-    def hdf(self):
-        """Lazily opened HDF file for the current plan.
+    def hdf(self) -> "SteadyPlanHdf | UnsteadyPlanHdf":
+        """Lazily opened HDF results file for the current plan.
 
         Dispatches to the appropriate class based on plan type:
 
         * Steady flow (``plan.is_steady``) → :class:`~rivia.hdf.SteadyPlanHdf`
         * Unsteady flow (``plan.is_unsteady``) → :class:`~rivia.hdf.UnsteadyPlanHdf`
-        * Unknown / plan not yet run → :class:`~rivia.hdf.GeometryHdf` (uncached fallback)
 
-        The plan HDF handle is kept open until :meth:`reload` is called or the
-        object is closed directly.  The ``GeometryHdf`` fallback is not cached;
-        each access that requires the fallback opens a new handle.
+        The handle is kept open until :meth:`reload` is called or :meth:`close`
+        is invoked.  For geometry-only access (no results), use
+        ``GeometryHdf(model.geom_hdf_file)`` directly.
+
+        Raises
+        ------
+        FileNotFoundError
+            If the plan HDF does not exist — run the model first, or use
+            ``GeometryHdf(model.geom_hdf_file)`` for geometry-only access.
+        ValueError
+            If the plan type cannot be determined from the flow file extension.
         """
-        from rivia.hdf import GeometryHdf, SteadyPlanHdf, UnsteadyPlanHdf
+        from rivia.hdf import SteadyPlanHdf, UnsteadyPlanHdf
 
         if self._hdf is None:
             plan_path = self.plan_hdf_file
-            try:
-                if not plan_path.exists():
-                    raise FileNotFoundError(plan_path)
-                if self.plan.is_steady:
-                    self._hdf = SteadyPlanHdf(plan_path)
-                elif self.plan.is_unsteady:
-                    self._hdf = UnsteadyPlanHdf(plan_path)
-                else:
-                    raise ValueError(
-                        f"Cannot determine plan type from flow file "
-                        f"{self.plan.flow_file!r}."
-                    )
-            except Exception:
-                return GeometryHdf(self.geom_hdf_file)
+            if not plan_path.exists():
+                raise FileNotFoundError(
+                    f"Plan HDF {plan_path.name!r} does not exist. "
+                    "Run the model first with model.run(), or use "
+                    "GeometryHdf(model.geom_hdf_file) for geometry-only access."
+                )
+            if self.plan.is_steady:
+                self._hdf = SteadyPlanHdf(plan_path)
+            elif self.plan.is_unsteady:
+                self._hdf = UnsteadyPlanHdf(plan_path)
+            else:
+                raise ValueError(
+                    f"Cannot determine plan type from flow file "
+                    f"{self.plan.flow_file!r}."
+                )
         return self._hdf
 
     @property
@@ -353,6 +357,69 @@ class Model(MapperExtension):
         if self._dss is None:
             self._dss = DssReader(self)
         return self._dss
+
+    @property
+    def plans(self) -> list[PlanSummary]:
+        """All plans in the project with index, title, short_id, path, and active flag.
+
+        Example::
+
+            for p in model.plans:
+                active = "*" if p.active else " "
+                print(f"[{active}] {p.index}: {p.title} ({p.short_id})")
+        """
+        active_name = self.plan_file.name
+        return [
+            PlanSummary(
+                index=i,
+                title=p["title"],
+                short_id=p["short_id"],
+                path=p["path"],
+                active=(p["path"].name == active_name),
+            )
+            for i, p in enumerate(self.project.plans())
+        ]
+
+    @contextlib.contextmanager
+    def editing(self):
+        """Context manager for batch file edits with automatic save and reload.
+
+        All modifications made inside the block are saved and the project is
+        reloaded on exit::
+
+            with model.editing():
+                model.plan.simulation_window = (start, end)
+                model.plan.computation_interval = "30SEC"
+            # files saved, project reloaded
+        """
+        yield self
+        self.reload(save_if_modified=True)
+
+    @contextlib.contextmanager
+    def chaining(self, cleanup: bool = False):
+        """Context manager that enables run-chaining for the duration of the block.
+
+        Chaining is automatically disabled (and optionally restart files
+        deleted) when the block exits, even if an exception is raised::
+
+            with model.chaining():
+                for window in windows:
+                    with model.editing():
+                        model.plan.simulation_window = window
+                    model.run()
+
+        Parameters
+        ----------
+        cleanup:
+            If ``True``, delete all restart files after chaining ends.
+        """
+        self.enable_chaining(True)
+        try:
+            yield self
+        finally:
+            self.enable_chaining(False)
+            if cleanup:
+                self.delete_restart_files()
 
     @property
     def plan_index(self) -> int:
@@ -799,11 +866,85 @@ class Model(MapperExtension):
                 deleted.append(path)
         return deleted
 
+    # ------------------------------------------------------------------
+    # Resource lifecycle
+    # ------------------------------------------------------------------
+
+    def close(self) -> None:
+        """Close the COM connection and release all cached file handles.
+
+        Safe to call multiple times.  Called automatically on ``__exit__``
+        when used as a context manager.
+        """
+        with contextlib.suppress(Exception):
+            if self._hdf is not None:
+                self._hdf.close()
+                self._hdf = None
+        with contextlib.suppress(Exception):
+            self.controller.close()
+
+    def __enter__(self) -> "Model":
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
+        self.close()
+        return False
+
+    def __repr__(self) -> str:
+        return (
+            f"Model({self.project_file.name!r}, plan={self.plan_file.name!r})"
+        )
+
     def __del__(self):
         with contextlib.suppress(Exception):
             logger.debug("Executing Model destructor.")
         with contextlib.suppress(Exception):
             self.controller.close()
+
+
+@dataclasses.dataclass
+class _ChainingState:
+    """Private state that tracks run-chaining for :class:`Model`.
+
+    Run-chaining is the pattern where a sequence of short HEC-RAS simulations
+    are linked end-to-end: each run writes a restart (``.rst``) file at its
+    simulation end time, and the following run reads that file as its initial
+    condition.  This allows long simulations to be broken into smaller windows
+    while preserving hydraulic continuity across the boundaries.
+
+    This dataclass is stored as ``Model._chaining`` and is only mutated by
+    :meth:`~Model.enable_chaining` and :meth:`~Model.run`.  All other
+    ``Model`` methods treat it as read-only.
+
+    Attributes
+    ----------
+    enabled : bool
+        ``True`` while chaining is active.  Set to ``True`` by
+        ``enable_chaining(True)`` and back to ``False`` by
+        ``enable_chaining(False)``.  When ``False`` no chaining logic runs
+        inside :meth:`~Model.run`.
+    run_number : int or None
+        Tracks how many chained runs have completed in the current sequence.
+
+        - ``None`` — chaining has never been enabled on this ``Model``
+          instance, or has been fully reset by ``enable_chaining(False)``.
+        - ``0`` — the seed run: no restart file exists yet, so only the
+          unsaved-modifications guard is active; the restart-file existence
+          check is skipped.
+        - ``≥ 1`` — a subsequent chained run: :meth:`~Model.run` verifies
+          that the restart file produced by the previous run exists on disk
+          and that the flow file has the restart flag enabled before
+          launching HEC-RAS.
+
+        The counter is initialised to ``0`` on the first ``enable_chaining(True)``
+        call and is never reset by subsequent ``enable_chaining(True)`` calls,
+        so chaining configuration can be adjusted mid-sequence without losing
+        track of the run position.  It is reset to ``None`` only by
+        ``enable_chaining(False)``.
+    """
+
+    enabled: bool = False
+    run_number: int | None = None
 
 
 def _get_ras_version_from_project_file(project_file: str | Path):

@@ -1829,7 +1829,7 @@ class Weir:
 
 
 @dataclass
-class GateOpening:
+class HdfGateOpening:
     """One physical opening within a :class:`GateGroup`.
 
     Attributes
@@ -1883,7 +1883,7 @@ class GateGroup:
     radial_coefficient: float
     weir_coefficient: float
     spillway_shape: str
-    openings: list[GateOpening] = field(default_factory=list)
+    openings: list[HdfGateOpening] = field(default_factory=list)
 
 
 @dataclass
@@ -2155,8 +2155,8 @@ class StructureCollection:
         def _ggf(row, f: str) -> float:
             return float(row[f]) if f in gg_fn else float("nan")
 
-        # Build openings dict: (struct_id, gate_group_local_id) → [GateOpening]
-        openings_map: dict[tuple[int, int], list[GateOpening]] = {}
+        # Build openings dict: (struct_id, gate_group_local_id) → [HdfGateOpening]
+        openings_map: dict[tuple[int, int], list[HdfGateOpening]] = {}
         op_path = f"{gg_root}/Openings/Attributes"
         if op_path in self._hdf:
             op_ds = self._hdf[op_path]
@@ -2168,7 +2168,7 @@ class StructureCollection:
                 name = _decode(op_row["Name"]) if "Name" in op_fn else ""
                 station = float(op_row["Station"]) if "Station" in op_fn else float("nan")
                 key = (sid, gid)
-                openings_map.setdefault(key, []).append(GateOpening(name=name, station=station))
+                openings_map.setdefault(key, []).append(HdfGateOpening(name=name, station=station))
 
         # Build gate groups, tracking local index per structure
         gate_groups_map: dict[int, list[GateGroup]] = {}
@@ -2419,12 +2419,12 @@ class StructureCollection:
 
 
 # ---------------------------------------------------------------------------
-# CrossSection / CrossSectionCollection
+# HdfCrossSection / HdfCrossSectionCollection
 # ---------------------------------------------------------------------------
 
 
 @dataclass
-class CrossSection:
+class HdfCrossSection:
     """One HEC-RAS 1-D cross section from ``Geometry/Cross Sections/Attributes``.
 
     Attributes
@@ -2471,7 +2471,7 @@ class CrossSection:
         return (self.river, self.reach, self.rs)
 
 
-class CrossSectionCollection:
+class HdfCrossSectionCollection:
     """Access all 1-D cross sections in ``Geometry/Cross Sections``.
 
     Keyed by ``"River Reach RS"`` — the same convention used by
@@ -2485,10 +2485,10 @@ class CrossSectionCollection:
 
     def __init__(self, hdf: h5py.File) -> None:
         self._hdf = hdf
-        self._items: dict[str, CrossSection] | None = None
+        self._items: dict[str, HdfCrossSection] | None = None
         self._loc_index: dict[tuple[str, str, str], str] = {}
 
-    def _load(self) -> dict[str, CrossSection]:
+    def _load(self) -> dict[str, HdfCrossSection]:
         if self._items is not None:
             return self._items
 
@@ -2516,7 +2516,7 @@ class CrossSectionCollection:
         pl_info = np.array(root["Polyline Info"])
         pl_pts  = np.array(root["Polyline Points"])           # (total, 2)
 
-        items: dict[str, CrossSection] = {}
+        items: dict[str, HdfCrossSection] = {}
         for i, row in enumerate(attrs):
             river = _s(row, "River")
             reach = _s(row, "Reach")
@@ -2530,7 +2530,7 @@ class CrossSectionCollection:
             pl_start, pl_count = int(pl_info[i, 0]), int(pl_info[i, 1])
 
             self._loc_index[(river, reach, rs)] = key
-            items[key] = CrossSection(
+            items[key] = HdfCrossSection(
                 river=river,
                 reach=reach,
                 rs=rs,
@@ -2562,13 +2562,13 @@ class CrossSectionCollection:
         return list(self._load().keys())
 
     @overload
-    def __getitem__(self, key: int) -> CrossSection: ...
+    def __getitem__(self, key: int) -> HdfCrossSection: ...
     @overload
-    def __getitem__(self, key: str) -> CrossSection: ...
+    def __getitem__(self, key: str) -> HdfCrossSection: ...
     @overload
-    def __getitem__(self, key: tuple[str, str, str]) -> CrossSection: ...
+    def __getitem__(self, key: tuple[str, str, str]) -> HdfCrossSection: ...
 
-    def __getitem__(self, key: int | str | tuple[str, str, str]) -> CrossSection:
+    def __getitem__(self, key: int | str | tuple[str, str, str]) -> HdfCrossSection:
         items = self._load()
         if isinstance(key, int):
             keys = list(items)
@@ -2594,7 +2594,7 @@ class CrossSectionCollection:
     def __len__(self) -> int:
         return len(self._load())
 
-    def __iter__(self) -> Iterator[CrossSection]:
+    def __iter__(self) -> Iterator[HdfCrossSection]:
         return iter(self._load().values())
 
     def __repr__(self) -> str:
@@ -2625,7 +2625,7 @@ class GeometryHdf(_HdfFile):
         self._storage_areas: StorageAreaCollection | None = None
         self._boundary_condition_lines: BoundaryConditionCollection | None = None
         self._structures: StructureCollection | None = None
-        self._cross_sections: CrossSectionCollection | None = None
+        self._cross_sections: HdfCrossSectionCollection | None = None
 
     # ------------------------------------------------------------------
     # Collections
@@ -2660,10 +2660,10 @@ class GeometryHdf(_HdfFile):
         return self._structures
 
     @property
-    def cross_sections(self) -> CrossSectionCollection:
+    def cross_sections(self) -> HdfCrossSectionCollection:
         """Access all 1-D cross sections stored in the geometry HDF."""
         if self._cross_sections is None:
-            self._cross_sections = CrossSectionCollection(self._hdf)
+            self._cross_sections = HdfCrossSectionCollection(self._hdf)
         return self._cross_sections
 
 
