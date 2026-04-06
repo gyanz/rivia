@@ -3,23 +3,23 @@
 from ._geometry import (
     BoundaryConditionCollection,
     BoundaryConditionLine,
-    Bridge,
+    HdfBridge,
     FlowArea,
     FlowAreaCollection,
-    GateGroup,
+    HdfGateGroup,
     GeometryHdf,
     HdfCrossSection,
     HdfCrossSectionCollection,
     HdfGateOpening,
-    Inline,
-    Lateral,
+    HdfInline,
+    HdfLateral,
     SA2DConnection,
     StorageArea,
     StorageAreaCollection,
-    Structure,
-    StructureCollection,
-    StructureIndex,
-    Weir,
+    HdfStructure,
+    HdfStructureCollection,
+    HdfStructureIndex,
+    HdfWeir,
 )
 
 # Backward-compatible aliases (deprecated — use Hdf-prefixed names)
@@ -27,13 +27,13 @@ CrossSection = HdfCrossSection
 CrossSectionCollection = HdfCrossSectionCollection
 GateOpening = HdfGateOpening
 from ._steady_plan import (
-    SteadyCrossSectionResults,
-    SteadyCrossSectionResultsCollection,
-    SteadyLateralResults,
+    CrossSectionResults as SteadyCrossSectionResults,
+    CrossSectionResultsCollection as SteadyCrossSectionResultsCollection,
+    LateralResults as SteadyLateralResults,
     SteadyPlanHdf,
-    SteadyStorageAreaResults,
-    SteadyStorageAreaResultsCollection,
-    SteadyStructureCollection,
+    StorageAreaResults as SteadyStorageAreaResults,
+    StorageAreaResultsCollection as SteadyStorageAreaResultsCollection,
+    StructureCollection as SteadyStructureCollection,
 )
 from ._unsteady_plan import (
     BridgeResults,
@@ -45,18 +45,12 @@ from ._unsteady_plan import (
     SA2DConnectionResults,
     StorageAreaResults,
     StorageAreaResultsCollection,
-    UnsteadyCrossSectionResults,
-    UnsteadyCrossSectionResultsCollection,
-    UnsteadyCrossSectionResultsDss,
-    UnsteadyCrossSectionResultsInst,
+    CrossSectionResults as UnsteadyCrossSectionResults,
+    CrossSectionResultsCollection as UnsteadyCrossSectionResultsCollection,
+    CrossSectionResultsDss as UnsteadyCrossSectionResultsDss,
+    CrossSectionResultsInst as UnsteadyCrossSectionResultsInst,
     UnsteadyPlanHdf,
 )
-
-# Backward-compatible aliases for renamed unsteady results classes
-CrossSectionResults = UnsteadyCrossSectionResults
-CrossSectionResultsDss = UnsteadyCrossSectionResultsDss
-CrossSectionResultsInst = UnsteadyCrossSectionResultsInst
-CrossSectionResultsCollection = UnsteadyCrossSectionResultsCollection
 
 __all__ = [
     "GeometryHdf",
@@ -72,6 +66,13 @@ __all__ = [
     "HdfCrossSection",
     "HdfCrossSectionCollection",
     "HdfGateOpening",
+    "HdfBridge",
+    "HdfInline",
+    "HdfLateral",
+    "HdfStructure",
+    "HdfStructureIndex",
+    "HdfWeir",
+    "HdfGateGroup",
     # Unsteady results classes
     "UnsteadyCrossSectionResults",
     "UnsteadyCrossSectionResultsDss",
@@ -92,15 +93,8 @@ __all__ = [
     "LateralResults",
     "BoundaryConditionLine",
     "BoundaryConditionCollection",
-    "Structure",
-    "Bridge",
-    "Inline",
-    "Lateral",
     "SA2DConnection",
-    "StructureCollection",
-    "StructureIndex",
-    "Weir",
-    "GateGroup",
+    "HdfStructureCollection",
     # Backward-compatible aliases
     "CrossSection",
     "CrossSectionCollection",

@@ -4,8 +4,8 @@ Steady plan HDF files embed the same ``Geometry/`` group as geometry HDF files
 *plus* ``Results/Steady/...`` profile-based output.
 
 ``SteadyPlanHdf`` inherits ``GeometryHdf`` so all geometry accessors are
-available.  ``SteadyCrossSectionResults``, ``SteadyStorageAreaResults``, and
-``SteadyLateralResults`` carry geometry attributes *and* steady-profile result
+available.  ``CrossSectionResults``, ``StorageAreaResults``, and
+``LateralResults`` carry geometry attributes *and* steady-profile result
 arrays.  All result arrays have shape ``(n_profiles,)`` (or ``(n_profiles,
 n_segments)`` for segment-level lateral data) where the first axis corresponds
 to a named steady-flow profile (e.g. ``"Big"``, ``"Bigger"``, ``"Biggest"``).
@@ -14,7 +14,7 @@ Bridge, culvert, and inline structure nodes in HEC-RAS 1D steady flow do not
 produce separate result datasets in the HDF file; their results are embedded in
 the adjacent upstream/downstream cross-section output.  ``SteadyPlanHdf``
 therefore returns plain geometry objects (no result access) for those types.
-Only :class:`SteadyLateralResults` carries dedicated result data.
+Only :class:`LateralResults` carries dedicated result data.
 
 Derived from examination of HEC-RAS 6.6 steady-flow plan HDF output at
 ``Results/Steady/Output/Output Blocks/Base Output/Steady Profiles/``.
@@ -35,11 +35,11 @@ from ._geometry import (
     HdfCrossSection,
     HdfCrossSectionCollection,
     GeometryHdf,
-    Lateral,
+    HdfLateral,
     StorageArea,
     StorageAreaCollection,
-    Structure,
-    StructureCollection,
+    HdfStructure,
+    HdfStructureCollection as _GeomStructureCollection,
     _decode,
 )
 
@@ -63,11 +63,11 @@ _STEADY_LATERAL = f"{_STEADY_PROFILES_ROOT}/Lateral Structures"
 
 
 # ---------------------------------------------------------------------------
-# SteadyCrossSectionResults
+# CrossSectionResults
 # ---------------------------------------------------------------------------
 
 
-class SteadyCrossSectionResults(HdfCrossSection):
+class CrossSectionResults(HdfCrossSection):
     """Geometry *and* steady-profile results for one 1-D cross section.
 
     Inherits all geometry attributes from :class:`~rivia.hdf.HdfCrossSection`.
@@ -462,16 +462,16 @@ class SteadyCrossSectionResults(HdfCrossSection):
 
 
 # ---------------------------------------------------------------------------
-# SteadyCrossSectionResultsCollection
+# CrossSectionResultsCollection
 # ---------------------------------------------------------------------------
 
 
-class SteadyCrossSectionResultsCollection(HdfCrossSectionCollection):
+class CrossSectionResultsCollection(HdfCrossSectionCollection):
     """Steady-plan cross section collection with profile results.
 
     Combines geometry from ``Geometry/Cross Sections`` with steady-flow
     result data from ``Results/Steady/Output/...``.  Each item is a
-    :class:`SteadyCrossSectionResults` instance.
+    :class:`CrossSectionResults` instance.
 
     Parameters
     ----------
@@ -481,9 +481,9 @@ class SteadyCrossSectionResultsCollection(HdfCrossSectionCollection):
 
     def __init__(self, hdf: "h5py.File") -> None:
         super().__init__(hdf)
-        self._result_items: dict[str, SteadyCrossSectionResults] | None = None
+        self._result_items: dict[str, CrossSectionResults] | None = None
 
-    def _load_results(self) -> dict[str, SteadyCrossSectionResults]:
+    def _load_results(self) -> dict[str, CrossSectionResults]:
         if self._result_items is not None:
             return self._result_items
 
@@ -504,11 +504,11 @@ class SteadyCrossSectionResultsCollection(HdfCrossSectionCollection):
             st = _decode(row["Station"]) if "Station" in fn else ""
             result_index[(r, rc, st)] = i
 
-        items: dict[str, SteadyCrossSectionResults] = {}
+        items: dict[str, CrossSectionResults] = {}
         for key, geom in geom_items.items():
             idx = result_index.get((geom.river, geom.reach, geom.rs))
             if idx is not None:
-                items[key] = SteadyCrossSectionResults(
+                items[key] = CrossSectionResults(
                     geom, self._hdf, idx, _STEADY_XS
                 )
 
@@ -516,15 +516,15 @@ class SteadyCrossSectionResultsCollection(HdfCrossSectionCollection):
         return self._result_items
 
     @overload
-    def __getitem__(self, key: int) -> SteadyCrossSectionResults: ...
+    def __getitem__(self, key: int) -> CrossSectionResults: ...
     @overload
-    def __getitem__(self, key: str) -> SteadyCrossSectionResults: ...
+    def __getitem__(self, key: str) -> CrossSectionResults: ...
     @overload
-    def __getitem__(self, key: tuple[str, str, str]) -> SteadyCrossSectionResults: ...
+    def __getitem__(self, key: tuple[str, str, str]) -> CrossSectionResults: ...
 
     def __getitem__(
         self, key: int | str | tuple[str, str, str]
-    ) -> SteadyCrossSectionResults:
+    ) -> CrossSectionResults:
         items = self._load_results()
         if isinstance(key, int):
             keys = list(items)
@@ -552,7 +552,7 @@ class SteadyCrossSectionResultsCollection(HdfCrossSectionCollection):
     def __len__(self) -> int:
         return len(self._load_results())
 
-    def __iter__(self) -> Iterator[SteadyCrossSectionResults]:
+    def __iter__(self) -> Iterator[CrossSectionResults]:
         return iter(self._load_results().values())
 
     @property
@@ -562,11 +562,11 @@ class SteadyCrossSectionResultsCollection(HdfCrossSectionCollection):
 
 
 # ---------------------------------------------------------------------------
-# SteadyStorageAreaResults
+# StorageAreaResults
 # ---------------------------------------------------------------------------
 
 
-class SteadyStorageAreaResults(StorageArea):
+class StorageAreaResults(StorageArea):
     """Geometry *and* steady-profile results for one storage area.
 
     Inherits all geometry properties from :class:`~rivia.hdf.StorageArea`.
@@ -684,18 +684,18 @@ class SteadyStorageAreaResults(StorageArea):
 
 
 # ---------------------------------------------------------------------------
-# SteadyStorageAreaResultsCollection
+# StorageAreaResultsCollection
 # ---------------------------------------------------------------------------
 
 
-class SteadyStorageAreaResultsCollection(StorageAreaCollection):
-    """Collection of :class:`SteadyStorageAreaResults` backed by a steady plan HDF.
+class StorageAreaResultsCollection(StorageAreaCollection):
+    """Collection of :class:`StorageAreaResults` backed by a steady plan HDF.
 
     Overrides :class:`~rivia.hdf.StorageAreaCollection` to return
-    ``SteadyStorageAreaResults`` with both geometry *and* steady results.
+    ``StorageAreaResults`` with both geometry *and* steady results.
     """
 
-    def _load(self) -> dict[str, SteadyStorageAreaResults]:  # type: ignore[override]
+    def _load(self) -> dict[str, StorageAreaResults]:  # type: ignore[override]
         if self._items is not None:
             return self._items  # type: ignore[return-value]
 
@@ -712,7 +712,7 @@ class SteadyStorageAreaResultsCollection(StorageAreaCollection):
 
         sa_group = self._hdf.get(_STEADY_SA)
 
-        items: dict[str, SteadyStorageAreaResults] = {}
+        items: dict[str, StorageAreaResults] = {}
         for i, row in enumerate(attrs):
             name = _decode(row["Name"])
             mode = _decode(row["Mode"])
@@ -731,12 +731,12 @@ class SteadyStorageAreaResultsCollection(StorageAreaCollection):
                 boundary=boundary,
                 volume_elevation=volume_elevation,
             )
-            items[name] = SteadyStorageAreaResults(sa_geom, i, sa_group)
+            items[name] = StorageAreaResults(sa_geom, i, sa_group)
 
         self._items = items  # type: ignore[assignment]
         return self._items  # type: ignore[return-value]
 
-    def __getitem__(self, key: int | str) -> SteadyStorageAreaResults:
+    def __getitem__(self, key: int | str) -> StorageAreaResults:
         items = self._load()
         if isinstance(key, int):
             keys = list(items)
@@ -759,14 +759,14 @@ class SteadyStorageAreaResultsCollection(StorageAreaCollection):
 
 
 # ---------------------------------------------------------------------------
-# SteadyLateralResults
+# LateralResults
 # ---------------------------------------------------------------------------
 
 
-class SteadyLateralResults(Lateral):
+class LateralResults(HdfLateral):
     """Geometry *and* steady-profile results for one lateral structure.
 
-    Inherits all geometry attributes from :class:`~rivia.hdf.Lateral`.
+    Inherits all geometry attributes from :class:`~rivia.hdf.HdfLateral`.
 
     All result properties return ``numpy`` arrays.  Scalar results (one value
     per profile) have shape ``(n_profiles,)``.  Segment-level results have
@@ -775,7 +775,7 @@ class SteadyLateralResults(Lateral):
     .. note::
         Bridge, culvert, and inline structure nodes do not have separate result
         datasets in HEC-RAS 1D steady-flow HDF files.
-        :class:`SteadyStructureCollection` returns plain geometry objects for
+        :class:`StructureCollection` returns plain geometry objects for
         those types.
 
     Parameters
@@ -787,8 +787,8 @@ class SteadyLateralResults(Lateral):
         ``Results/Steady/.../Steady Profiles/Lateral Structures/<name>``.
     """
 
-    def __init__(self, geom: Lateral, group: "h5py.Group") -> None:
-        Lateral.__init__(
+    def __init__(self, geom: HdfLateral, group: "h5py.Group") -> None:
+        HdfLateral.__init__(
             self,
             mode=geom.mode,
             upstream_type=geom.upstream_type,
@@ -985,15 +985,15 @@ class SteadyLateralResults(Lateral):
 
 
 # ---------------------------------------------------------------------------
-# SteadyStructureCollection
+# StructureCollection
 # ---------------------------------------------------------------------------
 
 
-class SteadyStructureCollection(StructureCollection):
+class StructureCollection(_GeomStructureCollection):
     """Steady-plan structure collection.
 
-    Upgrades :class:`~rivia.hdf.Lateral` geometry objects to
-    :class:`SteadyLateralResults` when a matching result group exists under
+    Upgrades :class:`~rivia.hdf.HdfLateral` geometry objects to
+    :class:`LateralResults` when a matching result group exists under
     ``Results/Steady/.../Steady Profiles/Lateral Structures``.
 
     All other structure types (Bridge, Culvert, Inline) are returned as plain
@@ -1001,13 +1001,13 @@ class SteadyStructureCollection(StructureCollection):
     result datasets for those node types.
     """
 
-    def _load(self) -> dict[str, Structure]:  # type: ignore[override]
+    def _load(self) -> dict[str, HdfStructure]:  # type: ignore[override]
         if self._items is not None:
             return self._items
 
         import h5py as _h5
 
-        geom_items = StructureCollection._load(self)
+        geom_items = _GeomStructureCollection._load(self)
 
         lateral_root = self._hdf.get(_STEADY_LATERAL)
         lateral_groups: dict[str, "h5py.Group"] = (
@@ -1016,13 +1016,13 @@ class SteadyStructureCollection(StructureCollection):
             else {}
         )
 
-        items: dict[str, Structure] = {}
+        items: dict[str, HdfStructure] = {}
         for key, geom in geom_items.items():
-            if isinstance(geom, Lateral):
+            if isinstance(geom, HdfLateral):
                 plan_key = " ".join(geom.location)
                 grp = lateral_groups.get(plan_key)
                 items[key] = (
-                    SteadyLateralResults(geom, grp) if grp is not None else geom
+                    LateralResults(geom, grp) if grp is not None else geom
                 )
             else:
                 # Bridge, Culvert, Inline: no separate steady result datasets
@@ -1069,9 +1069,9 @@ class SteadyPlanHdf(GeometryHdf):
 
     def __init__(self, filename: str | Path) -> None:
         super().__init__(filename)
-        self._steady_cross_sections: SteadyCrossSectionResultsCollection | None = None
-        self._steady_storage_areas: SteadyStorageAreaResultsCollection | None = None
-        self._steady_structures: SteadyStructureCollection | None = None
+        self._steady_cross_sections: CrossSectionResultsCollection | None = None
+        self._steady_storage_areas: StorageAreaResultsCollection | None = None
+        self._steady_structures: StructureCollection | None = None
 
     # ------------------------------------------------------------------
     # File metadata
@@ -1129,33 +1129,33 @@ class SteadyPlanHdf(GeometryHdf):
     # ------------------------------------------------------------------
 
     @property
-    def cross_sections(self) -> SteadyCrossSectionResultsCollection:
+    def cross_sections(self) -> CrossSectionResultsCollection:
         """1-D cross sections with geometry and steady-profile results."""
         if self._steady_cross_sections is None:
-            self._steady_cross_sections = SteadyCrossSectionResultsCollection(
+            self._steady_cross_sections = CrossSectionResultsCollection(
                 self._hdf
             )
         return self._steady_cross_sections
 
     @property
-    def storage_areas(self) -> SteadyStorageAreaResultsCollection:
+    def storage_areas(self) -> StorageAreaResultsCollection:
         """Storage areas with geometry and steady-profile results."""
         if self._steady_storage_areas is None:
-            self._steady_storage_areas = SteadyStorageAreaResultsCollection(
+            self._steady_storage_areas = StorageAreaResultsCollection(
                 self._hdf
             )
         return self._steady_storage_areas
 
     @property
-    def structures(self) -> SteadyStructureCollection:
+    def structures(self) -> StructureCollection:
         """All structures with geometry and, where available, steady-profile results.
 
         :class:`~rivia.hdf.Lateral` items are upgraded to
-        :class:`SteadyLateralResults` when result data is present.
+        :class:`LateralResults` when result data is present.
         :class:`~rivia.hdf.Bridge`, culvert, and inline structure items are
         returned as plain geometry objects — HEC-RAS 1D steady-flow HDF files
         do not store separate result datasets for those node types.
         """
         if self._steady_structures is None:
-            self._steady_structures = SteadyStructureCollection(self._hdf)
+            self._steady_structures = StructureCollection(self._hdf)
         return self._steady_structures

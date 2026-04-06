@@ -24,18 +24,7 @@ if TYPE_CHECKING:
 
 from .. import com
 from ..utils import normalize_sim_end_time, normalize_sim_start_time
-from ._dss import (
-    INL_FLOW_GATE,
-    INL_FLOW_TOTAL,
-    INL_FLOW_WEIR,
-    INL_GATE_OPENING,
-    INL_STAGE_HW,
-    INL_STAGE_TW,
-    XS_FLOW,
-    XS_FLOW_CUM,
-    XS_STAGE,
-    DssReader,
-)
+from ._dss import DssReader
 from ._mapper import MapperExtension
 from .flow_steady import SteadyBoundary, SteadyFlowFile
 from .flow_unsteady import (
@@ -99,15 +88,6 @@ __all__ = [
     "SteadyFlowFile",
     "SteadyBoundary",
     "DssReader",
-    "XS_FLOW",
-    "XS_FLOW_CUM",
-    "XS_STAGE",
-    "INL_FLOW_TOTAL",
-    "INL_FLOW_WEIR",
-    "INL_STAGE_HW",
-    "INL_STAGE_TW",
-    "INL_FLOW_GATE",
-    "INL_GATE_OPENING",
 ]
 
 logger = logging.getLogger("rivia.model")
