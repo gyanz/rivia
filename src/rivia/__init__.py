@@ -3,7 +3,7 @@
 import logging
 
 from rivia.hdf import GeometryHdf, SteadyPlanHdf, UnsteadyPlanHdf
-from rivia.model import Model
+from rivia.model import Model, ProjectFile, GeometryFile, PlanFile, SteadyFlowFile, UnsteadyFlowFile 
 
 try:
     from importlib.metadata import PackageNotFoundError, version
@@ -14,4 +14,5 @@ except PackageNotFoundError:
 
 logging.getLogger("numba").setLevel(logging.WARNING)
 
-__all__ = ["Model", "GeometryHdf", "SteadyPlanHdf", "UnsteadyPlanHdf"]
+__all__ = ["Model", "ProjectFile", "GeometryFile", "PlanFile", "SteadyFlowFile", "UnsteadyFlowFile", 
+           "GeometryHdf", "SteadyPlanHdf", "UnsteadyPlanHdf"]
