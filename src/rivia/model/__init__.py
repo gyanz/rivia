@@ -4,7 +4,7 @@
 manages plan switching and reloading, and provides lazy access to plan files,
 geometry files, flow files, and HDF results.
 
-Individual file classes (:class:`GeometryFile`, :class:`PlanFile`, etc.) can
+Individual file classes (:class:`Geometry`, :class:`Plan`, etc.) can
 also be used standalone without a :class:`Model` instance.
 """
 
@@ -26,56 +26,42 @@ from .. import controller
 from ..utils import normalize_sim_end_time, normalize_sim_start_time
 from ._dss import DssReader
 from ._mapper import MapperExtension
-from .flow_steady import SteadyBoundary, SteadyFlowFile
+from .flow_steady import SteadyBoundary, SteadyFlow
 from .flow_unsteady import (
     FlowHydrograph,
     FrictionSlope,
     GateBoundary,
     GateOpening,
     InitialFlowLoc,
-    InitialRRRElev,
+    InitialRainfallRunoffElev,
     InitialStorageElev,
     LateralInflow,
     NormalDepth,
     RatingCurve,
     StageHydrograph,
-    UnsteadyFlowEditor,
-    UnsteadyFlowFile,
+    UnsteadyFlow,
 )
 from .geometry import (
-    NODE_BRIDGE,
-    NODE_CULVERT,
-    NODE_INLINE_STRUCTURE,
-    NODE_LATERAL_STRUCTURE,
-    NODE_MULTIPLE_OPENING,
-    NODE_XS,
     NodeType,
     CrossSection,
-    GeometryFile,
+    Geometry,
     IneffArea,
     ManningEntry,
 )
-from .plan import PlanFile
+from .plan import Plan
 from .project import ProjectFile
 
 __all__ = [
-    "Model",
-    "PlanSummary",
-    "PlanFile",
+    # Entry points
+    "Model",        # will become Project in Phase 8
     "ProjectFile",
-    "GeometryFile",
-    "CrossSection",
-    "ManningEntry",
-    "IneffArea",
+    "Geometry",
+    "Plan",
+    "SteadyFlow",
+    "UnsteadyFlow",
+    # Enum
     "NodeType",
-    "NODE_XS",
-    "NODE_CULVERT",
-    "NODE_BRIDGE",
-    "NODE_MULTIPLE_OPENING",
-    "NODE_INLINE_STRUCTURE",
-    "NODE_LATERAL_STRUCTURE",
-    "UnsteadyFlowFile",
-    "UnsteadyFlowEditor",
+    # Unsteady-flow boundary classes (user-constructed)
     "FlowHydrograph",
     "LateralInflow",
     "StageHydrograph",
@@ -86,10 +72,9 @@ __all__ = [
     "GateOpening",
     "InitialFlowLoc",
     "InitialStorageElev",
-    "InitialRRRElev",
-    "SteadyFlowFile",
+    "InitialRainfallRunoffElev",
+    # Steady-flow boundary classes
     "SteadyBoundary",
-    "DssReader",
 ]
 
 logger = logging.getLogger("rivia.model")
@@ -156,10 +141,10 @@ class Model(MapperExtension):
         self._rc = controller.connect(ras_version)
         self._ras_version = self._rc.ras_version()
         self._rc.Project_Open(str(self._project_path))
-        self._plan: PlanFile | None = None
+        self._plan: Plan | None = None
         self._project: ProjectFile | None = None
-        self._geom: GeometryFile | None = None
-        self._flow: SteadyFlowFile | UnsteadyFlowEditor | None = None
+        self._geom: Geometry | None = None
+        self._flow: SteadyFlow | UnsteadyFlow | None = None
         self._hdf = None
         self._dss: DssReader | None = None
         self._run_history: collections.deque[dict] = collections.deque(maxlen=5)
@@ -191,7 +176,7 @@ class Model(MapperExtension):
     @property
     def plan_file(self) -> Path:
         """Return the current plan file path."""
-        return Path(self.controller.CurrentPlanFile())
+        return Path(self.controller.CurrentPlan())
 
     @property
     def plan_hdf_file(self) -> Path:
@@ -228,37 +213,37 @@ class Model(MapperExtension):
         return self._project
 
     @property
-    def plan(self) -> PlanFile:
+    def plan(self) -> Plan:
         """Lazily parsed plan file.
 
         Cached after first access.  Call ``plan.save()`` then ``reload()`` to
         write changes back to disk and refresh the cache.
         """
         if self._plan is None:
-            self._plan = PlanFile(self.plan_file)
+            self._plan = Plan(self.plan_file)
         return self._plan
 
     @property
-    def geom(self) -> GeometryFile:
+    def geom(self) -> Geometry:
         """Lazily parsed geometry file for the current plan.
 
         Cached after first access.  Call ``geom.save()`` then ``reload()`` to
         write changes back to disk and refresh the cache.
         """
         if self._geom is None:
-            self._geom = GeometryFile(self.geom_file)
+            self._geom = Geometry(self.geom_file)
         return self._geom
 
     @property
-    def flow(self) -> SteadyFlowFile | UnsteadyFlowEditor:
+    def flow(self) -> SteadyFlow | UnsteadyFlow:
         """Lazily parsed flow file for the current plan.
 
         Cached after first access.  Call ``flow.save()`` then ``reload()`` to
         write changes back to disk and refresh the cache.
 
-        Returns a :class:`SteadyFlowFile` when the plan references a steady
+        Returns a :class:`SteadyFlow` when the plan references a steady
         flow file (extension starting with ``f``), or an
-        :class:`UnsteadyFlowEditor` when it references an unsteady flow file
+        :class:`UnsteadyFlow` when it references an unsteady flow file
         (extension starting with ``u``).
 
         Raises
@@ -276,9 +261,9 @@ class Model(MapperExtension):
                     f"Plan file {self.plan_file.name!r} has no 'Flow File=' entry."
                 )
             if self.plan.is_steady:
-                self._flow = SteadyFlowFile(path)
+                self._flow = SteadyFlow(path)
             elif self.plan.is_unsteady:
-                self._flow = UnsteadyFlowEditor(path)
+                self._flow = UnsteadyFlow(path)
             else:
                 ext = self.plan.flow_file
                 raise ValueError(
@@ -540,7 +525,7 @@ class Model(MapperExtension):
                 and self._flow.is_modified
             ):
                 self._flow.save()
-        self._plan = None  # invalidate cached PlanFile so next access re-parses
+        self._plan = None  # invalidate cached Plan so next access re-parses
         self._geom = None
         self._flow = None
         self._dss = None

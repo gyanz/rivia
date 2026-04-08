@@ -1,10 +1,10 @@
 """Read/write HEC-RAS geometry files (.g**).
 
-:class:`GeometryFile` — verbatim-line editor for HEC-RAS 1-D geometry files
+:class:`Geometry` — verbatim-line editor for HEC-RAS 1-D geometry files
 (.g01, .g02, …).  All lines are stored verbatim.  Typed access is provided
 for:
 
-- File metadata (``geom_title``, ``program_version``, ``viewing_rectangle``)
+- File metadata (``title``, ``program_version``, ``viewing_rectangle``)
 - Reach / node inventory (``reaches``, ``junctions``, ``node_rs_list``)
 - Cross-section data: ``#Sta/Elev``, ``#Mann``, ``Bank Sta``,
   ``#XS Ineff``, ``Exp/Cntr``, ``Levee``, ``#Block Obstruct``,
@@ -89,14 +89,6 @@ class NodeType(IntEnum):
     INLINE_STRUCTURE = 5
     LATERAL_STRUCTURE = 6
 
-
-# Module-level aliases kept for backward compatibility.
-NODE_XS = NodeType.CROSS_SECTION
-NODE_CULVERT = NodeType.CULVERT
-NODE_BRIDGE = NodeType.BRIDGE
-NODE_MULTIPLE_OPENING = NodeType.MULTIPLE_OPENING
-NODE_INLINE_STRUCTURE = NodeType.INLINE_STRUCTURE
-NODE_LATERAL_STRUCTURE = NodeType.LATERAL_STRUCTURE
 
 _NODE_TYPE_NAMES: dict[NodeType, str] = {
     NodeType.CROSS_SECTION: "CrossSection",
@@ -360,8 +352,8 @@ class VerticalN:
 class CrossSection:
     """Parsed data for one HEC-RAS cross section (node type 1).
 
-    Returned by :meth:`GeometryFile.get_cross_section`.  Write changes back
-    with the targeted setters on :class:`GeometryFile` (``set_mannings``,
+    Returned by :meth:`Geometry.get_cross_section`.  Write changes back
+    with the targeted setters on :class:`Geometry` (``set_mannings``,
     ``set_stations``, ``set_bank_stations``, ``set_exp_cntr``).
 
     Attributes:
@@ -821,10 +813,10 @@ class Structure:
 
 
 @dataclass
-class Inline(Structure):
+class InlineStructure(Structure):
     """Inline structure (node type 5) parsed from a ``.g**`` text geometry file.
 
-    Mirrors :class:`rivia.hdf.geometry.Inline`.  Inherits ``mode``,
+    Mirrors :class:`rivia.hdf.geometry.InlineStructure`.  Inherits ``mode``,
     ``upstream_type``, ``downstream_type``, and ``centerline`` from
     :class:`Structure`.
 
@@ -936,10 +928,10 @@ class Bridge(Structure):
 
 
 @dataclass
-class Lateral(Structure):
+class LateralStructure(Structure):
     """Lateral structure (node type 6) parsed from a ``.g**`` text geometry file.
 
-    Mirrors :class:`rivia.hdf.geometry.Lateral`.  Inherits ``mode``,
+    Mirrors :class:`rivia.hdf.geometry.LateralStructure`.  Inherits ``mode``,
     ``upstream_type``, ``downstream_type``, and ``centerline`` from
     :class:`Structure`.
 
@@ -1064,7 +1056,7 @@ class StructureIndex(Generic[_T]):
         return list(zip(self._keys, self._values, strict=True))
 
 
-class ModelStructureCollection:
+class StructureCollection:
     """Structure collection parsed from a HEC-RAS text geometry file.
 
     Covers inline structures (node type 5), bridges/culverts (types 3/2),
@@ -1074,7 +1066,7 @@ class ModelStructureCollection:
 
     .. code-block:: python
 
-        g = GeometryFile("model.g01")
+        g = Geometry("model.g01")
         for key, iw in g.structures.inlines.items():
             print(key, iw.gate_groups)
         for key, br in g.structures.bridges.items():
@@ -1085,16 +1077,16 @@ class ModelStructureCollection:
 
     def __init__(
         self,
-        inlines: list[tuple[str, Inline]],
+        inlines: list[tuple[str, InlineStructure]],
         bridges: list[tuple[str, Bridge]],
-        laterals: list[tuple[str, Lateral]],
+        laterals: list[tuple[str, LateralStructure]],
     ) -> None:
-        self._inlines: StructureIndex[Inline] = StructureIndex(inlines)
+        self._inlines: StructureIndex[InlineStructure] = StructureIndex(inlines)
         self._bridges: StructureIndex[Bridge] = StructureIndex(bridges)
-        self._laterals: StructureIndex[Lateral] = StructureIndex(laterals)
+        self._laterals: StructureIndex[LateralStructure] = StructureIndex(laterals)
 
     @property
-    def inlines(self) -> StructureIndex[Inline]:
+    def inlines(self) -> StructureIndex[InlineStructure]:
         """All inline structures (type 5) keyed by ``'River Reach RS'``."""
         return self._inlines
 
@@ -1104,7 +1096,7 @@ class ModelStructureCollection:
         return self._bridges
 
     @property
-    def laterals(self) -> StructureIndex[Lateral]:
+    def laterals(self) -> StructureIndex[LateralStructure]:
         """All lateral structures (type 6) keyed by ``'River Reach RS'``."""
         return self._laterals
 
@@ -1119,7 +1111,7 @@ class ModelStructureCollection:
 
     def __repr__(self) -> str:
         return (
-            f"ModelStructureCollection("
+            f"StructureCollection("
             f"inlines={len(self._inlines)}, "
             f"bridges={len(self._bridges)}, "
             f"laterals={len(self._laterals)})"
@@ -1129,11 +1121,11 @@ class ModelStructureCollection:
 logger = logging.getLogger("rivia.model")
 
 # ---------------------------------------------------------------------------
-# GeometryFile
+# Geometry
 # ---------------------------------------------------------------------------
 
 
-class GeometryFile:
+class Geometry:
     """Verbatim-line editor for HEC-RAS geometry files (.g**).
 
     All lines are loaded verbatim.  Structured cross-section data can be
@@ -1156,7 +1148,7 @@ class GeometryFile:
         with open(self._path, encoding="utf-8", errors="replace") as fh:
             self._lines: list[str] = fh.readlines()
         self._modified: bool = False
-        self._structures_cache: ModelStructureCollection | None = None
+        self._structures_cache: StructureCollection | None = None
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -1223,7 +1215,7 @@ class GeometryFile:
             node_type = int(parts[0].strip())
         except ValueError:
             return None
-        rs = GeometryFile._normalize_rs(parts[1]) if len(parts) > 1 else ""
+        rs = Geometry._normalize_rs(parts[1]) if len(parts) > 1 else ""
 
         def _opt_float(s: str) -> float | None:
             s = s.strip()
@@ -1304,12 +1296,12 @@ class GeometryFile:
     # ------------------------------------------------------------------
 
     @property
-    def geom_title(self) -> str | None:
+    def title(self) -> str | None:
         """Geometry title (``Geom Title=``)."""
         return self._get("Geom Title")
 
-    @geom_title.setter
-    def geom_title(self, value: str) -> None:
+    @title.setter
+    def title(self, value: str) -> None:
         self._set("Geom Title", value)
 
     @property
@@ -1658,7 +1650,7 @@ class GeometryFile:
         if start is None:
             return None
         parsed = self._parse_node_header(self._lines[start])
-        if parsed is None or parsed[0] != NODE_XS:
+        if parsed is None or parsed[0] != NodeType.CROSS_SECTION:
             return None
         end = self._find_node_end(start)
         return self._parse_xs_from_lines(river, reach, start, end)
@@ -1694,7 +1686,7 @@ class GeometryFile:
                     in_reach = rh[0].lower() == river_l and rh[1].lower() == reach_l
             if in_reach and line.startswith(prefix):
                 parsed = self._parse_node_header(line)
-                if parsed and parsed[0] == NODE_XS:
+                if parsed and parsed[0] == NodeType.CROSS_SECTION:
                     end = self._find_node_end(i)
                     xs = self._parse_xs_from_lines(river, reach, i, end)
                     result.append(xs)
@@ -2077,16 +2069,16 @@ class GeometryFile:
     # ------------------------------------------------------------------
 
     @property
-    def structures(self) -> ModelStructureCollection:
+    def structures(self) -> StructureCollection:
         """Structure collection parsed from this geometry file.
 
-        Returns a :class:`ModelStructureCollection` whose ``inlines`` property
+        Returns a :class:`StructureCollection` whose ``inlines`` property
         holds all inline structures keyed by ``'River Reach RS'``.
         The result is cached; invalidated automatically on :meth:`save`.
 
         Example::
 
-            g = GeometryFile("model.g01")
+            g = Geometry("model.g01")
             for key, iw in g.structures.inlines.items():
                 print(key, [gg.name for gg in iw.gate_groups])
         """
@@ -2094,18 +2086,18 @@ class GeometryFile:
             self._structures_cache = self._build_structures()
         return self._structures_cache
 
-    def _build_structures(self) -> ModelStructureCollection:
-        """Scan all reaches and build the :class:`ModelStructureCollection`."""
-        inlines: list[tuple[str, Inline]] = []
+    def _build_structures(self) -> StructureCollection:
+        """Scan all reaches and build the :class:`StructureCollection`."""
+        inlines: list[tuple[str, InlineStructure]] = []
         bridges: list[tuple[str, Bridge]] = []
-        laterals: list[tuple[str, Lateral]] = []
+        laterals: list[tuple[str, LateralStructure]] = []
         for river, reach in self.reaches:
             for node_type, rs in self.node_rs_list(river, reach):
                 if node_type not in (
-                    NODE_CULVERT,
-                    NODE_BRIDGE,
-                    NODE_INLINE_STRUCTURE,
-                    NODE_LATERAL_STRUCTURE,
+                    NodeType.CULVERT,
+                    NodeType.BRIDGE,
+                    NodeType.INLINE_STRUCTURE,
+                    NodeType.LATERAL_STRUCTURE,
                 ):
                     continue
                 start = self._find_node_start(river, reach, rs)
@@ -2116,22 +2108,22 @@ class GeometryFile:
                     river, reach, rs
                 )
                 key = f"{river} {reach} {rs}"
-                if node_type == NODE_INLINE_STRUCTURE:
+                if node_type == NodeType.INLINE_STRUCTURE:
                     iw = self._parse_inline_structure(
                         river, reach, rs, start, end, upstream_node, downstream_node
                     )
                     inlines.append((key, iw))
-                elif node_type in (NODE_CULVERT, NODE_BRIDGE):
+                elif node_type in (NodeType.CULVERT, NodeType.BRIDGE):
                     br = self._parse_bridge(
                         river, reach, rs, start, end, upstream_node, downstream_node
                     )
                     bridges.append((key, br))
-                elif node_type == NODE_LATERAL_STRUCTURE:
+                elif node_type == NodeType.LATERAL_STRUCTURE:
                     lat = self._parse_lateral(
                         river, reach, rs, start, end, upstream_node
                     )
                     laterals.append((key, lat))
-        return ModelStructureCollection(inlines, bridges, laterals)
+        return StructureCollection(inlines, bridges, laterals)
 
     def _adjacent_xs_nodes(
         self, river: str, reach: str, rs: str
@@ -2160,12 +2152,12 @@ class GeometryFile:
             return _empty, _empty
         upstream: tuple[str, str, str] = _empty
         for i in range(idx - 1, -1, -1):
-            if nodes[i][0] == NODE_XS:
+            if nodes[i][0] == NodeType.CROSS_SECTION:
                 upstream = (river, reach, nodes[i][1])
                 break
         downstream: tuple[str, str, str] = _empty
         for i in range(idx + 1, len(nodes)):
-            if nodes[i][0] == NODE_XS:
+            if nodes[i][0] == NodeType.CROSS_SECTION:
                 downstream = (river, reach, nodes[i][1])
                 break
         return upstream, downstream
@@ -2179,8 +2171,8 @@ class GeometryFile:
         end: int,
         upstream_node: tuple[str, str, str],
         downstream_node: tuple[str, str, str],
-    ) -> Inline:
-        """Parse one inline-structure node block into an :class:`Inline`.
+    ) -> InlineStructure:
+        """Parse one inline-structure node block into an :class:`InlineStructure`.
 
         Parameters
         ----------
@@ -2350,7 +2342,7 @@ class GeometryFile:
             )
 
         _empty: tuple[str, str, str] = ("", "", "")
-        return Inline(
+        return InlineStructure(
             mode="",
             upstream_type="XS" if upstream_node != _empty else "",
             downstream_type="XS" if downstream_node != _empty else "",
@@ -2698,8 +2690,8 @@ class GeometryFile:
         start: int,
         end: int,
         upstream_node: tuple[str, str, str],
-    ) -> Lateral:
-        """Parse one lateral structure node block into a :class:`Lateral`.
+    ) -> LateralStructure:
+        """Parse one lateral structure node block into a :class:`LateralStructure`.
 
         Parameters
         ----------
@@ -2795,7 +2787,7 @@ class GeometryFile:
                 break
 
         _empty: tuple[str, str, str] = ("", "", "")
-        return Lateral(
+        return LateralStructure(
             mode="",
             upstream_type="XS" if upstream_node != _empty else "",
             downstream_type="XS" if downstream_node else "",
@@ -2859,7 +2851,7 @@ class GeometryFile:
                 f"Node not found: river={river!r}, reach={reach!r}, rs={rs!r}"
             )
         node_type = self.node_type(river, reach, rs)
-        if node_type != NODE_INLINE_STRUCTURE:
+        if node_type != NodeType.INLINE_STRUCTURE:
             raise KeyError(
                 f"Node at river={river!r}, reach={reach!r}, rs={rs!r} "
                 f"is not an inline structure (type={node_type!r})"
@@ -2873,9 +2865,9 @@ class GeometryFile:
     def node_type(self, river: str, reach: str, rs: str) -> int | None:
         """Return the node type code for *(river, reach, rs)*, or ``None``.
 
-        Returns one of :data:`NODE_XS`, :data:`NODE_CULVERT`,
-        :data:`NODE_BRIDGE`, :data:`NODE_MULTIPLE_OPENING`,
-        :data:`NODE_INLINE_STRUCTURE`, :data:`NODE_LATERAL_STRUCTURE`.
+        Returns one of :data:`NodeType.CROSS_SECTION`, :data:`NodeType.CULVERT`,
+        :data:`NodeType.BRIDGE`, :data:`NodeType.MULTIPLE_OPENING`,
+        :data:`NodeType.INLINE_STRUCTURE`, :data:`NodeType.LATERAL_STRUCTURE`.
         """
         start = self._find_node_start(river, reach, rs)
         if start is None:

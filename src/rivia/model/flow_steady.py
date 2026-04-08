@@ -1,6 +1,6 @@
 """Read/write HEC-RAS steady flow files (.f**).
 
-:class:`SteadyFlowFile` — verbatim-line editor.  All lines are stored
+:class:`SteadyFlow` — verbatim-line editor.  All lines are stored
 verbatim; only the specific data blocks that are mutated are reformatted.
 ``save()`` is byte-faithful for every unmodified line.
 
@@ -183,11 +183,11 @@ class SteadyBoundary:
 
 
 # ---------------------------------------------------------------------------
-# SteadyFlowFile — verbatim-line editor
+# SteadyFlow — verbatim-line editor
 # ---------------------------------------------------------------------------
 
 
-class SteadyFlowFile:
+class SteadyFlow:
     """Verbatim-line editor for HEC-RAS steady flow files (.f**).
 
     All lines are loaded into memory verbatim.  Targeted edits (e.g.

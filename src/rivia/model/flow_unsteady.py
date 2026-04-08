@@ -1,17 +1,9 @@
 """Read/write HEC-RAS unsteady flow files (.u**).
 
-Two classes are provided:
-
-- :class:`UnsteadyFlowFile` — verbatim-line editor.  All lines are stored
-  verbatim; only the specific data blocks that are mutated are reformatted.
-  ``save()`` is byte-faithful for every unmodified line.  Boundary ordering
-  is always preserved.  Use this for targeted, one-off edits.
-
-- :class:`UnsteadyFlowEditor` — structured editor.  Boundary conditions are
-  parsed into typed dataclass objects and may be sorted by river station.
-  ``save()`` reconstructs the boundary section from the objects; trailing
-  meteorological / non-Newtonian lines are still written verbatim.  Use this
-  when you need to reorder boundaries.
+:class:`UnsteadyFlow` — structured editor.  Boundary conditions are
+parsed into typed dataclass objects and may be sorted by river station.
+``save()`` reconstructs the boundary section from the objects; trailing
+meteorological / non-Newtonian lines are still written verbatim.
 
 Derived from: ``archive/ras_tools/unsteadyFlowParser.py``
 
@@ -220,7 +212,7 @@ class InitialStorageElev:
 
 
 @dataclass
-class InitialRRRElev:
+class InitialRainfallRunoffElev:
     """Initial water surface elevation for a reservoir / RRR."""
 
     river: str
@@ -229,7 +221,7 @@ class InitialRRRElev:
     elevation: float
 
     @classmethod
-    def _from_raw(cls, raw: str) -> "InitialRRRElev":
+    def _from_raw(cls, raw: str) -> "InitialRainfallRunoffElev":
         parts = raw.split(",")
         return cls(
             river=parts[0].strip() if len(parts) > 0 else "",
@@ -755,439 +747,13 @@ def _is_trailing_key(key: str) -> bool:
     )
 
 
-# ---------------------------------------------------------------------------
-# UnsteadyFlowFile — verbatim-line editor
-# ---------------------------------------------------------------------------
-
-
-class UnsteadyFlowFile:
-    """Verbatim-line editor for HEC-RAS unsteady flow files (.u**).
-
-    All lines are loaded into memory verbatim.  Targeted edits (e.g.
-    replacing a flow hydrograph) splice new formatted lines into the list
-    while leaving every other line byte-identical.  ``save()`` writes the
-    list back; a no-op parse+save produces an identical file.
-
-    Boundary ordering is always preserved.  If you need to reorder
-    boundaries by river station, use :class:`UnsteadyFlowEditor` instead.
-
-    Derived from: ``archive/ras_tools/unsteadyFlowParser.py``
-    """
-
-    def __init__(self, path: str | Path) -> None:
-        self._path = Path(path)
-        if not self._path.is_file():
-            raise FileNotFoundError(f"Unsteady flow file not found: {self._path}")
-        with open(self._path, encoding="utf-8", errors="replace") as fh:
-            self._lines: list[str] = fh.readlines()
-
-    # ------------------------------------------------------------------
-    # Internal helpers (same pattern as PlanFile)
-    # ------------------------------------------------------------------
-
-    def _get(self, key: str) -> str | None:
-        prefix = key + "="
-        for line in self._lines:
-            if line.startswith(prefix):
-                value = line[len(prefix) :].strip()
-                return value if value else None
-        return None
-
-    def _set(self, key: str, raw_value: str) -> None:
-        prefix = key + "="
-        for i, line in enumerate(self._lines):
-            if line.startswith(prefix):
-                self._lines[i] = f"{prefix}{raw_value}\n"
-                return
-        raise KeyError(f"Key not found in unsteady flow file: {key!r}")
-
-    def _find_boundary_location(self, river: str, reach: str, rs: str) -> int | None:
-        """Return the line index of the matching ``Boundary Location=`` line.
-
-        Matching is done by stripping and case-insensitive comparison of
-        river, reach, and river-station fields.
-        """
-        prefix = "Boundary Location="
-        for i, line in enumerate(self._lines):
-            if not line.startswith(prefix):
-                continue
-            tail = line[len(prefix) :]
-            parts = tail.split(",", 3)
-            if len(parts) < 3:
-                continue
-            if (
-                parts[0].strip().lower() == river.strip().lower()
-                and parts[1].strip().lower() == reach.strip().lower()
-                and parts[2].strip().lower() == str(rs).strip().lower()
-            ):
-                return i
-        return None
-
-    def _splice(self, start: int, old_count: int, new_lines: list[str]) -> None:
-        """Replace *old_count* lines starting at *start* with *new_lines*."""
-        self._lines[start : start + old_count] = [
-            (ln if ln.endswith("\n") else ln + "\n") for ln in new_lines
-        ]
-
-    # ------------------------------------------------------------------
-    # Generic escape hatch
-    # ------------------------------------------------------------------
-
-    def get(self, key: str) -> str | None:
-        """Return the raw stripped value for *key*, or ``None`` if absent."""
-        return self._get(key)
-
-    def set(self, key: str, value: str) -> None:
-        """Set *key* to *value* verbatim.  Raises ``KeyError`` if absent."""
-        self._set(key, value)
-
-    # ------------------------------------------------------------------
-    # Scalar properties
-    # ------------------------------------------------------------------
-
-    @property
-    def flow_title(self) -> str | None:
-        """Flow title (``Flow Title=``)."""
-        return self._get("Flow Title")
-
-    @flow_title.setter
-    def flow_title(self, value: str) -> None:
-        self._set("Flow Title", value)
-
-    @property
-    def program_version(self) -> str | None:
-        """HEC-RAS version string (``Program Version=``)."""
-        return self._get("Program Version")
-
-    @property
-    def write_ic_file(self) -> bool | None:
-        """Whether to write an initial conditions file at the end of simulation.
-
-        Returns ``True`` if ``Write IC File at Sim End=-1``, ``False`` if
-        ``0``, or ``None`` if the key is absent (older files).
-        """
-        raw = self._get("Write IC File at Sim End")
-        if raw is None:
-            return None
-        return int(raw) == -1
-
-    @write_ic_file.setter
-    def write_ic_file(self, value: bool) -> None:
-        self._set("Write IC File at Sim End", "-1" if value else "0")
-
-    def _set_restart_filename(self, filename: str) -> None:
-        prefix = "Restart Filename="
-        for i, line in enumerate(self._lines):
-            if line.startswith(prefix):
-                self._lines[i] = f"{prefix}{filename}\n"
-                return
-        ur_prefix = "Use Restart="
-        for i, line in enumerate(self._lines):
-            if line.startswith(ur_prefix):
-                self._lines.insert(i + 1, f"{prefix}{filename}\n")
-                return
-        raise KeyError("'Use Restart' not found; cannot insert 'Restart Filename'")
-
-    @property
-    def restart(self) -> tuple[int, str | None]:
-        """Return ``(flag, filename)`` for the restart configuration.
-
-        *flag* is the ``Use Restart`` value (``0`` = disabled, ``1`` = enabled).
-        *filename* is the ``Restart Filename`` value, or ``None`` if absent.
-        """
-        raw = self._get("Use Restart")
-        flag = int(raw.strip()) if raw is not None else 0
-        filename = self._get("Restart Filename")
-        return (flag, filename)
-
-    @restart.setter
-    def restart(self, value: int | bool | str | None) -> None:
-        if value is None or value is False:
-            self._set("Use Restart", " 0 ")
-        elif value is True:
-            self._set("Use Restart", " 1 ")
-        elif isinstance(value, str):
-            self._set_restart_filename(value)
-            self._set("Use Restart", " 1 ")
-        else:
-            self._set("Use Restart", " 1 " if value else " 0 ")
-
-    # ------------------------------------------------------------------
-    # Flow hydrograph
-    # ------------------------------------------------------------------
-
-    def get_flow_hydrograph(
-        self, river: str, reach: str, rs: str
-    ) -> list[float] | None:
-        """Return flow hydrograph values for the given location.
-
-        Returns ``None`` if no matching boundary is found.
-        """
-        loc_i = self._find_boundary_location(river, reach, rs)
-        if loc_i is None:
-            return None
-
-        n = len(self._lines)
-        i = loc_i + 1
-        while i < n:
-            line = self._lines[i]
-            if line.startswith("Boundary Location="):
-                break
-            if line.startswith("Flow Hydrograph="):
-                count = int(line.split("=", 1)[1].strip())
-                nlines = _data_line_count(count)
-                data_lines = [
-                    l.rstrip("\n") for l in self._lines[i + 1 : i + 1 + nlines]
-                ]
-                return _parse_data_block(data_lines, count)
-            i += 1
-        return None
-
-    def set_flow_hydrograph(
-        self, river: str, reach: str, rs: str, values: _Values
-    ) -> None:
-        """Replace the flow hydrograph at the given location.
-
-        Args:
-            river: River name (case-insensitive match).
-            reach: Reach name (case-insensitive match).
-            rs: River station string.
-            values: New flow values.  A scalar is broadcast to the length of
-                the existing time series.
-
-        Raises:
-            KeyError: No matching ``Boundary Location`` line.
-            ValueError: Boundary found but is not a flow hydrograph.
-        """
-        loc_i = self._find_boundary_location(river, reach, rs)
-        if loc_i is None:
-            raise KeyError(
-                f"No Boundary Location found for {river!r}, {reach!r}, {rs!r}"
-            )
-
-        n = len(self._lines)
-        i = loc_i + 1
-        while i < n:
-            line = self._lines[i]
-            if line.startswith("Boundary Location="):
-                break
-            if line.startswith("Flow Hydrograph="):
-                old_count = int(line.split("=", 1)[1].strip())
-                old_nlines = _data_line_count(old_count)
-                resolved = _coerce_values(values, old_count)
-                new_count = len(resolved)
-                self._lines[i] = f"Flow Hydrograph= {new_count} \n"
-                self._splice(i + 1, old_nlines, _format_data_block(resolved))
-                return
-            i += 1
-        raise ValueError(
-            f"Boundary at {river!r}, {reach!r}, {rs!r} has no Flow Hydrograph"
-        )
-
-    # ------------------------------------------------------------------
-    # Lateral inflow hydrograph
-    # ------------------------------------------------------------------
-
-    def get_lateral_inflow(self, river: str, reach: str, rs: str) -> list[float] | None:
-        """Return lateral inflow values for the given location."""
-        loc_i = self._find_boundary_location(river, reach, rs)
-        if loc_i is None:
-            return None
-
-        n = len(self._lines)
-        i = loc_i + 1
-        while i < n:
-            line = self._lines[i]
-            if line.startswith("Boundary Location="):
-                break
-            key = line.split("=", 1)[0]
-            if key in (
-                "Lateral Inflow Hydrograph",
-                "Uniform Lateral Inflow Hydrograph",
-            ):
-                count = int(line.split("=", 1)[1].strip())
-                nlines = _data_line_count(count)
-                data_lines = [
-                    l.rstrip("\n") for l in self._lines[i + 1 : i + 1 + nlines]
-                ]
-                return _parse_data_block(data_lines, count)
-            i += 1
-        return None
-
-    def set_lateral_inflow(
-        self, river: str, reach: str, rs: str, values: _Values
-    ) -> None:
-        """Replace the lateral inflow at the given location.
-
-        Args:
-            values: New flow values.  A scalar is broadcast to the length of
-                the existing time series.
-
-        Raises:
-            KeyError: No matching ``Boundary Location`` line.
-            ValueError: Boundary found but has no lateral inflow hydrograph.
-        """
-        loc_i = self._find_boundary_location(river, reach, rs)
-        if loc_i is None:
-            raise KeyError(
-                f"No Boundary Location found for {river!r}, {reach!r}, {rs!r}"
-            )
-
-        n = len(self._lines)
-        i = loc_i + 1
-        while i < n:
-            line = self._lines[i]
-            if line.startswith("Boundary Location="):
-                break
-            key = line.split("=", 1)[0]
-            if key in (
-                "Lateral Inflow Hydrograph",
-                "Uniform Lateral Inflow Hydrograph",
-            ):
-                old_count = int(line.split("=", 1)[1].strip())
-                old_nlines = _data_line_count(old_count)
-                resolved = _coerce_values(values, old_count)
-                new_count = len(resolved)
-                self._lines[i] = f"{key}= {new_count} \n"
-                self._splice(i + 1, old_nlines, _format_data_block(resolved))
-                return
-            i += 1
-        raise ValueError(
-            f"Boundary at {river!r}, {reach!r}, {rs!r} has no Lateral Inflow Hydrograph"
-        )
-
-    # ------------------------------------------------------------------
-    # Gate openings
-    # ------------------------------------------------------------------
-
-    def get_gate_openings(
-        self, river: str, reach: str, rs: str, gate_name: str
-    ) -> list[float] | None:
-        """Return gate opening values for the given location and gate name."""
-        loc_i = self._find_boundary_location(river, reach, rs)
-        if loc_i is None:
-            return None
-
-        n = len(self._lines)
-        i = loc_i + 1
-        current_gate: str | None = None
-        while i < n:
-            line = self._lines[i]
-            if line.startswith("Boundary Location="):
-                break
-            if line.startswith("Gate Name="):
-                current_gate = line.split("=", 1)[1].strip()
-            elif line.startswith("Gate Openings=") and current_gate is not None:
-                if current_gate.lower() == gate_name.strip().lower():
-                    count = int(line.split("=", 1)[1].strip())
-                    nlines = _data_line_count(count)
-                    data_lines = [
-                        l.rstrip("\n") for l in self._lines[i + 1 : i + 1 + nlines]
-                    ]
-                    return _parse_data_block(data_lines, count)
-            i += 1
-        return None
-
-    def set_gate_opening(
-        self, river: str, reach: str, rs: str, gate_name: str, values: _Values
-    ) -> None:
-        """Replace gate opening values for the given location and gate name.
-
-        Args:
-            values: New opening values.  A scalar is broadcast to the length
-                of the existing gate opening time series.
-
-        Raises:
-            KeyError: Boundary or gate name not found.
-        """
-        loc_i = self._find_boundary_location(river, reach, rs)
-        if loc_i is None:
-            raise KeyError(
-                f"No Boundary Location found for {river!r}, {reach!r}, {rs!r}"
-            )
-
-        n = len(self._lines)
-        i = loc_i + 1
-        current_gate: str | None = None
-        while i < n:
-            line = self._lines[i]
-            if line.startswith("Boundary Location="):
-                break
-            if line.startswith("Gate Name="):
-                current_gate = line.split("=", 1)[1].strip()
-            elif line.startswith("Gate Openings=") and current_gate is not None:
-                if current_gate.lower() == gate_name.strip().lower():
-                    old_count = int(line.split("=", 1)[1].strip())
-                    old_nlines = _data_line_count(old_count)
-                    resolved = _coerce_values(values, old_count)
-                    new_count = len(resolved)
-                    self._lines[i] = f"Gate Openings= {new_count} \n"
-                    self._splice(i + 1, old_nlines, _format_data_block(resolved))
-                    return
-            i += 1
-        raise KeyError(f"Gate {gate_name!r} not found at {river!r}, {reach!r}, {rs!r}")
-
-    # ------------------------------------------------------------------
-    # Initial conditions
-    # ------------------------------------------------------------------
-
-    def get_initial_flow(self, river: str, reach: str, rs: str) -> float | None:
-        """Return the initial flow at the given location, or ``None``."""
-        for line in self._lines:
-            if not line.startswith("Initial Flow Loc="):
-                continue
-            raw = line[len("Initial Flow Loc=") :].strip()
-            parts = raw.split(",")
-            if (
-                len(parts) >= 4
-                and parts[0].strip().lower() == river.strip().lower()
-                and parts[1].strip().lower() == reach.strip().lower()
-                and parts[2].strip().lower() == str(rs).strip().lower()
-            ):
-                return float(parts[3].strip())
-        return None
-
-    def set_initial_flow(self, river: str, reach: str, rs: str, flow: float) -> None:
-        """Update the initial flow at the given location.
-
-        Raises ``KeyError`` if not found.
-        """
-        for i, line in enumerate(self._lines):
-            if not line.startswith("Initial Flow Loc="):
-                continue
-            raw = line[len("Initial Flow Loc=") :].rstrip("\n")
-            parts = raw.split(",")
-            if (
-                len(parts) >= 4
-                and parts[0].strip().lower() == river.strip().lower()
-                and parts[1].strip().lower() == reach.strip().lower()
-                and parts[2].strip().lower() == str(rs).strip().lower()
-            ):
-                parts[3] = str(flow)
-                self._lines[i] = "Initial Flow Loc=" + ",".join(parts) + "\n"
-                return
-        raise KeyError(f"Initial Flow Loc not found for {river!r}, {reach!r}, {rs!r}")
-
-    # ------------------------------------------------------------------
-    # Persistence
-    # ------------------------------------------------------------------
-
-    def save(self, path: str | Path | None = None) -> None:
-        """Write all in-memory lines back to disk.
-
-        If *path* is omitted the source file is overwritten.
-        """
-        dest = Path(path) if path is not None else self._path
-        with open(dest, "w", encoding="utf-8") as fh:
-            fh.writelines(self._lines)
-
 
 # ---------------------------------------------------------------------------
-# UnsteadyFlowEditor — structured, sortable editor
+# UnsteadyFlow — structured, sortable editor
 # ---------------------------------------------------------------------------
 
 
-class UnsteadyFlowEditor:
+class UnsteadyFlow:
     """Structured editor for HEC-RAS unsteady flow files (.u**).
 
     Boundary conditions are parsed into typed dataclass objects stored in
@@ -1201,8 +767,7 @@ class UnsteadyFlowEditor:
     .. note::
         ``save()`` is **not** byte-identical to the original when boundaries
         are reordered or values are changed, because the file is reconstructed
-        from parsed objects.  Use :class:`UnsteadyFlowFile` when you need a
-        faithful roundtrip.
+        from parsed objects — the file is reconstructed from parsed data.
 
     Derived from: ``archive/ras_tools/unsteadyFlowParser.py``
     """
@@ -1280,7 +845,7 @@ class UnsteadyFlowEditor:
         # Parse initial conditions into typed objects
         self.initial_flow_locs: list[InitialFlowLoc] = []
         self.initial_storage_elevs: list[InitialStorageElev] = []
-        self.initial_rrr_elevs: list[InitialRRRElev] = []
+        self.initial_rainfall_runoff_elevs: list[InitialRainfallRunoffElev] = []
         for line in self._initial_lines:
             if line.startswith("Initial Flow Loc="):
                 raw = line[len("Initial Flow Loc=") :].strip()
@@ -1290,7 +855,7 @@ class UnsteadyFlowEditor:
                 self.initial_storage_elevs.append(InitialStorageElev._from_raw(raw))
             elif line.startswith("Initial RRR Elev="):
                 raw = line[len("Initial RRR Elev=") :].strip()
-                self.initial_rrr_elevs.append(InitialRRRElev._from_raw(raw))
+                self.initial_rainfall_runoff_elevs.append(InitialRainfallRunoffElev._from_raw(raw))
 
         # Parse boundaries
         boundary_lines_stripped = [l.rstrip("\n") for l in boundary_lines]
@@ -1669,6 +1234,55 @@ class UnsteadyFlowEditor:
         raise KeyError(f"Initial Flow Loc not found for {river!r}, {reach!r}, {rs!r}")
 
     # ------------------------------------------------------------------
+    # Get by location
+    # ------------------------------------------------------------------
+
+    def get_flow_hydrograph(
+        self, river: str, reach: str, rs: str
+    ) -> list[float] | None:
+        """Return flow hydrograph values for the given location, or ``None``."""
+        b = self._find_boundary(river, reach, rs)
+        if not isinstance(b, FlowHydrograph):
+            return None
+        return list(b.values)
+
+    def get_lateral_inflow(
+        self, river: str, reach: str, rs: str
+    ) -> list[float] | None:
+        """Return lateral inflow values for the given location, or ``None``."""
+        b = self._find_boundary(river, reach, rs)
+        if not isinstance(b, LateralInflow):
+            return None
+        return list(b.values)
+
+    def get_gate_openings(
+        self, river: str, reach: str, rs: str, gate_name: str
+    ) -> list[float] | None:
+        """Return gate opening values for the given location and gate name, or ``None``."""
+        b = self._find_boundary(river, reach, rs)
+        if not isinstance(b, GateBoundary):
+            return None
+        gn = gate_name.strip().lower()
+        for g in b.gates:
+            if g.gate_name.strip().lower() == gn:
+                return list(g.values)
+        return None
+
+    def get_initial_flow(self, river: str, reach: str, rs: str) -> float | None:
+        """Return the initial flow at the given location, or ``None``."""
+        r = river.strip().lower()
+        rc = reach.strip().lower()
+        s = str(rs).strip().lower()
+        for loc in self.initial_flow_locs:
+            if (
+                loc.river.lower() == r
+                and loc.reach.lower() == rc
+                and loc.river_station.lower() == s
+            ):
+                return loc.flow
+        return None
+
+    # ------------------------------------------------------------------
     # Serialisation helpers
     # ------------------------------------------------------------------
 
@@ -1782,7 +1396,7 @@ class UnsteadyFlowEditor:
             out.append(f"Initial Flow Loc={loc._to_raw()}\n")
         for se in self.initial_storage_elevs:
             out.append(f"Initial Storage Elev={se._to_raw()}\n")
-        for re_ in self.initial_rrr_elevs:
+        for re_ in self.initial_rainfall_runoff_elevs:
             out.append(f"Initial RRR Elev={re_._to_raw()}\n")
 
         # 3. Boundaries

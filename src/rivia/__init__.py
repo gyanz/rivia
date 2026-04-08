@@ -2,17 +2,15 @@
 
 import logging
 
-from rivia.hdf import Geometry as GeometryHdf, SteadyPlan as SteadyPlanHdf, UnsteadyPlan as UnsteadyPlanHdf
-from rivia.model import Model, ProjectFile, GeometryFile, PlanFile, SteadyFlowFile, UnsteadyFlowFile 
+from rivia.model import Model
+from rivia import controller, geo, hdf, model
 
 try:
     from importlib.metadata import PackageNotFoundError, version
     __version__ = version("rivia")
 except PackageNotFoundError:
-    # Package not installed (e.g. running from source without pip install)
     from rivia._version import version as __version__  # type: ignore[no-redef]  # noqa: F401, I001
 
 logging.getLogger("numba").setLevel(logging.WARNING)
 
-__all__ = ["Model", "ProjectFile", "GeometryFile", "PlanFile", "SteadyFlowFile", "UnsteadyFlowFile", 
-           "GeometryHdf", "SteadyPlanHdf", "UnsteadyPlanHdf"]
+__all__ = ["Model", "controller", "geo", "hdf", "model"]
