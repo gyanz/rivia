@@ -283,13 +283,13 @@ class Project(MapperExtension):
 
         The handle is kept open until :meth:`reload` is called or :meth:`close`
         is invoked.  For geometry-only access (no results), use
-        ``GeometryHdf(model.geom_hdf_file)`` directly.
+        ``hdf.Geometry(model.geometry_hdf_path)`` directly.
 
         Raises
         ------
         FileNotFoundError
             If the plan HDF does not exist — run the model first, or use
-            ``GeometryHdf(model.geom_hdf_file)`` for geometry-only access.
+            ``hdf.Geometry(model.geometry_hdf_path)`` for geometry-only access.
         ValueError
             If the plan type cannot be determined from the flow file extension.
         """
@@ -301,7 +301,7 @@ class Project(MapperExtension):
                 raise FileNotFoundError(
                     f"Plan HDF {plan_path.name!r} does not exist. "
                     "Run the model first with model.run(), or use "
-                    "GeometryHdf(model.geom_hdf_file) for geometry-only access."
+                    "hdf.Geometry(model.geometry_hdf_path) for geometry-only access."
                 )
             if self.plan.is_steady:
                 self._hdf = SteadyPlan(plan_path)
