@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from rivia.hdf import SteadyPlanHdf, UnsteadyPlanHdf
 
-from .. import com
+from .. import controller
 from ..utils import normalize_sim_end_time, normalize_sim_start_time
 from ._dss import DssReader
 from ._mapper import MapperExtension
@@ -153,7 +153,7 @@ class Model(MapperExtension):
             # Bypassing __del__ which is unreliable during interpreter teardown
             atexit.register(_restore_backups, model_files)
 
-        self._rc = com.open(ras_version)
+        self._rc = controller.connect(ras_version)
         self._ras_version = self._rc.ras_version()
         self._rc.Project_Open(str(self._project_path))
         self._plan: PlanFile | None = None
@@ -553,7 +553,7 @@ class Model(MapperExtension):
             self.controller.Project_Close()
         except NotImplementedError:
             self.controller.close()
-            self._rc = com.open(self._ras_version)
+            self._rc = controller.connect(self._ras_version)
         finally:
             self.controller.Project_Open(str(self._project_path))
 

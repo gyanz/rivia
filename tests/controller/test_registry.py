@@ -1,8 +1,8 @@
-"""Tests for rivia.com.registry.ras_registry_xxx."""
+"""Tests for rivia.controller.registry.ras_registry_xxx."""
 
 import pytest
 
-from rivia.com.registry import ras_registry_xxx
+from rivia.controller.registry import ras_registry_xxx
 
 
 # ---------------------------------------------------------------------------

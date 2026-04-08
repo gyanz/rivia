@@ -7,7 +7,7 @@ import logging
 
 from . import _ver400
 
-logger = logging.getLogger("rivia.com")
+logger = logging.getLogger("rivia.controller")
 
 
 class ControllerDeprecated(object):

@@ -1,9 +1,9 @@
-rivia.com
-=========
+rivia.controller
+================
 
 COM interface to run and control HEC-RAS. Windows only; requires ``pywin32``.
 
-.. automodule:: rivia.com
+.. automodule:: rivia.controller
    :members:
 
 .. rubric:: Submodules
@@ -12,6 +12,6 @@ COM interface to run and control HEC-RAS. Windows only; requires ``pywin32``.
    :toctree: generated
    :recursive:
 
-   rivia.com.controller
-   rivia.com.ras
-   rivia.com.registry
+   rivia.controller.controller
+   rivia.controller.ras
+   rivia.controller.registry

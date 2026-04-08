@@ -16,7 +16,7 @@ rivia
    :caption: API Reference
 
    api/model
-   api/com
+   api/controller
    api/hdf
    api/geo
    api/utils

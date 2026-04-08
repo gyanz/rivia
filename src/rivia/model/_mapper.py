@@ -44,7 +44,7 @@ from typing import TYPE_CHECKING, Literal
 if TYPE_CHECKING:
     import rasterio.io
 
-from ..com.ras import installed_ras_directory
+from ..controller.ras import installed_ras_directory
 from ..utils.fs import assert_path_writable
 from ..utils.helpers import log_call, timed
 
