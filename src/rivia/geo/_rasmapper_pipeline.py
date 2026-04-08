@@ -49,8 +49,8 @@ if TYPE_CHECKING:
 # Optional Numba JIT
 # ---------------------------------------------------------------------------
 
-from numba import njit, prange
 import numba as _numba
+from numba import njit, prange
 
 _log = logging.getLogger(__name__)
 

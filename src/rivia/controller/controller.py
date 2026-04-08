@@ -4,12 +4,15 @@ import psutil
 import pywintypes
 import win32com.client
 
-from .ras import installed_ras_progid, installed_ras_display_name
-from ._runtime import Runtime, kill_hecras_version
 from ._geometry import GeometryBase as _GeometryBase
-from ._ver400 import Controller as C400, RASEvents as E400
-from ._ver500 import Controller as C500, RASEvents as E500
-from ._ver503 import Controller as C503, RASEvents as E503
+from ._runtime import Runtime, kill_hecras_version
+from ._ver400 import Controller as C400
+from ._ver400 import RASEvents as E400
+from ._ver500 import Controller as C500
+from ._ver500 import RASEvents as E500
+from ._ver503 import Controller as C503
+from ._ver503 import RASEvents as E503
+from .ras import installed_ras_display_name, installed_ras_progid
 
 logger = logging.getLogger("rivia.controller")
 

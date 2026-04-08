@@ -28,7 +28,6 @@ import pandas as pd
 
 from rivia.utils import log_call, parse_interval, timed
 
-from ._base import _HdfFile
 from .geometry import (
     _SA_ROOT,
     Bridge,

@@ -2,8 +2,8 @@
 
 import logging
 
-from rivia.model import Project
 from rivia import controller, geo, hdf, model
+from rivia.model import Project
 
 try:
     from importlib.metadata import PackageNotFoundError, version

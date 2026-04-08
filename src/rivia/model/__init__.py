@@ -26,6 +26,15 @@ from .. import controller
 from ..utils import normalize_sim_end_time, normalize_sim_start_time
 from ._dss import DssReader
 from ._mapper import MapperExtension
+from .geometry import (  # noqa: F401
+    CrossSection,
+    Geometry,
+    IneffArea,
+    ManningEntry,
+    NodeType,
+)
+from .plan import Plan
+from .project import ProjectFile
 from .steady_flow import SteadyBoundary, SteadyFlow
 from .unsteady_flow import (
     FlowHydrograph,
@@ -41,15 +50,6 @@ from .unsteady_flow import (
     StageHydrograph,
     UnsteadyFlow,
 )
-from .geometry import (
-    NodeType,
-    CrossSection,
-    Geometry,
-    IneffArea,
-    ManningEntry,
-)
-from .plan import Plan
-from .project import ProjectFile
 
 __all__ = [
     # Entry points

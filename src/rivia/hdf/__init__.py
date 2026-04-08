@@ -1,6 +1,11 @@
 """Read/write HEC-RAS HDF5 output files."""
 
-from .geometry import (
+# ruff: noqa: I001
+# Geometry/structure/results classes are returned by method calls, not
+# user-constructed.  They are importable on demand for type annotations:
+#   from rivia.hdf import FlowArea, CrossSection, Bridge  # works
+# but are intentionally absent from __all__.
+from .geometry import (  # noqa: F401
     BoundaryConditionCollection,
     BoundaryConditionLine,
     Bridge,
@@ -21,7 +26,7 @@ from .geometry import (
     StructureIndex,
     Weir,
 )
-from .steady_plan import (
+from .steady_plan import (  # noqa: F401
     CrossSectionResults as SteadyCrossSectionResults,
     CrossSectionResultsCollection as SteadyCrossSectionResultsCollection,
     LateralResults as SteadyLateralResults,
@@ -30,7 +35,7 @@ from .steady_plan import (
     StorageAreaResultsCollection as SteadyStorageAreaResultsCollection,
     StructureResultsCollection as SteadyStructureResultsCollection,
 )
-from .unsteady_plan import (
+from .unsteady_plan import (  # noqa: F401
     BridgeResults,
     CrossSectionResults as UnsteadyCrossSectionResults,
     CrossSectionResultsCollection as UnsteadyCrossSectionResultsCollection,

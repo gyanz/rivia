@@ -29,7 +29,6 @@ from typing import TYPE_CHECKING, overload
 
 import numpy as np
 
-from ._base import _HdfFile
 from .geometry import (
     _SA_ROOT,
     CrossSection,
@@ -39,8 +38,10 @@ from .geometry import (
     StorageArea,
     StorageAreaCollection,
     Structure,
-    StructureCollection as _GeomStructureCollection,
     _decode,
+)
+from .geometry import (
+    StructureCollection as _GeomStructureCollection,
 )
 
 if TYPE_CHECKING:
