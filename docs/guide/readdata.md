@@ -44,7 +44,7 @@ rivia exposes HEC-RAS data through four entry points depending on the source:
 rivia exposes the four HEC-RAS text input files as lazily loaded objects on `Model`.
 
 ```
-model.project  → ProjectFile    .prj  — project index: plan list, unit system, file paths
+model.project  → Proj           .prj  — project index: plan list, unit system, file paths
 model.plan     → PlanFile       .p**  — plan settings: intervals, simulation window, file refs
 model.geom     → GeometryFile   .g**  — geometry: cross sections, Manning's n, structures
 model.flow     → SteadyFlowFile       — steady flow: profiles, boundary conditions
@@ -54,7 +54,7 @@ model.flow     → SteadyFlowFile       — steady flow: profiles, boundary cond
 ### `model.project` — project file
 
 ```python
-proj = model.project             # ProjectFile
+proj = model.project             # Proj
 
 proj.title                       # project title string
 proj.units                       # "English" or "SI"

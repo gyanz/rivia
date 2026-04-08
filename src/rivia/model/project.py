@@ -12,7 +12,7 @@ from typing import Literal
 logger = logging.getLogger("rivia.model")
 
 
-class ProjectFile:
+class Proj:
     """Read-only parser for a HEC-RAS project file (.prj).
 
     Parses the project file to expose project metadata, unit system, and
@@ -20,7 +20,7 @@ class ProjectFile:
 
     Example
     -------
-    >>> prj = ProjectFile("Baxter.prj")
+    >>> prj = Proj("Baxter.prj")
     >>> prj.title
     'Baxter River GIS Example'
     >>> prj.units
@@ -286,7 +286,7 @@ class ProjectFile:
         return list(self._plans_cache)
 
     def __repr__(self) -> str:
-        return f"ProjectFile({self._path!r})"
+        return f"Proj({self._path!r})"
 
 
 # ------------------------------------------------------------------

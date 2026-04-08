@@ -34,7 +34,7 @@ from .geometry import (  # noqa: F401
     NodeType,
 )
 from .plan import Plan
-from .project import ProjectFile
+from .project import Proj
 from .steady_flow import SteadyBoundary, SteadyFlow
 from .unsteady_flow import (
     FlowHydrograph,
@@ -54,7 +54,7 @@ from .unsteady_flow import (
 __all__ = [
     # Entry points
     "Project",
-    "ProjectFile",
+    "Proj",
     "Geometry",
     "Plan",
     "SteadyFlow",
@@ -142,7 +142,7 @@ class Project(MapperExtension):
         self._ras_version = self._controller.ras_version()
         self._controller.Project_Open(str(self._project_path))
         self._plan: Plan | None = None
-        self._project: ProjectFile | None = None
+        self._project: Proj | None = None
         self._geometry: Geometry | None = None
         self._flow: SteadyFlow | UnsteadyFlow | None = None
         self._hdf = None
@@ -159,7 +159,7 @@ class Project(MapperExtension):
         return self._controller
 
     @property
-    def project_file(self) -> Path:
+    def path(self) -> Path:
         """Return the project file path."""
         return self._project_path
 
@@ -204,12 +204,12 @@ class Project(MapperExtension):
         )
 
     @property
-    def project(self) -> ProjectFile:
+    def project(self) -> Proj:
         """Lazily parsed project file.
 
         """
         if self._project is None:
-            self._project = ProjectFile(self.project_file)
+            self._project = Proj(self.path)
         return self._project
 
     @property
@@ -867,7 +867,7 @@ class Project(MapperExtension):
 
     def __repr__(self) -> str:
         return (
-            f"Project({self.project_file.name!r}, plan={self.plan_path.name!r})"
+            f"Project({self.path.name!r}, plan={self.plan_path.name!r})"
         )
 
     def __del__(self):
