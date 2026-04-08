@@ -1,11 +1,11 @@
 """High-level HEC-RAS project interface and text file I/O.
 
-:class:`Model` is the primary entry point — it opens a project via COM,
+:class:`Project` is the primary entry point — it opens a project via COM,
 manages plan switching and reloading, and provides lazy access to plan files,
 geometry files, flow files, and HDF results.
 
 Individual file classes (:class:`Geometry`, :class:`Plan`, etc.) can
-also be used standalone without a :class:`Model` instance.
+also be used standalone without a :class:`Project` instance.
 """
 
 import atexit
@@ -53,7 +53,7 @@ from .project import ProjectFile
 
 __all__ = [
     # Entry points
-    "Model",        # will become Project in Phase 8
+    "Project",
     "ProjectFile",
     "Geometry",
     "Plan",
@@ -86,7 +86,7 @@ EXT_BACKUP_FILE = "rivia_bkup"
 class PlanSummary:
     """Lightweight summary of one plan in a project.
 
-    Returned by :attr:`Model.plans`.
+    Returned by :attr:`Project.plans`.
 
     Attributes
     ----------
@@ -109,11 +109,11 @@ class PlanSummary:
     active: bool
 
 
-class Model(MapperExtension):
+class Project(MapperExtension):
     """High-level interface for working with an HEC-RAS project via the COM object.
 
     Use this class in preference to `com.open`. While `com.open` returns a raw HEC-RAS
-    controller instance that is not associated with any project, `Model` binds the COM
+    controller instance that is not associated with any project, `Project` binds the COM
     object to a specific HEC-RAS project file and provides project-aware operations.
     """
 
@@ -138,12 +138,12 @@ class Model(MapperExtension):
             # Bypassing __del__ which is unreliable during interpreter teardown
             atexit.register(_restore_backups, model_files)
 
-        self._rc = controller.connect(ras_version)
-        self._ras_version = self._rc.ras_version()
-        self._rc.Project_Open(str(self._project_path))
+        self._controller = controller.connect(ras_version)
+        self._ras_version = self._controller.ras_version()
+        self._controller.Project_Open(str(self._project_path))
         self._plan: Plan | None = None
         self._project: ProjectFile | None = None
-        self._geom: Geometry | None = None
+        self._geometry: Geometry | None = None
         self._flow: SteadyFlow | UnsteadyFlow | None = None
         self._hdf = None
         self._dss: DssReader | None = None
@@ -156,7 +156,7 @@ class Model(MapperExtension):
 
     @property
     def controller(self):
-        return self._rc
+        return self._controller
 
     @property
     def project_file(self) -> Path:
@@ -164,27 +164,27 @@ class Model(MapperExtension):
         return self._project_path
 
     @property
-    def geom_file(self) -> Path:
+    def geometry_path(self) -> Path:
         """Return the current geometry file path."""
         return Path(self.controller.CurrentGeomFile())
 
     @property
-    def geom_hdf_file(self) -> Path:
+    def geometry_hdf_path(self) -> Path:
         """Return the current geometry HDF file path."""
-        return self.geom_file.with_name(self.geom_file.name + ".hdf")
+        return self.geometry_path.with_name(self.geometry_path.name + ".hdf")
 
     @property
-    def plan_file(self) -> Path:
+    def plan_path(self) -> Path:
         """Return the current plan file path."""
         return Path(self.controller.CurrentPlan())
 
     @property
-    def plan_hdf_file(self) -> Path:
+    def plan_hdf_path(self) -> Path:
         """Return the current plan HDF file path."""
-        return self.plan_file.with_name(self.plan_file.name + ".hdf")
+        return self.plan_path.with_name(self.plan_path.name + ".hdf")
 
     @property
-    def flow_file(self) -> Path:
+    def flow_path(self) -> Path:
         """Return the current flow file path.
 
         Raises
@@ -192,7 +192,7 @@ class Model(MapperExtension):
         ValueError
             If the plan file has no ``Flow File=`` entry or the entry is blank.
         """
-        plan_file = self.plan_file
+        plan_file = self.plan_path
         with open(plan_file) as fid:
             for line in fid:
                 if line.startswith("Flow File"):
@@ -220,19 +220,19 @@ class Model(MapperExtension):
         write changes back to disk and refresh the cache.
         """
         if self._plan is None:
-            self._plan = Plan(self.plan_file)
+            self._plan = Plan(self.plan_path)
         return self._plan
 
     @property
-    def geom(self) -> Geometry:
+    def geometry(self) -> Geometry:
         """Lazily parsed geometry file for the current plan.
 
         Cached after first access.  Call ``geom.save()`` then ``reload()`` to
         write changes back to disk and refresh the cache.
         """
-        if self._geom is None:
-            self._geom = Geometry(self.geom_file)
-        return self._geom
+        if self._geometry is None:
+            self._geometry = Geometry(self.geometry_path)
+        return self._geometry
 
     @property
     def flow(self) -> SteadyFlow | UnsteadyFlow:
@@ -255,10 +255,10 @@ class Model(MapperExtension):
             If the flow file path does not exist on disk.
         """
         if self._flow is None:
-            path = self.flow_file
+            path = self.flow_path
             if path is None:
                 raise ValueError(
-                    f"Plan file {self.plan_file.name!r} has no 'Flow File=' entry."
+                    f"Plan file {self.plan_path.name!r} has no 'Flow File=' entry."
                 )
             if self.plan.is_steady:
                 self._flow = SteadyFlow(path)
@@ -273,7 +273,7 @@ class Model(MapperExtension):
         return self._flow
 
     @property
-    def hdf(self) -> "SteadyPlan | UnsteadyPlan":
+    def results(self) -> "SteadyPlan | UnsteadyPlan":
         """Lazily opened HDF results file for the current plan.
 
         Dispatches to the appropriate class based on plan type:
@@ -296,7 +296,7 @@ class Model(MapperExtension):
         from rivia.hdf import SteadyPlan, UnsteadyPlan
 
         if self._hdf is None:
-            plan_path = self.plan_hdf_file
+            plan_path = self.plan_hdf_path
             if not plan_path.exists():
                 raise FileNotFoundError(
                     f"Plan HDF {plan_path.name!r} does not exist. "
@@ -315,7 +315,7 @@ class Model(MapperExtension):
         return self._hdf
 
     @property
-    def dss_file(self) -> Path:
+    def dss_path(self) -> Path:
         """Path to the DSS output file (project file with ``.dss`` extension)."""
         return self._project_path.with_suffix(".dss")
 
@@ -343,7 +343,7 @@ class Model(MapperExtension):
                 active = "*" if p.active else " "
                 print(f"[{active}] {p.index}: {p.title} ({p.short_id})")
         """
-        active_name = self.plan_file.name
+        active_name = self.plan_path.name
         return [
             PlanSummary(
                 index=i,
@@ -399,10 +399,10 @@ class Model(MapperExtension):
     @property
     def plan_index(self) -> int:
         for i, plan_info in enumerate(self.project.plans):
-            if plan_info["path"].name == self.plan_file.name:
+            if plan_info["path"].name == self.plan_path.name:
                 return i
 
-    def change_plan(
+    def set_plan(
         self,
         *,
         index: int | None = None,
@@ -507,7 +507,7 @@ class Model(MapperExtension):
     def reset(self):
         if not self._backup:
             raise ValueError(
-                "Model instance does not have back files to perform reset."
+                "Project instance does not have back files to perform reset."
             )
         model_files = _get_project_files(self._project_path)
         _restore_backups(model_files)
@@ -517,8 +517,8 @@ class Model(MapperExtension):
         if save_if_modified:
             if self._plan is not None and self._plan.is_modified:
                 self._plan.save()
-            if self._geom is not None and self._geom.is_modified:
-                self._geom.save()
+            if self._geometry is not None and self._geometry.is_modified:
+                self._geometry.save()
             if (
                 self._flow is not None
                 and hasattr(self._flow, "is_modified")
@@ -526,7 +526,7 @@ class Model(MapperExtension):
             ):
                 self._flow.save()
         self._plan = None  # invalidate cached Plan so next access re-parses
-        self._geom = None
+        self._geometry = None
         self._flow = None
         self._dss = None
         if self._hdf is not None:
@@ -538,7 +538,7 @@ class Model(MapperExtension):
             self.controller.Project_Close()
         except NotImplementedError:
             self.controller.close()
-            self._rc = controller.connect(self._ras_version)
+            self._controller = controller.connect(self._ras_version)
         finally:
             self.controller.Project_Open(str(self._project_path))
 
@@ -584,20 +584,20 @@ class Model(MapperExtension):
             self._hdf.close()
             self._hdf = None
         if self._plan is not None and self._plan.is_modified:
-            logger.warning("Plan file %s is modified but not saved.", self.plan_file.name)
-        if self._geom is not None and self._geom.is_modified:
-            logger.warning("Geometry file %s is modified but not saved.", self.geom_file.name)
+            logger.warning("Plan file %s is modified but not saved.", self.plan_path.name)
+        if self._geometry is not None and self._geometry.is_modified:
+            logger.warning("Geometry file %s is modified but not saved.", self.geometry_path.name)
         if (
             self._flow is not None
             and hasattr(self._flow, "is_modified")
             and self._flow.is_modified
         ):
-            logger.warning("Flow file %s is modified but not saved.", self.flow_file.name)
+            logger.warning("Flow file %s is modified but not saved.", self.flow_path.name)
         if self._chaining.enabled:
             if self._plan is not None and self._plan.is_modified:
                 raise RuntimeError(
                     f"Run-chaining is active (run #{self._chaining.run_number}) "
-                    f"but plan file {self.plan_file.name!r} has unsaved modifications. "
+                    f"but plan file {self.plan_path.name!r} has unsaved modifications. "
                     "Save or discard changes before calling run()."
                 )
             if (
@@ -607,7 +607,7 @@ class Model(MapperExtension):
             ):
                 raise RuntimeError(
                     f"Run-chaining is active (run #{self._chaining.run_number}) "
-                    f"but flow file {self.flow_file.name!r} has unsaved modifications. "
+                    f"but flow file {self.flow_path.name!r} has unsaved modifications. "
                     "Save or discard changes before calling run()."
                 )
         if self._chaining.enabled and self._chaining.run_number > 0:
@@ -619,7 +619,7 @@ class Model(MapperExtension):
                     "This should have been set automatically; check that the "
                     "flow file was not replaced or reloaded after chaining was enabled."
                 )
-            rst_path = self.plan_file.parent / self._chaining_ic_filename(end=False)
+            rst_path = self.plan_path.parent / self._chaining_ic_filename(end=False)
             if not rst_path.exists():
                 raise FileNotFoundError(
                     f"Chained run #{self._chaining.run_number} expects restart file "
@@ -656,7 +656,7 @@ class Model(MapperExtension):
                                 "the correct restart file is configured in the "
                                 "flow file.",
                                 rst_date, rst_time, sim_date, sim_time,
-                                self.plan_file.name,
+                                self.plan_path.name,
                             )
         if hide_window:
             self.controller.Compute_HideComputationWindow()
@@ -669,7 +669,7 @@ class Model(MapperExtension):
         finally:
             _ts = dt.datetime.now().isoformat(timespec="seconds")
             _entry: dict = {
-                "plan": self.plan_hdf_file.name,
+                "plan": self.plan_hdf_path.name,
                 "sim_window": None,
                 "timestamp": _ts,
                 "summary": None,
@@ -679,7 +679,7 @@ class Model(MapperExtension):
             except Exception as exc:
                 logger.debug("Could not capture simulation window: %s", exc)
             try:
-                _entry["summary"] = self.hdf.compute_summary().to_dict()
+                _entry["summary"] = self.results.compute_summary().to_dict()
             except Exception as exc:
                 logger.debug("Could not capture run summary: %s", exc)
             self._run_history.append(_entry)
@@ -744,7 +744,7 @@ class Model(MapperExtension):
             if not self.plan.is_unsteady:
                 raise RuntimeError(
                     "Run-chaining requires an unsteady-flow plan; "
-                    f"current plan {self.plan_file.name!r} is not unsteady."
+                    f"current plan {self.plan_path.name!r} is not unsteady."
                 )
             self._chaining.enabled = True
             if not self.plan.write_ic_at_end:
@@ -798,7 +798,7 @@ class Model(MapperExtension):
         window = self.plan.simulation_window
         if window is None:
             raise RuntimeError(
-                f"Plan {self.plan_file.name!r} has no simulation window set; "
+                f"Plan {self.plan_path.name!r} has no simulation window set; "
                 "cannot determine IC filename."
             )
         if end:
@@ -807,7 +807,7 @@ class Model(MapperExtension):
         else:
             (date, time), (_, _) = window
             date, time = normalize_sim_end_time(date, time)
-        return f"{self.plan_file.name}.{date} {time}.rst"
+        return f"{self.plan_path.name}.{date} {time}.rst"
 
     def delete_restart_files(self) -> list[Path]:
         """Delete all restart files associated with the current plan.
@@ -826,7 +826,7 @@ class Model(MapperExtension):
             If the current plan file does not have the expected ``.p<digits>``
             extension.
         """
-        plan_file = self.plan_file
+        plan_file = self.plan_path
         if not re.fullmatch(r"\.p\d+", plan_file.suffix):
             raise ValueError(
                 f"Unexpected plan file extension {plan_file.suffix!r}; "
@@ -858,7 +858,7 @@ class Model(MapperExtension):
         with contextlib.suppress(Exception):
             self.controller.close()
 
-    def __enter__(self) -> "Model":
+    def __enter__(self) -> "Project":
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
@@ -867,19 +867,19 @@ class Model(MapperExtension):
 
     def __repr__(self) -> str:
         return (
-            f"Model({self.project_file.name!r}, plan={self.plan_file.name!r})"
+            f"Project({self.project_file.name!r}, plan={self.plan_path.name!r})"
         )
 
     def __del__(self):
         with contextlib.suppress(Exception):
-            logger.debug("Executing Model destructor.")
+            logger.debug("Executing Project destructor.")
         with contextlib.suppress(Exception):
             self.controller.close()
 
 
 @dataclasses.dataclass
 class _ChainingState:
-    """Private state that tracks run-chaining for :class:`Model`.
+    """Private state that tracks run-chaining for :class:`Project`.
 
     Run-chaining is the pattern where a sequence of short HEC-RAS simulations
     are linked end-to-end: each run writes a restart (``.rst``) file at its
@@ -887,9 +887,9 @@ class _ChainingState:
     condition.  This allows long simulations to be broken into smaller windows
     while preserving hydraulic continuity across the boundaries.
 
-    This dataclass is stored as ``Model._chaining`` and is only mutated by
-    :meth:`~Model.enable_chaining` and :meth:`~Model.run`.  All other
-    ``Model`` methods treat it as read-only.
+    This dataclass is stored as ``Project._chaining`` and is only mutated by
+    :meth:`~Project.enable_chaining` and :meth:`~Project.run`.  All other
+    ``Project`` methods treat it as read-only.
 
     Attributes
     ----------
@@ -897,16 +897,16 @@ class _ChainingState:
         ``True`` while chaining is active.  Set to ``True`` by
         ``enable_chaining(True)`` and back to ``False`` by
         ``enable_chaining(False)``.  When ``False`` no chaining logic runs
-        inside :meth:`~Model.run`.
+        inside :meth:`~Project.run`.
     run_number : int or None
         Tracks how many chained runs have completed in the current sequence.
 
-        - ``None`` — chaining has never been enabled on this ``Model``
+        - ``None`` — chaining has never been enabled on this ``Project``
           instance, or has been fully reset by ``enable_chaining(False)``.
         - ``0`` — the seed run: no restart file exists yet, so only the
           unsaved-modifications guard is active; the restart-file existence
           check is skipped.
-        - ``≥ 1`` — a subsequent chained run: :meth:`~Model.run` verifies
+        - ``≥ 1`` — a subsequent chained run: :meth:`~Project.run` verifies
           that the restart file produced by the previous run exists on disk
           and that the flow file has the restart flag enabled before
           launching HEC-RAS.

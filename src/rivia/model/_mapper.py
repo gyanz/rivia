@@ -405,7 +405,7 @@ class MapperExtension:
         """
         import h5py
 
-        hdf_path = Path(str(self.geom_file) + ".hdf")
+        hdf_path = Path(str(self.geometry_path) + ".hdf")
         if not hdf_path.exists():
             raise FileNotFoundError(
                 f"Geometry HDF file not found: {hdf_path}"
@@ -492,12 +492,12 @@ class MapperExtension:
         if rasmap.exists():
             return rasmap
 
-        candidates = sorted(self.plan_file.parent.glob("*.rasmap"))
+        candidates = sorted(self.plan_path.parent.glob("*.rasmap"))
         if len(candidates) == 1:
             return candidates[0]
         if not candidates:
             raise FileNotFoundError(
-                f"No .rasmap file found in project folder: {self.plan_file.parent}"
+                f"No .rasmap file found in project folder: {self.plan_path.parent}"
             )
 
         raise FileNotFoundError(
@@ -642,7 +642,7 @@ class MapperExtension:
                 "self.plan.short_id is empty; set a plan short id before storing maps"
             )
 
-        project_dir = _resolve(self.plan_file.parent)
+        project_dir = _resolve(self.plan_path.parent)
 
         program_dir = _resolve(Path(installed_ras_directory(self.version)))
         if not program_dir:
@@ -672,7 +672,7 @@ class MapperExtension:
                 "and copy RasMapperStoreMap.exe to src/rivia/bin/."
             )
 
-        result_hdf = _resolve(self.plan_hdf_file)
+        result_hdf = _resolve(self.plan_hdf_path)
         if not result_hdf.exists():
             raise FileNotFoundError(f"Plan HDF file not found: {result_hdf}")
 

@@ -2,7 +2,7 @@
 
 import logging
 
-from rivia.model import Model
+from rivia.model import Project
 from rivia import controller, geo, hdf, model
 
 try:
@@ -13,4 +13,4 @@ except PackageNotFoundError:
 
 logging.getLogger("numba").setLevel(logging.WARNING)
 
-__all__ = ["Model", "controller", "geo", "hdf", "model"]
+__all__ = ["Project", "controller", "geo", "hdf", "model"]
