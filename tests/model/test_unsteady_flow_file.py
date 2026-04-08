@@ -1,4 +1,4 @@
-"""Tests for rivia.model.flow_unsteady — UnsteadyFlow and UnsteadyFlow.
+"""Tests for rivia.model.unsteady_flow — UnsteadyFlow and UnsteadyFlow.
 
 Fixtures (real unsteady flow files from HEC-RAS 6.6 example projects):
   baxter_1d.u01       — 2 flow hydrographs, 1 friction slope, 2 lateral inflows
@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from rivia.model.flow_unsteady import (
+from rivia.model.unsteady_flow import (
     FrictionSlope,
     GateBoundary,
     LateralInflow,

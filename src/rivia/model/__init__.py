@@ -26,8 +26,8 @@ from .. import controller
 from ..utils import normalize_sim_end_time, normalize_sim_start_time
 from ._dss import DssReader
 from ._mapper import MapperExtension
-from .flow_steady import SteadyBoundary, SteadyFlow
-from .flow_unsteady import (
+from .steady_flow import SteadyBoundary, SteadyFlow
+from .unsteady_flow import (
     FlowHydrograph,
     FrictionSlope,
     GateBoundary,
