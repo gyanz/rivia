@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 
 @log_call(logging.INFO)
 @timed()
-def rasmap_raster(
+def rasterize_results(
     variable: Literal["wse", "water_surface", "depth", "velocity", "velocity_vector"],
     cell_wse: np.ndarray,
     cell_min_elevation: np.ndarray,
@@ -272,11 +272,11 @@ def rasmap_raster(
         from rasterio.transform import from_origin
     except ImportError as exc:
         raise ImportError(
-            "rasmap_raster requires rasterio.  "
+            "rasterize_results requires rasterio.  "
             "Install it with: pip install rivia[geo]"
         ) from exc
 
-    from rivia.geo import _rasmap
+    from rivia.geo import _rasmapper_pipeline as _rasmap
 
     # -- 0. Guards ----------------------------------------------------------
     if variable == "wse":
@@ -412,7 +412,7 @@ def rasmap_raster(
     n_faces = len(face_cell_indexes)
 
     logger.info(
-        "rasmap_raster: variable=%r, render_mode=%r, n_cells=%d, n_faces=%d, "
+        "rasterize_results: variable=%r, render_mode=%r, n_cells=%d, n_faces=%d, "
         "grid=%dx%d, pixel_size=%.2f",
         variable, render_mode, n_cells, n_faces,
         out_width, out_height, abs(out_transform.a),

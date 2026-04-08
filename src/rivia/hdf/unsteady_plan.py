@@ -500,7 +500,7 @@ class FlowAreaResults(FlowArea):
         """Full 2D velocity ``[Vx, Vy]`` at each face midpoint.
 
         Implements the RASMapper-exact C-stencil least-squares reconstruction
-        (Step A + Step 2 from ``geo/_rasmap.py``):
+        (Step A + Step 2 from ``geo/_rasmapper_pipeline.py``):
 
         * **Step A** — hydraulic connectivity: determines which faces are
           actively conveying flow based on adjacent-cell WSE and bed elevation.
@@ -524,7 +524,7 @@ class FlowAreaResults(FlowArea):
             ``[Vx, Vy]`` velocity at each face midpoint.
             Disconnected (dry) faces receive ``[0, 0]``.
         """
-        from rivia.geo import _rasmap
+        from rivia.geo import _rasmapper_pipeline as _rasmap
 
         cell_wse = np.array(self.water_surface[timestep, :])
         face_normal_vel = np.array(self.face_velocity[timestep, :])
@@ -572,7 +572,7 @@ class FlowAreaResults(FlowArea):
             ``[Vx, Vy]`` velocity at each mesh corner.
             Facepoints adjacent only to dry faces receive ``[0, 0]``.
         """
-        from rivia.geo import _rasmap
+        from rivia.geo import _rasmapper_pipeline as _rasmap
 
         cell_wse = np.array(self.water_surface[timestep, :])
         face_normal_vel = np.array(self.face_velocity[timestep, :])
@@ -623,7 +623,7 @@ class FlowAreaResults(FlowArea):
         """Quiver plot of rasterized velocity vectors around a target cell.
 
         Rasterizes the neighbourhood of *cell_index* using the RASMapper-exact
-        pipeline (``rasmap_raster`` with ``variable="velocity"``), then draws
+        pipeline (``rasterize_results`` with ``variable="velocity"``), then draws
         quiver arrows at the pixel centres of wet pixels.  Arrows show the
         final, fully interpolated ``[Vx, Vy]`` value at each pixel — the same
         values that appear in RASMapper's velocity map.
@@ -759,7 +759,7 @@ class FlowAreaResults(FlowArea):
         # "velocity_vector" → 4-band [Vx, Vy, speed, direction]; quiver
         # needs all four bands.
         fp_face_info, fp_face_values = self.facepoint_face_orientation
-        ds = _raster.rasmap_raster(
+        ds = _raster.rasterize_results(
             variable="velocity_vector",
             cell_wse=np.array(self.water_surface[timestep, :]),
             cell_min_elevation=self._cell_min_elevation,
@@ -1122,8 +1122,8 @@ class FlowAreaResults(FlowArea):
         cell_face_info, cell_face_values = self.cell_face_info
         fp_face_info, fp_face_values = self.facepoint_face_orientation
 
-        # ---- Delegate to rasmap_raster -------------------------------------
-        return _raster.rasmap_raster(
+        # ---- Delegate to rasterize_results -------------------------------------
+        return _raster.rasterize_results(
             variable=variable,
             cell_wse=cell_wse,
             cell_min_elevation=self._cell_min_elevation,
