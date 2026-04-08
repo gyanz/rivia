@@ -1,6 +1,6 @@
 """Read/write HEC-RAS HDF5 output files."""
 
-from ._geometry import (
+from .geometry import (
     BoundaryConditionCollection,
     BoundaryConditionLine,
     Bridge,
@@ -21,7 +21,7 @@ from ._geometry import (
     StructureIndex,
     Weir,
 )
-from ._steady_plan import (
+from .steady_plan import (
     CrossSectionResults as SteadyCrossSectionResults,
     CrossSectionResultsCollection as SteadyCrossSectionResultsCollection,
     LateralResults as SteadyLateralResults,
@@ -30,7 +30,7 @@ from ._steady_plan import (
     StorageAreaResultsCollection as SteadyStorageAreaResultsCollection,
     StructureResultsCollection as SteadyStructureResultsCollection,
 )
-from ._unsteady_plan import (
+from .unsteady_plan import (
     BridgeResults,
     CrossSectionResults as UnsteadyCrossSectionResults,
     CrossSectionResultsCollection as UnsteadyCrossSectionResultsCollection,

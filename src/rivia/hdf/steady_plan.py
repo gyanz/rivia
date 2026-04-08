@@ -30,7 +30,7 @@ from typing import TYPE_CHECKING, overload
 import numpy as np
 
 from ._base import _HdfFile
-from ._geometry import (
+from .geometry import (
     _SA_ROOT,
     CrossSection,
     CrossSectionCollection,

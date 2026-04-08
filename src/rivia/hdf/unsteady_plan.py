@@ -29,7 +29,7 @@ import pandas as pd
 from rivia.utils import log_call, parse_interval, timed
 
 from ._base import _HdfFile
-from ._geometry import (
+from .geometry import (
     _SA_ROOT,
     Bridge,
     CrossSection,
@@ -367,7 +367,7 @@ class FlowAreaResults(FlowArea):
         ndarray, shape ``(n_cells, 2)``
             ``[Vx, Vy]`` depth-averaged velocity components for real cells.
         """
-        from ._velocity import compute_all_cell_velocities
+        from .velocity import compute_all_cell_velocities
 
         if method == "flow_ratio" and self.face_flow is None:
             raise KeyError(
