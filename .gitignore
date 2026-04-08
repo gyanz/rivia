@@ -1,9 +1,11 @@
 # Root-level development scripts (not part of the package)
 /*.py
+/*.bat
 *.xlsm
 *.tmp
 *.tmp.*
-api_strategy.md
+/*.md
+!/README.MD
 
 # Python build and packaging
 __pycache__/
