@@ -60,7 +60,7 @@ proj.title                       # project title string
 proj.units                       # "English" or "SI"
 proj.plan_files                  # list[Path] — all .p** files
 proj.geom_files                  # list[Path] — all .g** files
-proj.plans()                     # list of dicts with title, short_id, path per plan
+proj.plans                       # list of dicts with title, short_id, path per plan
 proj.plan_titles                 # list of plan title strings
 proj.plan_short_ids              # list of plan short IDs
 ```

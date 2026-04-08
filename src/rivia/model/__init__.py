@@ -49,6 +49,7 @@ from .geometry import (
     NODE_LATERAL_STRUCTURE,
     NODE_MULTIPLE_OPENING,
     NODE_XS,
+    NodeType,
     CrossSection,
     GeometryFile,
     IneffArea,
@@ -66,6 +67,7 @@ __all__ = [
     "CrossSection",
     "ManningEntry",
     "IneffArea",
+    "NodeType",
     "NODE_XS",
     "NODE_CULVERT",
     "NODE_BRIDGE",
@@ -229,7 +231,8 @@ class Model(MapperExtension):
     def plan(self) -> PlanFile:
         """Lazily parsed plan file.
 
-        Call ``plan.save()`` then ``reload()`` to activate changes.
+        Cached after first access.  Call ``plan.save()`` then ``reload()`` to
+        write changes back to disk and refresh the cache.
         """
         if self._plan is None:
             self._plan = PlanFile(self.plan_file)
@@ -237,7 +240,11 @@ class Model(MapperExtension):
 
     @property
     def geom(self) -> GeometryFile:
-        """Lazily parsed geometry file for the current plan."""
+        """Lazily parsed geometry file for the current plan.
+
+        Cached after first access.  Call ``geom.save()`` then ``reload()`` to
+        write changes back to disk and refresh the cache.
+        """
         if self._geom is None:
             self._geom = GeometryFile(self.geom_file)
         return self._geom
@@ -245,6 +252,9 @@ class Model(MapperExtension):
     @property
     def flow(self) -> SteadyFlowFile | UnsteadyFlowEditor:
         """Lazily parsed flow file for the current plan.
+
+        Cached after first access.  Call ``flow.save()`` then ``reload()`` to
+        write changes back to disk and refresh the cache.
 
         Returns a :class:`SteadyFlowFile` when the plan references a steady
         flow file (extension starting with ``f``), or an
@@ -357,7 +367,7 @@ class Model(MapperExtension):
                 path=p["path"],
                 active=(p["path"].name == active_name),
             )
-            for i, p in enumerate(self.project.plans())
+            for i, p in enumerate(self.project.plans)
         ]
 
     @contextlib.contextmanager
@@ -403,7 +413,7 @@ class Model(MapperExtension):
 
     @property
     def plan_index(self) -> int:
-        for i, plan_info in enumerate(self.project.plans()):
+        for i, plan_info in enumerate(self.project.plans):
             if plan_info["path"].name == self.plan_file.name:
                 return i
 
@@ -443,7 +453,7 @@ class Model(MapperExtension):
                 f"({given} given)."
             )
 
-        plans = self.project.plans()
+        plans = self.project.plans
 
         # --- validate COM plan list matches project file ---
         _, com_titles = self.controller.Plan_Names(IncludeOnlyPlansInBaseDirectory=True)

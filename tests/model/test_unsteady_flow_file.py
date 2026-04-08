@@ -518,20 +518,20 @@ class TestEditorParsing:
 class TestEditorSorting:
     def test_sort_lateral_inflows_ascending(self):
         ed = UnsteadyFlowEditor(DAMBRK)
-        ed.sort_lateral_inflows(ascending=True)
+        ed.sort_lateral_inflows(descending=False)
         rs = [float(li.river_station) for li in ed.lateral_inflows]
         assert rs == sorted(rs)
 
     def test_sort_lateral_inflows_descending(self):
         ed = UnsteadyFlowEditor(DAMBRK)
-        ed.sort_lateral_inflows(ascending=False)
+        ed.sort_lateral_inflows(descending=True)
         rs = [float(li.river_station) for li in ed.lateral_inflows]
         assert rs == sorted(rs, reverse=True)
 
     def test_sort_preserves_total_boundary_count(self):
         ed = UnsteadyFlowEditor(DAMBRK)
         n_before = len(ed.boundaries)
-        ed.sort_lateral_inflows(ascending=True)
+        ed.sort_lateral_inflows(descending=False)
         assert len(ed.boundaries) == n_before
 
     def test_sort_preserves_non_lateral_positions(self):
@@ -546,7 +546,7 @@ class TestEditorSorting:
             i for i, b in enumerate(ed.boundaries) if isinstance(b, FrictionSlope)
         ]
 
-        ed.sort_lateral_inflows(ascending=True)
+        ed.sort_lateral_inflows(descending=False)
 
         after_flow_indices = [
             i for i, b in enumerate(ed.boundaries) if isinstance(b, FlowHydrograph)
@@ -560,10 +560,10 @@ class TestEditorSorting:
 
     def test_sort_ascending_then_descending_restores_desc_order(self):
         ed = UnsteadyFlowEditor(DAMBRK)
-        ed.sort_lateral_inflows(ascending=False)
+        ed.sort_lateral_inflows(descending=True)
         rs_desc = [float(li.river_station) for li in ed.lateral_inflows]
-        ed.sort_lateral_inflows(ascending=True)
-        ed.sort_lateral_inflows(ascending=False)
+        ed.sort_lateral_inflows(descending=False)
+        ed.sort_lateral_inflows(descending=True)
         rs_again = [float(li.river_station) for li in ed.lateral_inflows]
         assert rs_desc == rs_again
 
@@ -585,7 +585,7 @@ class TestEditorSorting:
         ed._header_lines = []
         ed._path = None
 
-        ed.sort_lateral_inflows(ascending=True)
+        ed.sort_lateral_inflows(descending=False)
 
         result = [(li.reach, float(li.river_station)) for li in ed.lateral_inflows]
         assert result == [("Reach B", 200.0), ("Reach A", 100.0), ("Reach A", 300.0)]
@@ -646,7 +646,7 @@ class TestEditorSetByIndex:
     def test_set_after_sort_targets_correct_boundary(self):
         """After sorting, index 0 should address the lowest-RS boundary."""
         ed = UnsteadyFlowEditor(DAMBRK)
-        ed.sort_lateral_inflows(ascending=True)
+        ed.sort_lateral_inflows(descending=False)
         lowest_rs = float(ed.lateral_inflows[0].river_station)
         ed.set_lateral_inflow(0, 111.0)
 
@@ -682,33 +682,33 @@ class TestEditorSetByIndex:
         assert all(v == pytest.approx(999.0) for v in ed.lateral_inflows[0].values)
         assert ed.lateral_inflows[-1].values == pytest.approx(original_last)
 
-    # set_all_gate_opening --------------------------------------------------
+    # set_all_gate_openings --------------------------------------------------
 
-    def test_set_all_gate_opening_scalar_per_gate(self):
+    def test_set_all_gate_openings_scalar_per_gate(self):
         """One scalar per gate broadcasts to the full series length."""
         ed = UnsteadyFlowEditor(INLINE_3G)
         gates = ed.gate_boundaries[0].gates
         scalars = [float(i + 1) for i in range(len(gates))]
-        ed.set_all_gate_opening(scalars)
+        ed.set_all_gate_openings(scalars)
         for i, gate in enumerate(gates):
             assert all(v == pytest.approx(scalars[i]) for v in gate.values)
 
-    def test_set_all_gate_opening_list_per_gate(self):
+    def test_set_all_gate_openings_list_per_gate(self):
         """One list[float] per gate sets exact values."""
         ed = UnsteadyFlowEditor(INLINE_3G)
         gates = ed.gate_boundaries[0].gates
         series = [[float(i)] * 100 for i in range(len(gates))]
-        ed.set_all_gate_opening(series)
+        ed.set_all_gate_openings(series)
         for i, gate in enumerate(gates):
             assert gate.values == pytest.approx(series[i])
 
-    def test_set_all_gate_opening_partial_leaves_rest_unchanged(self):
+    def test_set_all_gate_openings_partial_leaves_rest_unchanged(self):
         """If values is shorter than gate count, remaining gates are untouched."""
         ed = UnsteadyFlowEditor(INLINE_3G)
         gates = ed.gate_boundaries[0].gates
         original_last = list(gates[-1].values)
         # INLINE_3G has 3 gates; only update first one
-        ed.set_all_gate_opening([7.0])
+        ed.set_all_gate_openings([7.0])
         assert all(v == pytest.approx(7.0) for v in gates[0].values)
         assert gates[-1].values == pytest.approx(original_last)
 
@@ -812,7 +812,7 @@ class TestEditorSemanticRoundtrip:
     def test_sort_then_save_then_re_parse_preserves_order(self, tmp_path):
         """After sort + save, the re-parsed file should have the same order."""
         ed1 = UnsteadyFlowEditor(DAMBRK)
-        ed1.sort_lateral_inflows(ascending=True)
+        ed1.sort_lateral_inflows(descending=False)
         rs_before = [float(li.river_station) for li in ed1.lateral_inflows]
 
         out = tmp_path / "dambrk_sorted.u01"

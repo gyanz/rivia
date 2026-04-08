@@ -12,7 +12,7 @@ archive/ras_tools/r2d/ras2d_cell_velocity.py.
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Generic, TypeVar, overload
@@ -1382,8 +1382,12 @@ class FlowArea:
 # ---------------------------------------------------------------------------
 
 
-class FlowAreaCollection:
+class FlowAreaCollection(Mapping[str, "FlowArea"]):
     """Access all 2-D flow areas stored in an HDF geometry or plan file.
+
+    Implements the :class:`collections.abc.Mapping` protocol: supports
+    ``len()``, iteration, ``in``, ``[]``, ``.keys()``, ``.values()``,
+    ``.items()``, and ``.get()``.
 
     Parameters
     ----------
@@ -1562,8 +1566,12 @@ class StorageArea:
         return float(np.interp(wse, self.elevations, self.volumes))
 
 
-class StorageAreaCollection:
+class StorageAreaCollection(Mapping[str, "StorageArea"]):
     """Access all storage areas stored in an HDF geometry file.
+
+    Implements the :class:`collections.abc.Mapping` protocol: supports
+    ``len()``, iteration, ``in``, ``[]``, ``.keys()``, ``.values()``,
+    ``.items()``, and ``.get()``.
 
     Parameters
     ----------
@@ -1685,8 +1693,12 @@ class BoundaryConditionLine:
     polyline: np.ndarray  # (n_pts, 2)
 
 
-class BoundaryConditionCollection:
+class BoundaryConditionCollection(Mapping[str, "BoundaryConditionLine"]):
     """Access all boundary condition lines in an HDF geometry file.
+
+    Implements the :class:`collections.abc.Mapping` protocol: supports
+    ``len()``, iteration, ``in``, ``[]``, ``.keys()``, ``.values()``,
+    ``.items()``, and ``.get()``.
 
     Parameters
     ----------

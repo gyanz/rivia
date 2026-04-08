@@ -21,12 +21,18 @@ File format notes:
       4 — Rating Curve    (``Up/Dn Nval=<count>`` + interleaved stage/flow pairs)
 
 Derived from format inspection of HEC-RAS 6.6 example files.
+
+Convention
+----------
+``get_*`` methods return ``None`` when the requested item is not found.
+``set_*`` methods raise :exc:`KeyError` when the target does not exist.
 """
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from enum import IntEnum
 from math import ceil
 from pathlib import Path
 
@@ -124,12 +130,22 @@ _TRAILING_STARTS = (
     "Observed WS=",
 )
 
-# BC type codes
-_BC_NONE = 0
-_BC_KNOWN_WS = 1
-_BC_CRITICAL_DEPTH = 2
-_BC_NORMAL_DEPTH = 3
-_BC_RATING_CURVE = 4
+class _BcType(IntEnum):
+    """Boundary condition type codes (``Up/Dn Type=`` field in steady flow files)."""
+
+    NONE = 0
+    KNOWN_WS = 1
+    CRITICAL_DEPTH = 2
+    NORMAL_DEPTH = 3
+    RATING_CURVE = 4
+
+
+# Aliases used internally throughout this module.
+_BC_NONE = _BcType.NONE
+_BC_KNOWN_WS = _BcType.KNOWN_WS
+_BC_CRITICAL_DEPTH = _BcType.CRITICAL_DEPTH
+_BC_NORMAL_DEPTH = _BcType.NORMAL_DEPTH
+_BC_RATING_CURVE = _BcType.RATING_CURVE
 
 
 # ---------------------------------------------------------------------------

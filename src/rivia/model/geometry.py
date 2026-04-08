@@ -53,6 +53,11 @@ only; n-values in that block are all zero (placeholders).
 
 Derived from format inspection of HEC-RAS 6.6 example files and
 ``archive/ras_tools/geomParser.py``.
+
+Convention
+----------
+``get_*`` methods return ``None`` when the requested item is not found.
+``set_*`` methods raise :exc:`KeyError` when the target does not exist.
 """
 
 from __future__ import annotations
@@ -60,6 +65,7 @@ from __future__ import annotations
 import contextlib
 import logging
 from dataclasses import dataclass, field
+from enum import IntEnum
 from math import ceil, isnan, nan
 from pathlib import Path
 from typing import Generic, TypeVar, overload
@@ -73,26 +79,32 @@ _COLS_STAE = 10  # values per row in #Sta/Elev blocks  (5 pairs)
 _COLS_MANN = 9  # values per row in #Mann / #XS Ineff  (3 triplets)
 _COLS_FLAGS = 10  # flags per row in Permanent Ineff blocks
 
-#: Node type: cross section
-NODE_XS = 1
-#: Node type: culvert
-NODE_CULVERT = 2
-#: Node type: bridge
-NODE_BRIDGE = 3
-#: Node type: multiple opening
-NODE_MULTIPLE_OPENING = 4
-#: Node type: inline structure
-NODE_INLINE_STRUCTURE = 5
-#: Node type: lateral structure
-NODE_LATERAL_STRUCTURE = 6
+class NodeType(IntEnum):
+    """Node type codes from the ``Type RM Length L Ch R = TYPE, ...`` line."""
 
-_NODE_TYPE_NAMES: dict[int, str] = {
-    NODE_XS: "CrossSection",
-    NODE_CULVERT: "Culvert",
-    NODE_BRIDGE: "Bridge",
-    NODE_MULTIPLE_OPENING: "MultipleOpening",
-    NODE_INLINE_STRUCTURE: "InlineStructure",
-    NODE_LATERAL_STRUCTURE: "LateralStructure",
+    CROSS_SECTION = 1
+    CULVERT = 2
+    BRIDGE = 3
+    MULTIPLE_OPENING = 4
+    INLINE_STRUCTURE = 5
+    LATERAL_STRUCTURE = 6
+
+
+# Module-level aliases kept for backward compatibility.
+NODE_XS = NodeType.CROSS_SECTION
+NODE_CULVERT = NodeType.CULVERT
+NODE_BRIDGE = NodeType.BRIDGE
+NODE_MULTIPLE_OPENING = NodeType.MULTIPLE_OPENING
+NODE_INLINE_STRUCTURE = NodeType.INLINE_STRUCTURE
+NODE_LATERAL_STRUCTURE = NodeType.LATERAL_STRUCTURE
+
+_NODE_TYPE_NAMES: dict[NodeType, str] = {
+    NodeType.CROSS_SECTION: "CrossSection",
+    NodeType.CULVERT: "Culvert",
+    NodeType.BRIDGE: "Bridge",
+    NodeType.MULTIPLE_OPENING: "MultipleOpening",
+    NodeType.INLINE_STRUCTURE: "InlineStructure",
+    NodeType.LATERAL_STRUCTURE: "LateralStructure",
 }
 
 #: Culvert shape codes from ``Culvert=`` data line (index 0).
@@ -246,6 +258,10 @@ class ManningEntry:
     station: float
     n_value: float
     variation: float = 0.0
+
+    def __post_init__(self) -> None:
+        if self.n_value <= 0:
+            raise ValueError(f"n_value must be > 0, got {self.n_value!r}")
 
 
 @dataclass
@@ -1646,6 +1662,17 @@ class GeometryFile:
             return None
         end = self._find_node_end(start)
         return self._parse_xs_from_lines(river, reach, start, end)
+
+    def all_cross_sections(self) -> list[CrossSection]:
+        """Return every cross section in the geometry, in file order.
+
+        Iterates all reaches and collects cross sections from each.
+        Structure nodes (bridges, culverts, etc.) are skipped.
+        """
+        result: list[CrossSection] = []
+        for river, reach in self.reaches:
+            result.extend(self.cross_sections(river, reach))
+        return result
 
     def cross_sections(self, river: str, reach: str) -> list[CrossSection]:
         """Return all cross sections in *reach*, in file order.

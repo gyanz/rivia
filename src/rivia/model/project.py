@@ -242,24 +242,27 @@ class ProjectFile:
     # Plan metadata helpers
     # ------------------------------------------------------------------
 
+    @property
     def plan_titles(self) -> list[str | None]:
-        """Return the ``Plan Title`` for each plan file, in project order.
+        """``Plan Title`` for each plan file, in project order.
 
         A ``None`` entry means the plan file does not exist or has no
         ``Plan Title=`` line.
         """
         return [_read_plan_field(p, "Plan Title") for p in self._plan_files]
 
+    @property
     def plan_short_ids(self) -> list[str | None]:
-        """Return the ``Short Identifier`` for each plan file, in project order.
+        """``Short Identifier`` for each plan file, in project order.
 
         A ``None`` entry means the plan file does not exist or has no
         ``Short Identifier=`` line.
         """
         return [_read_plan_field(p, "Short Identifier") for p in self._plan_files]
 
+    @property
     def plans(self) -> list[dict[str, str | Path | None]]:
-        """Return metadata for each plan file in project order.
+        """Metadata for each plan file in project order.
 
         Each entry is a dict with keys:
 
@@ -268,7 +271,7 @@ class ProjectFile:
         - ``"title"``    — value of ``Plan Title=``, or ``None``
         - ``"short_id"`` — value of ``Short Identifier=``, or ``None``
 
-        Results are cached after the first call.
+        Results are cached after the first access.
         """
         if self._plans_cache is None:
             self._plans_cache = [
