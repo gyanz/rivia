@@ -26,7 +26,7 @@ Where:
     ``"STAGE-TW"``, ``"FLOW-GATE"``, ``"Gate Opening"``
 
 - **D** — date block (empty — let pydsstools select via time window)
-- **E** — output interval taken from ``plan.dss_interval``
+- **E** — output interval taken from ``plan.output_interval``
 - **F** — plan short identifier from ``plan.short_id``
 
 Reading time-series directly from the DSS file is particularly useful when a
@@ -269,7 +269,7 @@ class DssReader:
         plan = self._model.plan
         part_a = f"{river} {reach}"
         part_b = _part_b(node_type, rs, gate_name)
-        part_e = plan.dss_interval or ""
+        part_e = plan.output_interval or ""
         part_f = plan.short_id or ""
         pathname = f"/{part_a}/{part_b}/{output}//{part_e}/{part_f}/"
 
