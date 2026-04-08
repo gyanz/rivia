@@ -2,6 +2,7 @@
 /*.py
 *.xlsm
 *.tmp
+*.tmp.*
 api_strategy.md
 
 # Python build and packaging
