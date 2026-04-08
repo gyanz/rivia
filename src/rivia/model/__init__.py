@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from rivia.hdf import SteadyPlanHdf, UnsteadyPlanHdf
+    from rivia.hdf import SteadyPlan, UnsteadyPlan
 
 from .. import controller
 from ..utils import normalize_sim_end_time, normalize_sim_start_time
@@ -288,13 +288,13 @@ class Model(MapperExtension):
         return self._flow
 
     @property
-    def hdf(self) -> "SteadyPlanHdf | UnsteadyPlanHdf":
+    def hdf(self) -> "SteadyPlan | UnsteadyPlan":
         """Lazily opened HDF results file for the current plan.
 
         Dispatches to the appropriate class based on plan type:
 
-        * Steady flow (``plan.is_steady``) → :class:`~rivia.hdf.SteadyPlanHdf`
-        * Unsteady flow (``plan.is_unsteady``) → :class:`~rivia.hdf.UnsteadyPlanHdf`
+        * Steady flow (``plan.is_steady``) → :class:`~rivia.hdf.SteadyPlan`
+        * Unsteady flow (``plan.is_unsteady``) → :class:`~rivia.hdf.UnsteadyPlan`
 
         The handle is kept open until :meth:`reload` is called or :meth:`close`
         is invoked.  For geometry-only access (no results), use
@@ -308,7 +308,7 @@ class Model(MapperExtension):
         ValueError
             If the plan type cannot be determined from the flow file extension.
         """
-        from rivia.hdf import SteadyPlanHdf, UnsteadyPlanHdf
+        from rivia.hdf import SteadyPlan, UnsteadyPlan
 
         if self._hdf is None:
             plan_path = self.plan_hdf_file
@@ -319,9 +319,9 @@ class Model(MapperExtension):
                     "GeometryHdf(model.geom_hdf_file) for geometry-only access."
                 )
             if self.plan.is_steady:
-                self._hdf = SteadyPlanHdf(plan_path)
+                self._hdf = SteadyPlan(plan_path)
             elif self.plan.is_unsteady:
-                self._hdf = UnsteadyPlanHdf(plan_path)
+                self._hdf = UnsteadyPlan(plan_path)
             else:
                 raise ValueError(
                     f"Cannot determine plan type from flow file "
@@ -721,7 +721,7 @@ class Model(MapperExtension):
         - ``"plan"``: plan HDF filename (e.g. ``"MyModel.p01.hdf"``)
         - ``"timestamp"``: ISO-8601 wall-clock time the run completed
           (e.g. ``"2026-04-02T09:27:24"``)
-        - ``"summary"``: :meth:`~rivia.hdf.UnsteadyPlanHdf.compute_summary`
+        - ``"summary"``: :meth:`~rivia.hdf.UnsteadyPlan.compute_summary`
           output as a dict, or ``None`` if the summary could not be read
           (e.g. run failed before writing HDF output, or steady-flow plan).
 

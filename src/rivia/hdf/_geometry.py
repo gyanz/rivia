@@ -1,4 +1,4 @@
-"""GeometryHdf — read HEC-RAS geometry HDF5 files (.g*.hdf).
+"""Geometry — read HEC-RAS geometry HDF5 files (.g*.hdf).
 
 Provides structured access to 2-D flow-area mesh data:
 cell centres, face connectivity, hydraulic property tables, etc.
@@ -1791,15 +1791,15 @@ class BoundaryConditionCollection(Mapping[str, "BoundaryConditionLine"]):
 
 
 # ---------------------------------------------------------------------------
-# Structure / SA2DConnection / HdfStructureCollection
+# Structure / SA2DConnection / StructureCollection
 # ---------------------------------------------------------------------------
 
 
 @dataclass
-class HdfWeir:
+class Weir:
     """Overflow weir parameters read from ``Geometry/Structures/Attributes``.
 
-    Present on :class:`HdfBridge`, :class:`HdfInline`, and :class:`HdfLateral`
+    Present on :class:`Bridge`, :class:`InlineStructure`, and :class:`LateralStructure`
     structures when *mode* is ``'Weir/Gate/Culverts'``.
 
     Attributes
@@ -1841,8 +1841,8 @@ class HdfWeir:
 
 
 @dataclass
-class HdfGateOpening:
-    """One physical opening within a :class:`HdfGateGroup`.
+class GateOpening:
+    """One physical opening within a :class:`GateGroup`.
 
     Attributes
     ----------
@@ -1858,7 +1858,7 @@ class HdfGateOpening:
 
 
 @dataclass
-class HdfGateGroup:
+class GateGroup:
     """One gate group from ``Geometry/Structures/Gate Groups/Attributes``.
 
     A gate group defines a set of identical gate openings.  Each opening
@@ -1895,11 +1895,11 @@ class HdfGateGroup:
     radial_coefficient: float
     weir_coefficient: float
     spillway_shape: str
-    openings: list[HdfGateOpening] = field(default_factory=list)
+    openings: list[GateOpening] = field(default_factory=list)
 
 
 @dataclass
-class HdfStructure:
+class Structure:
     """Base class for one HEC-RAS structure from ``Geometry/Structures/Attributes``.
 
     Attributes
@@ -1924,7 +1924,7 @@ class HdfStructure:
 
 
 @dataclass
-class HdfBridge(HdfStructure):
+class Bridge(Structure):
     """Bridge structure embedded in a 1-D HEC-RAS reach.
 
     Both sides are always ``'XS'``.
@@ -1950,12 +1950,12 @@ class HdfBridge(HdfStructure):
     location: tuple[str, str, str] = ("", "", "")
     upstream_node: tuple[str, str, str] = ("", "", "")
     downstream_node: tuple[str, str, str] = ("", "", "")
-    weir: HdfWeir | None = None
-    gate_groups: list[HdfGateGroup] = field(default_factory=list)
+    weir: Weir | None = None
+    gate_groups: list[GateGroup] = field(default_factory=list)
 
 
 @dataclass
-class HdfInline(HdfStructure):
+class InlineStructure(Structure):
     """Inline structure (e.g. inline weir/dam) embedded in a 1-D HEC-RAS reach.
 
     Both sides are always ``'XS'``.
@@ -1977,12 +1977,12 @@ class HdfInline(HdfStructure):
     location: tuple[str, str, str] = ("", "", "")
     upstream_node: tuple[str, str, str] = ("", "", "")
     downstream_node: tuple[str, str, str] = ("", "", "")
-    weir: HdfWeir | None = None
-    gate_groups: list[HdfGateGroup] = field(default_factory=list)
+    weir: Weir | None = None
+    gate_groups: list[GateGroup] = field(default_factory=list)
 
 
 @dataclass
-class HdfLateral(HdfStructure):
+class LateralStructure(Structure):
     """Lateral structure connecting a 1-D reach to a Storage Area or 2-D Flow Area.
 
     The upstream side is always ``'XS'`` (the 1-D reach).  The downstream
@@ -2007,12 +2007,12 @@ class HdfLateral(HdfStructure):
     location: tuple[str, str, str] = ("", "", "")
     upstream_node: tuple[str, str, str] = ("", "", "")
     downstream_node: str = ""
-    weir: HdfWeir | None = None
-    gate_groups: list[HdfGateGroup] = field(default_factory=list)
+    weir: Weir | None = None
+    gate_groups: list[GateGroup] = field(default_factory=list)
 
 
 @dataclass
-class SA2DConnection(HdfStructure):
+class SA2DConnection(Structure):
     """Connection structure linking two Storage Areas or 2-D Flow Areas.
 
     Both sides are ``'SA'``, ``'2D'``, or ``'--'`` (treated as SA by
@@ -2047,7 +2047,7 @@ class SA2DConnection(HdfStructure):
 _T = TypeVar("_T")
 
 
-class HdfStructureIndex(Generic[_T]):
+class StructureIndex(Generic[_T]):
     """Ordered mapping of structures supporting string-key *and* integer-index access.
 
     Behaves like a read-only ``dict`` but also accepts integer positions::
@@ -2120,17 +2120,17 @@ class HdfStructureIndex(Generic[_T]):
 
 
 # ---------------------------------------------------------------------------
-# Structure / SA2DConnection / HdfStructureCollection
+# Structure / SA2DConnection / StructureCollection
 # ---------------------------------------------------------------------------
 
 
-class HdfStructureCollection:
+class StructureCollection:
     """Access all structures stored in ``Geometry/Structures/Attributes``.
 
     The collection is keyed by a string identifier:
 
     * :class:`SA2DConnection` — the HDF ``Connection`` field (user-given name).
-    * :class:`HdfBridge`, :class:`HdfInline`, :class:`HdfLateral` — ``"River Reach RS"``
+    * :class:`Bridge`, :class:`InlineStructure`, :class:`LateralStructure` — ``"River Reach RS"``
       built from the HDF ``River`` / ``Reach`` / ``RS`` fields.
 
     Use the typed filter properties (:attr:`connections`, :attr:`bridges`,
@@ -2144,14 +2144,14 @@ class HdfStructureCollection:
 
     def __init__(self, hdf: "h5py.File") -> None:
         self._hdf = hdf
-        self._items: dict[str, HdfStructure] | None = None
+        self._items: dict[str, Structure] | None = None
         self._tuple_index: dict[tuple[str, str, str], str] | None = None
 
     # ------------------------------------------------------------------
     # Internal loader
     # ------------------------------------------------------------------
 
-    def _load_gate_groups(self) -> dict[int, list[HdfGateGroup]]:
+    def _load_gate_groups(self) -> dict[int, list[GateGroup]]:
         """Return gate groups keyed by structure row index (0-based)."""
         gg_root = f"{_STRUCT_ROOT}/Gate Groups"
         if gg_root not in self._hdf:
@@ -2167,8 +2167,8 @@ class HdfStructureCollection:
         def _ggf(row, f: str) -> float:
             return float(row[f]) if f in gg_fn else float("nan")
 
-        # Build openings dict: (struct_id, gate_group_local_id) → [HdfGateOpening]
-        openings_map: dict[tuple[int, int], list[HdfGateOpening]] = {}
+        # Build openings dict: (struct_id, gate_group_local_id) → [GateOpening]
+        openings_map: dict[tuple[int, int], list[GateOpening]] = {}
         op_path = f"{gg_root}/Openings/Attributes"
         if op_path in self._hdf:
             op_ds = self._hdf[op_path]
@@ -2180,16 +2180,16 @@ class HdfStructureCollection:
                 name = _decode(op_row["Name"]) if "Name" in op_fn else ""
                 station = float(op_row["Station"]) if "Station" in op_fn else float("nan")
                 key = (sid, gid)
-                openings_map.setdefault(key, []).append(HdfGateOpening(name=name, station=station))
+                openings_map.setdefault(key, []).append(GateOpening(name=name, station=station))
 
         # Build gate groups, tracking local index per structure
-        gate_groups_map: dict[int, list[HdfGateGroup]] = {}
+        gate_groups_map: dict[int, list[GateGroup]] = {}
         local_count: dict[int, int] = {}
         for gg_row in gg_arr:
             sid = int(gg_row["Structure ID"]) if "Structure ID" in gg_fn else -1
             local_id = local_count.get(sid, 0)
             local_count[sid] = local_id + 1
-            gg = HdfGateGroup(
+            gg = GateGroup(
                 name=_gg(gg_row, "Name"),
                 width=_ggf(gg_row, "Width"),
                 height=_ggf(gg_row, "Height"),
@@ -2204,7 +2204,7 @@ class HdfStructureCollection:
 
         return gate_groups_map
 
-    def _load(self) -> dict[str, HdfStructure]:
+    def _load(self) -> dict[str, Structure]:
         if self._items is not None:
             return self._items
 
@@ -2229,8 +2229,8 @@ class HdfStructureCollection:
         def _xs_node(r: str, rc: str, rstation: str) -> tuple[str, str, str]:
             return (r, rc, rstation)
 
-        def _build_weir(row) -> HdfWeir:
-            return HdfWeir(
+        def _build_weir(row) -> Weir:
+            return Weir(
                 width=_getf(row, "Weir Width"),
                 coefficient=_getf(row, "Weir Coef"),
                 shape=_get(row, "Weir Shape"),
@@ -2245,7 +2245,7 @@ class HdfStructureCollection:
 
         gate_groups_map = self._load_gate_groups()
 
-        items: dict[str, HdfStructure] = {}
+        items: dict[str, Structure] = {}
         for i, row in enumerate(attrs):
             typ  = _get(row, "Type")
             mode = _get(row, "Mode")
@@ -2281,7 +2281,7 @@ class HdfStructureCollection:
                 weir = _build_weir(row) if mode else None
                 gate_groups = gate_groups_map.get(i, [])
                 if typ == "Bridge":
-                    items[key] = HdfBridge(
+                    items[key] = Bridge(
                         **base,
                         location=location,
                         upstream_node=us_xs,
@@ -2290,7 +2290,7 @@ class HdfStructureCollection:
                         gate_groups=gate_groups,
                     )
                 elif typ == "Inline":
-                    items[key] = HdfInline(
+                    items[key] = InlineStructure(
                         **base,
                         location=location,
                         upstream_node=us_xs,
@@ -2299,7 +2299,7 @@ class HdfStructureCollection:
                         gate_groups=gate_groups,
                     )
                 elif typ == "Lateral":
-                    items[key] = HdfLateral(
+                    items[key] = LateralStructure(
                         **base,
                         location=location,
                         upstream_node=us_xs,
@@ -2308,14 +2308,14 @@ class HdfStructureCollection:
                         gate_groups=gate_groups,
                     )
                 else:
-                    items[key] = HdfStructure(**base)  # unknown type, store as base
+                    items[key] = Structure(**base)  # unknown type, store as base
 
         self._items = items
 
         # Secondary index: (river, reach, rs) → string key for non-connection structures.
         self._tuple_index = {}
         for k, v in items.items():
-            if isinstance(v, (HdfBridge, HdfInline, HdfLateral)):
+            if isinstance(v, (Bridge, InlineStructure, LateralStructure)):
                 r, rc, rs = v.location
                 normalized = (r.strip(), rc.strip(), rs.strip())
                 self._tuple_index[normalized] = k
@@ -2332,31 +2332,31 @@ class HdfStructureCollection:
         return list(self._load().keys())
 
     @property
-    def connections(self) -> HdfStructureIndex[SA2DConnection]:
+    def connections(self) -> StructureIndex[SA2DConnection]:
         """All :class:`SA2DConnection` instances keyed by connection name."""
-        return HdfStructureIndex(
+        return StructureIndex(
             {k: v for k, v in self._load().items() if isinstance(v, SA2DConnection)}
         )
 
     @property
-    def bridges(self) -> HdfStructureIndex[HdfBridge]:
-        """All :class:`HdfBridge` instances keyed by ``"River Reach RS"``."""
-        return HdfStructureIndex(
-            {k: v for k, v in self._load().items() if isinstance(v, HdfBridge)}
+    def bridges(self) -> StructureIndex[Bridge]:
+        """All :class:`Bridge` instances keyed by ``"River Reach RS"``."""
+        return StructureIndex(
+            {k: v for k, v in self._load().items() if isinstance(v, Bridge)}
         )
 
     @property
-    def laterals(self) -> HdfStructureIndex[HdfLateral]:
-        """All :class:`HdfLateral` instances keyed by ``"River Reach RS"``."""
-        return HdfStructureIndex(
-            {k: v for k, v in self._load().items() if isinstance(v, HdfLateral)}
+    def laterals(self) -> StructureIndex[LateralStructure]:
+        """All :class:`LateralStructure` instances keyed by ``"River Reach RS"``."""
+        return StructureIndex(
+            {k: v for k, v in self._load().items() if isinstance(v, LateralStructure)}
         )
 
     @property
-    def inlines(self) -> HdfStructureIndex[HdfInline]:
-        """All :class:`HdfInline` instances keyed by ``"River Reach RS"``."""
-        return HdfStructureIndex(
-            {k: v for k, v in self._load().items() if isinstance(v, HdfInline)}
+    def inlines(self) -> StructureIndex[InlineStructure]:
+        """All :class:`InlineStructure` instances keyed by ``"River Reach RS"``."""
+        return StructureIndex(
+            {k: v for k, v in self._load().items() if isinstance(v, InlineStructure)}
         )
 
     @property
@@ -2368,9 +2368,9 @@ class HdfStructureCollection:
         ``n_centerline_points``.
 
         ``upstream_node`` / ``downstream_node`` are ``(river, reach, rs)``
-        tuples for :class:`HdfBridge` and :class:`HdfInline` sides, and plain
+        tuples for :class:`Bridge` and :class:`InlineStructure` sides, and plain
         strings (area names) for :class:`SA2DConnection` and
-        :class:`HdfLateral` downstream sides.
+        :class:`LateralStructure` downstream sides.
         """
         rows = []
         for key, s in self._load().items():
@@ -2386,7 +2386,7 @@ class HdfStructureCollection:
             })
         return pd.DataFrame(rows)
 
-    def __getitem__(self, key: str | int | tuple[str, str, str]) -> HdfStructure:
+    def __getitem__(self, key: str | int | tuple[str, str, str]) -> Structure:
         items = self._load()
         if isinstance(key, int):
             keys = list(items)
@@ -2426,17 +2426,17 @@ class HdfStructureCollection:
 
 
 # ---------------------------------------------------------------------------
-# GeometryHdf — public entry point
+# Geometry — public entry point
 # ---------------------------------------------------------------------------
 
 
 # ---------------------------------------------------------------------------
-# HdfCrossSection / HdfCrossSectionCollection
+# CrossSection / CrossSectionCollection
 # ---------------------------------------------------------------------------
 
 
 @dataclass
-class HdfCrossSection:
+class CrossSection:
     """One HEC-RAS 1-D cross section from ``Geometry/Cross Sections/Attributes``.
 
     Attributes
@@ -2483,11 +2483,11 @@ class HdfCrossSection:
         return (self.river, self.reach, self.rs)
 
 
-class HdfCrossSectionCollection:
+class CrossSectionCollection:
     """Access all 1-D cross sections in ``Geometry/Cross Sections``.
 
     Keyed by ``"River Reach RS"`` — the same convention used by
-    :class:`HdfStructureCollection` and the DSS Hydrograph Output group names.
+    :class:`StructureCollection` and the DSS Hydrograph Output group names.
 
     Parameters
     ----------
@@ -2497,10 +2497,10 @@ class HdfCrossSectionCollection:
 
     def __init__(self, hdf: h5py.File) -> None:
         self._hdf = hdf
-        self._items: dict[str, HdfCrossSection] | None = None
+        self._items: dict[str, CrossSection] | None = None
         self._loc_index: dict[tuple[str, str, str], str] = {}
 
-    def _load(self) -> dict[str, HdfCrossSection]:
+    def _load(self) -> dict[str, CrossSection]:
         if self._items is not None:
             return self._items
 
@@ -2528,7 +2528,7 @@ class HdfCrossSectionCollection:
         pl_info = np.array(root["Polyline Info"])
         pl_pts  = np.array(root["Polyline Points"])           # (total, 2)
 
-        items: dict[str, HdfCrossSection] = {}
+        items: dict[str, CrossSection] = {}
         for i, row in enumerate(attrs):
             river = _s(row, "River")
             reach = _s(row, "Reach")
@@ -2542,7 +2542,7 @@ class HdfCrossSectionCollection:
             pl_start, pl_count = int(pl_info[i, 0]), int(pl_info[i, 1])
 
             self._loc_index[(river, reach, rs)] = key
-            items[key] = HdfCrossSection(
+            items[key] = CrossSection(
                 river=river,
                 reach=reach,
                 rs=rs,
@@ -2574,13 +2574,13 @@ class HdfCrossSectionCollection:
         return list(self._load().keys())
 
     @overload
-    def __getitem__(self, key: int) -> HdfCrossSection: ...
+    def __getitem__(self, key: int) -> CrossSection: ...
     @overload
-    def __getitem__(self, key: str) -> HdfCrossSection: ...
+    def __getitem__(self, key: str) -> CrossSection: ...
     @overload
-    def __getitem__(self, key: tuple[str, str, str]) -> HdfCrossSection: ...
+    def __getitem__(self, key: tuple[str, str, str]) -> CrossSection: ...
 
-    def __getitem__(self, key: int | str | tuple[str, str, str]) -> HdfCrossSection:
+    def __getitem__(self, key: int | str | tuple[str, str, str]) -> CrossSection:
         items = self._load()
         if isinstance(key, int):
             keys = list(items)
@@ -2606,14 +2606,14 @@ class HdfCrossSectionCollection:
     def __len__(self) -> int:
         return len(self._load())
 
-    def __iter__(self) -> Iterator[HdfCrossSection]:
+    def __iter__(self) -> Iterator[CrossSection]:
         return iter(self._load().values())
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}({len(self)} cross sections)"
 
 
-class GeometryHdf(_HdfFile):
+class Geometry(_HdfFile):
     """Read HEC-RAS geometry HDF5 output files (``*.g*.hdf``).
 
     Parameters
@@ -2626,7 +2626,7 @@ class GeometryHdf(_HdfFile):
     --------
     ::
 
-        with GeometryHdf("MyModel.g01") as g:
+        with Geometry("MyModel.g01") as g:
             print(g.flow_areas.summary)
             centers = g.flow_areas["spillway"].cell_centers
     """
@@ -2636,8 +2636,8 @@ class GeometryHdf(_HdfFile):
         self._flow_areas: FlowAreaCollection | None = None
         self._storage_areas: StorageAreaCollection | None = None
         self._boundary_condition_lines: BoundaryConditionCollection | None = None
-        self._structures: HdfStructureCollection | None = None
-        self._cross_sections: HdfCrossSectionCollection | None = None
+        self._structures: StructureCollection | None = None
+        self._cross_sections: CrossSectionCollection | None = None
 
     # ------------------------------------------------------------------
     # Collections
@@ -2665,17 +2665,17 @@ class GeometryHdf(_HdfFile):
         return self._boundary_condition_lines
 
     @property
-    def structures(self) -> HdfStructureCollection:
+    def structures(self) -> StructureCollection:
         """Access all structures (connections, bridges, laterals, inline weirs)."""
         if self._structures is None:
-            self._structures = HdfStructureCollection(self._hdf)
+            self._structures = StructureCollection(self._hdf)
         return self._structures
 
     @property
-    def cross_sections(self) -> HdfCrossSectionCollection:
+    def cross_sections(self) -> CrossSectionCollection:
         """Access all 1-D cross sections stored in the geometry HDF."""
         if self._cross_sections is None:
-            self._cross_sections = HdfCrossSectionCollection(self._hdf)
+            self._cross_sections = CrossSectionCollection(self._hdf)
         return self._cross_sections
 
 

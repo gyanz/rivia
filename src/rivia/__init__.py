@@ -2,7 +2,7 @@
 
 import logging
 
-from rivia.hdf import GeometryHdf, SteadyPlanHdf, UnsteadyPlanHdf
+from rivia.hdf import Geometry as GeometryHdf, SteadyPlan as SteadyPlanHdf, UnsteadyPlan as UnsteadyPlanHdf
 from rivia.model import Model, ProjectFile, GeometryFile, PlanFile, SteadyFlowFile, UnsteadyFlowFile 
 
 try:

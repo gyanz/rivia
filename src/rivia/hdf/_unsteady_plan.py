@@ -1,9 +1,9 @@
-"""UnsteadyUnsteadyPlanHdf - read HEC-RAS unsteady plan HDF5 files (.p*.hdf).
+"""UnsteadyUnsteadyPlan - read HEC-RAS unsteady plan HDF5 files (.p*.hdf).
 
 Plan HDF files embed the same ``Geometry/`` group as geometry HDF files
 *plus* ``Results/Unsteady/...`` time-series and summary output.
 
-``UnsteadyUnsteadyPlanHdf`` inherits ``GeometryHdf`` so all geometry accessors are available.
+``UnsteadyUnsteadyPlan`` inherits ``Geometry`` so all geometry accessors are available.
 ``FlowAreaResults`` extends ``FlowArea`` with lazy time-series properties,
 summary DataFrames, and computed depth / velocity methods.  Raster export
 methods delegate to ``rivia.geo`` via a deferred import so this module is
@@ -31,19 +31,19 @@ from rivia.utils import log_call, parse_interval, timed
 from ._base import _HdfFile
 from ._geometry import (
     _SA_ROOT,
-    HdfBridge,
-    HdfCrossSection,
-    HdfCrossSectionCollection,
+    Bridge,
+    CrossSection,
+    CrossSectionCollection,
     FlowArea,
     FlowAreaCollection,
-    GeometryHdf,
-    HdfInline,
-    HdfLateral,
+    Geometry,
+    InlineStructure,
+    LateralStructure,
     SA2DConnection,
     StorageArea,
     StorageAreaCollection,
-    HdfStructure,
-    HdfStructureCollection,
+    Structure,
+    StructureCollection,
     _decode,
 )
 
@@ -1704,7 +1704,7 @@ class SA2DConnectionResults(_StructureResultsMixin, SA2DConnection):
     Parameters
     ----------
     geom:
-        Geometry object from :class:`~rivia.hdf.HdfStructureCollection`.
+        Geometry object from :class:`~rivia.hdf.StructureCollection`.
     group:
         ``h5py.Group`` at ``-/SA 2D Area Conn/<plan_name>``.
     """
@@ -1781,10 +1781,10 @@ class SA2DConnectionResults(_StructureResultsMixin, SA2DConnection):
 # ---------------------------------------------------------------------------
 
 
-class InlineResults(_StructureResultsMixin, HdfInline):
+class InlineResults(_StructureResultsMixin, InlineStructure):
     """Geometry *and* time-series results for one HEC-RAS inline structure.
 
-    Inherits geometry from :class:`~rivia.hdf.HdfInline` and shared HDF result
+    Inherits geometry from :class:`~rivia.hdf.InlineStructure` and shared HDF result
     access from :class:`_StructureResultsMixin`.
 
     The HDF group is at
@@ -1793,13 +1793,13 @@ class InlineResults(_StructureResultsMixin, HdfInline):
     Parameters
     ----------
     geom:
-        Geometry object from :class:`~rivia.hdf.HdfStructureCollection`.
+        Geometry object from :class:`~rivia.hdf.StructureCollection`.
     group:
         ``h5py.Group`` at the inline structure result path.
     """
 
-    def __init__(self, geom: HdfInline, group: h5py.Group) -> None:
-        HdfInline.__init__(
+    def __init__(self, geom: InlineStructure, group: h5py.Group) -> None:
+        InlineStructure.__init__(
             self,
             mode=geom.mode,
             upstream_type=geom.upstream_type,
@@ -1820,10 +1820,10 @@ class InlineResults(_StructureResultsMixin, HdfInline):
 # ---------------------------------------------------------------------------
 
 
-class LateralResults(_StructureResultsMixin, HdfLateral):
+class LateralResults(_StructureResultsMixin, LateralStructure):
     """Geometry *and* time-series results for one HEC-RAS lateral structure.
 
-    Inherits geometry from :class:`~rivia.hdf.HdfLateral` and shared HDF result
+    Inherits geometry from :class:`~rivia.hdf.LateralStructure` and shared HDF result
     access from :class:`_StructureResultsMixin`.
 
     The HDF group is at
@@ -1835,13 +1835,13 @@ class LateralResults(_StructureResultsMixin, HdfLateral):
     Parameters
     ----------
     geom:
-        Geometry object from :class:`~rivia.hdf.HdfStructureCollection`.
+        Geometry object from :class:`~rivia.hdf.StructureCollection`.
     group:
         ``h5py.Group`` at the lateral structure result path.
     """
 
-    def __init__(self, geom: HdfLateral, group: h5py.Group) -> None:
-        HdfLateral.__init__(
+    def __init__(self, geom: LateralStructure, group: h5py.Group) -> None:
+        LateralStructure.__init__(
             self,
             mode=geom.mode,
             upstream_type=geom.upstream_type,
@@ -1894,10 +1894,10 @@ class LateralResults(_StructureResultsMixin, HdfLateral):
 # ---------------------------------------------------------------------------
 
 
-class BridgeResults(_StructureResultsMixin, HdfBridge):
+class BridgeResults(_StructureResultsMixin, Bridge):
     """Geometry *and* time-series results for one HEC-RAS bridge structure.
 
-    Inherits geometry from :class:`~rivia.hdf.HdfBridge` and shared HDF result
+    Inherits geometry from :class:`~rivia.hdf.Bridge` and shared HDF result
     access from :class:`_StructureResultsMixin`.
 
     The HDF group is at
@@ -1906,13 +1906,13 @@ class BridgeResults(_StructureResultsMixin, HdfBridge):
     Parameters
     ----------
     geom:
-        Geometry object from :class:`~rivia.hdf.HdfStructureCollection`.
+        Geometry object from :class:`~rivia.hdf.StructureCollection`.
     group:
         ``h5py.Group`` at the bridge result path.
     """
 
-    def __init__(self, geom: HdfBridge, group: h5py.Group) -> None:
-        HdfBridge.__init__(
+    def __init__(self, geom: Bridge, group: h5py.Group) -> None:
+        Bridge.__init__(
             self,
             mode=geom.mode,
             upstream_type=geom.upstream_type,
@@ -1929,37 +1929,37 @@ class BridgeResults(_StructureResultsMixin, HdfBridge):
 
 
 # ---------------------------------------------------------------------------
-# PlanHdfStructureCollection - plan-enriched HdfStructureCollection
+# StructureResultsCollection - plan-enriched StructureCollection
 # ---------------------------------------------------------------------------
 
 
-class PlanHdfStructureCollection(HdfStructureCollection):
+class StructureResultsCollection(StructureCollection):
     """Plan-enriched structure collection: all structure types with results.
 
-    Overrides :class:`~rivia.hdf.HdfStructureCollection` so each item carries
+    Overrides :class:`~rivia.hdf.StructureCollection` so each item carries
     both geometry attributes *and* time-series result access:
 
     * :class:`SA2DConnection` → :class:`SA2DConnectionResults`
       (Base Output ``SA 2D Area Conn``)
-    * :class:`HdfInline` → :class:`InlineResults`
+    * :class:`InlineStructure` → :class:`InlineResults`
       (DSS Hydrograph Output ``Inline Structures``)
-    * :class:`HdfLateral` → :class:`LateralResults`
+    * :class:`LateralStructure` → :class:`LateralResults`
       (DSS Hydrograph Output ``Lateral Structures``)
-    * :class:`HdfBridge` → :class:`BridgeResults`
+    * :class:`Bridge` → :class:`BridgeResults`
       (DSS Hydrograph Output ``Bridge``)
 
     When no plan result group is found for a structure (e.g. DSS output was
     not requested for that type), the plain geometry object is kept unchanged.
     """
 
-    def _load(self) -> dict[str, HdfStructure]:  # type: ignore[override]
+    def _load(self) -> dict[str, Structure]:  # type: ignore[override]
         if self._items is not None:
             return self._items
 
         import h5py as _h5
 
         # Build geometry items first (parent caches in self._items).
-        geom_items = HdfStructureCollection._load(self)
+        geom_items = StructureCollection._load(self)
 
         # Helper: collect sub-groups from an HDF path (returns {} when absent).
         def _groups(path: str) -> dict[str, h5py.Group]:
@@ -1973,7 +1973,7 @@ class PlanHdfStructureCollection(HdfStructureCollection):
         lateral_groups = _groups(_DSS_LATERAL)
         bridge_groups = _groups(_DSS_BRIDGE)
 
-        items: dict[str, HdfStructure] = {}
+        items: dict[str, Structure] = {}
         for key, geom in geom_items.items():
 
             if isinstance(geom, SA2DConnection):
@@ -1992,17 +1992,17 @@ class PlanHdfStructureCollection(HdfStructureCollection):
                     SA2DConnectionResults(geom, grp) if grp is not None else geom
                 )
 
-            elif isinstance(geom, HdfInline):
+            elif isinstance(geom, InlineStructure):
                 plan_key = " ".join(geom.location)
                 grp = inline_groups.get(plan_key)
                 items[key] = InlineResults(geom, grp) if grp is not None else geom
 
-            elif isinstance(geom, HdfLateral):
+            elif isinstance(geom, LateralStructure):
                 plan_key = " ".join(geom.location)
                 grp = lateral_groups.get(plan_key)
                 items[key] = LateralResults(geom, grp) if grp is not None else geom
 
-            elif isinstance(geom, HdfBridge):
+            elif isinstance(geom, Bridge):
                 plan_key = " ".join(geom.location)
                 grp = bridge_groups.get(plan_key)
                 items[key] = BridgeResults(geom, grp) if grp is not None else geom
@@ -2019,7 +2019,7 @@ class PlanHdfStructureCollection(HdfStructureCollection):
 # ---------------------------------------------------------------------------
 
 
-class _CrossSectionResultsBase(HdfCrossSection):
+class _CrossSectionResultsBase(CrossSection):
     """Private base for all three cross-section result variants.
 
     Holds the HDF handle, column index, and result-group root; provides the
@@ -2028,18 +2028,18 @@ class _CrossSectionResultsBase(HdfCrossSection):
 
     Concrete subclasses add the properties that are specific to their output
     block (:class:`CrossSectionResults`,
-    :class:`CrossSectionResultsDss`,
-    :class:`CrossSectionResultsInst`).
+    :class:`CrossSectionResultsDSS`,
+    :class:`CrossSectionResultsInstantaneous`).
     """
 
     def __init__(
         self,
-        geom: HdfCrossSection,
+        geom: CrossSection,
         hdf: "h5py.File",
         index: int,
         root: str,
     ) -> None:
-        HdfCrossSection.__init__(
+        CrossSection.__init__(
             self,
             river=geom.river,
             reach=geom.reach,
@@ -2086,15 +2086,15 @@ class _CrossSectionResultsBase(HdfCrossSection):
 class CrossSectionResults(_CrossSectionResultsBase):
     """Geometry *and* results for one XS from the **Base Output** block.
 
-    Corresponds to :attr:`UnsteadyPlanHdf.cross_sections` (mapping output interval).
+    Corresponds to :attr:`UnsteadyPlan.cross_sections` (mapping output interval).
     All variables written by HEC-RAS at the mapping interval are exposed.
 
     Parameters
     ----------
     geom:
-        Geometry object from :class:`HdfCrossSectionCollection`.
+        Geometry object from :class:`CrossSectionCollection`.
     hdf:
-        Open ``h5py.File`` — kept alive by the parent ``UnsteadyPlanHdf`` context.
+        Open ``h5py.File`` — kept alive by the parent ``UnsteadyPlan`` context.
     index:
         Column index of this XS in the ``(n_t, n_xs)`` result datasets.
     root:
@@ -2122,18 +2122,18 @@ class CrossSectionResults(_CrossSectionResultsBase):
         return self._load("Velocity Total")
 
 
-class CrossSectionResultsDss(_CrossSectionResultsBase):
+class CrossSectionResultsDSS(_CrossSectionResultsBase):
     """Geometry *and* results for one XS from the **DSS Hydrograph Output** block.
 
-    Corresponds to :attr:`UnsteadyPlanHdf.cross_sections_dss` (hydrograph output interval).
+    Corresponds to :attr:`UnsteadyPlan.cross_sections_dss` (hydrograph output interval).
     Available datasets: ``wse``, ``flow``, ``flow_cumulative``.
 
     Parameters
     ----------
     geom:
-        Geometry object from :class:`HdfCrossSectionCollection`.
+        Geometry object from :class:`CrossSectionCollection`.
     hdf:
-        Open ``h5py.File`` — kept alive by the parent ``UnsteadyPlanHdf`` context.
+        Open ``h5py.File`` — kept alive by the parent ``UnsteadyPlan`` context.
     index:
         Column index of this XS in the ``(n_t, n_xs)`` result datasets.
     root:
@@ -2146,15 +2146,15 @@ class CrossSectionResultsDss(_CrossSectionResultsBase):
         return self._load("Flow Volume Cumulative")
 
 
-class CrossSectionResultsInst(_CrossSectionResultsBase):
+class CrossSectionResultsInstantaneous(_CrossSectionResultsBase):
     """Geometry *and* results for one XS from the **Post Process Profiles** block.
 
-    Corresponds to :attr:`UnsteadyPlanHdf.cross_sections_inst` (DSS inst interval).
+    Corresponds to :attr:`UnsteadyPlan.cross_sections_inst` (DSS inst interval).
 
     All result arrays have shape ``(n_profiles,)`` where index ``0`` is the
     **Max WS** profile and indices ``1:`` are the instantaneous profiles
     written at the DSS instantaneous interval.  Use
-    :attr:`UnsteadyPlanHdf.timestamps_dss_inst` for the datetime index of indices
+    :attr:`UnsteadyPlan.timestamps_dss_inst` for the datetime index of indices
     ``1:``.
 
     Available top-level datasets: ``water_surface``, ``flow``,
@@ -2166,9 +2166,9 @@ class CrossSectionResultsInst(_CrossSectionResultsBase):
     Parameters
     ----------
     geom:
-        Geometry object from :class:`HdfCrossSectionCollection`.
+        Geometry object from :class:`CrossSectionCollection`.
     hdf:
-        Open ``h5py.File`` — kept alive by the parent ``UnsteadyPlanHdf`` context.
+        Open ``h5py.File`` — kept alive by the parent ``UnsteadyPlan`` context.
     index:
         Column index of this XS in the ``(n_profiles, n_xs)`` result datasets.
     root:
@@ -2487,7 +2487,7 @@ class CrossSectionResultsInst(_CrossSectionResultsBase):
         return self.additional_variable("Wetted Perimeter Total")
 
 
-class CrossSectionResultsCollection(HdfCrossSectionCollection):
+class CrossSectionResultsCollection(CrossSectionCollection):
     """Plan-enriched cross section collection with time-series results.
 
     Parameterised over the concrete result class and the HDF path used to
@@ -2504,8 +2504,8 @@ class CrossSectionResultsCollection(HdfCrossSectionCollection):
     result_cls:
         Concrete result class to instantiate per cross section —
         :class:`CrossSectionResults`,
-        :class:`CrossSectionResultsDss`, or
-        :class:`CrossSectionResultsInst`.
+        :class:`CrossSectionResultsDSS`, or
+        :class:`CrossSectionResultsInstantaneous`.
     attrs_path:
         HDF path to the ``Cross Section Attributes`` structured array used
         to map ``(river, reach, station)`` → column index.  Defaults to
@@ -2531,7 +2531,7 @@ class CrossSectionResultsCollection(HdfCrossSectionCollection):
         if self._result_items is not None:
             return self._result_items
 
-        geom_items = HdfCrossSectionCollection._load(self)
+        geom_items = CrossSectionCollection._load(self)
 
         attrs_ds = self._hdf.get(self._attrs_path)
         if attrs_ds is None:
@@ -2603,7 +2603,7 @@ class CrossSectionResultsCollection(HdfCrossSectionCollection):
 
 
 # ---------------------------------------------------------------------------
-# UnsteadyPlanHdf - public entry point
+# UnsteadyPlan - public entry point
 # ---------------------------------------------------------------------------
 
 
@@ -2860,7 +2860,7 @@ class ComputeSummary:
         }
 
 
-class UnsteadyPlanHdf(GeometryHdf):
+class UnsteadyPlan(Geometry):
     """Read HEC-RAS plan HDF5 output files (``*.p*.hdf``).
 
     A plan HDF file contains the same ``Geometry/`` data as a geometry HDF
@@ -2876,7 +2876,7 @@ class UnsteadyPlanHdf(GeometryHdf):
     --------
     ::
 
-        with UnsteadyPlanHdf("MyModel.p01") as hdf:
+        with UnsteadyPlan("MyModel.p01") as hdf:
             ts   = hdf.timestamps_mapping
             area = hdf.flow_areas["spillway"]
 
@@ -2899,7 +2899,7 @@ class UnsteadyPlanHdf(GeometryHdf):
         self._program_directory = Path(program_directory) if program_directory else None
         self._plan_flow_areas: FlowAreaResultsCollection | None = None
         self._plan_storage_areas: StorageAreaResultsCollection | None = None
-        self._plan_structures: PlanHdfStructureCollection | None = None
+        self._plan_structures: StructureResultsCollection | None = None
         self._plan_cross_sections: CrossSectionResultsCollection | None = None
         self._plan_cross_sections_dss: CrossSectionResultsCollection | None = None
         self._plan_cross_sections_inst: CrossSectionResultsCollection | None = None
@@ -2933,7 +2933,7 @@ class UnsteadyPlanHdf(GeometryHdf):
         --------
         ::
 
-            with UnsteadyPlanHdf("MyModel.p01") as hdf:
+            with UnsteadyPlan("MyModel.p01") as hdf:
                 s = hdf.compute_summary()
                 print(s.run.solution)
                 print(s.volume.error_pct)
@@ -3437,7 +3437,7 @@ class UnsteadyPlanHdf(GeometryHdf):
         return pd.to_datetime(raw, format=_POSTPROC_TS_FMT)
 
     # ------------------------------------------------------------------
-    # Collections (override GeometryHdf equivalents with results-aware types)
+    # Collections (override Geometry equivalents with results-aware types)
     # ------------------------------------------------------------------
 
     @property
@@ -3455,10 +3455,10 @@ class UnsteadyPlanHdf(GeometryHdf):
         return self._plan_storage_areas
 
     @property
-    def structures(self) -> PlanHdfStructureCollection:
+    def structures(self) -> StructureResultsCollection:
         """Access all structures with geometry *and* plan results.
 
-        Returns a :class:`PlanHdfStructureCollection` where each item is
+        Returns a :class:`StructureResultsCollection` where each item is
         upgraded to the matching results class when plan output is present:
 
         * :class:`SA2DConnectionResults` — SA/2D connections
@@ -3466,13 +3466,13 @@ class UnsteadyPlanHdf(GeometryHdf):
         * :class:`LateralResults` — lateral structures
         * :class:`BridgeResults` — bridge structures
 
-        Use :attr:`~rivia.hdf.HdfStructureCollection.connections`,
-        :attr:`~rivia.hdf.HdfStructureCollection.inlines`,
-        :attr:`~rivia.hdf.HdfStructureCollection.laterals`, and
-        :attr:`~rivia.hdf.HdfStructureCollection.bridges` for filtered access.
+        Use :attr:`~rivia.hdf.StructureCollection.connections`,
+        :attr:`~rivia.hdf.StructureCollection.inlines`,
+        :attr:`~rivia.hdf.StructureCollection.laterals`, and
+        :attr:`~rivia.hdf.StructureCollection.bridges` for filtered access.
         """
         if self._plan_structures is None:
-            self._plan_structures = PlanHdfStructureCollection(self._hdf)
+            self._plan_structures = StructureResultsCollection(self._hdf)
         return self._plan_structures
 
     @property
@@ -3498,14 +3498,14 @@ class UnsteadyPlanHdf(GeometryHdf):
     def cross_sections_dss(self) -> CrossSectionResultsCollection:
         """1-D cross sections with geometry and DSS Hydrograph Output results.
 
-        Items are :class:`CrossSectionResultsDss` instances.
+        Items are :class:`CrossSectionResultsDSS` instances.
         Results are at the hydrograph output interval (:attr:`timestamps_dss`).
         Available variables: ``water_surface``, ``flow``,
         ``flow_volume_cumulative``.
         """
         if self._plan_cross_sections_dss is None:
             self._plan_cross_sections_dss = CrossSectionResultsCollection(
-                self._hdf, _DSS_XS, result_cls=CrossSectionResultsDss,
+                self._hdf, _DSS_XS, result_cls=CrossSectionResultsDSS,
             )
         return self._plan_cross_sections_dss
 
@@ -3513,7 +3513,7 @@ class UnsteadyPlanHdf(GeometryHdf):
     def cross_sections_inst(self) -> CrossSectionResultsCollection:
         """1-D cross sections with geometry and Post Process Profiles results.
 
-        Items are :class:`CrossSectionResultsInst` instances.
+        Items are :class:`CrossSectionResultsInstantaneous` instances.
         Results are at the DSS instantaneous profile interval
         (:attr:`timestamps_dss_inst`).
 
@@ -3521,12 +3521,12 @@ class UnsteadyPlanHdf(GeometryHdf):
         the **Max WS** profile and indices ``1:`` are the instantaneous
         profiles.  Available variables: ``water_surface``, ``flow``,
         ``energy_grade``, plus any ``Additional Variables`` dataset via
-        :meth:`~CrossSectionResultsInst.additional_variable`.
+        :meth:`~CrossSectionResultsInstantaneous.additional_variable`.
         """
         if self._plan_cross_sections_inst is None:
             self._plan_cross_sections_inst = CrossSectionResultsCollection(
                 self._hdf, _POSTPROC_XS,
-                result_cls=CrossSectionResultsInst,
+                result_cls=CrossSectionResultsInstantaneous,
                 attrs_path=_POSTPROC_GEOM_ATTRS,
             )
         return self._plan_cross_sections_inst

@@ -39,25 +39,25 @@ class TestHdfFileLifecycle:
             _HdfFile(tmp_path / "nonexistent.p01.hdf")
 
     def test_context_manager_closes_file(self, synthetic_plan_hdf):
-        from rivia.hdf import UnsteadyPlanHdf
+        from rivia.hdf import UnsteadyPlan
 
-        with UnsteadyPlanHdf(synthetic_plan_hdf) as hdf:
+        with UnsteadyPlan(synthetic_plan_hdf) as hdf:
             assert hdf._hdf.id.valid
         assert not hdf._hdf.id.valid
 
     def test_explicit_close(self, synthetic_plan_hdf):
-        from rivia.hdf import UnsteadyPlanHdf
+        from rivia.hdf import UnsteadyPlan
 
-        hdf = UnsteadyPlanHdf(synthetic_plan_hdf)
+        hdf = UnsteadyPlan(synthetic_plan_hdf)
         assert hdf._hdf.id.valid
         hdf.close()
         assert not hdf._hdf.id.valid
 
     def test_suffix_auto_appended(self, synthetic_plan_hdf):
-        from rivia.hdf import UnsteadyPlanHdf
+        from rivia.hdf import UnsteadyPlan
 
         # Pass path without .hdf — it points to a file that doesn't exist,
         # but we just want to confirm the suffix logic; use the full path.
         no_suffix = str(synthetic_plan_hdf).removesuffix(".hdf")
-        with UnsteadyPlanHdf(no_suffix) as hdf:
+        with UnsteadyPlan(no_suffix) as hdf:
             assert hdf.filename == synthetic_plan_hdf
