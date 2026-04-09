@@ -122,11 +122,18 @@ class PlanSummary:
 
     def __repr__(self) -> str:
         active = "*" if self.active else ""
-        return (
-            f"PlanSummary({active}{self.index}: {self.title!r}"
-            f", short_id={self.short_id!r}, flow_type={self.flow_type!r}"
-            f", file={self.path.name!r})"
-        )
+        parts = [
+            f"PlanSummary({active}{self.index}: {self.title!r}",
+            f"short_id={self.short_id!r}",
+            f"flow_type={self.flow_type!r}",
+            f"path={self.path.name!r}",
+        ]
+        if self.sediment_path is not None:
+            parts.append(f"sediment={self.sediment_path.name!r}")
+        if self.water_quality_path is not None:
+            parts.append(f"water_quality={self.water_quality_path.name!r}")
+        return ", ".join(parts) + ")"
+
 
 
 class Project(MapperExtension):
@@ -169,6 +176,7 @@ class Project(MapperExtension):
         self._dss: DssReader | None = None
         self._run_history: collections.deque[dict] = collections.deque(maxlen=5)
         self._chaining = _ChainingState()
+        self._plans_file_cache: list[PlanSummary] | None = None
 
     @property
     def version(self) -> int:
@@ -357,19 +365,44 @@ class Project(MapperExtension):
             self._dss = DssReader(self)
         return self._dss
 
-    @property
-    def plans(self) -> list[PlanSummary]:
+    def plans(self, invalidate_cache: bool = False) -> list[PlanSummary]:
         """All plans in the project with index, title, short_id, path, and active flag.
+
+        Plan file data (title, short_id, flow_type, sediment_path,
+        water_quality_path) is read once and cached.  The ``active`` flag is
+        recomputed on every call without re-reading files.
+
+        Parameters
+        ----------
+        invalidate_cache:
+            If ``True``, discard the cached plan file data and re-read all
+            plan files from disk.  Use this after editing plan files outside
+            of a :meth:`editing` block or after other external changes.
 
         Example::
 
-            for p in model.plans:
+            for p in model.plans():
                 active = "*" if p.active else " "
                 print(f"[{active}] {p.index}: {p.title} ({p.short_id})")
         """
+        if invalidate_cache or self._plans_file_cache is None:
+            self._plans_file_cache = self._build_plans_file_cache()
         active_name = self.plan_path.name
+        plans = [
+            dataclasses.replace(d, active=(d.path.name == active_name))
+            for d in self._plans_file_cache
+        ]
+        return sorted(plans, key=lambda p: not p.active)
+
+    def _build_plans_file_cache(self) -> list[PlanSummary]:
+        """Read all plan files and build the file-data cache.
+
+        ``active`` is stored as ``False`` throughout — it is a placeholder
+        that :attr:`plans` overwrites via ``dataclasses.replace`` on each
+        access.
+        """
         proj_path = self._project_path
-        plans = []
+        cache = []
         for i, p in enumerate(self.project.plans):
             plan_path = p["path"]
             plan = Plan(plan_path)
@@ -385,12 +418,12 @@ class Project(MapperExtension):
                 flow_type = None
             sed_ext = plan.sediment_file
             wq_ext = plan.water_quality_file
-            plans.append(PlanSummary(
+            cache.append(PlanSummary(
                 index=i,
                 title=p["title"],
                 short_id=p["short_id"],
                 path=plan_path,
-                active=(plan_path.name == active_name),
+                active=False,
                 flow_type=flow_type,
                 sediment_path=(
                     proj_path.with_suffix(f".{sed_ext}") if sed_ext else None
@@ -399,7 +432,7 @@ class Project(MapperExtension):
                     proj_path.with_suffix(f".{wq_ext}") if wq_ext else None
                 ),
             ))
-        return sorted(plans, key=lambda p: not p.active)
+        return cache
 
     @contextlib.contextmanager
     def editing(self):
