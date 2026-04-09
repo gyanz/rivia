@@ -2124,7 +2124,8 @@ class CrossSectionResults(_CrossSectionResultsBase):
 class CrossSectionResultsDSS(_CrossSectionResultsBase):
     """Geometry *and* results for one XS from the **DSS Hydrograph Output** block.
 
-    Corresponds to :attr:`UnsteadyPlan.cross_sections_dss` (hydrograph output interval).
+    Corresponds to :attr:`UnsteadyPlan.cross_sections_output`
+    (hydrograph output interval).
     Available datasets: ``wse``, ``flow``, ``flow_cumulative``.
 
     Parameters
@@ -2148,13 +2149,13 @@ class CrossSectionResultsDSS(_CrossSectionResultsBase):
 class CrossSectionResultsInstantaneous(_CrossSectionResultsBase):
     """Geometry *and* results for one XS from the **Post Process Profiles** block.
 
-    Corresponds to :attr:`UnsteadyPlan.cross_sections_inst` (DSS inst interval).
+    Corresponds to :attr:`UnsteadyPlan.cross_sections_instantaneous`.
 
     All result arrays have shape ``(n_profiles,)`` where index ``0`` is the
     **Max WS** profile and indices ``1:`` are the instantaneous profiles
-    written at the DSS instantaneous interval.  Use
-    :attr:`UnsteadyPlan.timestamps_dss_inst` for the datetime index of indices
-    ``1:``.
+    written at the instantaneous interval.  Use
+    :attr:`UnsteadyPlan.instantaneous_timestamps` for the datetime index of
+    indices ``1:``.
 
     Available top-level datasets: ``water_surface``, ``flow``,
     ``energy_grade``.  All ``Additional Variables`` sub-group datasets are
@@ -3061,7 +3062,7 @@ class UnsteadyPlan(Geometry):
     ::
 
         with UnsteadyPlan("MyModel.p01") as hdf:
-            ts   = hdf.timestamps_mapping
+            ts   = hdf.mapping_timestamps
             area = hdf.flow_areas["spillway"]
 
             wse   = area.water_surface[10]    # one timestep
@@ -3085,8 +3086,10 @@ class UnsteadyPlan(Geometry):
         self._plan_storage_areas: StorageAreaResultsCollection | None = None
         self._plan_structures: StructureResultsCollection | None = None
         self._plan_cross_sections: CrossSectionResultsCollection | None = None
-        self._plan_cross_sections_dss: CrossSectionResultsCollection | None = None
-        self._plan_cross_sections_inst: CrossSectionResultsCollection | None = None
+        self._plan_cross_sections_output: CrossSectionResultsCollection | None = None
+        self._plan_cross_sections_instantaneous: (
+            CrossSectionResultsCollection | None
+        ) = None
 
     # ------------------------------------------------------------------
     # File metadata
@@ -3277,7 +3280,7 @@ class UnsteadyPlan(Geometry):
         return None if grp is None else grp.attrs.get(name)
 
     @property
-    def interval_computation(self) -> dt.timedelta | None:
+    def computation_interval(self) -> dt.timedelta | None:
         """Base computation time step, or ``None`` if absent.
 
         Read from ``Plan Data/Plan Information`` attribute
@@ -3289,7 +3292,7 @@ class UnsteadyPlan(Geometry):
         return None if raw is None else parse_interval(raw)
 
     @property
-    def interval_mapping(self) -> dt.timedelta | None:
+    def mapping_interval(self) -> dt.timedelta | None:
         """Mapping output interval, or ``None`` if absent.
 
         Read from ``Plan Data/Plan Information`` attribute
@@ -3323,7 +3326,7 @@ class UnsteadyPlan(Geometry):
     # ------------------------------------------------------------------
 
     @property
-    def timestamps_mapping(self) -> pd.DatetimeIndex:
+    def mapping_timestamps(self) -> pd.DatetimeIndex:
         """Simulation output time stamps as a ``pd.DatetimeIndex``.
 
         Parsed from the ``Time Date Stamp`` dataset written by HEC-RAS.
@@ -3339,7 +3342,7 @@ class UnsteadyPlan(Geometry):
         return pd.to_datetime(raw, format=_RAS_TS_FMT)
 
     @property
-    def timestamps_dss(self) -> pd.DatetimeIndex:
+    def output_timestamps(self) -> pd.DatetimeIndex:
         """DSS hydrograph output time stamps as a ``pd.DatetimeIndex``.
 
         Parsed from ``Results/.../DSS Hydrograph Output/Unsteady Time
@@ -3355,7 +3358,7 @@ class UnsteadyPlan(Geometry):
         return pd.to_datetime(raw, format=_RAS_TS_FMT)
 
     @property
-    def interval_dss(self) -> dt.timedelta | None:
+    def output_interval(self) -> dt.timedelta | None:
         """DSS hydrograph output interval, or ``None`` if absent.
 
         Derived from the difference between the first two hydrograph
@@ -3369,36 +3372,7 @@ class UnsteadyPlan(Geometry):
         return ts[1] - ts[0]
 
     @property
-    def n_mapping(self) -> int | None:
-        """Number of output time steps, or ``None`` for steady-flow plans."""
-        ds = self._hdf.get(_TIME_STAMP_DS)
-        if ds is None:
-            return None
-        return len(ds)
-
-    @property
-    def n_dss(self) -> int | None:
-        """Number of DSS hydrograph output time steps, or ``None`` if absent."""
-        ds = self._hdf.get(_DSS_TIME_STAMP_DS)
-        if ds is None:
-            return None
-        return len(ds)
-
-    @property
-    def n_dss_inst(self) -> int | None:
-        """Number of instantaneous profile time steps, or ``None`` if absent.
-
-        Read from ``Profile Dates`` in the Post Process Profiles group.
-        The first entry (``"Max WS"``) is excluded from the count; only
-        actual datetime-stamped profiles are counted.
-        """
-        ds = self._hdf.get(_POSTPROC_PROFILE_DATES)
-        if ds is None:
-            return None
-        return max(0, len(ds) - 1)
-
-    @property
-    def interval_dss_inst(self) -> dt.timedelta | None:
+    def instantaneous_interval(self) -> dt.timedelta | None:
         """Instantaneous profile output interval, or ``None`` if absent.
 
         Derived from the difference between the first two actual profile
@@ -3413,14 +3387,14 @@ class UnsteadyPlan(Geometry):
         return t2 - t1
 
     @property
-    def timestamps_dss_inst(self) -> pd.DatetimeIndex:
+    def instantaneous_timestamps(self) -> pd.DatetimeIndex:
         """Instantaneous profile output timestamps as a ``pd.DatetimeIndex``.
 
         Parsed from ``Profile Dates`` in the Post Process Profiles group,
         skipping the first entry (``"Max WS"``).  Format: ``"DDMONYYYY HHMM"``
         (e.g. ``"01JAN2026 0002"``).
 
-        Use ``cross_sections_inst[xs].wse[1:]`` (or ``[1:n+1]``)
+        Use ``cross_sections_instantaneous[xs].wse[1:]`` (or ``[1:n+1]``)
         to align result arrays with this index; index ``0`` of the result
         arrays holds the Max WS profile value.
 
@@ -3437,6 +3411,34 @@ class UnsteadyPlan(Geometry):
             )
         raw = np.array(ds[1:]).astype(str)
         return pd.to_datetime(raw, format=_POSTPROC_TS_FMT)
+
+    @property
+    def n_mapping_timestamps(self) -> int | None:
+        """Number of mapping output time steps, or ``None`` for steady-flow plans.
+
+        Reads only the dataset shape — no timestamp data is loaded.
+        """
+        ds = self._hdf.get(_TIME_STAMP_DS)
+        return None if ds is None else len(ds)
+
+    @property
+    def n_output_timestamps(self) -> int | None:
+        """Number of DSS hydrograph output time steps, or ``None`` if absent.
+
+        Reads only the dataset shape — no timestamp data is loaded.
+        """
+        ds = self._hdf.get(_DSS_TIME_STAMP_DS)
+        return None if ds is None else len(ds)
+
+    @property
+    def n_instantaneous_timestamps(self) -> int | None:
+        """Number of instantaneous profile time steps, or ``None`` if absent.
+
+        Reads only the dataset shape — no timestamp data is loaded.
+        The ``"Max WS"`` entry at index 0 is excluded from the count.
+        """
+        ds = self._hdf.get(_POSTPROC_PROFILE_DATES)
+        return None if ds is None else max(0, len(ds) - 1)
 
     # ------------------------------------------------------------------
     # Collections (override Geometry equivalents with results-aware types)
@@ -3482,12 +3484,12 @@ class UnsteadyPlan(Geometry):
         """1-D cross sections with geometry and Base Output results.
 
         Results are at the mapping output interval
-        (:attr:`timestamps_mapping`).  All variables are available:
+        (:attr:`mapping_timestamps`).  All variables are available:
         ``water_surface``, ``flow``, ``flow_lateral``,
         ``velocity_channel``, ``velocity_total``,
         ``flow_volume_cumulative``.
 
-        See also :attr:`cross_sections_dss` for the DSS hydrograph interval
+        See also :attr:`cross_sections_output` for the DSS hydrograph interval
         (fewer variables but finer timestep when DSS output was enabled).
         """
         if self._plan_cross_sections is None:
@@ -3497,27 +3499,27 @@ class UnsteadyPlan(Geometry):
         return self._plan_cross_sections
 
     @property
-    def cross_sections_dss(self) -> CrossSectionResultsCollection:
+    def cross_sections_output(self) -> CrossSectionResultsCollection:
         """1-D cross sections with geometry and DSS Hydrograph Output results.
 
         Items are :class:`CrossSectionResultsDSS` instances.
-        Results are at the hydrograph output interval (:attr:`timestamps_dss`).
+        Results are at the hydrograph output interval (:attr:`output_timestamps`).
         Available variables: ``water_surface``, ``flow``,
         ``flow_volume_cumulative``.
         """
-        if self._plan_cross_sections_dss is None:
-            self._plan_cross_sections_dss = CrossSectionResultsCollection(
+        if self._plan_cross_sections_output is None:
+            self._plan_cross_sections_output = CrossSectionResultsCollection(
                 self._hdf, _DSS_XS, result_cls=CrossSectionResultsDSS,
             )
-        return self._plan_cross_sections_dss
+        return self._plan_cross_sections_output
 
     @property
-    def cross_sections_inst(self) -> CrossSectionResultsCollection:
+    def cross_sections_instantaneous(self) -> CrossSectionResultsCollection:
         """1-D cross sections with geometry and Post Process Profiles results.
 
         Items are :class:`CrossSectionResultsInstantaneous` instances.
-        Results are at the DSS instantaneous profile interval
-        (:attr:`timestamps_dss_inst`).
+        Results are at the instantaneous profile interval
+        (:attr:`instantaneous_timestamps`).
 
         Each result array has shape ``(n_profiles,)`` where index ``0`` is
         the **Max WS** profile and indices ``1:`` are the instantaneous
@@ -3525,13 +3527,13 @@ class UnsteadyPlan(Geometry):
         ``energy_grade``, plus any ``Additional Variables`` dataset via
         :meth:`~CrossSectionResultsInstantaneous.additional_variable`.
         """
-        if self._plan_cross_sections_inst is None:
-            self._plan_cross_sections_inst = CrossSectionResultsCollection(
+        if self._plan_cross_sections_instantaneous is None:
+            self._plan_cross_sections_instantaneous = CrossSectionResultsCollection(
                 self._hdf, _POSTPROC_XS,
                 result_cls=CrossSectionResultsInstantaneous,
                 attrs_path=_POSTPROC_GEOM_ATTRS,
             )
-        return self._plan_cross_sections_inst
+        return self._plan_cross_sections_instantaneous
 
     @property
     def sa2d_connections(self) -> dict[str, SA2DConnection]:

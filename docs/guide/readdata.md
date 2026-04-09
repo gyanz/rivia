@@ -157,10 +157,10 @@ PlanHdf
 ├── .cross_sections      → CrossSectionResultsCollection  (mapping output interval)
 │     └── ["River Reach RS" | index | (river, reach, rs)]  → CrossSectionResults
 │
-├── .cross_sections_dss  → CrossSectionResultsCollection  (DSS output interval)
+├── .cross_sections_output         → CrossSectionResultsCollection  (DSS output interval)
 │     └── ["River Reach RS" | index | (river, reach, rs)]  → CrossSectionResultsDss
 │
-└── .cross_sections_inst → CrossSectionResultsCollection  (instantaneous output interval)
+└── .cross_sections_instantaneous  → CrossSectionResultsCollection  (instantaneous output interval)
       └── ["River Reach RS" | index | (river, reach, rs)]  → CrossSectionResultsInst
 ```
 
@@ -190,10 +190,10 @@ area.max_face_velocity                 # pd.DataFrame, max velocity per face
 | Property | Class | Interval |
 |---|---|---|
 | `.cross_sections` | `CrossSectionResults` | Mapping output interval |
-| `.cross_sections_dss` | `CrossSectionResultsDss` | DSS output interval |
-| `.cross_sections_inst` | `CrossSectionResultsInst` | Instantaneous output interval |
+| `.cross_sections_output` | `CrossSectionResultsDss` | DSS output interval |
+| `.cross_sections_instantaneous` | `CrossSectionResultsInst` | Instantaneous output interval |
 
-All three collections (`cross_sections`, `cross_sections_dss`, `cross_sections_inst`)
+All three collections (`cross_sections`, `cross_sections_output`, `cross_sections_instantaneous`)
 accept any of three key types:
 
 ```python
