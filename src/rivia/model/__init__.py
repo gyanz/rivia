@@ -176,7 +176,7 @@ class Project(MapperExtension):
     @property
     def plan_path(self) -> Path:
         """Return the current plan file path."""
-        return Path(self.controller.CurrentPlan())
+        return Path(self.controller.CurrentPlanFile())
 
     @property
     def plan_hdf_path(self) -> Path:
