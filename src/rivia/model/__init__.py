@@ -17,7 +17,7 @@ import logging
 import re
 import shutil
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from rivia.hdf import SteadyPlan, UnsteadyPlan
@@ -100,6 +100,15 @@ class PlanSummary:
         Full path to the plan file.
     active:
         ``True`` for the plan currently loaded by HEC-RAS.
+    flow_type:
+        ``'steady'``, ``'unsteady'``, or ``'quasi_steady'`` based on the
+        ``Flow File=`` extension; ``None`` if the key is absent or unrecognised.
+    sediment_path:
+        Full path to the sediment file, or ``None`` if the plan has no
+        ``Sediment File=`` entry.
+    water_quality_path:
+        Full path to the water quality file, or ``None`` if the plan has no
+        ``Water Quality File=`` entry.
     """
 
     index: int
@@ -107,12 +116,16 @@ class PlanSummary:
     short_id: str | None
     path: Path
     active: bool
+    flow_type: Literal["steady", "unsteady", "quasi_steady"] | None
+    sediment_path: Path | None
+    water_quality_path: Path | None
 
     def __repr__(self) -> str:
         active = "*" if self.active else ""
         return (
             f"PlanSummary({active}{self.index}: {self.title!r}"
-            f", short_id={self.short_id!r}, file={self.path.name!r})"
+            f", short_id={self.short_id!r}, flow_type={self.flow_type!r}"
+            f", file={self.path.name!r})"
         )
 
 
@@ -355,16 +368,37 @@ class Project(MapperExtension):
                 print(f"[{active}] {p.index}: {p.title} ({p.short_id})")
         """
         active_name = self.plan_path.name
-        plans = [
-            PlanSummary(
+        proj_path = self._project_path
+        plans = []
+        for i, p in enumerate(self.project.plans):
+            plan_path = p["path"]
+            plan = Plan(plan_path)
+            if plan.is_steady:
+                flow_type: (
+                    Literal["steady", "unsteady", "quasi_steady"] | None
+                ) = "steady"
+            elif plan.is_unsteady:
+                flow_type = "unsteady"
+            elif plan.is_quasi_steady:
+                flow_type = "quasi_steady"
+            else:
+                flow_type = None
+            sed_ext = plan.sediment_file
+            wq_ext = plan.water_quality_file
+            plans.append(PlanSummary(
                 index=i,
                 title=p["title"],
                 short_id=p["short_id"],
-                path=p["path"],
-                active=(p["path"].name == active_name),
-            )
-            for i, p in enumerate(self.project.plans)
-        ]
+                path=plan_path,
+                active=(plan_path.name == active_name),
+                flow_type=flow_type,
+                sediment_path=(
+                    proj_path.with_suffix(f".{sed_ext}") if sed_ext else None
+                ),
+                water_quality_path=(
+                    proj_path.with_suffix(f".{wq_ext}") if wq_ext else None
+                ),
+            ))
         return sorted(plans, key=lambda p: not p.active)
 
     @contextlib.contextmanager
