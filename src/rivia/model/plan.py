@@ -179,6 +179,26 @@ class Plan:
         self._set("Flow File", value)
 
     @property
+    def sediment_file(self) -> str | None:
+        """Sediment file extension reference, e.g. ``s04`` (``Sediment File=``)."""
+        return self._get("Sediment File")
+
+    @sediment_file.setter
+    def sediment_file(self, value: str) -> None:
+        self._set("Sediment File", value)
+
+    @property
+    def water_quality_file(self) -> str | None:
+        """Water quality file extension reference, e.g. ``w01``
+        (``Water Quality File=``).
+        """
+        return self._get("Water Quality File")
+
+    @water_quality_file.setter
+    def water_quality_file(self, value: str) -> None:
+        self._set("Water Quality File", value)
+
+    @property
     def is_steady(self) -> bool:
         """True if this is a steady flow plan.
 
@@ -195,6 +215,31 @@ class Plan:
         """
         ref = self.flow_file
         return ref is not None and ref.strip().lower().startswith("u")
+
+    @property
+    def is_quasi_steady(self) -> bool:
+        """True if this is a quasi-steady flow plan.
+
+        Determined by ``Flow File=`` extension starting with ``q``.
+        """
+        ref = self.flow_file
+        return ref is not None and ref.strip().lower().startswith("q")
+
+    @property
+    def is_sediment(self) -> bool:
+        """True if this plan includes a sediment file.
+
+        Determined by ``Sediment File=`` being present.
+        """
+        return self.sediment_file is not None
+
+    @property
+    def is_water_quality(self) -> bool:
+        """True if this plan includes a water quality file.
+
+        Determined by ``Water Quality File=`` being present.
+        """
+        return self.water_quality_file is not None
 
     # ------------------------------------------------------------------
     # Simulation window

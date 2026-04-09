@@ -109,6 +109,9 @@ class Proj:
         self._unsteady_flow_files = [self._ext_to_path(e) for e in self._get_all("Unsteady File")]
         self._sediment_files = [self._ext_to_path(e) for e in self._get_all("Sediment File")]
         self._quasi_steady_files = [self._ext_to_path(e) for e in self._get_all("QuasiSteady File")]
+        self._water_quality_files = [
+            self._ext_to_path(e) for e in self._get_all("Water Quality File")
+        ]
 
         # --- description block ---
         self._description = _parse_description(self._lines)
@@ -199,6 +202,11 @@ class Proj:
     def quasi_steady_files(self) -> list[Path]:
         """Full paths to all quasi-steady files listed in the project."""
         return list(self._quasi_steady_files)
+
+    @property
+    def water_quality_files(self) -> list[Path]:
+        """Full paths to all water quality files listed in the project."""
+        return list(self._water_quality_files)
 
     @property
     def dss_start_date(self) -> str | None:

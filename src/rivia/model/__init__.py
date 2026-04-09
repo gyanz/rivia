@@ -108,6 +108,13 @@ class PlanSummary:
     path: Path
     active: bool
 
+    def __repr__(self) -> str:
+        active = "*" if self.active else ""
+        return (
+            f"PlanSummary({active}{self.index}: {self.title!r}"
+            f", short_id={self.short_id!r}, file={self.path.name!r})"
+        )
+
 
 class Project(MapperExtension):
     """High-level interface for working with an HEC-RAS project via the COM object.
