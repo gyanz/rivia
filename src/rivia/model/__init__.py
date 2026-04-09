@@ -17,10 +17,9 @@ import logging
 import re
 import shutil
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import Literal
 
-if TYPE_CHECKING:
-    from rivia.hdf import SteadyPlan, UnsteadyPlan
+from rivia.hdf import SteadyPlan, UnsteadyPlan
 
 from .. import controller
 from ..utils import normalize_sim_end_time, normalize_sim_start_time
@@ -310,7 +309,7 @@ class Project(MapperExtension):
         return self._flow
 
     @property
-    def results(self) -> "SteadyPlan | UnsteadyPlan":
+    def results(self) -> SteadyPlan | UnsteadyPlan:
         """Lazily opened HDF results file for the current plan.
 
         Dispatches to the appropriate class based on plan type:
@@ -330,8 +329,6 @@ class Project(MapperExtension):
         ValueError
             If the plan type cannot be determined from the flow file extension.
         """
-        from rivia.hdf import SteadyPlan, UnsteadyPlan
-
         if self._hdf is None:
             plan_path = self.plan_hdf_path
             if not plan_path.exists():
