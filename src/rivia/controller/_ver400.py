@@ -9,7 +9,7 @@ import os.path as osp
 from rivia.utils.helpers import ensure_dir as _create_dir
 from rivia.utils.helpers import fix_ras_dates as _fix_dates
 
-logger = logging.getLogger("rivia.com")
+logger = logging.getLogger("rivia.controller")
 
 
 class ControllerDeprecated(object):

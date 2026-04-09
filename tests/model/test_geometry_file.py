@@ -1,4 +1,4 @@
-"""Tests for rivia.model.geometry — GeometryFile.
+"""Tests for rivia.model.geometry — Geometry.
 
 Fixtures (real HEC-RAS 6.6 geometry files):
 
@@ -31,15 +31,11 @@ from rivia.model.geometry import (
     Bridge,
     CrossSection,
     CulvertGroup,
-    GeometryFile,
+    Geometry,
     IneffArea,
-    Lateral,
+    LateralStructure,
     ManningEntry,
-    NODE_BRIDGE,
-    NODE_CULVERT,
-    NODE_INLINE_STRUCTURE,
-    NODE_LATERAL_STRUCTURE,
-    NODE_XS,
+    NodeType,
     Pier,
     Roadway,
     Weir,
@@ -73,15 +69,15 @@ def tmp_copy(tmp_path: Path):
 class TestConstruction:
     def test_missing_file_raises(self, tmp_path):
         with pytest.raises(FileNotFoundError):
-            GeometryFile(tmp_path / "missing.g01")
+            Geometry(tmp_path / "missing.g01")
 
     def test_accepts_str_path(self):
-        g = GeometryFile(str(EX1))
-        assert g.geom_title is not None
+        g = Geometry(str(EX1))
+        assert g.title is not None
 
     def test_accepts_path_object(self):
-        g = GeometryFile(EX1)
-        assert g.geom_title is not None
+        g = Geometry(EX1)
+        assert g.title is not None
 
 
 # ---------------------------------------------------------------------------
@@ -91,28 +87,28 @@ class TestConstruction:
 
 class TestMetadata:
     def test_geom_title_ex1(self):
-        g = GeometryFile(EX1)
-        assert g.geom_title == "Base Geometry Data"
+        g = Geometry(EX1)
+        assert g.title == "Base Geometry Data"
 
     def test_program_version_ex1(self):
-        g = GeometryFile(EX1)
+        g = Geometry(EX1)
         assert g.program_version == "4.00"
 
     def test_geom_title_conspan(self):
-        g = GeometryFile(CONSPAN)
-        assert g.geom_title == "ConSpan Culvert Geometry"
+        g = Geometry(CONSPAN)
+        assert g.title == "ConSpan Culvert Geometry"
 
     def test_program_version_conspan(self):
-        g = GeometryFile(CONSPAN)
+        g = Geometry(CONSPAN)
         assert g.program_version == "5.00"
 
     def test_geom_title_setter(self, tmp_copy):
         path = tmp_copy(EX1)
-        g = GeometryFile(path)
-        g.geom_title = "Modified Title"
+        g = Geometry(path)
+        g.title = "Modified Title"
         g.save()
-        g2 = GeometryFile(path)
-        assert g2.geom_title == "Modified Title"
+        g2 = Geometry(path)
+        assert g2.title == "Modified Title"
 
 
 # ---------------------------------------------------------------------------
@@ -122,7 +118,7 @@ class TestMetadata:
 
 class TestReachesAndJunctions:
     def test_ex1_reaches(self):
-        g = GeometryFile(EX1)
+        g = Geometry(EX1)
         reaches = g.reaches
         # EX1 has Butte Cr./Tributary and Fall River/Upper+Lower Reach
         assert len(reaches) == 3
@@ -131,24 +127,24 @@ class TestReachesAndJunctions:
         assert "Fall River" in rivers
 
     def test_ex1_junctions(self):
-        g = GeometryFile(EX1)
+        g = Geometry(EX1)
         juncts = g.junctions
         assert len(juncts) == 1
         assert "Sutter" in juncts[0]
 
     def test_conspan_reaches(self):
-        g = GeometryFile(CONSPAN)
+        g = Geometry(CONSPAN)
         reaches = g.reaches
         assert len(reaches) == 1
         assert reaches[0][0] == "Spring Creek"
         assert reaches[0][1] == "Culvrt Reach"
 
     def test_conspan_no_junctions(self):
-        g = GeometryFile(CONSPAN)
+        g = Geometry(CONSPAN)
         assert g.junctions == []
 
     def test_nit_reaches(self):
-        g = GeometryFile(NIT)
+        g = Geometry(NIT)
         reaches = g.reaches
         assert len(reaches) == 1
         assert reaches[0][0] == "Nittany River"
@@ -161,43 +157,43 @@ class TestReachesAndJunctions:
 
 class TestNodeInventory:
     def test_ex1_node_count_butte(self):
-        g = GeometryFile(EX1)
+        g = Geometry(EX1)
         nodes = g.node_rs_list("Butte Cr.", "Tributary")
         # EX1 Butte Cr has 3 XS
         assert len(nodes) == 3
-        assert all(ntype == NODE_XS for ntype, _ in nodes)
+        assert all(ntype == NodeType.CROSS_SECTION for ntype, _ in nodes)
 
     def test_conspan_has_culvert_node(self):
-        g = GeometryFile(CONSPAN)
+        g = Geometry(CONSPAN)
         nodes = g.node_rs_list("Spring Creek", "Culvrt Reach")
         types = [ntype for ntype, _ in nodes]
-        assert NODE_CULVERT in types
+        assert NodeType.CULVERT in types
 
     def test_beaver_has_bridge_node(self):
-        g = GeometryFile(BEAVER)
+        g = Geometry(BEAVER)
         nodes = g.node_rs_list("Beaver Creek", "Kentwood")
         types = [ntype for ntype, _ in nodes]
-        assert NODE_BRIDGE in types
+        assert NodeType.BRIDGE in types
 
     def test_nit_has_inline_structure_node(self):
-        g = GeometryFile(NIT)
+        g = Geometry(NIT)
         nodes = g.node_rs_list("Nittany River", "Weir Reach")
         types = [ntype for ntype, _ in nodes]
-        assert NODE_INLINE_STRUCTURE in types
+        assert NodeType.INLINE_STRUCTURE in types
 
     def test_node_type_xs(self):
-        g = GeometryFile(EX1)
+        g = Geometry(EX1)
         rs = g.node_rs_list("Butte Cr.", "Tributary")[0][1]
-        assert g.node_type("Butte Cr.", "Tributary", rs) == NODE_XS
+        assert g.node_type("Butte Cr.", "Tributary", rs) == NodeType.CROSS_SECTION
 
     def test_node_type_bridge(self):
-        g = GeometryFile(BEAVER)
+        g = Geometry(BEAVER)
         nodes = g.node_rs_list("Beaver Creek", "Kentwood")
-        bridge_rs = next(rs for ntype, rs in nodes if ntype == NODE_BRIDGE)
-        assert g.node_type("Beaver Creek", "Kentwood", bridge_rs) == NODE_BRIDGE
+        bridge_rs = next(rs for ntype, rs in nodes if ntype == NodeType.BRIDGE)
+        assert g.node_type("Beaver Creek", "Kentwood", bridge_rs) == NodeType.BRIDGE
 
     def test_node_type_missing_returns_none(self):
-        g = GeometryFile(EX1)
+        g = Geometry(EX1)
         assert g.node_type("Butte Cr.", "Tributary", "99999") is None
 
 
@@ -208,7 +204,7 @@ class TestNodeInventory:
 
 class TestCrossSectionParsing:
     def test_get_cross_section_returns_object(self):
-        g = GeometryFile(EX1)
+        g = Geometry(EX1)
         # First XS of Butte Cr. is at RS "0.2" (river mile 0.2)
         xs_list = g.cross_sections("Butte Cr.", "Tributary")
         assert len(xs_list) == 3
@@ -216,13 +212,13 @@ class TestCrossSectionParsing:
         assert isinstance(xs, CrossSection)
 
     def test_stations_and_elevations_count(self):
-        g = GeometryFile(EX1)
+        g = Geometry(EX1)
         xs = g.cross_sections("Butte Cr.", "Tributary")[0]
         assert len(xs.stations) == len(xs.elevations)
         assert len(xs.stations) == 8  # #Sta/Elev= 8
 
     def test_station_values(self):
-        g = GeometryFile(EX1)
+        g = Geometry(EX1)
         xs = g.cross_sections("Butte Cr.", "Tributary")[0]
         # From file: 210 90 220 82 260 80 265 70 270 71 275 81 300 83 310 91
         assert xs.stations[0] == pytest.approx(210.0)
@@ -231,20 +227,20 @@ class TestCrossSectionParsing:
         assert xs.elevations[4] == pytest.approx(71.0)
 
     def test_bank_stations(self):
-        g = GeometryFile(EX1)
+        g = Geometry(EX1)
         xs = g.cross_sections("Butte Cr.", "Tributary")[0]
         # Bank Sta=260,275
         assert xs.bank_left == pytest.approx(260.0)
         assert xs.bank_right == pytest.approx(275.0)
 
     def test_mannings_count(self):
-        g = GeometryFile(EX1)
+        g = Geometry(EX1)
         xs = g.cross_sections("Butte Cr.", "Tributary")[0]
         # #Mann= 3 , 0 , 0
         assert len(xs.mann_entries) == 3
 
     def test_mannings_values(self):
-        g = GeometryFile(EX1)
+        g = Geometry(EX1)
         xs = g.cross_sections("Butte Cr.", "Tributary")[0]
         # 210 .07 0    260 .04 0    275 .07 0
         assert xs.mann_entries[0].station == pytest.approx(210.0)
@@ -253,26 +249,26 @@ class TestCrossSectionParsing:
         assert xs.mann_entries[1].n_value == pytest.approx(0.04)
 
     def test_expansion_contraction(self):
-        g = GeometryFile(EX1)
+        g = Geometry(EX1)
         xs = g.cross_sections("Butte Cr.", "Tributary")[0]
         # Exp/Cntr=0.3,0.1
         assert xs.expansion == pytest.approx(0.3)
         assert xs.contraction == pytest.approx(0.1)
 
     def test_description_parsed(self):
-        g = GeometryFile(EX1)
+        g = Geometry(EX1)
         xs = g.cross_sections("Butte Cr.", "Tributary")[0]
         assert "Upstream Boundary" in xs.description
 
     def test_river_reach_rs_set(self):
-        g = GeometryFile(EX1)
+        g = Geometry(EX1)
         xs = g.cross_sections("Butte Cr.", "Tributary")[0]
         assert xs.river == "Butte Cr."
         assert xs.reach == "Tributary"
         assert xs.rs != ""
 
     def test_reach_lengths(self):
-        g = GeometryFile(EX1)
+        g = Geometry(EX1)
         xs = g.cross_sections("Butte Cr.", "Tributary")[0]
         # Type RM Length L Ch R = 1 ,0.2     ,500,500,500
         assert xs.left_length == pytest.approx(500.0)
@@ -280,7 +276,7 @@ class TestCrossSectionParsing:
         assert xs.right_length == pytest.approx(500.0)
 
     def test_downstream_xs_has_zero_lengths(self):
-        g = GeometryFile(EX1)
+        g = Geometry(EX1)
         xs_list = g.cross_sections("Butte Cr.", "Tributary")
         last_xs = xs_list[-1]
         # Last XS has length 0,0,0
@@ -288,7 +284,7 @@ class TestCrossSectionParsing:
         assert last_xs.channel_length == pytest.approx(0.0)
 
     def test_get_cross_section_by_rs(self):
-        g = GeometryFile(EX1)
+        g = Geometry(EX1)
         xs_list = g.cross_sections("Butte Cr.", "Tributary")
         rs = xs_list[0].rs
         xs_direct = g.get_cross_section("Butte Cr.", "Tributary", rs)
@@ -297,23 +293,23 @@ class TestCrossSectionParsing:
         assert xs_direct.stations == xs_list[0].stations
 
     def test_get_cross_section_missing_returns_none(self):
-        g = GeometryFile(EX1)
+        g = Geometry(EX1)
         assert g.get_cross_section("Butte Cr.", "Tributary", "99999") is None
 
     def test_get_cross_section_on_structure_returns_none(self):
-        g = GeometryFile(CONSPAN)
+        g = Geometry(CONSPAN)
         nodes = g.node_rs_list("Spring Creek", "Culvrt Reach")
-        culvert_rs = next(rs for ntype, rs in nodes if ntype == NODE_CULVERT)
+        culvert_rs = next(rs for ntype, rs in nodes if ntype == NodeType.CULVERT)
         result = g.get_cross_section("Spring Creek", "Culvrt Reach", culvert_rs)
         assert result is None
 
     def test_cross_sections_multireach_fall_upper(self):
-        g = GeometryFile(EX1)
+        g = Geometry(EX1)
         xs_list = g.cross_sections("Fall River", "Upper Reach")
         assert len(xs_list) == 3
 
     def test_cross_sections_multireach_fall_lower(self):
-        g = GeometryFile(EX1)
+        g = Geometry(EX1)
         xs_list = g.cross_sections("Fall River", "Lower Reach")
         assert len(xs_list) == 4
 
@@ -325,14 +321,14 @@ class TestCrossSectionParsing:
 
 class TestIneffectiveAreas:
     def test_conspan_ineff_areas_parsed(self):
-        g = GeometryFile(CONSPAN)
+        g = Geometry(CONSPAN)
         # The upstream approach XS (20.238) has ineffective areas
         xs_list = g.cross_sections("Spring Creek", "Culvrt Reach")
         xs_with_ineff = [xs for xs in xs_list if xs.ineff_areas]
         assert len(xs_with_ineff) >= 1
 
     def test_ineff_area_fields(self):
-        g = GeometryFile(CONSPAN)
+        g = Geometry(CONSPAN)
         xs_list = g.cross_sections("Spring Creek", "Culvrt Reach")
         xs_with_ineff = next(xs for xs in xs_list if xs.ineff_areas)
         area = xs_with_ineff.ineff_areas[0]
@@ -340,7 +336,7 @@ class TestIneffectiveAreas:
         assert area.x_start < area.x_end
 
     def test_ineff_permanent_flag(self):
-        g = GeometryFile(CONSPAN)
+        g = Geometry(CONSPAN)
         xs_list = g.cross_sections("Spring Creek", "Culvrt Reach")
         xs_with_ineff = next(xs for xs in xs_list if xs.ineff_areas)
         # Permanent Ineff= with "F F" flags → both should be False
@@ -355,7 +351,7 @@ class TestIneffectiveAreas:
 
 class TestInterpolatedXS:
     def test_interpolated_flag(self):
-        g = GeometryFile(CONSPAN)
+        g = Geometry(CONSPAN)
         # ConSpan has an interpolated XS at 20.208*
         xs_list = g.cross_sections("Spring Creek", "Culvrt Reach")
         interpolated = [xs for xs in xs_list if xs.interpolated]
@@ -369,7 +365,7 @@ class TestInterpolatedXS:
 
 class TestRawNodeAccess:
     def test_get_node_lines_xs(self):
-        g = GeometryFile(EX1)
+        g = Geometry(EX1)
         xs_list = g.cross_sections("Butte Cr.", "Tributary")
         rs = xs_list[0].rs
         lines = g.get_node_lines("Butte Cr.", "Tributary", rs)
@@ -378,21 +374,21 @@ class TestRawNodeAccess:
         assert any("#Sta/Elev" in ln for ln in lines)
 
     def test_get_node_lines_bridge(self):
-        g = GeometryFile(BEAVER)
+        g = Geometry(BEAVER)
         nodes = g.node_rs_list("Beaver Creek", "Kentwood")
-        bridge_rs = next(rs for ntype, rs in nodes if ntype == NODE_BRIDGE)
+        bridge_rs = next(rs for ntype, rs in nodes if ntype == NodeType.BRIDGE)
         lines = g.get_node_lines("Beaver Creek", "Kentwood", bridge_rs)
         assert lines is not None
         assert any("Bridge Culvert" in ln for ln in lines)
 
     def test_get_node_lines_missing_returns_none(self):
-        g = GeometryFile(EX1)
+        g = Geometry(EX1)
         assert g.get_node_lines("Butte Cr.", "Tributary", "99999") is None
 
     def test_get_node_lines_inline_structure(self):
-        g = GeometryFile(NIT)
+        g = Geometry(NIT)
         nodes = g.node_rs_list("Nittany River", "Weir Reach")
-        is_rs = next(rs for ntype, rs in nodes if ntype == NODE_INLINE_STRUCTURE)
+        is_rs = next(rs for ntype, rs in nodes if ntype == NodeType.INLINE_STRUCTURE)
         lines = g.get_node_lines("Nittany River", "Weir Reach", is_rs)
         assert lines is not None
         assert any("Inline Weir" in ln or "IW " in ln for ln in lines)
@@ -406,7 +402,7 @@ class TestRawNodeAccess:
 class TestSetMannings:
     def test_set_mannings_changes_values(self, tmp_copy):
         path = tmp_copy(EX1)
-        g = GeometryFile(path)
+        g = Geometry(path)
         xs_list = g.cross_sections("Butte Cr.", "Tributary")
         rs = xs_list[0].rs
 
@@ -418,7 +414,7 @@ class TestSetMannings:
         g.set_mannings("Butte Cr.", "Tributary", rs, new_entries)
         g.save()
 
-        g2 = GeometryFile(path)
+        g2 = Geometry(path)
         xs2 = g2.get_cross_section("Butte Cr.", "Tributary", rs)
         assert xs2 is not None
         assert xs2.mann_entries[0].n_value == pytest.approx(0.05)
@@ -427,7 +423,7 @@ class TestSetMannings:
 
     def test_set_mannings_preserves_type(self, tmp_copy):
         path = tmp_copy(EX1)
-        g = GeometryFile(path)
+        g = Geometry(path)
         xs_list = g.cross_sections("Butte Cr.", "Tributary")
         rs = xs_list[0].rs
         original_type = xs_list[0].mann_type
@@ -437,14 +433,14 @@ class TestSetMannings:
         g.set_mannings("Butte Cr.", "Tributary", rs, new_entries)
         g.save()
 
-        g2 = GeometryFile(path)
+        g2 = Geometry(path)
         xs2 = g2.get_cross_section("Butte Cr.", "Tributary", rs)
         assert xs2.mann_type == original_type
         assert xs2.mann_alt == original_alt
 
     def test_set_mannings_different_zone_count(self, tmp_copy):
         path = tmp_copy(EX1)
-        g = GeometryFile(path)
+        g = Geometry(path)
         xs_list = g.cross_sections("Butte Cr.", "Tributary")
         rs = xs_list[0].rs
 
@@ -456,13 +452,13 @@ class TestSetMannings:
         g.set_mannings("Butte Cr.", "Tributary", rs, new_entries)
         g.save()
 
-        g2 = GeometryFile(path)
+        g2 = Geometry(path)
         xs2 = g2.get_cross_section("Butte Cr.", "Tributary", rs)
         assert len(xs2.mann_entries) == 2
 
     def test_set_mannings_other_xs_unchanged(self, tmp_copy):
         path = tmp_copy(EX1)
-        g = GeometryFile(path)
+        g = Geometry(path)
         xs_list = g.cross_sections("Butte Cr.", "Tributary")
         rs0 = xs_list[0].rs
         rs1 = xs_list[1].rs
@@ -480,12 +476,12 @@ class TestSetMannings:
         )
         g.save()
 
-        g2 = GeometryFile(path)
+        g2 = Geometry(path)
         xs2_1 = g2.get_cross_section("Butte Cr.", "Tributary", rs1)
         assert xs2_1.mann_entries[0].n_value == pytest.approx(original_n1)
 
     def test_set_mannings_missing_rs_raises(self):
-        g = GeometryFile(EX1)
+        g = Geometry(EX1)
         with pytest.raises(KeyError):
             g.set_mannings("Butte Cr.", "Tributary", "99999", [])
 
@@ -498,7 +494,7 @@ class TestSetMannings:
 class TestSetStations:
     def test_set_stations_changes_values(self, tmp_copy):
         path = tmp_copy(EX1)
-        g = GeometryFile(path)
+        g = Geometry(path)
         xs_list = g.cross_sections("Butte Cr.", "Tributary")
         rs = xs_list[0].rs
         orig_n = len(xs_list[0].stations)
@@ -508,14 +504,14 @@ class TestSetStations:
         g.set_stations("Butte Cr.", "Tributary", rs, new_sta, new_elev)
         g.save()
 
-        g2 = GeometryFile(path)
+        g2 = Geometry(path)
         xs2 = g2.get_cross_section("Butte Cr.", "Tributary", rs)
         assert len(xs2.stations) == 5
         assert xs2.stations[0] == pytest.approx(0.0)
         assert xs2.elevations[2] == pytest.approx(3.0)
 
     def test_set_stations_length_mismatch_raises(self):
-        g = GeometryFile(EX1)
+        g = Geometry(EX1)
         xs_list = g.cross_sections("Butte Cr.", "Tributary")
         rs = xs_list[0].rs
         with pytest.raises(ValueError):
@@ -523,7 +519,7 @@ class TestSetStations:
 
     def test_set_stations_preserves_mannings(self, tmp_copy):
         path = tmp_copy(EX1)
-        g = GeometryFile(path)
+        g = Geometry(path)
         xs_list = g.cross_sections("Butte Cr.", "Tributary")
         rs = xs_list[0].rs
         orig_n0 = xs_list[0].mann_entries[0].n_value
@@ -531,12 +527,12 @@ class TestSetStations:
         g.set_stations("Butte Cr.", "Tributary", rs, [0.0, 100.0], [5.0, 5.0])
         g.save()
 
-        g2 = GeometryFile(path)
+        g2 = Geometry(path)
         xs2 = g2.get_cross_section("Butte Cr.", "Tributary", rs)
         assert xs2.mann_entries[0].n_value == pytest.approx(orig_n0)
 
     def test_set_stations_missing_rs_raises(self):
-        g = GeometryFile(EX1)
+        g = Geometry(EX1)
         with pytest.raises(KeyError):
             g.set_stations("Butte Cr.", "Tributary", "99999", [0.0], [0.0])
 
@@ -549,20 +545,20 @@ class TestSetStations:
 class TestSetBankStations:
     def test_set_bank_stations(self, tmp_copy):
         path = tmp_copy(EX1)
-        g = GeometryFile(path)
+        g = Geometry(path)
         xs_list = g.cross_sections("Butte Cr.", "Tributary")
         rs = xs_list[0].rs
 
         g.set_bank_stations("Butte Cr.", "Tributary", rs, 250.0, 280.0)
         g.save()
 
-        g2 = GeometryFile(path)
+        g2 = Geometry(path)
         xs2 = g2.get_cross_section("Butte Cr.", "Tributary", rs)
         assert xs2.bank_left == pytest.approx(250.0)
         assert xs2.bank_right == pytest.approx(280.0)
 
     def test_set_bank_stations_missing_raises(self):
-        g = GeometryFile(EX1)
+        g = Geometry(EX1)
         with pytest.raises(KeyError):
             g.set_bank_stations("Butte Cr.", "Tributary", "99999", 0.0, 0.0)
 
@@ -575,20 +571,20 @@ class TestSetBankStations:
 class TestSetExpCntr:
     def test_set_exp_cntr(self, tmp_copy):
         path = tmp_copy(EX1)
-        g = GeometryFile(path)
+        g = Geometry(path)
         xs_list = g.cross_sections("Butte Cr.", "Tributary")
         rs = xs_list[0].rs
 
         g.set_exp_cntr("Butte Cr.", "Tributary", rs, 0.5, 0.2)
         g.save()
 
-        g2 = GeometryFile(path)
+        g2 = Geometry(path)
         xs2 = g2.get_cross_section("Butte Cr.", "Tributary", rs)
         assert xs2.expansion == pytest.approx(0.5)
         assert xs2.contraction == pytest.approx(0.2)
 
     def test_set_exp_cntr_missing_raises(self):
-        g = GeometryFile(EX1)
+        g = Geometry(EX1)
         with pytest.raises(KeyError):
             g.set_exp_cntr("Butte Cr.", "Tributary", "99999", 0.3, 0.1)
 
@@ -603,7 +599,7 @@ class TestRoundTrip:
         orig = src.read_bytes()
         dst = tmp_path / src.name
         shutil.copy(src, dst)
-        g = GeometryFile(dst)
+        g = Geometry(dst)
         g.save()
         assert dst.read_bytes() == orig, "save() must not modify unedited content"
 
@@ -627,13 +623,13 @@ class TestRoundTrip:
 
 class TestCaseInsensitiveMatching:
     def test_reach_lookup_case_insensitive(self):
-        g = GeometryFile(EX1)
+        g = Geometry(EX1)
         xs_upper = g.cross_sections("BUTTE CR.", "TRIBUTARY")
         xs_lower = g.cross_sections("butte cr.", "tributary")
         assert len(xs_upper) == len(xs_lower) > 0
 
     def test_get_xs_case_insensitive(self):
-        g = GeometryFile(EX1)
+        g = Geometry(EX1)
         xs_list = g.cross_sections("Butte Cr.", "Tributary")
         rs = xs_list[0].rs
         xs_upper = g.get_cross_section("BUTTE CR.", "TRIBUTARY", rs)
@@ -648,19 +644,19 @@ class TestCaseInsensitiveMatching:
 
 class TestConspanXS:
     def test_conspan_xs_count(self):
-        g = GeometryFile(CONSPAN)
+        g = Geometry(CONSPAN)
         # 10 XS nodes + 1 culvert node; cross_sections() returns only type-1 nodes
         xs_list = g.cross_sections("Spring Creek", "Culvrt Reach")
         assert len(xs_list) == 10
 
     def test_conspan_upstream_xs_has_htab_data(self):
-        g = GeometryFile(CONSPAN)
+        g = Geometry(CONSPAN)
         # Presence of XS HTab lines doesn't break parsing
         xs_list = g.cross_sections("Spring Creek", "Culvrt Reach")
         assert len(xs_list) > 0
 
     def test_conspan_upstream_approach_xs_mann(self):
-        g = GeometryFile(CONSPAN)
+        g = Geometry(CONSPAN)
         xs_list = g.cross_sections("Spring Creek", "Culvrt Reach")
         # First XS (20.535) has 3 Manning zones
         xs0 = xs_list[0]
@@ -674,14 +670,14 @@ class TestConspanXS:
 
 class TestBeaverBridge:
     def test_beaver_xs_parsed(self):
-        g = GeometryFile(BEAVER)
+        g = Geometry(BEAVER)
         xs_list = g.cross_sections("Beaver Creek", "Kentwood")
         assert len(xs_list) > 5  # many XS in beaver.g01
 
     def test_beaver_bridge_node_lines_non_empty(self):
-        g = GeometryFile(BEAVER)
+        g = Geometry(BEAVER)
         nodes = g.node_rs_list("Beaver Creek", "Kentwood")
-        bridge_rs = next(rs for ntype, rs in nodes if ntype == NODE_BRIDGE)
+        bridge_rs = next(rs for ntype, rs in nodes if ntype == NodeType.BRIDGE)
         lines = g.get_node_lines("Beaver Creek", "Kentwood", bridge_rs)
         assert len(lines) > 5
 
@@ -693,38 +689,38 @@ class TestBeaverBridge:
 
 class TestStructuresBridge:
     def test_summary_one_bridge(self):
-        g = GeometryFile(BEAVER)
+        g = Geometry(BEAVER)
         assert g.structures.summary == {"inlines": 0, "bridges": 1, "laterals": 0}
 
     def test_bridge_type(self):
-        g = GeometryFile(BEAVER)
+        g = Geometry(BEAVER)
         _, br = g.structures.bridges.items()[0]
         assert isinstance(br, Bridge)
 
     def test_bridge_key(self):
-        g = GeometryFile(BEAVER)
+        g = Geometry(BEAVER)
         keys = g.structures.bridges.keys()
         assert keys == ["Beaver Creek Kentwood 5.4"]
 
     def test_bridge_location(self):
-        g = GeometryFile(BEAVER)
+        g = Geometry(BEAVER)
         br = g.structures.bridges["Beaver Creek Kentwood 5.4"]
         assert br.location == ("Beaver Creek", "Kentwood", "5.4")
 
     def test_bridge_adjacent_xs(self):
-        g = GeometryFile(BEAVER)
+        g = Geometry(BEAVER)
         br = g.structures.bridges["Beaver Creek Kentwood 5.4"]
         assert br.upstream_node == ("Beaver Creek", "Kentwood", "5.41")
         assert br.downstream_node == ("Beaver Creek", "Kentwood", "5.39")
 
     def test_bridge_connection_types(self):
-        g = GeometryFile(BEAVER)
+        g = Geometry(BEAVER)
         br = g.structures.bridges["Beaver Creek Kentwood 5.4"]
         assert br.upstream_type == "XS"
         assert br.downstream_type == "XS"
 
     def test_bridge_weir(self):
-        g = GeometryFile(BEAVER)
+        g = Geometry(BEAVER)
         br = g.structures.bridges["Beaver Creek Kentwood 5.4"]
         assert isinstance(br.weir, Weir)
         assert br.weir.width == 40.0
@@ -738,12 +734,12 @@ class TestStructuresBridge:
         assert br.weir.use_water_surface is False
 
     def test_bridge_gate_groups_empty(self):
-        g = GeometryFile(BEAVER)
+        g = Geometry(BEAVER)
         br = g.structures.bridges["Beaver Creek Kentwood 5.4"]
         assert br.gate_groups == []
 
     def test_bridge_cached(self):
-        g = GeometryFile(BEAVER)
+        g = Geometry(BEAVER)
         assert g.structures is g.structures
 
 
@@ -754,27 +750,27 @@ class TestStructuresBridge:
 
 class TestStructuresCulvert:
     def test_summary_one_bridge(self):
-        g = GeometryFile(CONSPAN)
+        g = Geometry(CONSPAN)
         assert g.structures.summary == {"inlines": 0, "bridges": 1, "laterals": 0}
 
     def test_culvert_key(self):
-        g = GeometryFile(CONSPAN)
+        g = Geometry(CONSPAN)
         assert g.structures.bridges.keys() == ["Spring Creek Culvrt Reach 20.237"]
 
     def test_culvert_location(self):
-        g = GeometryFile(CONSPAN)
+        g = Geometry(CONSPAN)
         br = g.structures.bridges["Spring Creek Culvrt Reach 20.237"]
         assert br.location == ("Spring Creek", "Culvrt Reach", "20.237")
 
     def test_culvert_adjacent_xs(self):
-        g = GeometryFile(CONSPAN)
+        g = Geometry(CONSPAN)
         br = g.structures.bridges["Spring Creek Culvrt Reach 20.237"]
         assert br.upstream_node == ("Spring Creek", "Culvrt Reach", "20.238")
         assert br.downstream_node == ("Spring Creek", "Culvrt Reach", "20.227")
 
     def test_culvert_node_type_still_culvert(self):
-        g = GeometryFile(CONSPAN)
-        assert g.node_type("Spring Creek", "Culvrt Reach", "20.237") == NODE_CULVERT
+        g = Geometry(CONSPAN)
+        assert g.node_type("Spring Creek", "Culvrt Reach", "20.237") == NodeType.CULVERT
 
 
 # ---------------------------------------------------------------------------
@@ -784,34 +780,34 @@ class TestStructuresCulvert:
 
 class TestStructures3Reach:
     def test_summary(self):
-        g = GeometryFile(LAT3)
+        g = Geometry(LAT3)
         assert g.structures.summary == {"inlines": 0, "bridges": 3, "laterals": 1}
 
     def test_bridge_count(self):
-        g = GeometryFile(LAT3)
+        g = Geometry(LAT3)
         assert len(g.structures.bridges) == 3
 
     def test_bridge_keys(self):
-        g = GeometryFile(LAT3)
+        g = Geometry(LAT3)
         keys = g.structures.bridges.keys()
         assert "Butte Cr. Butte Cr. 0.22" in keys
         assert "Fall River Upper Reach 10.1" in keys
         assert "Fall River Lower Reach 9.55" in keys
 
     def test_bridge_description(self):
-        g = GeometryFile(LAT3)
+        g = Geometry(LAT3)
         br = g.structures.bridges["Butte Cr. Butte Cr. 0.22"]
         assert br.description == "bridge crossing"
 
     def test_culvert_in_bridge_index(self):
         # Type 2 (culvert) and type 3 (bridge) both go into .bridges
-        g = GeometryFile(LAT3)
+        g = Geometry(LAT3)
         br = g.structures.bridges["Fall River Upper Reach 10.1"]
         assert br.description == "Culvert crossing"
-        assert g.node_type("Fall River", "Upper Reach", "10.1") == NODE_CULVERT
+        assert g.node_type("Fall River", "Upper Reach", "10.1") == NodeType.CULVERT
 
     def test_bridge_weir_values(self):
-        g = GeometryFile(LAT3)
+        g = Geometry(LAT3)
         br = g.structures.bridges["Butte Cr. Butte Cr. 0.22"]
         assert br.weir.width == 100.0
         assert br.weir.coefficient == pytest.approx(2.6)
@@ -825,41 +821,41 @@ class TestStructures3Reach:
 
 class TestStructuresLateral:
     def test_lateral_count(self):
-        g = GeometryFile(LAT3)
+        g = Geometry(LAT3)
         assert len(g.structures.laterals) == 1
 
     def test_lateral_type(self):
-        g = GeometryFile(LAT3)
+        g = Geometry(LAT3)
         _, lat = g.structures.laterals.items()[0]
-        assert isinstance(lat, Lateral)
+        assert isinstance(lat, LateralStructure)
 
     def test_lateral_key(self):
-        g = GeometryFile(LAT3)
+        g = Geometry(LAT3)
         assert g.structures.laterals.keys() == ["Fall River Upper Reach 10.25"]
 
     def test_lateral_location(self):
-        g = GeometryFile(LAT3)
+        g = Geometry(LAT3)
         lat = g.structures.laterals["Fall River Upper Reach 10.25"]
         assert lat.location == ("Fall River", "Upper Reach", "10.25")
 
     def test_lateral_upstream_node(self):
-        g = GeometryFile(LAT3)
+        g = Geometry(LAT3)
         lat = g.structures.laterals["Fall River Upper Reach 10.25"]
         assert lat.upstream_node == ("Fall River", "Upper Reach", "10.3")
 
     def test_lateral_downstream_node(self):
-        g = GeometryFile(LAT3)
+        g = Geometry(LAT3)
         lat = g.structures.laterals["Fall River Upper Reach 10.25"]
         assert lat.downstream_node == "Butte Cr. Butte Cr."
 
     def test_lateral_connection_types(self):
-        g = GeometryFile(LAT3)
+        g = Geometry(LAT3)
         lat = g.structures.laterals["Fall River Upper Reach 10.25"]
         assert lat.upstream_type == "XS"
         assert lat.downstream_type == "XS"
 
     def test_lateral_weir(self):
-        g = GeometryFile(LAT3)
+        g = Geometry(LAT3)
         lat = g.structures.laterals["Fall River Upper Reach 10.25"]
         assert isinstance(lat.weir, Weir)
         assert lat.weir.width == 10.0
@@ -873,20 +869,20 @@ class TestStructuresLateral:
 
     def test_lateral_use_water_surface(self):
         # WSCriteria=-1 means use water surface
-        g = GeometryFile(LAT3)
+        g = Geometry(LAT3)
         lat = g.structures.laterals["Fall River Upper Reach 10.25"]
         assert lat.weir.use_water_surface is True
 
     def test_lateral_gate_groups_empty(self):
-        g = GeometryFile(LAT3)
+        g = Geometry(LAT3)
         lat = g.structures.laterals["Fall River Upper Reach 10.25"]
         assert lat.gate_groups == []
 
     def test_lateral_node_type(self):
-        g = GeometryFile(LAT3)
+        g = Geometry(LAT3)
         assert (
             g.node_type("Fall River", "Upper Reach", "10.25")
-            == NODE_LATERAL_STRUCTURE
+            == NodeType.LATERAL_STRUCTURE
         )
 
 
@@ -897,16 +893,16 @@ class TestStructuresLateral:
 
 class TestStructuresNitInline:
     def test_no_bridges_or_laterals(self):
-        g = GeometryFile(NIT)
+        g = Geometry(NIT)
         assert g.structures.summary == {"inlines": 1, "bridges": 0, "laterals": 0}
 
     def test_inline_still_parsed(self):
-        g = GeometryFile(NIT)
+        g = Geometry(NIT)
         assert len(g.structures.inlines) == 1
 
     def _iw(self):
         from math import isnan
-        g = GeometryFile(NIT)
+        g = Geometry(NIT)
         return g.structures.inlines[0], isnan
 
     def test_pilot_flow(self):
@@ -1048,7 +1044,7 @@ class TestRoundTripLat3:
         dst = tmp_path / LAT3.name
         import shutil as _shutil
         _shutil.copy(LAT3, dst)
-        g = GeometryFile(dst)
+        g = Geometry(dst)
         g.save()
         assert dst.read_bytes() == orig
 
@@ -1068,7 +1064,7 @@ class TestBridgeRoadway:
     """
 
     def _br(self):
-        g = GeometryFile(BEAVER)
+        g = Geometry(BEAVER)
         return g.structures.bridges["Beaver Creek Kentwood 5.4"]
 
     def test_roadway_present(self):
@@ -1142,7 +1138,7 @@ class TestBridgePiers:
     """
 
     def _br(self):
-        g = GeometryFile(BEAVER)
+        g = Geometry(BEAVER)
         return g.structures.bridges["Beaver Creek Kentwood 5.4"]
 
     def test_pier_count(self):
@@ -1193,7 +1189,7 @@ class TestCulvertParsing:
     """
 
     def _br(self):
-        g = GeometryFile(CONSPAN)
+        g = Geometry(CONSPAN)
         return g.structures.bridges["Spring Creek Culvrt Reach 20.237"]
 
     def test_culvert_count(self):
@@ -1279,7 +1275,7 @@ class TestMultipleBarrelCulvert:
     """
 
     def _br(self):
-        g = GeometryFile(LAT3)
+        g = Geometry(LAT3)
         return g.structures.bridges["Fall River Upper Reach 10.1"]
 
     def test_culvert_count(self):
@@ -1322,7 +1318,7 @@ class TestBridgePiers3Reach:
     """
 
     def _br(self):
-        g = GeometryFile(LAT3)
+        g = Geometry(LAT3)
         return g.structures.bridges["Butte Cr. Butte Cr. 0.22"]
 
     def test_pier_count(self):
@@ -1368,7 +1364,7 @@ class TestLateralExtended:
     """
 
     def _lat(self):
-        g = GeometryFile(LAT3)
+        g = Geometry(LAT3)
         return g.structures.laterals["Fall River Upper Reach 10.25"]
 
     def test_pos_left_bank(self):

@@ -1,9 +1,9 @@
-"""SteadyPlanHdf - read HEC-RAS steady-flow plan HDF5 files (.p*.hdf).
+"""SteadyPlan - read HEC-RAS steady-flow plan HDF5 files (.p*.hdf).
 
 Steady plan HDF files embed the same ``Geometry/`` group as geometry HDF files
 *plus* ``Results/Steady/...`` profile-based output.
 
-``SteadyPlanHdf`` inherits ``GeometryHdf`` so all geometry accessors are
+``SteadyPlan`` inherits ``Geometry`` so all geometry accessors are
 available.  ``CrossSectionResults``, ``StorageAreaResults``, and
 ``LateralResults`` carry geometry attributes *and* steady-profile result
 arrays.  All result arrays have shape ``(n_profiles,)`` (or ``(n_profiles,
@@ -12,7 +12,7 @@ to a named steady-flow profile (e.g. ``"Big"``, ``"Bigger"``, ``"Biggest"``).
 
 Bridge, culvert, and inline structure nodes in HEC-RAS 1D steady flow do not
 produce separate result datasets in the HDF file; their results are embedded in
-the adjacent upstream/downstream cross-section output.  ``SteadyPlanHdf``
+the adjacent upstream/downstream cross-section output.  ``SteadyPlan``
 therefore returns plain geometry objects (no result access) for those types.
 Only :class:`LateralResults` carries dedicated result data.
 
@@ -29,18 +29,19 @@ from typing import TYPE_CHECKING, overload
 
 import numpy as np
 
-from ._base import _HdfFile
-from ._geometry import (
+from .geometry import (
     _SA_ROOT,
-    HdfCrossSection,
-    HdfCrossSectionCollection,
-    GeometryHdf,
-    HdfLateral,
+    CrossSection,
+    CrossSectionCollection,
+    Geometry,
+    LateralStructure,
     StorageArea,
     StorageAreaCollection,
-    HdfStructure,
-    HdfStructureCollection as _GeomStructureCollection,
+    Structure,
     _decode,
+)
+from .geometry import (
+    StructureCollection as _GeomStructureCollection,
 )
 
 if TYPE_CHECKING:
@@ -67,21 +68,21 @@ _STEADY_LATERAL = f"{_STEADY_PROFILES_ROOT}/Lateral Structures"
 # ---------------------------------------------------------------------------
 
 
-class CrossSectionResults(HdfCrossSection):
+class CrossSectionResults(CrossSection):
     """Geometry *and* steady-profile results for one 1-D cross section.
 
-    Inherits all geometry attributes from :class:`~rivia.hdf.HdfCrossSection`.
+    Inherits all geometry attributes from :class:`~rivia.hdf.CrossSection`.
 
     All result properties return a ``numpy`` array of shape ``(n_profiles,)``
     where each index corresponds to a named steady-flow profile.  Use
-    :attr:`SteadyPlanHdf.profile_names` to map indices to profile names.
+    :attr:`SteadyPlan.profile_names` to map indices to profile names.
 
     Parameters
     ----------
     geom:
-        Geometry object from :class:`~rivia.hdf.HdfCrossSectionCollection`.
+        Geometry object from :class:`~rivia.hdf.CrossSectionCollection`.
     hdf:
-        Open ``h5py.File`` — kept alive by the parent ``SteadyPlanHdf`` context.
+        Open ``h5py.File`` — kept alive by the parent ``SteadyPlan`` context.
     index:
         Column index of this XS in the ``(n_profiles, n_xs)`` result datasets.
     root:
@@ -90,12 +91,12 @@ class CrossSectionResults(HdfCrossSection):
 
     def __init__(
         self,
-        geom: HdfCrossSection,
+        geom: CrossSection,
         hdf: "h5py.File",
         index: int,
         root: str,
     ) -> None:
-        HdfCrossSection.__init__(
+        CrossSection.__init__(
             self,
             river=geom.river,
             reach=geom.reach,
@@ -466,7 +467,7 @@ class CrossSectionResults(HdfCrossSection):
 # ---------------------------------------------------------------------------
 
 
-class CrossSectionResultsCollection(HdfCrossSectionCollection):
+class CrossSectionResultsCollection(CrossSectionCollection):
     """Steady-plan cross section collection with profile results.
 
     Combines geometry from ``Geometry/Cross Sections`` with steady-flow
@@ -487,7 +488,7 @@ class CrossSectionResultsCollection(HdfCrossSectionCollection):
         if self._result_items is not None:
             return self._result_items
 
-        geom_items = HdfCrossSectionCollection._load(self)
+        geom_items = CrossSectionCollection._load(self)
 
         attrs_ds = self._hdf.get(_STEADY_GEOM_ATTRS)
         if attrs_ds is None:
@@ -573,7 +574,7 @@ class StorageAreaResults(StorageArea):
 
     All result properties return a ``numpy`` array of shape ``(n_profiles,)``
     where each index corresponds to a named steady-flow profile.  Use
-    :attr:`SteadyPlanHdf.profile_names` to map indices to profile names.
+    :attr:`SteadyPlan.profile_names` to map indices to profile names.
 
     Parameters
     ----------
@@ -763,10 +764,10 @@ class StorageAreaResultsCollection(StorageAreaCollection):
 # ---------------------------------------------------------------------------
 
 
-class LateralResults(HdfLateral):
+class LateralResults(LateralStructure):
     """Geometry *and* steady-profile results for one lateral structure.
 
-    Inherits all geometry attributes from :class:`~rivia.hdf.HdfLateral`.
+    Inherits all geometry attributes from :class:`~rivia.hdf.LateralStructure`.
 
     All result properties return ``numpy`` arrays.  Scalar results (one value
     per profile) have shape ``(n_profiles,)``.  Segment-level results have
@@ -787,8 +788,8 @@ class LateralResults(HdfLateral):
         ``Results/Steady/.../Steady Profiles/Lateral Structures/<name>``.
     """
 
-    def __init__(self, geom: HdfLateral, group: "h5py.Group") -> None:
-        HdfLateral.__init__(
+    def __init__(self, geom: LateralStructure, group: "h5py.Group") -> None:
+        LateralStructure.__init__(
             self,
             mode=geom.mode,
             upstream_type=geom.upstream_type,
@@ -985,14 +986,14 @@ class LateralResults(HdfLateral):
 
 
 # ---------------------------------------------------------------------------
-# StructureCollection
+# StructureResultsCollection
 # ---------------------------------------------------------------------------
 
 
-class StructureCollection(_GeomStructureCollection):
+class StructureResultsCollection(_GeomStructureCollection):
     """Steady-plan structure collection.
 
-    Upgrades :class:`~rivia.hdf.HdfLateral` geometry objects to
+    Upgrades :class:`~rivia.hdf.LateralStructure` geometry objects to
     :class:`LateralResults` when a matching result group exists under
     ``Results/Steady/.../Steady Profiles/Lateral Structures``.
 
@@ -1001,7 +1002,7 @@ class StructureCollection(_GeomStructureCollection):
     result datasets for those node types.
     """
 
-    def _load(self) -> dict[str, HdfStructure]:  # type: ignore[override]
+    def _load(self) -> dict[str, Structure]:  # type: ignore[override]
         if self._items is not None:
             return self._items
 
@@ -1016,9 +1017,9 @@ class StructureCollection(_GeomStructureCollection):
             else {}
         )
 
-        items: dict[str, HdfStructure] = {}
+        items: dict[str, Structure] = {}
         for key, geom in geom_items.items():
-            if isinstance(geom, HdfLateral):
+            if isinstance(geom, LateralStructure):
                 plan_key = " ".join(geom.location)
                 grp = lateral_groups.get(plan_key)
                 items[key] = (
@@ -1033,11 +1034,11 @@ class StructureCollection(_GeomStructureCollection):
 
 
 # ---------------------------------------------------------------------------
-# SteadyPlanHdf - public entry point
+# SteadyPlan - public entry point
 # ---------------------------------------------------------------------------
 
 
-class SteadyPlanHdf(GeometryHdf):
+class SteadyPlan(Geometry):
     """Read HEC-RAS steady-flow plan HDF5 output files (``*.p*.hdf``).
 
     A steady plan HDF file contains the same ``Geometry/`` data as a geometry
@@ -1057,7 +1058,7 @@ class SteadyPlanHdf(GeometryHdf):
     --------
     ::
 
-        with SteadyPlanHdf("Baxter.p01") as hdf:
+        with SteadyPlan("Baxter.p01") as hdf:
             profiles = hdf.profile_names          # ["Big", "Bigger", "Biggest"]
             xs = hdf.cross_sections["Baxter River Lower Reach 27470."]
             wse = xs.wse                           # shape (3,)
@@ -1071,7 +1072,7 @@ class SteadyPlanHdf(GeometryHdf):
         super().__init__(filename)
         self._steady_cross_sections: CrossSectionResultsCollection | None = None
         self._steady_storage_areas: StorageAreaResultsCollection | None = None
-        self._steady_structures: StructureCollection | None = None
+        self._steady_structures: StructureResultsCollection | None = None
 
     # ------------------------------------------------------------------
     # File metadata
@@ -1125,7 +1126,7 @@ class SteadyPlanHdf(GeometryHdf):
         return raw.decode() if isinstance(raw, (bytes, bytes)) else str(raw)
 
     # ------------------------------------------------------------------
-    # Collections (override GeometryHdf equivalents with results-aware types)
+    # Collections (override Geometry equivalents with results-aware types)
     # ------------------------------------------------------------------
 
     @property
@@ -1147,15 +1148,15 @@ class SteadyPlanHdf(GeometryHdf):
         return self._steady_storage_areas
 
     @property
-    def structures(self) -> StructureCollection:
+    def structures(self) -> StructureResultsCollection:
         """All structures with geometry and, where available, steady-profile results.
 
-        :class:`~rivia.hdf.Lateral` items are upgraded to
+        :class:`~rivia.hdf.LateralStructure` items are upgraded to
         :class:`LateralResults` when result data is present.
         :class:`~rivia.hdf.Bridge`, culvert, and inline structure items are
         returned as plain geometry objects — HEC-RAS 1D steady-flow HDF files
         do not store separate result datasets for those node types.
         """
         if self._steady_structures is None:
-            self._steady_structures = StructureCollection(self._hdf)
+            self._steady_structures = StructureResultsCollection(self._hdf)
         return self._steady_structures

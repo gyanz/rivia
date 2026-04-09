@@ -1,4 +1,4 @@
-"""Tests for rivia.model.plan.PlanFile.
+"""Tests for rivia.model.plan.Plan.
 
 Fixtures are real plan files copied from HEC-RAS 6.6 example projects:
   - baxter_steady.p01         Steady flow plan (Program Version=5.00)
@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from rivia.model.plan import PlanFile
+from rivia.model.plan import Plan
 
 FIXTURES = Path(__file__).parent / "fixtures"
 BAXTER = FIXTURES / "baxter_steady.p01"
@@ -42,11 +42,11 @@ def tmp_plan(tmp_path: Path):
 class TestConstruction:
     def test_missing_file_raises(self, tmp_path):
         with pytest.raises(FileNotFoundError):
-            PlanFile(tmp_path / "nonexistent.p01")
+            Plan(tmp_path / "nonexistent.p01")
 
     def test_accepts_str_path(self):
-        pf = PlanFile(str(BAXTER))
-        assert pf.plan_title is not None
+        pf = Plan(str(BAXTER))
+        assert pf.title is not None
 
 
 # ---------------------------------------------------------------------------
@@ -59,7 +59,7 @@ class TestRoundTrip:
     def test_save_produces_identical_file(self, fixture, tmp_plan):
         original = fixture.read_bytes()
         dst = tmp_plan(fixture)
-        pf = PlanFile(dst)
+        pf = Plan(dst)
         pf.save()
         assert dst.read_bytes() == original
 
@@ -71,10 +71,10 @@ class TestRoundTrip:
 
 class TestIdentityBaxter:
     def setup_method(self):
-        self.pf = PlanFile(BAXTER)
+        self.pf = Plan(BAXTER)
 
     def test_plan_title(self):
-        assert self.pf.plan_title == "Steady Flows"
+        assert self.pf.title == "Steady Flows"
 
     def test_short_id_stripped(self):
         # Raw line has heavy trailing padding; getter must strip it.
@@ -97,19 +97,19 @@ class TestIdentityBaxter:
 
 class TestSimulationDate:
     def test_steady_plan(self):
-        pf = PlanFile(BAXTER)
+        pf = Plan(BAXTER)
         start, end = pf.simulation_date
         assert start == "01jan2005,0100"
         assert end == "04jan2005,2400"
 
     def test_unsteady_1d_plan(self):
-        pf = PlanFile(BALDEAGLE)
+        pf = Plan(BALDEAGLE)
         start, end = pf.simulation_date
         assert start == "18FEB1999,0000"
         assert end == "24FEB1999,0500"
 
     def test_2d_plan(self):
-        pf = PlanFile(MUNCIE_P01)
+        pf = Plan(MUNCIE_P01)
         start, end = pf.simulation_date
         assert start == "02JAN1900,0000"
         assert end == "02JAN1900,2400"
@@ -122,29 +122,29 @@ class TestSimulationDate:
 
 class TestIntervals:
     def test_computation_interval_baxter(self):
-        assert PlanFile(BAXTER).computation_interval == "10MIN"
+        assert Plan(BAXTER).computation_interval == "10MIN"
 
     def test_computation_interval_baldeagle(self):
-        assert PlanFile(BALDEAGLE).computation_interval == "2MIN"
+        assert Plan(BALDEAGLE).computation_interval == "2MIN"
 
     def test_computation_interval_muncie(self):
-        assert PlanFile(MUNCIE_P01).computation_interval == "15SEC"
+        assert Plan(MUNCIE_P01).computation_interval == "15SEC"
 
     def test_output_interval_baxter(self):
-        assert PlanFile(BAXTER).output_interval == "1HOUR"
+        assert Plan(BAXTER).output_interval == "1HOUR"
 
     def test_instantaneous_interval_baxter(self):
-        assert PlanFile(BAXTER).instantaneous_interval == "1HOUR"
+        assert Plan(BAXTER).instantaneous_interval == "1HOUR"
 
     def test_mapping_interval_muncie(self):
-        assert PlanFile(MUNCIE_P01).mapping_interval == "5MIN"
+        assert Plan(MUNCIE_P01).mapping_interval == "5MIN"
 
     def test_mapping_interval_baldeagle(self):
-        assert PlanFile(BALDEAGLE).mapping_interval == "1HOUR"
+        assert Plan(BALDEAGLE).mapping_interval == "1HOUR"
 
     def test_mapping_interval_absent_returns_none(self):
         # BaldEagle.p02 has no Mapping Interval line.
-        assert PlanFile(BALDEAGLE_P02).mapping_interval is None
+        assert Plan(BALDEAGLE_P02).mapping_interval is None
 
 
 # ---------------------------------------------------------------------------
@@ -154,17 +154,17 @@ class TestIntervals:
 
 class TestPlanType:
     def test_baxter_is_steady(self):
-        pf = PlanFile(BAXTER)
+        pf = Plan(BAXTER)
         assert pf.is_steady is True
         assert pf.is_unsteady is False
 
     def test_baldeagle_is_unsteady(self):
-        pf = PlanFile(BALDEAGLE)
+        pf = Plan(BALDEAGLE)
         assert pf.is_unsteady is True
         assert pf.is_steady is False
 
     def test_muncie_is_unsteady(self):
-        pf = PlanFile(MUNCIE_P01)
+        pf = Plan(MUNCIE_P01)
         assert pf.is_unsteady is True
         assert pf.is_steady is False
 
@@ -176,28 +176,28 @@ class TestPlanType:
 
 class TestRunFlags:
     def setup_method(self):
-        self.baxter = PlanFile(BAXTER)
-        self.p03 = PlanFile(MUNCIE_P03)
+        self.baxter = Plan(BAXTER)
+        self.p03 = Plan(MUNCIE_P03)
 
     def test_run_htab_enabled(self):
         # Baxter: "Run HTab= 1 "
-        assert self.baxter.run_htab is True
+        assert self.baxter.run_hydraulic_tables is True
 
     def test_run_htab_minus_one_is_true(self):
         # Muncie p03: "Run HTab=-1 " — negative-one also means enabled.
-        assert self.p03.run_htab is True
+        assert self.p03.run_hydraulic_tables is True
 
     def test_run_sediment_false(self):
         assert self.baxter.run_sediment is False
 
     def test_run_wq_false(self):
-        assert self.baxter.run_wq is False
+        assert self.baxter.run_water_quality is False
 
     def test_run_post_process_true(self):
         assert self.baxter.run_post_process is True
 
     def test_run_ras_mapper_false(self):
-        assert self.baxter.run_ras_mapper is False
+        assert self.baxter.run_rasmapper is False
 
 
 # ---------------------------------------------------------------------------
@@ -207,7 +207,7 @@ class TestRunFlags:
 
 class TestHydraulics:
     def setup_method(self):
-        self.pf = PlanFile(BAXTER)
+        self.pf = Plan(BAXTER)
 
     def test_theta(self):
         assert self.pf.theta == pytest.approx(1.0)
@@ -230,11 +230,11 @@ class TestHydraulics:
 class TestNoneValues:
     def test_empty_value_returns_none(self):
         # "UNET QTol=" has no value in any example plan.
-        pf = PlanFile(BAXTER)
+        pf = Plan(BAXTER)
         assert pf.get("UNET QTol") is None
 
     def test_absent_key_returns_none(self):
-        pf = PlanFile(BAXTER)
+        pf = Plan(BAXTER)
         assert pf.get("Nonexistent Key") is None
 
 
@@ -245,12 +245,12 @@ class TestNoneValues:
 
 class TestGenericAccess:
     def test_get_known_key(self):
-        pf = PlanFile(BAXTER)
+        pf = Plan(BAXTER)
         assert pf.get("Plan Title") == "Steady Flows"
 
     def test_get_repeated_key_returns_first(self):
         # BaldEagle has many "Stage Flow Hydrograph=" lines; get returns first.
-        pf = PlanFile(BALDEAGLE)
+        pf = Plan(BALDEAGLE)
         val = pf.get("Stage Flow Hydrograph")
         assert val is not None
         # First occurrence points to station 138154.4
@@ -258,12 +258,12 @@ class TestGenericAccess:
 
     def test_set_unknown_key_raises(self, tmp_plan):
         dst = tmp_plan(BAXTER)
-        pf = PlanFile(dst)
+        pf = Plan(dst)
         with pytest.raises(KeyError):
             pf.set("Nonexistent Key", "value")
 
     def test_get_absent_key_returns_none(self):
-        pf = PlanFile(BAXTER)
+        pf = Plan(BAXTER)
         assert pf.get("Nonexistent Key") is None
 
 
@@ -275,61 +275,61 @@ class TestGenericAccess:
 class TestMutation:
     def test_set_plan_title(self, tmp_plan):
         dst = tmp_plan(BAXTER)
-        pf = PlanFile(dst)
-        pf.plan_title = "New Title"
+        pf = Plan(dst)
+        pf.title = "New Title"
         pf.save()
-        assert PlanFile(dst).plan_title == "New Title"
+        assert Plan(dst).title == "New Title"
 
     def test_set_short_id(self, tmp_plan):
         dst = tmp_plan(BAXTER)
-        pf = PlanFile(dst)
+        pf = Plan(dst)
         pf.short_id = "Scenario_A"
         pf.save()
-        assert PlanFile(dst).short_id == "Scenario_A"
+        assert Plan(dst).short_id == "Scenario_A"
 
     def test_set_simulation_date(self, tmp_plan):
         dst = tmp_plan(BALDEAGLE)
-        pf = PlanFile(dst)
+        pf = Plan(dst)
         pf.simulation_date = ("01JAN2020,0000", "15JAN2020,2400")
         pf.save()
-        start, end = PlanFile(dst).simulation_date
+        start, end = Plan(dst).simulation_date
         assert start == "01JAN2020,0000"
         assert end == "15JAN2020,2400"
 
     def test_set_computation_interval(self, tmp_plan):
         dst = tmp_plan(BALDEAGLE)
-        pf = PlanFile(dst)
+        pf = Plan(dst)
         pf.computation_interval = "5MIN"
         pf.save()
-        assert PlanFile(dst).computation_interval == "5MIN"
+        assert Plan(dst).computation_interval == "5MIN"
 
     def test_set_run_flag_false(self, tmp_plan):
         dst = tmp_plan(BAXTER)
-        pf = PlanFile(dst)
-        pf.run_htab = False
+        pf = Plan(dst)
+        pf.run_hydraulic_tables = False
         pf.save()
-        assert PlanFile(dst).run_htab is False
+        assert Plan(dst).run_hydraulic_tables is False
 
     def test_set_run_flag_true(self, tmp_plan):
         dst = tmp_plan(BAXTER)
-        pf = PlanFile(dst)
+        pf = Plan(dst)
         pf.run_sediment = True
         pf.save()
-        assert PlanFile(dst).run_sediment is True
+        assert Plan(dst).run_sediment is True
 
     def test_set_z_tolerance(self, tmp_plan):
         dst = tmp_plan(BAXTER)
-        pf = PlanFile(dst)
+        pf = Plan(dst)
         pf.z_tolerance = 0.005
         pf.save()
-        assert PlanFile(dst).z_tolerance == pytest.approx(0.005)
+        assert Plan(dst).z_tolerance == pytest.approx(0.005)
 
     def test_set_max_iterations(self, tmp_plan):
         dst = tmp_plan(BAXTER)
-        pf = PlanFile(dst)
+        pf = Plan(dst)
         pf.max_iterations = 30
         pf.save()
-        assert PlanFile(dst).max_iterations == 30
+        assert Plan(dst).max_iterations == 30
 
     def test_set_does_not_affect_other_lines(self, tmp_plan):
         """Changing one field must not alter any other line in the file."""
@@ -337,8 +337,8 @@ class TestMutation:
         original_lines = BAXTER.read_text(
             encoding="utf-8", errors="replace"
         ).splitlines()
-        pf = PlanFile(dst)
-        pf.plan_title = "Changed Title"
+        pf = Plan(dst)
+        pf.title = "Changed Title"
         pf.save()
         new_lines = dst.read_text(encoding="utf-8", errors="replace").splitlines()
         changed = [
@@ -352,7 +352,7 @@ class TestMutation:
     def test_mutation_only_first_repeated_key(self, tmp_plan):
         """set() on a repeated key (Breach Loc) only touches the first occurrence."""
         dst = tmp_plan(MUNCIE_P01)
-        pf = PlanFile(dst)
+        pf = Plan(dst)
         pf.set("Breach Loc", "Modified           ,Value           ,0       ,False,")
         pf.save()
         lines = dst.read_text(encoding="utf-8", errors="replace").splitlines()

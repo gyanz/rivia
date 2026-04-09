@@ -8,7 +8,7 @@ def test_version():
 
 
 def test_subpackage_imports():
-    import rivia.com
+    import rivia.controller
     import rivia.model
     import rivia.hdf
     import rivia.geo

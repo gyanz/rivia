@@ -12,7 +12,8 @@ Reads HEC-RAS HDF5 geometry and plan result files (h5py-based).
    :toctree: generated
    :recursive:
 
-   rivia.hdf._geometry
-   rivia.hdf._plan
-   rivia.hdf._terrain
-   rivia.hdf._velocity
+   rivia.hdf.geometry
+   rivia.hdf.steady_plan
+   rivia.hdf.unsteady_plan
+   rivia.hdf.terrain
+   rivia.hdf.velocity

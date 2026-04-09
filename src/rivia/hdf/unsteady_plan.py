@@ -1,9 +1,9 @@
-"""UnsteadyUnsteadyPlanHdf - read HEC-RAS unsteady plan HDF5 files (.p*.hdf).
+"""UnsteadyUnsteadyPlan - read HEC-RAS unsteady plan HDF5 files (.p*.hdf).
 
 Plan HDF files embed the same ``Geometry/`` group as geometry HDF files
 *plus* ``Results/Unsteady/...`` time-series and summary output.
 
-``UnsteadyUnsteadyPlanHdf`` inherits ``GeometryHdf`` so all geometry accessors are available.
+``UnsteadyUnsteadyPlan`` inherits ``Geometry`` so all geometry accessors are available.
 ``FlowAreaResults`` extends ``FlowArea`` with lazy time-series properties,
 summary DataFrames, and computed depth / velocity methods.  Raster export
 methods delegate to ``rivia.geo`` via a deferred import so this module is
@@ -28,22 +28,21 @@ import pandas as pd
 
 from rivia.utils import log_call, parse_interval, timed
 
-from ._base import _HdfFile
-from ._geometry import (
+from .geometry import (
     _SA_ROOT,
-    HdfBridge,
-    HdfCrossSection,
-    HdfCrossSectionCollection,
+    Bridge,
+    CrossSection,
+    CrossSectionCollection,
     FlowArea,
     FlowAreaCollection,
-    GeometryHdf,
-    HdfInline,
-    HdfLateral,
+    Geometry,
+    InlineStructure,
+    LateralStructure,
     SA2DConnection,
     StorageArea,
     StorageAreaCollection,
-    HdfStructure,
-    HdfStructureCollection,
+    Structure,
+    StructureCollection,
     _decode,
 )
 
@@ -367,7 +366,7 @@ class FlowAreaResults(FlowArea):
         ndarray, shape ``(n_cells, 2)``
             ``[Vx, Vy]`` depth-averaged velocity components for real cells.
         """
-        from ._velocity import compute_all_cell_velocities
+        from .velocity import compute_all_cell_velocities
 
         if method == "flow_ratio" and self.face_flow is None:
             raise KeyError(
@@ -500,7 +499,7 @@ class FlowAreaResults(FlowArea):
         """Full 2D velocity ``[Vx, Vy]`` at each face midpoint.
 
         Implements the RASMapper-exact C-stencil least-squares reconstruction
-        (Step A + Step 2 from ``geo/_rasmap.py``):
+        (Step A + Step 2 from ``geo/_rasmapper_pipeline.py``):
 
         * **Step A** — hydraulic connectivity: determines which faces are
           actively conveying flow based on adjacent-cell WSE and bed elevation.
@@ -524,7 +523,7 @@ class FlowAreaResults(FlowArea):
             ``[Vx, Vy]`` velocity at each face midpoint.
             Disconnected (dry) faces receive ``[0, 0]``.
         """
-        from rivia.geo import _rasmap
+        from rivia.geo import _rasmapper_pipeline as _rasmap
 
         cell_wse = np.array(self.water_surface[timestep, :])
         face_normal_vel = np.array(self.face_velocity[timestep, :])
@@ -572,7 +571,7 @@ class FlowAreaResults(FlowArea):
             ``[Vx, Vy]`` velocity at each mesh corner.
             Facepoints adjacent only to dry faces receive ``[0, 0]``.
         """
-        from rivia.geo import _rasmap
+        from rivia.geo import _rasmapper_pipeline as _rasmap
 
         cell_wse = np.array(self.water_surface[timestep, :])
         face_normal_vel = np.array(self.face_velocity[timestep, :])
@@ -623,7 +622,7 @@ class FlowAreaResults(FlowArea):
         """Quiver plot of rasterized velocity vectors around a target cell.
 
         Rasterizes the neighbourhood of *cell_index* using the RASMapper-exact
-        pipeline (``rasmap_raster`` with ``variable="velocity"``), then draws
+        pipeline (``rasterize_results`` with ``variable="velocity"``), then draws
         quiver arrows at the pixel centres of wet pixels.  Arrows show the
         final, fully interpolated ``[Vx, Vy]`` value at each pixel — the same
         values that appear in RASMapper's velocity map.
@@ -759,7 +758,7 @@ class FlowAreaResults(FlowArea):
         # "velocity_vector" → 4-band [Vx, Vy, speed, direction]; quiver
         # needs all four bands.
         fp_face_info, fp_face_values = self.facepoint_face_orientation
-        ds = _raster.rasmap_raster(
+        ds = _raster.rasterize_results(
             variable="velocity_vector",
             cell_wse=np.array(self.water_surface[timestep, :]),
             cell_min_elevation=self._cell_min_elevation,
@@ -1122,8 +1121,8 @@ class FlowAreaResults(FlowArea):
         cell_face_info, cell_face_values = self.cell_face_info
         fp_face_info, fp_face_values = self.facepoint_face_orientation
 
-        # ---- Delegate to rasmap_raster -------------------------------------
-        return _raster.rasmap_raster(
+        # ---- Delegate to rasterize_results -------------------------------------
+        return _raster.rasterize_results(
             variable=variable,
             cell_wse=cell_wse,
             cell_min_elevation=self._cell_min_elevation,
@@ -1704,7 +1703,7 @@ class SA2DConnectionResults(_StructureResultsMixin, SA2DConnection):
     Parameters
     ----------
     geom:
-        Geometry object from :class:`~rivia.hdf.HdfStructureCollection`.
+        Geometry object from :class:`~rivia.hdf.StructureCollection`.
     group:
         ``h5py.Group`` at ``-/SA 2D Area Conn/<plan_name>``.
     """
@@ -1781,10 +1780,10 @@ class SA2DConnectionResults(_StructureResultsMixin, SA2DConnection):
 # ---------------------------------------------------------------------------
 
 
-class InlineResults(_StructureResultsMixin, HdfInline):
+class InlineResults(_StructureResultsMixin, InlineStructure):
     """Geometry *and* time-series results for one HEC-RAS inline structure.
 
-    Inherits geometry from :class:`~rivia.hdf.HdfInline` and shared HDF result
+    Inherits geometry from :class:`~rivia.hdf.InlineStructure` and shared HDF result
     access from :class:`_StructureResultsMixin`.
 
     The HDF group is at
@@ -1793,13 +1792,13 @@ class InlineResults(_StructureResultsMixin, HdfInline):
     Parameters
     ----------
     geom:
-        Geometry object from :class:`~rivia.hdf.HdfStructureCollection`.
+        Geometry object from :class:`~rivia.hdf.StructureCollection`.
     group:
         ``h5py.Group`` at the inline structure result path.
     """
 
-    def __init__(self, geom: HdfInline, group: h5py.Group) -> None:
-        HdfInline.__init__(
+    def __init__(self, geom: InlineStructure, group: h5py.Group) -> None:
+        InlineStructure.__init__(
             self,
             mode=geom.mode,
             upstream_type=geom.upstream_type,
@@ -1820,10 +1819,10 @@ class InlineResults(_StructureResultsMixin, HdfInline):
 # ---------------------------------------------------------------------------
 
 
-class LateralResults(_StructureResultsMixin, HdfLateral):
+class LateralResults(_StructureResultsMixin, LateralStructure):
     """Geometry *and* time-series results for one HEC-RAS lateral structure.
 
-    Inherits geometry from :class:`~rivia.hdf.HdfLateral` and shared HDF result
+    Inherits geometry from :class:`~rivia.hdf.LateralStructure` and shared HDF result
     access from :class:`_StructureResultsMixin`.
 
     The HDF group is at
@@ -1835,13 +1834,13 @@ class LateralResults(_StructureResultsMixin, HdfLateral):
     Parameters
     ----------
     geom:
-        Geometry object from :class:`~rivia.hdf.HdfStructureCollection`.
+        Geometry object from :class:`~rivia.hdf.StructureCollection`.
     group:
         ``h5py.Group`` at the lateral structure result path.
     """
 
-    def __init__(self, geom: HdfLateral, group: h5py.Group) -> None:
-        HdfLateral.__init__(
+    def __init__(self, geom: LateralStructure, group: h5py.Group) -> None:
+        LateralStructure.__init__(
             self,
             mode=geom.mode,
             upstream_type=geom.upstream_type,
@@ -1894,10 +1893,10 @@ class LateralResults(_StructureResultsMixin, HdfLateral):
 # ---------------------------------------------------------------------------
 
 
-class BridgeResults(_StructureResultsMixin, HdfBridge):
+class BridgeResults(_StructureResultsMixin, Bridge):
     """Geometry *and* time-series results for one HEC-RAS bridge structure.
 
-    Inherits geometry from :class:`~rivia.hdf.HdfBridge` and shared HDF result
+    Inherits geometry from :class:`~rivia.hdf.Bridge` and shared HDF result
     access from :class:`_StructureResultsMixin`.
 
     The HDF group is at
@@ -1906,13 +1905,13 @@ class BridgeResults(_StructureResultsMixin, HdfBridge):
     Parameters
     ----------
     geom:
-        Geometry object from :class:`~rivia.hdf.HdfStructureCollection`.
+        Geometry object from :class:`~rivia.hdf.StructureCollection`.
     group:
         ``h5py.Group`` at the bridge result path.
     """
 
-    def __init__(self, geom: HdfBridge, group: h5py.Group) -> None:
-        HdfBridge.__init__(
+    def __init__(self, geom: Bridge, group: h5py.Group) -> None:
+        Bridge.__init__(
             self,
             mode=geom.mode,
             upstream_type=geom.upstream_type,
@@ -1929,37 +1928,37 @@ class BridgeResults(_StructureResultsMixin, HdfBridge):
 
 
 # ---------------------------------------------------------------------------
-# PlanHdfStructureCollection - plan-enriched HdfStructureCollection
+# StructureResultsCollection - plan-enriched StructureCollection
 # ---------------------------------------------------------------------------
 
 
-class PlanHdfStructureCollection(HdfStructureCollection):
+class StructureResultsCollection(StructureCollection):
     """Plan-enriched structure collection: all structure types with results.
 
-    Overrides :class:`~rivia.hdf.HdfStructureCollection` so each item carries
+    Overrides :class:`~rivia.hdf.StructureCollection` so each item carries
     both geometry attributes *and* time-series result access:
 
     * :class:`SA2DConnection` → :class:`SA2DConnectionResults`
       (Base Output ``SA 2D Area Conn``)
-    * :class:`HdfInline` → :class:`InlineResults`
+    * :class:`InlineStructure` → :class:`InlineResults`
       (DSS Hydrograph Output ``Inline Structures``)
-    * :class:`HdfLateral` → :class:`LateralResults`
+    * :class:`LateralStructure` → :class:`LateralResults`
       (DSS Hydrograph Output ``Lateral Structures``)
-    * :class:`HdfBridge` → :class:`BridgeResults`
+    * :class:`Bridge` → :class:`BridgeResults`
       (DSS Hydrograph Output ``Bridge``)
 
     When no plan result group is found for a structure (e.g. DSS output was
     not requested for that type), the plain geometry object is kept unchanged.
     """
 
-    def _load(self) -> dict[str, HdfStructure]:  # type: ignore[override]
+    def _load(self) -> dict[str, Structure]:  # type: ignore[override]
         if self._items is not None:
             return self._items
 
         import h5py as _h5
 
         # Build geometry items first (parent caches in self._items).
-        geom_items = HdfStructureCollection._load(self)
+        geom_items = StructureCollection._load(self)
 
         # Helper: collect sub-groups from an HDF path (returns {} when absent).
         def _groups(path: str) -> dict[str, h5py.Group]:
@@ -1973,7 +1972,7 @@ class PlanHdfStructureCollection(HdfStructureCollection):
         lateral_groups = _groups(_DSS_LATERAL)
         bridge_groups = _groups(_DSS_BRIDGE)
 
-        items: dict[str, HdfStructure] = {}
+        items: dict[str, Structure] = {}
         for key, geom in geom_items.items():
 
             if isinstance(geom, SA2DConnection):
@@ -1992,17 +1991,17 @@ class PlanHdfStructureCollection(HdfStructureCollection):
                     SA2DConnectionResults(geom, grp) if grp is not None else geom
                 )
 
-            elif isinstance(geom, HdfInline):
+            elif isinstance(geom, InlineStructure):
                 plan_key = " ".join(geom.location)
                 grp = inline_groups.get(plan_key)
                 items[key] = InlineResults(geom, grp) if grp is not None else geom
 
-            elif isinstance(geom, HdfLateral):
+            elif isinstance(geom, LateralStructure):
                 plan_key = " ".join(geom.location)
                 grp = lateral_groups.get(plan_key)
                 items[key] = LateralResults(geom, grp) if grp is not None else geom
 
-            elif isinstance(geom, HdfBridge):
+            elif isinstance(geom, Bridge):
                 plan_key = " ".join(geom.location)
                 grp = bridge_groups.get(plan_key)
                 items[key] = BridgeResults(geom, grp) if grp is not None else geom
@@ -2019,7 +2018,7 @@ class PlanHdfStructureCollection(HdfStructureCollection):
 # ---------------------------------------------------------------------------
 
 
-class _CrossSectionResultsBase(HdfCrossSection):
+class _CrossSectionResultsBase(CrossSection):
     """Private base for all three cross-section result variants.
 
     Holds the HDF handle, column index, and result-group root; provides the
@@ -2028,18 +2027,18 @@ class _CrossSectionResultsBase(HdfCrossSection):
 
     Concrete subclasses add the properties that are specific to their output
     block (:class:`CrossSectionResults`,
-    :class:`CrossSectionResultsDss`,
-    :class:`CrossSectionResultsInst`).
+    :class:`CrossSectionResultsDSS`,
+    :class:`CrossSectionResultsInstantaneous`).
     """
 
     def __init__(
         self,
-        geom: HdfCrossSection,
+        geom: CrossSection,
         hdf: "h5py.File",
         index: int,
         root: str,
     ) -> None:
-        HdfCrossSection.__init__(
+        CrossSection.__init__(
             self,
             river=geom.river,
             reach=geom.reach,
@@ -2086,15 +2085,15 @@ class _CrossSectionResultsBase(HdfCrossSection):
 class CrossSectionResults(_CrossSectionResultsBase):
     """Geometry *and* results for one XS from the **Base Output** block.
 
-    Corresponds to :attr:`UnsteadyPlanHdf.cross_sections` (mapping output interval).
+    Corresponds to :attr:`UnsteadyPlan.cross_sections` (mapping output interval).
     All variables written by HEC-RAS at the mapping interval are exposed.
 
     Parameters
     ----------
     geom:
-        Geometry object from :class:`HdfCrossSectionCollection`.
+        Geometry object from :class:`CrossSectionCollection`.
     hdf:
-        Open ``h5py.File`` — kept alive by the parent ``UnsteadyPlanHdf`` context.
+        Open ``h5py.File`` — kept alive by the parent ``UnsteadyPlan`` context.
     index:
         Column index of this XS in the ``(n_t, n_xs)`` result datasets.
     root:
@@ -2122,18 +2121,19 @@ class CrossSectionResults(_CrossSectionResultsBase):
         return self._load("Velocity Total")
 
 
-class CrossSectionResultsDss(_CrossSectionResultsBase):
+class CrossSectionResultsDSS(_CrossSectionResultsBase):
     """Geometry *and* results for one XS from the **DSS Hydrograph Output** block.
 
-    Corresponds to :attr:`UnsteadyPlanHdf.cross_sections_dss` (hydrograph output interval).
+    Corresponds to :attr:`UnsteadyPlan.cross_sections_output`
+    (hydrograph output interval).
     Available datasets: ``wse``, ``flow``, ``flow_cumulative``.
 
     Parameters
     ----------
     geom:
-        Geometry object from :class:`HdfCrossSectionCollection`.
+        Geometry object from :class:`CrossSectionCollection`.
     hdf:
-        Open ``h5py.File`` — kept alive by the parent ``UnsteadyPlanHdf`` context.
+        Open ``h5py.File`` — kept alive by the parent ``UnsteadyPlan`` context.
     index:
         Column index of this XS in the ``(n_t, n_xs)`` result datasets.
     root:
@@ -2146,16 +2146,16 @@ class CrossSectionResultsDss(_CrossSectionResultsBase):
         return self._load("Flow Volume Cumulative")
 
 
-class CrossSectionResultsInst(_CrossSectionResultsBase):
+class CrossSectionResultsInstantaneous(_CrossSectionResultsBase):
     """Geometry *and* results for one XS from the **Post Process Profiles** block.
 
-    Corresponds to :attr:`UnsteadyPlanHdf.cross_sections_inst` (DSS inst interval).
+    Corresponds to :attr:`UnsteadyPlan.cross_sections_instantaneous`.
 
     All result arrays have shape ``(n_profiles,)`` where index ``0`` is the
     **Max WS** profile and indices ``1:`` are the instantaneous profiles
-    written at the DSS instantaneous interval.  Use
-    :attr:`UnsteadyPlanHdf.timestamps_dss_inst` for the datetime index of indices
-    ``1:``.
+    written at the instantaneous interval.  Use
+    :attr:`UnsteadyPlan.instantaneous_timestamps` for the datetime index of
+    indices ``1:``.
 
     Available top-level datasets: ``water_surface``, ``flow``,
     ``energy_grade``.  All ``Additional Variables`` sub-group datasets are
@@ -2166,9 +2166,9 @@ class CrossSectionResultsInst(_CrossSectionResultsBase):
     Parameters
     ----------
     geom:
-        Geometry object from :class:`HdfCrossSectionCollection`.
+        Geometry object from :class:`CrossSectionCollection`.
     hdf:
-        Open ``h5py.File`` — kept alive by the parent ``UnsteadyPlanHdf`` context.
+        Open ``h5py.File`` — kept alive by the parent ``UnsteadyPlan`` context.
     index:
         Column index of this XS in the ``(n_profiles, n_xs)`` result datasets.
     root:
@@ -2487,7 +2487,7 @@ class CrossSectionResultsInst(_CrossSectionResultsBase):
         return self.additional_variable("Wetted Perimeter Total")
 
 
-class CrossSectionResultsCollection(HdfCrossSectionCollection):
+class CrossSectionResultsCollection(CrossSectionCollection):
     """Plan-enriched cross section collection with time-series results.
 
     Parameterised over the concrete result class and the HDF path used to
@@ -2504,8 +2504,8 @@ class CrossSectionResultsCollection(HdfCrossSectionCollection):
     result_cls:
         Concrete result class to instantiate per cross section —
         :class:`CrossSectionResults`,
-        :class:`CrossSectionResultsDss`, or
-        :class:`CrossSectionResultsInst`.
+        :class:`CrossSectionResultsDSS`, or
+        :class:`CrossSectionResultsInstantaneous`.
     attrs_path:
         HDF path to the ``Cross Section Attributes`` structured array used
         to map ``(river, reach, station)`` → column index.  Defaults to
@@ -2531,7 +2531,7 @@ class CrossSectionResultsCollection(HdfCrossSectionCollection):
         if self._result_items is not None:
             return self._result_items
 
-        geom_items = HdfCrossSectionCollection._load(self)
+        geom_items = CrossSectionCollection._load(self)
 
         attrs_ds = self._hdf.get(self._attrs_path)
         if attrs_ds is None:
@@ -2603,7 +2603,7 @@ class CrossSectionResultsCollection(HdfCrossSectionCollection):
 
 
 # ---------------------------------------------------------------------------
-# UnsteadyPlanHdf - public entry point
+# UnsteadyPlan - public entry point
 # ---------------------------------------------------------------------------
 
 
@@ -2859,8 +2859,193 @@ class ComputeSummary:
             },
         }
 
+    def errors(self) -> dict[str, float]:
+        """Return key convergence and volume-balance error metrics.
 
-class UnsteadyPlanHdf(GeometryHdf):
+        Derives four scalar error measures from this summary that are useful
+        for quick quality-control checks after a run.
+
+        Returns
+        -------
+        dict[str, float]
+            A flat dictionary with the following keys:
+
+            ``"wse"``
+                Maximum water-surface elevation error across all cells
+                (model units — feet or metres).  ``None`` when the simulation
+                went unstable before the run converged.
+
+            ``"volume_error_pct"``
+                Overall volume balance error as a percentage of total inflow,
+                read directly from the HEC-RAS ``Results/Unsteady/Summary``
+                volume accounting block.
+
+            ``"volume_1d_error_pct"``
+                1-D volume balance error (%) computed from the individual
+                1-D flux terms::
+
+                    error = -(flow_us_in + net_other_fluxes + storage_change)
+                    supply = reach_vol_start + sa_vol_start + flow_us_in
+                             + hydro_lat + hydro_sa + diversions
+                             + groundwater + precip_excess
+                    error_pct = error / supply * 100
+
+                where *net_other_fluxes* = ``-flow_ds_out + hydro_lat +
+                hydro_sa + diversions + groundwater + precip_excess``.
+                ``supply`` is the total 1-D water budget (initial storage plus
+                all non-DS-outflow fluxes); for a 1D-only model this matches
+                the HEC-RAS overall ``"Error Percent"`` attribute.
+                Returns ``nan`` when total 1-D supply is zero.
+
+            ``"volume_2d_error_pct"``
+                Largest-magnitude 2-D volume balance error (%) across all
+                2-D flow areas, preserving the sign of the worst-case area.
+                Zero when the model has no 2-D flow areas.
+
+        See Also
+        --------
+        ok : Quality-control pass/fail check with threshold logging.
+        """
+        v1d = self.volume_1d
+
+        outflow = (
+            v1d.flow_ds_out - v1d.hydro_lat - v1d.hydro_sa
+            - v1d.diversions - v1d.groundwater - v1d.precip_excess
+        )
+        storage_change = (
+            (v1d.reach_vol_start + v1d.sa_vol_start)
+            - (v1d.reach_vol_end + v1d.sa_vol_end)
+        )
+        error_1d = outflow - v1d.flow_us_in - storage_change
+        supply_1d = (
+            v1d.reach_vol_start + v1d.sa_vol_start
+            + v1d.flow_us_in
+            + v1d.hydro_lat
+            + v1d.hydro_sa
+            + v1d.diversions
+            + v1d.groundwater
+            + v1d.precip_excess
+        )
+        volume_1d_error_pct = (
+            error_1d / supply_1d * 100 if supply_1d != 0 else float("nan")
+        )
+
+        if (self.volume_2d
+                and not np.isclose(error_1d, 0.0)
+                and np.isclose(v1d.flow_ds_out, 0.0)):
+            logger.warning(
+                "Model has 2-D flow areas but zero 1-D downstream outflow; "
+                "1-D error percentages may be unreliable. Setting 1-D error to zero."
+            )
+            volume_1d_error_pct = 0.0
+
+        max_2d_error_pct = 0.0
+        for area in self.volume_2d.values():
+            if abs(area.error_pct) > abs(max_2d_error_pct):
+                max_2d_error_pct = area.error_pct
+
+        return {
+            "wse": self.run.max_wsel_error,
+            "volume_error_pct": self.volume.error_pct,
+            "volume_1d_error_pct": volume_1d_error_pct,
+            "volume_2d_error_pct": max_2d_error_pct,
+        }
+
+    def ok(
+        self,
+        wse_threshold: float = 0.5,
+        volume_error_pct_threshold: float = 1.0,
+        volume_1d_error_pct_threshold: float = 1.0,
+        volume_2d_error_pct_threshold: float = 1.0,
+    ) -> bool:
+        """Return ``True`` if the simulation completed stably and all error
+        metrics are within their thresholds.
+
+        Checks stability first, then each error metric against its threshold.
+        All failures are collected and logged before returning so the caller
+        sees the complete picture in one pass.
+
+        If the simulation went unstable every failure is logged at
+        ``CRITICAL``; otherwise threshold violations are logged at
+        ``WARNING``.
+
+        Parameters
+        ----------
+        wse_threshold:
+            Maximum allowable water-surface elevation error in model units
+            (feet or metres).  Default: ``0.5``.
+        volume_error_pct_threshold:
+            Maximum allowable overall volume balance error (%).
+            Default: ``1.0``.
+        volume_1d_error_pct_threshold:
+            Maximum allowable 1-D volume balance error (%).
+            Default: ``1.0``.
+        volume_2d_error_pct_threshold:
+            Maximum allowable 2-D volume balance error (%) per 2-D flow area.
+            Default: ``1.0``.
+
+        Returns
+        -------
+        bool
+            ``True`` if the simulation is stable and all metrics are within
+            bounds; ``False`` otherwise.
+
+        See Also
+        --------
+        errors : Raw error metric values.
+        """
+        failures: list[str] = []
+
+        unstable = self.run.time_unstable is not None
+        if unstable:
+            failures.append(
+                f"simulation went unstable at t={self.run.time_unstable}"
+            )
+
+        errs = self.errors()
+
+        wse = errs["wse"]
+        if wse is None or math.isnan(wse) or abs(wse) > wse_threshold:
+            failures.append(
+                f"WSE error {wse!r} exceeds threshold {wse_threshold}"
+            )
+
+        vol_err = errs["volume_error_pct"]
+        if math.isnan(vol_err) or abs(vol_err) > volume_error_pct_threshold:
+            failures.append(
+                f"overall volume error {vol_err:.4f}% exceeds threshold "
+                f"{volume_error_pct_threshold}%"
+            )
+
+        vol_1d_err = errs["volume_1d_error_pct"]
+        if math.isnan(vol_1d_err) or abs(vol_1d_err) > volume_1d_error_pct_threshold:
+            vol_1d_str = "nan" if math.isnan(vol_1d_err) else f"{vol_1d_err:.4f}%"
+            failures.append(
+                f"1D volume error {vol_1d_str} exceeds threshold "
+                f"{volume_1d_error_pct_threshold}%"
+            )
+
+        for area_name, area in self.volume_2d.items():
+            exceeds = (
+                math.isnan(area.error_pct)
+                or abs(area.error_pct) > volume_2d_error_pct_threshold
+            )
+            if exceeds:
+                failures.append(
+                    f"2D area '{area_name}' volume error {area.error_pct:.4f}% "
+                    f"exceeds threshold {volume_2d_error_pct_threshold}%"
+                )
+
+        if not failures:
+            return True
+
+        log = logger.critical if unstable else logger.warning
+        for msg in failures:
+            log("compute_ok: %s", msg)
+        return False
+
+
+class UnsteadyPlan(Geometry):
     """Read HEC-RAS plan HDF5 output files (``*.p*.hdf``).
 
     A plan HDF file contains the same ``Geometry/`` data as a geometry HDF
@@ -2876,8 +3061,8 @@ class UnsteadyPlanHdf(GeometryHdf):
     --------
     ::
 
-        with UnsteadyPlanHdf("MyModel.p01") as hdf:
-            ts   = hdf.timestamps_mapping
+        with UnsteadyPlan("MyModel.p01") as hdf:
+            ts   = hdf.mapping_timestamps
             area = hdf.flow_areas["spillway"]
 
             wse   = area.water_surface[10]    # one timestep
@@ -2899,10 +3084,12 @@ class UnsteadyPlanHdf(GeometryHdf):
         self._program_directory = Path(program_directory) if program_directory else None
         self._plan_flow_areas: FlowAreaResultsCollection | None = None
         self._plan_storage_areas: StorageAreaResultsCollection | None = None
-        self._plan_structures: PlanHdfStructureCollection | None = None
+        self._plan_structures: StructureResultsCollection | None = None
         self._plan_cross_sections: CrossSectionResultsCollection | None = None
-        self._plan_cross_sections_dss: CrossSectionResultsCollection | None = None
-        self._plan_cross_sections_inst: CrossSectionResultsCollection | None = None
+        self._plan_cross_sections_output: CrossSectionResultsCollection | None = None
+        self._plan_cross_sections_instantaneous: (
+            CrossSectionResultsCollection | None
+        ) = None
 
     # ------------------------------------------------------------------
     # File metadata
@@ -2933,7 +3120,7 @@ class UnsteadyPlanHdf(GeometryHdf):
         --------
         ::
 
-            with UnsteadyPlanHdf("MyModel.p01") as hdf:
+            with UnsteadyPlan("MyModel.p01") as hdf:
                 s = hdf.compute_summary()
                 print(s.run.solution)
                 print(s.volume.error_pct)
@@ -3027,98 +3214,15 @@ class UnsteadyPlanHdf(GeometryHdf):
     def compute_errors(self) -> dict[str, float]:
         """Return key convergence and volume-balance error metrics.
 
-        Reads :meth:`compute_summary` once and derives four scalar error
-        measures that are useful for quick quality-control checks after a run.
-
-        Returns
-        -------
-        dict[str, float]
-            A flat dictionary with the following keys:
-
-            ``"wse"``
-                Maximum water-surface elevation error across all cells
-                (model units — feet or metres).  ``None`` when the simulation
-                went unstable before the run converged.
-
-            ``"volume_error_pct"``
-                Overall volume balance error as a percentage of total inflow,
-                read directly from the HEC-RAS ``Results/Unsteady/Summary``
-                volume accounting block.
-
-            ``"volume_1d_error_pct"``
-                1-D volume balance error (%) computed from the individual
-                1-D flux terms::
-
-                    error = -(flow_us_in + net_other_fluxes + storage_change)
-                    supply = reach_vol_start + sa_vol_start + flow_us_in
-                             + hydro_lat + hydro_sa + diversions
-                             + groundwater + precip_excess
-                    error_pct = error / supply * 100
-
-                where *net_other_fluxes* = ``-flow_ds_out + hydro_lat +
-                hydro_sa + diversions + groundwater + precip_excess``.
-                ``supply`` is the total 1-D water budget (initial storage plus
-                all non-DS-outflow fluxes); for a 1D-only model this matches
-                the HEC-RAS overall ``"Error Percent"`` attribute.
-                Returns ``nan`` when total 1-D supply is zero.
-
-            ``"volume_2d_error_pct"``
-                Largest-magnitude 2-D volume balance error (%) across all
-                2-D flow areas, preserving the sign of the worst-case area.
-                Zero when the model has no 2-D flow areas.
+        Convenience wrapper: calls :meth:`compute_summary` and delegates to
+        :meth:`ComputeSummary.errors`.  See that method for full documentation.
 
         See Also
         --------
-        compute_summary : Full unsteady simulation summary dataclass.
+        ComputeSummary.errors : Full documentation and return-value details.
         compute_ok : Quality-control pass/fail check with threshold logging.
         """
-        summary = self.compute_summary()
-        v1d = summary.volume_1d
-
-        # 1-D volume balance
-        outflow = (
-            v1d.flow_ds_out - v1d.hydro_lat - v1d.hydro_sa
-            - v1d.diversions - v1d.groundwater - v1d.precip_excess
-        )
-        storage_change = (
-            (v1d.reach_vol_start + v1d.sa_vol_start)
-            - (v1d.reach_vol_end + v1d.sa_vol_end)
-        )
-        error_1d = outflow - v1d.flow_us_in - storage_change
-        supply_1d = (
-            v1d.reach_vol_start + v1d.sa_vol_start
-            + v1d.flow_us_in
-            + v1d.hydro_lat
-            + v1d.hydro_sa
-            + v1d.diversions
-            + v1d.groundwater
-            + v1d.precip_excess
-        )
-        volume_1d_error_pct = (
-            error_1d / supply_1d * 100 if supply_1d != 0 else float("nan")
-        )
-
-        if (summary.volume_2d
-                and not np.isclose(error_1d, 0.0)
-                and np.isclose(v1d.flow_ds_out, 0.0)):
-            logger.warning(
-                "Model has 2-D flow areas but zero 1-D downstream outflow; "
-                "1-D error percentages may be unreliable. Setting 1-D error to zero."
-            )
-            volume_1d_error_pct = 0.0
-
-        # 2-D: worst-case area by magnitude
-        max_2d_error_pct = 0.0
-        for area in summary.volume_2d.values():
-            if abs(area.error_pct) > abs(max_2d_error_pct):
-                max_2d_error_pct = area.error_pct
-
-        return {
-            "wse": summary.run.max_wsel_error,
-            "volume_error_pct": summary.volume.error_pct,
-            "volume_1d_error_pct": volume_1d_error_pct,
-            "volume_2d_error_pct": max_2d_error_pct,
-        }
+        return self.compute_summary().errors()
 
     def compute_ok(
         self,
@@ -3130,35 +3234,9 @@ class UnsteadyPlanHdf(GeometryHdf):
         """Return ``True`` if the simulation completed stably and all error
         metrics are within their thresholds.
 
-        Calls :meth:`compute_summary` once and checks stability first, then
-        each error metric against its threshold.  All failures are collected
-        and logged before returning so the caller sees the complete picture in
-        one pass.
-
-        If the simulation went unstable every failure is logged at
-        ``CRITICAL``; otherwise threshold violations are logged at
-        ``WARNING``.
-
-        Parameters
-        ----------
-        wse_threshold:
-            Maximum allowable water-surface elevation error in model units
-            (feet or metres).  Default: ``0.5``.
-        volume_error_pct_threshold:
-            Maximum allowable overall volume balance error (%).
-            Default: ``1.0``.
-        volume_1d_error_pct_threshold:
-            Maximum allowable 1-D volume balance error (%).
-            Default: ``1.0``.
-        volume_2d_error_pct_threshold:
-            Maximum allowable 2-D volume balance error (%) per 2-D flow area.
-            Default: ``1.0``.
-
-        Returns
-        -------
-        bool
-            ``True`` if the simulation is stable and all metrics are within
-            bounds; ``False`` otherwise.
+        Convenience wrapper: calls :meth:`compute_summary` and delegates to
+        :meth:`ComputeSummary.ok`.  See that method for full documentation,
+        including parameter descriptions and logging behaviour.
 
         Examples
         --------
@@ -3174,88 +3252,15 @@ class UnsteadyPlanHdf(GeometryHdf):
 
         See Also
         --------
-        compute_summary : Full unsteady simulation summary.
+        ComputeSummary.ok : Full documentation and parameter descriptions.
         compute_errors : Raw error metric values.
         """
-        summary = self.compute_summary()
-        failures: list[str] = []
-
-        # -- stability (checked first; drives log level for all failures) ---
-        unstable = summary.run.time_unstable is not None
-        if unstable:
-            failures.append(
-                f"simulation went unstable at t={summary.run.time_unstable}"
-            )
-
-        # -- WSE error -------------------------------------------------------
-        wse = summary.run.max_wsel_error
-        if wse is None or math.isnan(wse) or abs(wse) > wse_threshold:
-            failures.append(
-                f"WSE error {wse!r} exceeds threshold {wse_threshold}"
-            )
-
-        # -- overall volume error --------------------------------------------
-        vol_err = summary.volume.error_pct
-        if math.isnan(vol_err) or abs(vol_err) > volume_error_pct_threshold:
-            failures.append(
-                f"overall volume error {vol_err:.4f}% exceeds threshold "
-                f"{volume_error_pct_threshold}%"
-            )
-
-        # -- 1-D volume error ------------------------------------------------
-        v1d = summary.volume_1d
-        net_other_fluxes = (
-            -v1d.flow_ds_out
-            + v1d.hydro_lat
-            + v1d.hydro_sa
-            + v1d.diversions
-            + v1d.groundwater
-            + v1d.precip_excess
+        return self.compute_summary().ok(
+            wse_threshold=wse_threshold,
+            volume_error_pct_threshold=volume_error_pct_threshold,
+            volume_1d_error_pct_threshold=volume_1d_error_pct_threshold,
+            volume_2d_error_pct_threshold=volume_2d_error_pct_threshold,
         )
-        storage_change = (
-            v1d.reach_vol_start + v1d.sa_vol_start
-            - v1d.reach_vol_end - v1d.sa_vol_end
-        )
-        supply_1d = (
-            v1d.reach_vol_start + v1d.sa_vol_start
-            + v1d.flow_us_in
-            + v1d.hydro_lat
-            + v1d.hydro_sa
-            + v1d.diversions
-            + v1d.groundwater
-            + v1d.precip_excess
-        )
-        vol_1d_err = (
-            (v1d.flow_us_in + net_other_fluxes + storage_change) / supply_1d * 100
-            if supply_1d != 0
-            else float("nan")
-        )
-        if math.isnan(vol_1d_err) or abs(vol_1d_err) > volume_1d_error_pct_threshold:
-            vol_1d_str = "nan" if math.isnan(vol_1d_err) else f"{vol_1d_err:.4f}%"
-            failures.append(
-                f"1D volume error {vol_1d_str} exceeds threshold "
-                f"{volume_1d_error_pct_threshold}%"
-            )
-
-        # -- 2-D volume errors (reported per area) ---------------------------
-        for area_name, area in summary.volume_2d.items():
-            exceeds = (
-                math.isnan(area.error_pct)
-                or abs(area.error_pct) > volume_2d_error_pct_threshold
-            )
-            if exceeds:
-                failures.append(
-                    f"2D area '{area_name}' volume error {area.error_pct:.4f}% "
-                    f"exceeds threshold {volume_2d_error_pct_threshold}%"
-                )
-
-        if not failures:
-            return True
-
-        log = logger.critical if unstable else logger.warning
-        for msg in failures:
-            log("compute_ok: %s", msg)
-        return False
 
     @property
     def ras_version(self) -> str:
@@ -3275,7 +3280,7 @@ class UnsteadyPlanHdf(GeometryHdf):
         return None if grp is None else grp.attrs.get(name)
 
     @property
-    def interval_computation(self) -> dt.timedelta | None:
+    def computation_interval(self) -> dt.timedelta | None:
         """Base computation time step, or ``None`` if absent.
 
         Read from ``Plan Data/Plan Information`` attribute
@@ -3287,7 +3292,7 @@ class UnsteadyPlanHdf(GeometryHdf):
         return None if raw is None else parse_interval(raw)
 
     @property
-    def interval_mapping(self) -> dt.timedelta | None:
+    def mapping_interval(self) -> dt.timedelta | None:
         """Mapping output interval, or ``None`` if absent.
 
         Read from ``Plan Data/Plan Information`` attribute
@@ -3321,7 +3326,7 @@ class UnsteadyPlanHdf(GeometryHdf):
     # ------------------------------------------------------------------
 
     @property
-    def timestamps_mapping(self) -> pd.DatetimeIndex:
+    def mapping_timestamps(self) -> pd.DatetimeIndex:
         """Simulation output time stamps as a ``pd.DatetimeIndex``.
 
         Parsed from the ``Time Date Stamp`` dataset written by HEC-RAS.
@@ -3337,7 +3342,7 @@ class UnsteadyPlanHdf(GeometryHdf):
         return pd.to_datetime(raw, format=_RAS_TS_FMT)
 
     @property
-    def timestamps_dss(self) -> pd.DatetimeIndex:
+    def output_timestamps(self) -> pd.DatetimeIndex:
         """DSS hydrograph output time stamps as a ``pd.DatetimeIndex``.
 
         Parsed from ``Results/.../DSS Hydrograph Output/Unsteady Time
@@ -3353,7 +3358,7 @@ class UnsteadyPlanHdf(GeometryHdf):
         return pd.to_datetime(raw, format=_RAS_TS_FMT)
 
     @property
-    def interval_dss(self) -> dt.timedelta | None:
+    def output_interval(self) -> dt.timedelta | None:
         """DSS hydrograph output interval, or ``None`` if absent.
 
         Derived from the difference between the first two hydrograph
@@ -3367,36 +3372,7 @@ class UnsteadyPlanHdf(GeometryHdf):
         return ts[1] - ts[0]
 
     @property
-    def n_mapping(self) -> int | None:
-        """Number of output time steps, or ``None`` for steady-flow plans."""
-        ds = self._hdf.get(_TIME_STAMP_DS)
-        if ds is None:
-            return None
-        return len(ds)
-
-    @property
-    def n_dss(self) -> int | None:
-        """Number of DSS hydrograph output time steps, or ``None`` if absent."""
-        ds = self._hdf.get(_DSS_TIME_STAMP_DS)
-        if ds is None:
-            return None
-        return len(ds)
-
-    @property
-    def n_dss_inst(self) -> int | None:
-        """Number of instantaneous profile time steps, or ``None`` if absent.
-
-        Read from ``Profile Dates`` in the Post Process Profiles group.
-        The first entry (``"Max WS"``) is excluded from the count; only
-        actual datetime-stamped profiles are counted.
-        """
-        ds = self._hdf.get(_POSTPROC_PROFILE_DATES)
-        if ds is None:
-            return None
-        return max(0, len(ds) - 1)
-
-    @property
-    def interval_dss_inst(self) -> dt.timedelta | None:
+    def instantaneous_interval(self) -> dt.timedelta | None:
         """Instantaneous profile output interval, or ``None`` if absent.
 
         Derived from the difference between the first two actual profile
@@ -3411,14 +3387,14 @@ class UnsteadyPlanHdf(GeometryHdf):
         return t2 - t1
 
     @property
-    def timestamps_dss_inst(self) -> pd.DatetimeIndex:
+    def instantaneous_timestamps(self) -> pd.DatetimeIndex:
         """Instantaneous profile output timestamps as a ``pd.DatetimeIndex``.
 
         Parsed from ``Profile Dates`` in the Post Process Profiles group,
         skipping the first entry (``"Max WS"``).  Format: ``"DDMONYYYY HHMM"``
         (e.g. ``"01JAN2026 0002"``).
 
-        Use ``cross_sections_inst[xs].wse[1:]`` (or ``[1:n+1]``)
+        Use ``cross_sections_instantaneous[xs].wse[1:]`` (or ``[1:n+1]``)
         to align result arrays with this index; index ``0`` of the result
         arrays holds the Max WS profile value.
 
@@ -3436,8 +3412,36 @@ class UnsteadyPlanHdf(GeometryHdf):
         raw = np.array(ds[1:]).astype(str)
         return pd.to_datetime(raw, format=_POSTPROC_TS_FMT)
 
+    @property
+    def n_mapping_timestamps(self) -> int | None:
+        """Number of mapping output time steps, or ``None`` for steady-flow plans.
+
+        Reads only the dataset shape — no timestamp data is loaded.
+        """
+        ds = self._hdf.get(_TIME_STAMP_DS)
+        return None if ds is None else len(ds)
+
+    @property
+    def n_output_timestamps(self) -> int | None:
+        """Number of DSS hydrograph output time steps, or ``None`` if absent.
+
+        Reads only the dataset shape — no timestamp data is loaded.
+        """
+        ds = self._hdf.get(_DSS_TIME_STAMP_DS)
+        return None if ds is None else len(ds)
+
+    @property
+    def n_instantaneous_timestamps(self) -> int | None:
+        """Number of instantaneous profile time steps, or ``None`` if absent.
+
+        Reads only the dataset shape — no timestamp data is loaded.
+        The ``"Max WS"`` entry at index 0 is excluded from the count.
+        """
+        ds = self._hdf.get(_POSTPROC_PROFILE_DATES)
+        return None if ds is None else max(0, len(ds) - 1)
+
     # ------------------------------------------------------------------
-    # Collections (override GeometryHdf equivalents with results-aware types)
+    # Collections (override Geometry equivalents with results-aware types)
     # ------------------------------------------------------------------
 
     @property
@@ -3455,10 +3459,10 @@ class UnsteadyPlanHdf(GeometryHdf):
         return self._plan_storage_areas
 
     @property
-    def structures(self) -> PlanHdfStructureCollection:
+    def structures(self) -> StructureResultsCollection:
         """Access all structures with geometry *and* plan results.
 
-        Returns a :class:`PlanHdfStructureCollection` where each item is
+        Returns a :class:`StructureResultsCollection` where each item is
         upgraded to the matching results class when plan output is present:
 
         * :class:`SA2DConnectionResults` — SA/2D connections
@@ -3466,13 +3470,13 @@ class UnsteadyPlanHdf(GeometryHdf):
         * :class:`LateralResults` — lateral structures
         * :class:`BridgeResults` — bridge structures
 
-        Use :attr:`~rivia.hdf.HdfStructureCollection.connections`,
-        :attr:`~rivia.hdf.HdfStructureCollection.inlines`,
-        :attr:`~rivia.hdf.HdfStructureCollection.laterals`, and
-        :attr:`~rivia.hdf.HdfStructureCollection.bridges` for filtered access.
+        Use :attr:`~rivia.hdf.StructureCollection.connections`,
+        :attr:`~rivia.hdf.StructureCollection.inlines`,
+        :attr:`~rivia.hdf.StructureCollection.laterals`, and
+        :attr:`~rivia.hdf.StructureCollection.bridges` for filtered access.
         """
         if self._plan_structures is None:
-            self._plan_structures = PlanHdfStructureCollection(self._hdf)
+            self._plan_structures = StructureResultsCollection(self._hdf)
         return self._plan_structures
 
     @property
@@ -3480,12 +3484,12 @@ class UnsteadyPlanHdf(GeometryHdf):
         """1-D cross sections with geometry and Base Output results.
 
         Results are at the mapping output interval
-        (:attr:`timestamps_mapping`).  All variables are available:
+        (:attr:`mapping_timestamps`).  All variables are available:
         ``water_surface``, ``flow``, ``flow_lateral``,
         ``velocity_channel``, ``velocity_total``,
         ``flow_volume_cumulative``.
 
-        See also :attr:`cross_sections_dss` for the DSS hydrograph interval
+        See also :attr:`cross_sections_output` for the DSS hydrograph interval
         (fewer variables but finer timestep when DSS output was enabled).
         """
         if self._plan_cross_sections is None:
@@ -3495,41 +3499,41 @@ class UnsteadyPlanHdf(GeometryHdf):
         return self._plan_cross_sections
 
     @property
-    def cross_sections_dss(self) -> CrossSectionResultsCollection:
+    def cross_sections_output(self) -> CrossSectionResultsCollection:
         """1-D cross sections with geometry and DSS Hydrograph Output results.
 
-        Items are :class:`CrossSectionResultsDss` instances.
-        Results are at the hydrograph output interval (:attr:`timestamps_dss`).
+        Items are :class:`CrossSectionResultsDSS` instances.
+        Results are at the hydrograph output interval (:attr:`output_timestamps`).
         Available variables: ``water_surface``, ``flow``,
         ``flow_volume_cumulative``.
         """
-        if self._plan_cross_sections_dss is None:
-            self._plan_cross_sections_dss = CrossSectionResultsCollection(
-                self._hdf, _DSS_XS, result_cls=CrossSectionResultsDss,
+        if self._plan_cross_sections_output is None:
+            self._plan_cross_sections_output = CrossSectionResultsCollection(
+                self._hdf, _DSS_XS, result_cls=CrossSectionResultsDSS,
             )
-        return self._plan_cross_sections_dss
+        return self._plan_cross_sections_output
 
     @property
-    def cross_sections_inst(self) -> CrossSectionResultsCollection:
+    def cross_sections_instantaneous(self) -> CrossSectionResultsCollection:
         """1-D cross sections with geometry and Post Process Profiles results.
 
-        Items are :class:`CrossSectionResultsInst` instances.
-        Results are at the DSS instantaneous profile interval
-        (:attr:`timestamps_dss_inst`).
+        Items are :class:`CrossSectionResultsInstantaneous` instances.
+        Results are at the instantaneous profile interval
+        (:attr:`instantaneous_timestamps`).
 
         Each result array has shape ``(n_profiles,)`` where index ``0`` is
         the **Max WS** profile and indices ``1:`` are the instantaneous
         profiles.  Available variables: ``water_surface``, ``flow``,
         ``energy_grade``, plus any ``Additional Variables`` dataset via
-        :meth:`~CrossSectionResultsInst.additional_variable`.
+        :meth:`~CrossSectionResultsInstantaneous.additional_variable`.
         """
-        if self._plan_cross_sections_inst is None:
-            self._plan_cross_sections_inst = CrossSectionResultsCollection(
+        if self._plan_cross_sections_instantaneous is None:
+            self._plan_cross_sections_instantaneous = CrossSectionResultsCollection(
                 self._hdf, _POSTPROC_XS,
-                result_cls=CrossSectionResultsInst,
+                result_cls=CrossSectionResultsInstantaneous,
                 attrs_path=_POSTPROC_GEOM_ATTRS,
             )
-        return self._plan_cross_sections_inst
+        return self._plan_cross_sections_instantaneous
 
     @property
     def sa2d_connections(self) -> dict[str, SA2DConnection]:

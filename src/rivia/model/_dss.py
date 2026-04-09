@@ -26,7 +26,7 @@ Where:
     ``"STAGE-TW"``, ``"FLOW-GATE"``, ``"Gate Opening"``
 
 - **D** — date block (empty — let pydsstools select via time window)
-- **E** — output interval taken from ``plan.dss_interval``
+- **E** — output interval taken from ``plan.output_interval``
 - **F** — plan short identifier from ``plan.short_id``
 
 Reading time-series directly from the DSS file is particularly useful when a
@@ -50,7 +50,7 @@ import numpy as np
 import pandas as pd
 
 from ..utils.helpers import check_sim_date, check_sim_time
-from .geometry import NODE_INLINE_STRUCTURE, NODE_XS
+from .geometry import NodeType
 
 if TYPE_CHECKING:
     from . import Model
@@ -238,15 +238,15 @@ class DssReader:
                 f"Node not found in geometry: river={river!r}, "
                 f"reach={reach!r}, rs={rs!r}"
             )
-        if node_type not in (NODE_XS, NODE_INLINE_STRUCTURE):
+        if node_type not in (NodeType.CROSS_SECTION, NodeType.INLINE_STRUCTURE):
             raise ValueError(
                 f"Node type {node_type!r} at river={river!r}, reach={reach!r}, "
                 f"rs={rs!r} is not supported; only cross sections "
-                "(NODE_XS) and inline structures (NODE_INLINE_STRUCTURE) "
+                "(NodeType.CROSS_SECTION) and inline structures (NodeType.INLINE_STRUCTURE) "
                 "are currently handled."
             )
 
-        if gate is not None and node_type == NODE_XS:
+        if gate is not None and node_type == NodeType.CROSS_SECTION:
             raise ValueError(
                 f"gate selector is not valid for cross sections; "
                 f"node at river={river!r}, reach={reach!r}, rs={rs!r} "
@@ -269,7 +269,7 @@ class DssReader:
         plan = self._model.plan
         part_a = f"{river} {reach}"
         part_b = _part_b(node_type, rs, gate_name)
-        part_e = plan.dss_interval or ""
+        part_e = plan.output_interval or ""
         part_f = plan.short_id or ""
         pathname = f"/{part_a}/{part_b}/{output}//{part_e}/{part_f}/"
 
@@ -346,9 +346,9 @@ class DssReader:
                 f"Node not found in geometry: river={river!r}, "
                 f"reach={reach!r}, rs={rs!r}"
             )
-        if node_type == NODE_XS:
+        if node_type == NodeType.CROSS_SECTION:
             output = XS_FLOW
-        elif node_type == NODE_INLINE_STRUCTURE:
+        elif node_type == NodeType.INLINE_STRUCTURE:
             output = INL_FLOW_TOTAL
         else:
             raise ValueError(
@@ -398,11 +398,11 @@ class DssReader:
                 f"Node not found in geometry: river={river!r}, "
                 f"reach={reach!r}, rs={rs!r}"
             )
-        if node_type != NODE_XS:
+        if node_type != NodeType.CROSS_SECTION:
             raise ValueError(
                 f"wse() requires a cross section; "
                 f"node at river={river!r}, reach={reach!r}, rs={rs!r} "
-                f"has type {node_type!r} (expected NODE_XS={NODE_XS})."
+                f"has type {node_type!r} (expected NodeType.CROSS_SECTION={NodeType.CROSS_SECTION})."
             )
         start, end = window if window is not None else (None, None)
         return self.timeseries(river, reach, rs, XS_STAGE, start=start, end=end)
@@ -644,11 +644,11 @@ class DssReader:
                 f"Node not found in geometry: river={river!r}, "
                 f"reach={reach!r}, rs={rs!r}"
             )
-        if node_type != NODE_XS:
+        if node_type != NodeType.CROSS_SECTION:
             raise ValueError(
                 f"flow_cumulative() requires a cross section; "
                 f"node at river={river!r}, reach={reach!r}, rs={rs!r} "
-                f"has type {node_type!r} (expected NODE_XS={NODE_XS})."
+                f"has type {node_type!r} (expected NodeType.CROSS_SECTION={NodeType.CROSS_SECTION})."
             )
         start, end = window if window is not None else (None, None)
         return self.timeseries(river, reach, rs, XS_FLOW_CUM, start=start, end=end)
@@ -676,18 +676,18 @@ def _bound_to_dss_str(bound: _WindowBound) -> str | datetime | None:
 
 
 def _assert_inline(node_type: int | None, river: str, reach: str, rs: str) -> None:
-    """Raise ``ValueError`` if *node_type* is not ``NODE_INLINE_STRUCTURE``."""
+    """Raise ``ValueError`` if *node_type* is not ``NodeType.INLINE_STRUCTURE``."""
     if node_type is None:
         raise ValueError(
             f"Node not found in geometry: river={river!r}, "
             f"reach={reach!r}, rs={rs!r}"
         )
-    if node_type != NODE_INLINE_STRUCTURE:
+    if node_type != NodeType.INLINE_STRUCTURE:
         raise ValueError(
             f"Method requires an inline structure; "
             f"node at river={river!r}, reach={reach!r}, rs={rs!r} "
             f"has type {node_type!r} "
-            f"(expected NODE_INLINE_STRUCTURE={NODE_INLINE_STRUCTURE})."
+            f"(expected NodeType.INLINE_STRUCTURE={NodeType.INLINE_STRUCTURE})."
         )
 
 
@@ -701,7 +701,7 @@ def _part_b(node_type: int, rs: str, gate: str | None) -> str:
     gate indexes are resolved by the caller before reaching this function.
     """
     rs_norm = rs.strip().rstrip("*").strip()
-    if node_type == NODE_XS:
+    if node_type == NodeType.CROSS_SECTION:
         return rs_norm
     # Inline structure
     if gate is None:

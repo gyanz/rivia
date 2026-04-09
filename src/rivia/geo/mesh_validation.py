@@ -439,7 +439,7 @@ def print_mesh_report(report: dict, max_cells: int = 20) -> None:
         Maximum number of per-cell violation rows to print.
     """
     s = report["summary"]
-    print(f"Mesh validation report")
+    print("Mesh validation report")
     print(f"  Cells      : {report['n_cells']:,}")
     print(f"  Facepoints : {report['n_facepoints']:,}")
     print()
@@ -452,7 +452,7 @@ def print_mesh_report(report: dict, max_cells: int = 20) -> None:
     if "n_center_outside_boundary" in s:
         print(f"           centre outside boundary   : {s['n_center_outside_boundary']:,}")
     print(f"  Malformed face graph                : {s['n_malformed']:,}")
-    print(f"  ─────────────────────────────────────────")
+    print("  ─────────────────────────────────────────")
     print(f"  Total violations                    : {s['n_total_violations']:,}")
 
     # Per-cell detail

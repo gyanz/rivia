@@ -1,42 +1,46 @@
 """Read/write HEC-RAS HDF5 output files."""
 
-from ._geometry import (
+# ruff: noqa: I001
+# Geometry/structure/results classes are returned by method calls, not
+# user-constructed.  They are importable on demand for type annotations:
+#   from rivia.hdf import FlowArea, CrossSection, Bridge  # works
+# but are intentionally absent from __all__.
+from .geometry import (  # noqa: F401
     BoundaryConditionCollection,
     BoundaryConditionLine,
-    HdfBridge,
+    Bridge,
+    CrossSection,
+    CrossSectionCollection,
     FlowArea,
     FlowAreaCollection,
-    HdfGateGroup,
-    GeometryHdf,
-    HdfCrossSection,
-    HdfCrossSectionCollection,
-    HdfGateOpening,
-    HdfInline,
-    HdfLateral,
+    GateGroup,
+    GateOpening,
+    Geometry,
+    InlineStructure,
+    LateralStructure,
     SA2DConnection,
     StorageArea,
     StorageAreaCollection,
-    HdfStructure,
-    HdfStructureCollection,
-    HdfStructureIndex,
-    HdfWeir,
+    Structure,
+    StructureCollection,
+    StructureIndex,
+    Weir,
 )
-
-# Backward-compatible aliases (deprecated — use Hdf-prefixed names)
-CrossSection = HdfCrossSection
-CrossSectionCollection = HdfCrossSectionCollection
-GateOpening = HdfGateOpening
-from ._steady_plan import (
+from .steady_plan import (  # noqa: F401
     CrossSectionResults as SteadyCrossSectionResults,
     CrossSectionResultsCollection as SteadyCrossSectionResultsCollection,
     LateralResults as SteadyLateralResults,
-    SteadyPlanHdf,
+    SteadyPlan,
     StorageAreaResults as SteadyStorageAreaResults,
     StorageAreaResultsCollection as SteadyStorageAreaResultsCollection,
-    StructureCollection as SteadyStructureCollection,
+    StructureResultsCollection as SteadyStructureResultsCollection,
 )
-from ._unsteady_plan import (
+from .unsteady_plan import (  # noqa: F401
     BridgeResults,
+    CrossSectionResults as UnsteadyCrossSectionResults,
+    CrossSectionResultsCollection as UnsteadyCrossSectionResultsCollection,
+    CrossSectionResultsDSS,
+    CrossSectionResultsInstantaneous,
     FlowAreaResults,
     FlowAreaResultsCollection,
     InlineResults,
@@ -44,57 +48,12 @@ from ._unsteady_plan import (
     SA2DConnectionResults,
     StorageAreaResults,
     StorageAreaResultsCollection,
-    CrossSectionResults as UnsteadyCrossSectionResults,
-    CrossSectionResultsCollection as UnsteadyCrossSectionResultsCollection,
-    CrossSectionResultsDss as UnsteadyCrossSectionResultsDss,
-    CrossSectionResultsInst as UnsteadyCrossSectionResultsInst,
-    UnsteadyPlanHdf,
+    StructureResultsCollection,
+    UnsteadyPlan,
 )
 
 __all__ = [
-    "GeometryHdf",
-    "SteadyPlanHdf",
-    "SteadyCrossSectionResults",
-    "SteadyCrossSectionResultsCollection",
-    "SteadyLateralResults",
-    "SteadyStorageAreaResults",
-    "SteadyStorageAreaResultsCollection",
-    "SteadyStructureCollection",
-    "UnsteadyPlanHdf",
-    # HDF geometry classes
-    "HdfCrossSection",
-    "HdfCrossSectionCollection",
-    "HdfGateOpening",
-    "HdfBridge",
-    "HdfInline",
-    "HdfLateral",
-    "HdfStructure",
-    "HdfStructureIndex",
-    "HdfWeir",
-    "HdfGateGroup",
-    # Unsteady results classes
-    "UnsteadyCrossSectionResults",
-    "UnsteadyCrossSectionResultsDss",
-    "UnsteadyCrossSectionResultsInst",
-    "UnsteadyCrossSectionResultsCollection",
-    "FlowAreaCollection",
-    "FlowAreaResultsCollection",
-    "FlowArea",
-    "FlowAreaResults",
-    "StorageArea",
-    "StorageAreaCollection",
-    "StorageAreaResults",
-    "StorageAreaResultsCollection",
-    "SA2DConnectionResults",
-    "BridgeResults",
-    "InlineResults",
-    "LateralResults",
-    "BoundaryConditionLine",
-    "BoundaryConditionCollection",
-    "SA2DConnection",
-    "HdfStructureCollection",
-    # Backward-compatible aliases
-    "CrossSection",
-    "CrossSectionCollection",
-    "GateOpening",
+    "Geometry",
+    "SteadyPlan",
+    "UnsteadyPlan",
 ]

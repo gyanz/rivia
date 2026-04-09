@@ -7,7 +7,7 @@ import logging
 
 from . import _ver500
 
-logger = logging.getLogger("rivia.com")
+logger = logging.getLogger("rivia.controller")
 
 
 class Controller(_ver500.Controller):

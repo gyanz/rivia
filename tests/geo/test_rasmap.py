@@ -50,7 +50,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from rivia.geo._rasmap import (
+from rivia.geo._rasmapper_pipeline import (
     compute_face_wss,
     compute_facepoint_wse,
     reconstruct_face_velocities,
@@ -280,7 +280,7 @@ def _make_fp_face_orientation():
 
 class TestComputeFacepointWse:
     def _run(self, cell_wse):
-        from rivia.geo._rasmap import HC_BACKFILL, HC_DOWNHILL_SHALLOW
+        from rivia.geo._rasmapper_pipeline import HC_BACKFILL, HC_DOWNHILL_SHALLOW
         val_a, val_b, hconn = compute_face_wss(
             cell_wse, CELL_MIN_ELEV, FACE_MIN_ELEV, FACE_CI, CELL_FACE_COUNT
         )
@@ -623,7 +623,7 @@ class TestAllShallow:
 
 
 # ---------------------------------------------------------------------------
-# rasmap_raster integration tests (require rasterio + shapely)
+# rasterize_results integration tests (require rasterio + shapely)
 # ---------------------------------------------------------------------------
 
 pytest.importorskip("rasterio", reason="rasterio not installed")
@@ -631,8 +631,8 @@ pytest.importorskip("shapely", reason="shapely not installed")
 
 
 def _make_rasmap_inputs(cell_wse_vals=(2.0, 2.0), face_vel=None):
-    """Return all keyword arguments for rasmap_raster using our minimal mesh."""
-    from rivia.geo.raster import rasmap_raster  # noqa: F401 — imported for signature
+    """Return all keyword arguments for rasterize_results using our minimal mesh."""
+    from rivia.geo.raster import rasterize_results  # noqa: F401 — imported for signature
 
     # Cell polygons: two unit squares
     cell_polygons = [
@@ -669,14 +669,14 @@ def _make_rasmap_inputs(cell_wse_vals=(2.0, 2.0), face_vel=None):
 
 
 class TestRasmapRasterFlat:
-    """Tests for rasmap_raster with render_mode='horizontal'."""
+    """Tests for rasterize_results with render_mode='horizontal'."""
 
     def _run(self, variable="water_surface", cell_wse_vals=(2.0, 2.0), **kwargs):
-        from rivia.geo.raster import rasmap_raster
+        from rivia.geo.raster import rasterize_results
         inputs = _make_rasmap_inputs(cell_wse_vals=cell_wse_vals)
         inputs["variable"] = variable
         inputs.update(kwargs)
-        ds = rasmap_raster(**inputs, render_mode="horizontal")
+        ds = rasterize_results(**inputs, render_mode="horizontal")
         try:
             data = ds.read(1)
         finally:
@@ -684,9 +684,9 @@ class TestRasmapRasterFlat:
         return data
 
     def test_returns_dataset(self):
-        from rivia.geo.raster import rasmap_raster
+        from rivia.geo.raster import rasterize_results
         inputs = _make_rasmap_inputs()
-        ds = rasmap_raster(**inputs, render_mode="horizontal")
+        ds = rasterize_results(**inputs, render_mode="horizontal")
         assert ds is not None
         ds.close()
 
@@ -709,49 +709,49 @@ class TestRasmapRasterFlat:
 
     def test_speed_requires_face_vel(self):
         """variable='speed' without face_normal_velocity raises ValueError."""
-        from rivia.geo.raster import rasmap_raster
+        from rivia.geo.raster import rasterize_results
         inputs = _make_rasmap_inputs()
         inputs["variable"] = "velocity"
         inputs["face_normal_velocity"] = None
         with pytest.raises(ValueError, match="face_normal_velocity"):
-            rasmap_raster(**inputs, render_mode="horizontal")
+            rasterize_results(**inputs, render_mode="horizontal")
 
     def test_depth_requires_reference_raster(self):
         """variable='depth' without reference_raster raises ValueError."""
-        from rivia.geo.raster import rasmap_raster
+        from rivia.geo.raster import rasterize_results
         inputs = _make_rasmap_inputs()
         inputs["variable"] = "depth"
         with pytest.raises(ValueError, match="reference_raster"):
-            rasmap_raster(**inputs, render_mode="horizontal")
+            rasterize_results(**inputs, render_mode="horizontal")
 
     def test_no_grid_spec_raises(self):
         """Neither reference_raster nor cell_size → ValueError."""
-        from rivia.geo.raster import rasmap_raster
+        from rivia.geo.raster import rasterize_results
         inputs = _make_rasmap_inputs()
         del inputs["cell_size"]
         inputs["output_path"] = None
         with pytest.raises(ValueError):
-            rasmap_raster(**inputs, render_mode="horizontal")
+            rasterize_results(**inputs, render_mode="horizontal")
 
     def test_both_grid_specs_raises(self):
         """Both reference_raster and cell_size → ValueError."""
-        from rivia.geo.raster import rasmap_raster
+        from rivia.geo.raster import rasterize_results
         import tempfile, os
         inputs = _make_rasmap_inputs()
         inputs["reference_raster"] = "some_file.tif"  # value doesn't matter — raises before open
         with pytest.raises((ValueError, Exception)):
-            rasmap_raster(**inputs, render_mode="horizontal")
+            rasterize_results(**inputs, render_mode="horizontal")
 
 
 class TestRasmapRasterSloping:
-    """Tests for rasmap_raster with render_mode='sloping' (default)."""
+    """Tests for rasterize_results with render_mode='sloping' (default)."""
 
     def _run(self, variable="water_surface", cell_wse_vals=(2.0, 2.0), **kwargs):
-        from rivia.geo.raster import rasmap_raster
+        from rivia.geo.raster import rasterize_results
         inputs = _make_rasmap_inputs(cell_wse_vals=cell_wse_vals)
         inputs["variable"] = variable
         inputs.update(kwargs)
-        ds = rasmap_raster(**inputs, render_mode="sloping")
+        ds = rasterize_results(**inputs, render_mode="sloping")
         try:
             data = ds.read(1)
         finally:
@@ -780,12 +780,12 @@ class TestRasmapRasterSloping:
 
     def test_velocity_returns_1_band(self):
         """variable='velocity' must produce a 1-band speed raster."""
-        from rivia.geo.raster import rasmap_raster
+        from rivia.geo.raster import rasterize_results
         face_vel = np.ones(N_FACES, dtype=np.float64) * 0.5
         inputs = _make_rasmap_inputs()
         inputs["variable"] = "velocity"
         inputs["face_normal_velocity"] = face_vel
-        ds = rasmap_raster(**inputs, render_mode="sloping")
+        ds = rasterize_results(**inputs, render_mode="sloping")
         try:
             assert ds.count == 1
         finally:
@@ -793,12 +793,12 @@ class TestRasmapRasterSloping:
 
     def test_velocity_vector_returns_4_bands(self):
         """variable='velocity_vector' must produce a 4-band dataset (Vx, Vy, speed, direction)."""
-        from rivia.geo.raster import rasmap_raster
+        from rivia.geo.raster import rasterize_results
         face_vel = np.ones(N_FACES, dtype=np.float64) * 0.5
         inputs = _make_rasmap_inputs()
         inputs["variable"] = "velocity_vector"
         inputs["face_normal_velocity"] = face_vel
-        ds = rasmap_raster(**inputs, render_mode="sloping")
+        ds = rasterize_results(**inputs, render_mode="sloping")
         try:
             assert ds.count == 4
         finally:
@@ -806,13 +806,13 @@ class TestRasmapRasterSloping:
 
     def test_speed_nonnegative(self):
         """Speed must be ≥ 0 for both velocity (band 1) and velocity_vector (band 3)."""
-        from rivia.geo.raster import rasmap_raster
+        from rivia.geo.raster import rasterize_results
         face_vel = np.random.default_rng(99).uniform(-1, 1, N_FACES)
         inputs = _make_rasmap_inputs()
         inputs["face_normal_velocity"] = face_vel
         for var, band in [("velocity", 1), ("velocity_vector", 3)]:
             inputs["variable"] = var
-            ds = rasmap_raster(**inputs, render_mode="sloping")
+            ds = rasterize_results(**inputs, render_mode="sloping")
             try:
                 speed = ds.read(band)
             finally:
@@ -822,21 +822,21 @@ class TestRasmapRasterSloping:
 
     def test_output_path_creates_file(self, tmp_path):
         """output_path writes a GeoTIFF and returns the path."""
-        from rivia.geo.raster import rasmap_raster
+        from rivia.geo.raster import rasterize_results
         out = tmp_path / "out.tif"
         inputs = _make_rasmap_inputs()
         inputs["output_path"] = str(out)
-        result = rasmap_raster(**inputs, render_mode="sloping")
+        result = rasterize_results(**inputs, render_mode="sloping")
         assert out.exists()
         assert str(result) == str(out)
 
     def test_flat_and_sloping_agree_on_wet_coverage(self):
         """Flat and sloping modes should produce the same grid dimensions."""
-        from rivia.geo.raster import rasmap_raster
+        from rivia.geo.raster import rasterize_results
         inputs_flat   = _make_rasmap_inputs(cell_wse_vals=(2.0, 2.0))
         inputs_slope  = _make_rasmap_inputs(cell_wse_vals=(2.0, 2.0))
-        ds_flat  = rasmap_raster(**inputs_flat,  render_mode="horizontal")
-        ds_slope = rasmap_raster(**inputs_slope, render_mode="sloping")
+        ds_flat  = rasterize_results(**inputs_flat,  render_mode="horizontal")
+        ds_slope = rasterize_results(**inputs_slope, render_mode="sloping")
         try:
             assert ds_flat.shape  == ds_slope.shape
         finally:

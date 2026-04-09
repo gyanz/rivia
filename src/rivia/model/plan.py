@@ -32,7 +32,7 @@ def _to_sim_date_str(bound: str | tuple[str, str] | datetime) -> str:
     return bound
 
 
-class PlanFile:
+class Plan:
     """Parser and editor for a HEC-RAS plan file.
 
     Reads the file into memory once, exposes typed properties for commonly
@@ -53,7 +53,7 @@ class PlanFile:
         self._modified: bool = False
 
     def __repr__(self) -> str:
-        return f"PlanFile({self._path.name!r}, title={self.plan_title!r})"
+        return f"Plan({self._path.name!r}, title={self.title!r})"
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -131,12 +131,12 @@ class PlanFile:
     # ------------------------------------------------------------------
 
     @property
-    def plan_title(self) -> str | None:
+    def title(self) -> str | None:
         """Full plan title (``Plan Title=``)."""
         return self._get("Plan Title")
 
-    @plan_title.setter
-    def plan_title(self, value: str) -> None:
+    @title.setter
+    def title(self, value: str) -> None:
         self._set("Plan Title", value)
 
     @property
@@ -179,6 +179,26 @@ class PlanFile:
         self._set("Flow File", value)
 
     @property
+    def sediment_file(self) -> str | None:
+        """Sediment file extension reference, e.g. ``s04`` (``Sediment File=``)."""
+        return self._get("Sediment File")
+
+    @sediment_file.setter
+    def sediment_file(self, value: str) -> None:
+        self._set("Sediment File", value)
+
+    @property
+    def water_quality_file(self) -> str | None:
+        """Water quality file extension reference, e.g. ``w01``
+        (``Water Quality File=``).
+        """
+        return self._get("Water Quality File")
+
+    @water_quality_file.setter
+    def water_quality_file(self, value: str) -> None:
+        self._set("Water Quality File", value)
+
+    @property
     def is_steady(self) -> bool:
         """True if this is a steady flow plan.
 
@@ -195,6 +215,31 @@ class PlanFile:
         """
         ref = self.flow_file
         return ref is not None and ref.strip().lower().startswith("u")
+
+    @property
+    def is_quasi_steady(self) -> bool:
+        """True if this is a quasi-steady flow plan.
+
+        Determined by ``Flow File=`` extension starting with ``q``.
+        """
+        ref = self.flow_file
+        return ref is not None and ref.strip().lower().startswith("q")
+
+    @property
+    def is_sediment(self) -> bool:
+        """True if this plan includes a sediment file.
+
+        Determined by ``Sediment File=`` being present.
+        """
+        return self.sediment_file is not None
+
+    @property
+    def is_water_quality(self) -> bool:
+        """True if this plan includes a water quality file.
+
+        Determined by ``Water Quality File=`` being present.
+        """
+        return self.water_quality_file is not None
 
     # ------------------------------------------------------------------
     # Simulation window
@@ -267,11 +312,6 @@ class PlanFile:
         self._set("Output Interval", value)
 
     @property
-    def dss_interval(self) -> str | None:
-        """Output write interval, e.g. ``"1HOUR"`` (``Output Interval=``)."""
-        return self.output_interval
-
-    @property
     def instantaneous_interval(self) -> str | None:
         """Instantaneous output interval (``Instantaneous Interval=``).
 
@@ -300,21 +340,21 @@ class PlanFile:
     # ------------------------------------------------------------------
 
     @property
-    def run_htab(self) -> bool:
+    def run_hydraulic_tables(self) -> bool:
         """Whether to run hydraulic tables (``Run HTab=``)."""
         return self._to_bool(self._get("Run HTab"))
 
-    @run_htab.setter
-    def run_htab(self, value: bool) -> None:
+    @run_hydraulic_tables.setter
+    def run_hydraulic_tables(self, value: bool) -> None:
         self._set("Run HTab", self._from_bool(value))
 
     @property
-    def run_unet(self) -> bool:
+    def run_unsteady(self) -> bool:
         """Whether to run the unsteady-flow engine (``Run UNet=``)."""
         return self._to_bool(self._get("Run UNet"))
 
-    @run_unet.setter
-    def run_unet(self, value: bool) -> None:
+    @run_unsteady.setter
+    def run_unsteady(self, value: bool) -> None:
         self._set("Run UNet", self._from_bool(value))
 
     @property
@@ -336,21 +376,21 @@ class PlanFile:
         self._set("Run PostProcess", self._from_bool(value))
 
     @property
-    def run_wq(self) -> bool:
+    def run_water_quality(self) -> bool:
         """Whether to run water quality (``Run WQNet=``)."""
         return self._to_bool(self._get("Run WQNet"))
 
-    @run_wq.setter
-    def run_wq(self, value: bool) -> None:
+    @run_water_quality.setter
+    def run_water_quality(self, value: bool) -> None:
         self._set("Run WQNet", self._from_bool(value))
 
     @property
-    def run_ras_mapper(self) -> bool:
+    def run_rasmapper(self) -> bool:
         """Whether to run RAS Mapper post-processing (``Run RASMapper=``)."""
         return self._to_bool(self._get("Run RASMapper"))
 
-    @run_ras_mapper.setter
-    def run_ras_mapper(self, value: bool) -> None:
+    @run_rasmapper.setter
+    def run_rasmapper(self, value: bool) -> None:
         self._set("Run RASMapper", self._from_bool(value))
 
     # ------------------------------------------------------------------

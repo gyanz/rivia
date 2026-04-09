@@ -12,7 +12,7 @@ from typing import Literal
 logger = logging.getLogger("rivia.model")
 
 
-class ProjectFile:
+class Proj:
     """Read-only parser for a HEC-RAS project file (.prj).
 
     Parses the project file to expose project metadata, unit system, and
@@ -20,7 +20,7 @@ class ProjectFile:
 
     Example
     -------
-    >>> prj = ProjectFile("Baxter.prj")
+    >>> prj = Proj("Baxter.prj")
     >>> prj.title
     'Baxter River GIS Example'
     >>> prj.units
@@ -109,6 +109,9 @@ class ProjectFile:
         self._unsteady_flow_files = [self._ext_to_path(e) for e in self._get_all("Unsteady File")]
         self._sediment_files = [self._ext_to_path(e) for e in self._get_all("Sediment File")]
         self._quasi_steady_files = [self._ext_to_path(e) for e in self._get_all("QuasiSteady File")]
+        self._water_quality_files = [
+            self._ext_to_path(e) for e in self._get_all("Water Quality File")
+        ]
 
         # --- description block ---
         self._description = _parse_description(self._lines)
@@ -201,6 +204,11 @@ class ProjectFile:
         return list(self._quasi_steady_files)
 
     @property
+    def water_quality_files(self) -> list[Path]:
+        """Full paths to all water quality files listed in the project."""
+        return list(self._water_quality_files)
+
+    @property
     def dss_start_date(self) -> str | None:
         """DSS simulation start date string, or ``None`` if unset."""
         return self._dss_start_date
@@ -286,7 +294,7 @@ class ProjectFile:
         return list(self._plans_cache)
 
     def __repr__(self) -> str:
-        return f"ProjectFile({self._path!r})"
+        return f"Proj({self._path!r})"
 
 
 # ------------------------------------------------------------------
