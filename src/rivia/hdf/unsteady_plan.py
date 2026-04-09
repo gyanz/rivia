@@ -2858,6 +2858,191 @@ class ComputeSummary:
             },
         }
 
+    def errors(self) -> dict[str, float]:
+        """Return key convergence and volume-balance error metrics.
+
+        Derives four scalar error measures from this summary that are useful
+        for quick quality-control checks after a run.
+
+        Returns
+        -------
+        dict[str, float]
+            A flat dictionary with the following keys:
+
+            ``"wse"``
+                Maximum water-surface elevation error across all cells
+                (model units — feet or metres).  ``None`` when the simulation
+                went unstable before the run converged.
+
+            ``"volume_error_pct"``
+                Overall volume balance error as a percentage of total inflow,
+                read directly from the HEC-RAS ``Results/Unsteady/Summary``
+                volume accounting block.
+
+            ``"volume_1d_error_pct"``
+                1-D volume balance error (%) computed from the individual
+                1-D flux terms::
+
+                    error = -(flow_us_in + net_other_fluxes + storage_change)
+                    supply = reach_vol_start + sa_vol_start + flow_us_in
+                             + hydro_lat + hydro_sa + diversions
+                             + groundwater + precip_excess
+                    error_pct = error / supply * 100
+
+                where *net_other_fluxes* = ``-flow_ds_out + hydro_lat +
+                hydro_sa + diversions + groundwater + precip_excess``.
+                ``supply`` is the total 1-D water budget (initial storage plus
+                all non-DS-outflow fluxes); for a 1D-only model this matches
+                the HEC-RAS overall ``"Error Percent"`` attribute.
+                Returns ``nan`` when total 1-D supply is zero.
+
+            ``"volume_2d_error_pct"``
+                Largest-magnitude 2-D volume balance error (%) across all
+                2-D flow areas, preserving the sign of the worst-case area.
+                Zero when the model has no 2-D flow areas.
+
+        See Also
+        --------
+        ok : Quality-control pass/fail check with threshold logging.
+        """
+        v1d = self.volume_1d
+
+        outflow = (
+            v1d.flow_ds_out - v1d.hydro_lat - v1d.hydro_sa
+            - v1d.diversions - v1d.groundwater - v1d.precip_excess
+        )
+        storage_change = (
+            (v1d.reach_vol_start + v1d.sa_vol_start)
+            - (v1d.reach_vol_end + v1d.sa_vol_end)
+        )
+        error_1d = outflow - v1d.flow_us_in - storage_change
+        supply_1d = (
+            v1d.reach_vol_start + v1d.sa_vol_start
+            + v1d.flow_us_in
+            + v1d.hydro_lat
+            + v1d.hydro_sa
+            + v1d.diversions
+            + v1d.groundwater
+            + v1d.precip_excess
+        )
+        volume_1d_error_pct = (
+            error_1d / supply_1d * 100 if supply_1d != 0 else float("nan")
+        )
+
+        if (self.volume_2d
+                and not np.isclose(error_1d, 0.0)
+                and np.isclose(v1d.flow_ds_out, 0.0)):
+            logger.warning(
+                "Model has 2-D flow areas but zero 1-D downstream outflow; "
+                "1-D error percentages may be unreliable. Setting 1-D error to zero."
+            )
+            volume_1d_error_pct = 0.0
+
+        max_2d_error_pct = 0.0
+        for area in self.volume_2d.values():
+            if abs(area.error_pct) > abs(max_2d_error_pct):
+                max_2d_error_pct = area.error_pct
+
+        return {
+            "wse": self.run.max_wsel_error,
+            "volume_error_pct": self.volume.error_pct,
+            "volume_1d_error_pct": volume_1d_error_pct,
+            "volume_2d_error_pct": max_2d_error_pct,
+        }
+
+    def ok(
+        self,
+        wse_threshold: float = 0.5,
+        volume_error_pct_threshold: float = 1.0,
+        volume_1d_error_pct_threshold: float = 1.0,
+        volume_2d_error_pct_threshold: float = 1.0,
+    ) -> bool:
+        """Return ``True`` if the simulation completed stably and all error
+        metrics are within their thresholds.
+
+        Checks stability first, then each error metric against its threshold.
+        All failures are collected and logged before returning so the caller
+        sees the complete picture in one pass.
+
+        If the simulation went unstable every failure is logged at
+        ``CRITICAL``; otherwise threshold violations are logged at
+        ``WARNING``.
+
+        Parameters
+        ----------
+        wse_threshold:
+            Maximum allowable water-surface elevation error in model units
+            (feet or metres).  Default: ``0.5``.
+        volume_error_pct_threshold:
+            Maximum allowable overall volume balance error (%).
+            Default: ``1.0``.
+        volume_1d_error_pct_threshold:
+            Maximum allowable 1-D volume balance error (%).
+            Default: ``1.0``.
+        volume_2d_error_pct_threshold:
+            Maximum allowable 2-D volume balance error (%) per 2-D flow area.
+            Default: ``1.0``.
+
+        Returns
+        -------
+        bool
+            ``True`` if the simulation is stable and all metrics are within
+            bounds; ``False`` otherwise.
+
+        See Also
+        --------
+        errors : Raw error metric values.
+        """
+        failures: list[str] = []
+
+        unstable = self.run.time_unstable is not None
+        if unstable:
+            failures.append(
+                f"simulation went unstable at t={self.run.time_unstable}"
+            )
+
+        errs = self.errors()
+
+        wse = errs["wse"]
+        if wse is None or math.isnan(wse) or abs(wse) > wse_threshold:
+            failures.append(
+                f"WSE error {wse!r} exceeds threshold {wse_threshold}"
+            )
+
+        vol_err = errs["volume_error_pct"]
+        if math.isnan(vol_err) or abs(vol_err) > volume_error_pct_threshold:
+            failures.append(
+                f"overall volume error {vol_err:.4f}% exceeds threshold "
+                f"{volume_error_pct_threshold}%"
+            )
+
+        vol_1d_err = errs["volume_1d_error_pct"]
+        if math.isnan(vol_1d_err) or abs(vol_1d_err) > volume_1d_error_pct_threshold:
+            vol_1d_str = "nan" if math.isnan(vol_1d_err) else f"{vol_1d_err:.4f}%"
+            failures.append(
+                f"1D volume error {vol_1d_str} exceeds threshold "
+                f"{volume_1d_error_pct_threshold}%"
+            )
+
+        for area_name, area in self.volume_2d.items():
+            exceeds = (
+                math.isnan(area.error_pct)
+                or abs(area.error_pct) > volume_2d_error_pct_threshold
+            )
+            if exceeds:
+                failures.append(
+                    f"2D area '{area_name}' volume error {area.error_pct:.4f}% "
+                    f"exceeds threshold {volume_2d_error_pct_threshold}%"
+                )
+
+        if not failures:
+            return True
+
+        log = logger.critical if unstable else logger.warning
+        for msg in failures:
+            log("compute_ok: %s", msg)
+        return False
+
 
 class UnsteadyPlan(Geometry):
     """Read HEC-RAS plan HDF5 output files (``*.p*.hdf``).
@@ -3026,98 +3211,15 @@ class UnsteadyPlan(Geometry):
     def compute_errors(self) -> dict[str, float]:
         """Return key convergence and volume-balance error metrics.
 
-        Reads :meth:`compute_summary` once and derives four scalar error
-        measures that are useful for quick quality-control checks after a run.
-
-        Returns
-        -------
-        dict[str, float]
-            A flat dictionary with the following keys:
-
-            ``"wse"``
-                Maximum water-surface elevation error across all cells
-                (model units — feet or metres).  ``None`` when the simulation
-                went unstable before the run converged.
-
-            ``"volume_error_pct"``
-                Overall volume balance error as a percentage of total inflow,
-                read directly from the HEC-RAS ``Results/Unsteady/Summary``
-                volume accounting block.
-
-            ``"volume_1d_error_pct"``
-                1-D volume balance error (%) computed from the individual
-                1-D flux terms::
-
-                    error = -(flow_us_in + net_other_fluxes + storage_change)
-                    supply = reach_vol_start + sa_vol_start + flow_us_in
-                             + hydro_lat + hydro_sa + diversions
-                             + groundwater + precip_excess
-                    error_pct = error / supply * 100
-
-                where *net_other_fluxes* = ``-flow_ds_out + hydro_lat +
-                hydro_sa + diversions + groundwater + precip_excess``.
-                ``supply`` is the total 1-D water budget (initial storage plus
-                all non-DS-outflow fluxes); for a 1D-only model this matches
-                the HEC-RAS overall ``"Error Percent"`` attribute.
-                Returns ``nan`` when total 1-D supply is zero.
-
-            ``"volume_2d_error_pct"``
-                Largest-magnitude 2-D volume balance error (%) across all
-                2-D flow areas, preserving the sign of the worst-case area.
-                Zero when the model has no 2-D flow areas.
+        Convenience wrapper: calls :meth:`compute_summary` and delegates to
+        :meth:`ComputeSummary.errors`.  See that method for full documentation.
 
         See Also
         --------
-        compute_summary : Full unsteady simulation summary dataclass.
+        ComputeSummary.errors : Full documentation and return-value details.
         compute_ok : Quality-control pass/fail check with threshold logging.
         """
-        summary = self.compute_summary()
-        v1d = summary.volume_1d
-
-        # 1-D volume balance
-        outflow = (
-            v1d.flow_ds_out - v1d.hydro_lat - v1d.hydro_sa
-            - v1d.diversions - v1d.groundwater - v1d.precip_excess
-        )
-        storage_change = (
-            (v1d.reach_vol_start + v1d.sa_vol_start)
-            - (v1d.reach_vol_end + v1d.sa_vol_end)
-        )
-        error_1d = outflow - v1d.flow_us_in - storage_change
-        supply_1d = (
-            v1d.reach_vol_start + v1d.sa_vol_start
-            + v1d.flow_us_in
-            + v1d.hydro_lat
-            + v1d.hydro_sa
-            + v1d.diversions
-            + v1d.groundwater
-            + v1d.precip_excess
-        )
-        volume_1d_error_pct = (
-            error_1d / supply_1d * 100 if supply_1d != 0 else float("nan")
-        )
-
-        if (summary.volume_2d
-                and not np.isclose(error_1d, 0.0)
-                and np.isclose(v1d.flow_ds_out, 0.0)):
-            logger.warning(
-                "Model has 2-D flow areas but zero 1-D downstream outflow; "
-                "1-D error percentages may be unreliable. Setting 1-D error to zero."
-            )
-            volume_1d_error_pct = 0.0
-
-        # 2-D: worst-case area by magnitude
-        max_2d_error_pct = 0.0
-        for area in summary.volume_2d.values():
-            if abs(area.error_pct) > abs(max_2d_error_pct):
-                max_2d_error_pct = area.error_pct
-
-        return {
-            "wse": summary.run.max_wsel_error,
-            "volume_error_pct": summary.volume.error_pct,
-            "volume_1d_error_pct": volume_1d_error_pct,
-            "volume_2d_error_pct": max_2d_error_pct,
-        }
+        return self.compute_summary().errors()
 
     def compute_ok(
         self,
@@ -3129,35 +3231,9 @@ class UnsteadyPlan(Geometry):
         """Return ``True`` if the simulation completed stably and all error
         metrics are within their thresholds.
 
-        Calls :meth:`compute_summary` once and checks stability first, then
-        each error metric against its threshold.  All failures are collected
-        and logged before returning so the caller sees the complete picture in
-        one pass.
-
-        If the simulation went unstable every failure is logged at
-        ``CRITICAL``; otherwise threshold violations are logged at
-        ``WARNING``.
-
-        Parameters
-        ----------
-        wse_threshold:
-            Maximum allowable water-surface elevation error in model units
-            (feet or metres).  Default: ``0.5``.
-        volume_error_pct_threshold:
-            Maximum allowable overall volume balance error (%).
-            Default: ``1.0``.
-        volume_1d_error_pct_threshold:
-            Maximum allowable 1-D volume balance error (%).
-            Default: ``1.0``.
-        volume_2d_error_pct_threshold:
-            Maximum allowable 2-D volume balance error (%) per 2-D flow area.
-            Default: ``1.0``.
-
-        Returns
-        -------
-        bool
-            ``True`` if the simulation is stable and all metrics are within
-            bounds; ``False`` otherwise.
+        Convenience wrapper: calls :meth:`compute_summary` and delegates to
+        :meth:`ComputeSummary.ok`.  See that method for full documentation,
+        including parameter descriptions and logging behaviour.
 
         Examples
         --------
@@ -3173,88 +3249,15 @@ class UnsteadyPlan(Geometry):
 
         See Also
         --------
-        compute_summary : Full unsteady simulation summary.
+        ComputeSummary.ok : Full documentation and parameter descriptions.
         compute_errors : Raw error metric values.
         """
-        summary = self.compute_summary()
-        failures: list[str] = []
-
-        # -- stability (checked first; drives log level for all failures) ---
-        unstable = summary.run.time_unstable is not None
-        if unstable:
-            failures.append(
-                f"simulation went unstable at t={summary.run.time_unstable}"
-            )
-
-        # -- WSE error -------------------------------------------------------
-        wse = summary.run.max_wsel_error
-        if wse is None or math.isnan(wse) or abs(wse) > wse_threshold:
-            failures.append(
-                f"WSE error {wse!r} exceeds threshold {wse_threshold}"
-            )
-
-        # -- overall volume error --------------------------------------------
-        vol_err = summary.volume.error_pct
-        if math.isnan(vol_err) or abs(vol_err) > volume_error_pct_threshold:
-            failures.append(
-                f"overall volume error {vol_err:.4f}% exceeds threshold "
-                f"{volume_error_pct_threshold}%"
-            )
-
-        # -- 1-D volume error ------------------------------------------------
-        v1d = summary.volume_1d
-        net_other_fluxes = (
-            -v1d.flow_ds_out
-            + v1d.hydro_lat
-            + v1d.hydro_sa
-            + v1d.diversions
-            + v1d.groundwater
-            + v1d.precip_excess
+        return self.compute_summary().ok(
+            wse_threshold=wse_threshold,
+            volume_error_pct_threshold=volume_error_pct_threshold,
+            volume_1d_error_pct_threshold=volume_1d_error_pct_threshold,
+            volume_2d_error_pct_threshold=volume_2d_error_pct_threshold,
         )
-        storage_change = (
-            v1d.reach_vol_start + v1d.sa_vol_start
-            - v1d.reach_vol_end - v1d.sa_vol_end
-        )
-        supply_1d = (
-            v1d.reach_vol_start + v1d.sa_vol_start
-            + v1d.flow_us_in
-            + v1d.hydro_lat
-            + v1d.hydro_sa
-            + v1d.diversions
-            + v1d.groundwater
-            + v1d.precip_excess
-        )
-        vol_1d_err = (
-            (v1d.flow_us_in + net_other_fluxes + storage_change) / supply_1d * 100
-            if supply_1d != 0
-            else float("nan")
-        )
-        if math.isnan(vol_1d_err) or abs(vol_1d_err) > volume_1d_error_pct_threshold:
-            vol_1d_str = "nan" if math.isnan(vol_1d_err) else f"{vol_1d_err:.4f}%"
-            failures.append(
-                f"1D volume error {vol_1d_str} exceeds threshold "
-                f"{volume_1d_error_pct_threshold}%"
-            )
-
-        # -- 2-D volume errors (reported per area) ---------------------------
-        for area_name, area in summary.volume_2d.items():
-            exceeds = (
-                math.isnan(area.error_pct)
-                or abs(area.error_pct) > volume_2d_error_pct_threshold
-            )
-            if exceeds:
-                failures.append(
-                    f"2D area '{area_name}' volume error {area.error_pct:.4f}% "
-                    f"exceeds threshold {volume_2d_error_pct_threshold}%"
-                )
-
-        if not failures:
-            return True
-
-        log = logger.critical if unstable else logger.warning
-        for msg in failures:
-            log("compute_ok: %s", msg)
-        return False
 
     @property
     def ras_version(self) -> str:
