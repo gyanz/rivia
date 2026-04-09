@@ -204,6 +204,15 @@ class Project(MapperExtension):
         )
 
     @property
+    def dss_path(self) -> Path:
+        """Path to the DSS output file (project file with ``.dss`` extension)."""
+        return self._project_path.with_suffix(".dss")
+
+    @property
+    def description(self) -> str:
+        return self.project.description
+
+    @property
     def project(self) -> Proj:
         """Lazily parsed project file.
 
@@ -315,11 +324,6 @@ class Project(MapperExtension):
         return self._hdf
 
     @property
-    def dss_path(self) -> Path:
-        """Path to the DSS output file (project file with ``.dss`` extension)."""
-        return self._project_path.with_suffix(".dss")
-
-    @property
     def dss(self) -> DssReader:
         """Lazily created :class:`DssReader` for this plan's DSS output file.
 
@@ -344,7 +348,7 @@ class Project(MapperExtension):
                 print(f"[{active}] {p.index}: {p.title} ({p.short_id})")
         """
         active_name = self.plan_path.name
-        return [
+        plans = [
             PlanSummary(
                 index=i,
                 title=p["title"],
@@ -354,6 +358,7 @@ class Project(MapperExtension):
             )
             for i, p in enumerate(self.project.plans)
         ]
+        return sorted(plans, key=lambda p: not p.active)
 
     @contextlib.contextmanager
     def editing(self):
@@ -873,8 +878,7 @@ class Project(MapperExtension):
     def __del__(self):
         with contextlib.suppress(Exception):
             logger.debug("Executing Project destructor.")
-        with contextlib.suppress(Exception):
-            self.controller.close()
+        self.close()
 
 
 @dataclasses.dataclass
