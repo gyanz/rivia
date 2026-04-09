@@ -5,8 +5,8 @@
 Initial release.
 
 ### Added
-- `hdf` subpackage: read geometry and plan result HDF5 files
-- `model` subpackage: read/write HEC-RAS text input files
+- `hdf` subpackage: read geometry and plan result HDF5 files (`Geometry`, `UnsteadyPlan`, `SteadyPlan`)
+- `model` subpackage: read/write HEC-RAS text input files; `Project` as primary entry point
 - `geo` subpackage: RASMapper-exact rasterization pipeline
-- `com` subpackage: COM interface to HEC-RAS
+- `controller` subpackage: COM interface to HEC-RAS
 - `utils` subpackage: shared path, logging, and validation helpers

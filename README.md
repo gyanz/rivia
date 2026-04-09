@@ -45,10 +45,10 @@ pip install rivia[geo]
 ## Quick Example
 
 ```python
-from rivia.model import Model
+from rivia.model import Project
 
 # Open a HEC-RAS project
-model = Model("path/to/project.prj")
+model = Project("path/to/project.prj")
 print(model.version)       # e.g. "6.30"
 
 # Switch plans
@@ -56,8 +56,11 @@ model.change_plan(title="Base Condition")
 model.change_plan(short_id="BC")
 model.change_plan(index=0)
 
+# Run model
+model.run(hide_window=False)
+
 # Read HDF results
-area = model.hdf.flow_areas["Perimeter 1"]
+area = model.results.flow_areas["Perimeter 1"]
 wse_max = area.max_water_surface
 
 # Export a WSE raster
@@ -69,11 +72,11 @@ print(vrt.path)
 
 ```
 rivia/
-├── com/       # COM interface to run/control HEC-RAS
-├── model/     # Model - primary project interface; read/write text input files, read HDF results
-├── hdf/       # Read HEC-RAS HDF5 geometry and result files
-├── geo/       # Geospatial operations: raster export (geopandas/rasterio)
-└── utils/     # Shared helpers
+├── controller/  # COM interface to run/control HEC-RAS
+├── model/       # Project — primary project interface; read/write text input files, read HDF results
+├── hdf/         # Read HEC-RAS HDF5 geometry and result files
+├── geo/         # Geospatial operations: raster export (geopandas/rasterio)
+└── utils/       # Shared helpers
 ```
 
 ## Development

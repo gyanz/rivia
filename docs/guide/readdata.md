@@ -13,13 +13,13 @@ rivia exposes HEC-RAS data through four entry points depending on the source:
   - `model.project` / `model.plan` / `model.geom` / `model.flow`
   - Python dataclasses, readable and writable
 * - Plan HDF (`.px.hdf`) — 2D mesh results, 1D XS, structures, storage areas
-  - `model.hdf` → `PlanHdf`
+  - `model.results` → `UnsteadyPlan` / `SteadyPlan`
   - NumPy arrays, pandas DataFrames
 * - DSS file (`.dss`) — XS and inline structure time series
   - `model.dss` → `DssReader`
   - `pd.Series` (spans full period across restart runs)
 * - Geometry HDF (`.gx.hdf`) — mesh geometry only, no results
-  - `GeometryHdf(path)`
+  - `hdf.Geometry(path)`
   - NumPy arrays
 ```
 
@@ -31,24 +31,24 @@ rivia exposes HEC-RAS data through four entry points depending on the source:
 | Read/edit plan settings (intervals, window, flow file) | `model.plan` |
 | Read/edit cross-section geometry, Manning's n | `model.geom` |
 | Read/edit boundary conditions and flow hydrographs | `model.flow` |
-| 2D mesh results (WSE, velocity) at specific timesteps | `model.hdf.flow_areas` |
-| Maximum/minimum summary over all timesteps | `model.hdf.flow_areas` |
-| 1D cross-section results from the latest run | `model.hdf.cross_sections` |
+| 2D mesh results (WSE, velocity) at specific timesteps | `model.results.flow_areas` |
+| Maximum/minimum summary over all timesteps | `model.results.flow_areas` |
+| 1D cross-section results from the latest run | `model.results.cross_sections` |
 | 1D results spanning multiple restart-file runs | `model.dss` |
-| Inline/lateral structure results | `model.hdf.structures` or `model.dss` |
+| Inline/lateral structure results | `model.results.structures` or `model.dss` |
 | Mesh geometry only (no results) | `GeometryHdf` directly |
 
 
 ## Text Input Files
 
-rivia exposes the four HEC-RAS text input files as lazily loaded objects on `Model`.
+rivia exposes the four HEC-RAS text input files as lazily loaded objects on `Project`.
 
 ```
-model.project  → Proj           .prj  — project index: plan list, unit system, file paths
-model.plan     → PlanFile       .p**  — plan settings: intervals, simulation window, file refs
-model.geom     → GeometryFile   .g**  — geometry: cross sections, Manning's n, structures
-model.flow     → SteadyFlowFile       — steady flow: profiles, boundary conditions
-              → UnsteadyFlowEditor    — unsteady flow: hydrographs, gate openings, initial conditions
+model.project   → Proj         .prj  — project index: plan list, unit system, file paths
+model.plan      → Plan         .p**  — plan settings: intervals, simulation window, file refs
+model.geometry  → Geometry     .g**  — geometry: cross sections, Manning's n, structures
+model.flow      → SteadyFlow         — steady flow: profiles, boundary conditions
+               → UnsteadyFlow        — unsteady flow: hydrographs, gate openings, initial conditions
 ```
 
 ### `model.project` — project file
@@ -68,26 +68,25 @@ proj.plan_short_ids              # list of plan short IDs
 ### `model.plan` — plan file
 
 ```python
-plan = model.plan                # PlanFile for the current plan
+plan = model.plan                # Plan for the current plan
 
-plan.plan_title                  # plan title string
+plan.title                       # plan title string
 plan.short_id                    # plan short identifier (e.g. "BC")
 plan.is_unsteady                 # True for unsteady plans
 plan.simulation_window           # ((start_date, start_time), (end_date, end_time))
 plan.computation_interval        # e.g. "1MIN"
-plan.output_interval             # mapping output interval
-plan.dss_interval                # DSS output interval
+plan.output_interval             # DSS hydrograph output interval
 plan.instantaneous_interval      # instantaneous output interval
 plan.mapping_interval            # RASMapper output interval
 
-plan.plan_title = "New Title"    # properties are settable
+plan.title = "New Title"         # properties are settable
 plan.save()                      # write back to disk
 ```
 
-### `model.geom` — geometry file
+### `model.geometry` — geometry file
 
 ```python
-geom = model.geom                # GeometryFile
+geom = model.geometry            # Geometry
 
 geom.reaches                     # list[(river, reach)]
 geom.get_cross_section("Butte Cr", "Upper", "7")  # → CrossSection dataclass
@@ -106,10 +105,10 @@ geom.structures.laterals         # StructureIndex[Lateral]
 
 ### `model.flow` — flow file
 
-`model.flow` returns an `UnsteadyFlowEditor`.
+`model.flow` returns an `UnsteadyFlow`.
 
 ```python
-flow = model.flow   # UnsteadyFlowEditor
+flow = model.flow   # UnsteadyFlow
 
 flow.flow_hydrographs            # list[FlowHydrograph]
 flow.lateral_inflows             # list[LateralInflow]
@@ -125,13 +124,14 @@ flow.save()
 ```
 
 
-## Plan HDF — `model.hdf`
+## Plan HDF — `model.results`
 
-`model.hdf` returns a lazily opened `PlanHdf` backed by the current plan's
-HDF file (`*.px.hdf`).  It gives access to both geometry and results.
+`model.results` returns a lazily opened `UnsteadyPlan` or `SteadyPlan`
+backed by the current plan's HDF file (`*.px.hdf`).  It gives access to
+both geometry and results.
 
 ```
-PlanHdf
+UnsteadyPlan
 ├── .flow_areas          → FlowAreaResultsCollection
 │     └── ["name"]       → FlowAreaResults
 │           ├── .water_surface         h5py.Dataset  shape (n_t, n_cells)
@@ -167,7 +167,7 @@ PlanHdf
 ### 2D flow areas
 
 ```python
-hdf = model.hdf
+hdf = model.results
 area = hdf.flow_areas["Perimeter 1"]   # FlowAreaResults
 
 # Time-series datasets (lazy — slice to load into memory)
@@ -290,19 +290,20 @@ q = dss.flow("Butte Cr", "Upper", "7",
 ```
 
 
-## Geometry HDF — `GeometryHdf`
+## Geometry HDF — `hdf.Geometry`
 
-`GeometryHdf` reads a standalone geometry HDF (`*.gx.hdf`) for mesh geometry
+`hdf.Geometry` reads a standalone geometry HDF (`*.gx.hdf`) for mesh geometry
 without simulation results.
 
 ```{note}
-`PlanHdf` inherits from `GeometryHdf`, so all geometry properties described
-below are equally accessible via `model.hdf` on a plan file — no need to open
-the geometry HDF separately when you already have a plan open.
+`UnsteadyPlan` and `SteadyPlan` both inherit from `hdf.Geometry`, so all
+geometry properties described below are equally accessible via `model.results`
+on a plan file — no need to open the geometry HDF separately when you already
+have a plan open.
 ```
 
 ```
-GeometryHdf
+Geometry
 ├── .flow_areas        → FlowAreaCollection
 │     └── ["name"]    → FlowArea
 │           ├── .cell_centers           np.ndarray  shape (n_cells, 2)
@@ -322,9 +323,9 @@ GeometryHdf
 ```
 
 ```python
-from rivia.hdf import GeometryHdf
+from rivia.hdf import Geometry
 
-geom = GeometryHdf("model.g01.hdf")
+geom = Geometry("model.g01.hdf")
 area = geom.flow_areas["Perimeter 1"]   # FlowArea (geometry only)
 
 area.cell_centers                        # np.ndarray shape (n_cells, 2)

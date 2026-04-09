@@ -1,18 +1,18 @@
 # Quickstart
 
-`Model` is the primary entry point for working with a HEC-RAS project.
+`Project` is the primary entry point for working with a HEC-RAS project.
 It opens HEC-RAS via COM, binds to a project file, and provides access to
 all associated files and results through a single object.
 
 ## 1. Opening a project
 
 ```python
-from rivia.model import Model
+from rivia.model import Project
 
-model = Model("path/to/project.prj", ras_version=None, backup=False)
+model = Project("path/to/project.prj", ras_version=None, backup=False)
 print(model.version)          # e.g. "6.30"
-print(model.plan_file)        # Path to current plan file
-print(model.geom_file)        # Path to current geometry file
+print(model.plan_path)        # Path to current plan file
+print(model.geometry_path)    # Path to current geometry file
 ```
 
 `ras_version` is auto-detected from the project file's current plan; pass an explicit
@@ -22,7 +22,7 @@ Pass `backup=True` to snapshot all input files on open and restore them
 automatically on exit — useful when running batch modifications:
 
 ```{important}
-`Model` requires exactly one HEC-RAS process running for the version it
+`Project` requires exactly one HEC-RAS process running for the version it
 targets.  At construction time, all existing HEC-RAS instances of that
 version are closed automatically before the new session is opened.
 
@@ -63,8 +63,8 @@ HEC-RAS and rivia pick up the changes.  It closes and discards the cached
 
 The input files are accessed as:
 
-- `model.plan` — plan file (`.p**`), a `PlanFile` instance
-- `model.flow` — flow file, a `SteadyFlowFile` or `UnsteadyFlowEditor`
+- `model.plan` — plan file (`.p**`), a `Plan` instance
+- `model.flow` — flow file, a `SteadyFlow` or `UnsteadyFlow`
   depending on the active plan (`.f**` or `.u**`)
 
 ```python
@@ -119,7 +119,7 @@ model.reset()
 
 ## 7. Exporting rasters
 
-`Model` inherits all raster export methods from `MapperExtension`.
+`Project` inherits all raster export methods from `MapperExtension`.
 The rasterization pipeline is a pixel-perfect reimplementation of RASMapper's
 rendering engine — output rasters are identical to those produced by RASMapper.
 Each hydraulic variable has a dedicated `export_*` method (returns a
@@ -187,11 +187,11 @@ terrain_path = model.export_plan_terrain("terrain.vrt", copy=True)
 
 ## 8. Reading plan results (HDF)
 
-`model.hdf` returns a lazily opened `PlanHdf` instance bound to the current
-plan's HDF file.
+`model.results` returns a lazily opened `UnsteadyPlan` or `SteadyPlan`
+instance bound to the current plan's HDF file.
 
 ```python
-hdf = model.hdf
+hdf = model.results
 print(hdf.mapping_timestamps)              # pd.DatetimeIndex of output timesteps
 print(len(hdf.mapping_timestamps))         # number of timesteps
 ```
@@ -299,15 +299,14 @@ sa.max_water_surface                   # pd.DataFrame with columns [value, time]
 
 ### SA/2D connections
 
-`hdf.storage_area_connections` is an `SA2DConnectionCollection` — a
-dict-like container of `SA2DConnectionResults` objects for structures
-connecting storage areas and 2D flow areas (dams, levees, gates, weirs).
+`hdf.sa2d_connections` is a dict-like container of `SA2DConnectionResults`
+objects for structures connecting storage areas and 2D flow areas (dams,
+levees, gates, weirs).  It is a convenience alias for `hdf.structures.connections`.
 
 ```python
-print(hdf.storage_area_connections.names)
-conn = hdf.storage_area_connections["Dam"]  # SA2DConnectionResults
+conn = hdf.sa2d_connections["Dam"]  # SA2DConnectionResults
 
-conn.total_flow                             # total flow time series, shape (n_t,)
-conn.stage_hw                               # headwater stage time series
-conn.stage_tw                               # tailwater stage time series
+conn.total_flow                     # total flow time series, shape (n_t,)
+conn.stage_hw                       # headwater stage time series
+conn.stage_tw                       # tailwater stage time series
 ```
