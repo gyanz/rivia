@@ -1,2 +1,2 @@
-del /q source\api\*.rst
+del /q api\generated\*.rst
 make clean
