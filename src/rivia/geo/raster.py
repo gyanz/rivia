@@ -74,19 +74,22 @@ def rasterize_results(
     Horizontal" checkbox is a sub-option of WithFaces only and does not
     apply to this mode.
 
-    A. ``compute_face_wss`` — hydraulic connectivity (``face_connected``),
-       per-face WSE values (``face_value_a``, ``face_value_b``), and full
-       connection classification (``face_hconn``, one of the ``HC_*``
-       constants).
-    B. ``compute_facepoint_wse`` — planar regression fitting a plane through
-       the face midpoint WSE samples; the intercept ``c`` at each facepoint
-       is the corner WSE.
-    4a. ``build_cell_id_raster`` — scan-line rasterize wet cell polygons.
-    4b. ``sample_terrain_at_facepoints`` — terrain elevation at facepoints
-        for depth rebalancing (only when a DEM is supplied).
-    4c. ``rasterize_rasmap`` — per-pixel barycentric interpolation of the
-        facepoint WSE values within each cell's triangles (``with_faces=False``,
-        ``shallow_to_flat=False``).
+    **A.** ``compute_face_wss`` — hydraulic connectivity (``face_connected``),
+    per-face WSE values (``face_value_a``, ``face_value_b``), and full
+    connection classification (``face_hconn``, one of the ``HC_*`` constants).
+
+    **B.** ``compute_facepoint_wse`` — planar regression fitting a plane through
+    the face midpoint WSE samples; the intercept ``c`` at each facepoint
+    is the corner WSE.
+
+    **4a.** ``build_cell_id_raster`` — scan-line rasterize wet cell polygons.
+
+    **4b.** ``sample_terrain_at_facepoints`` — terrain elevation at facepoints
+    for depth rebalancing (only when a DEM is supplied).
+
+    **4c.** ``rasterize_rasmap`` — per-pixel barycentric interpolation of the
+    facepoint WSE values within each cell's triangles (``with_faces=False``,
+    ``shallow_to_flat=False``).
 
     **water_surface / depth — hybrid** (``render_mode="hybrid"``)
 
@@ -96,19 +99,24 @@ def rasterize_results(
 
     **velocity / velocity_vector — sloping / hybrid**
 
-    A. ``compute_face_wss`` — hydraulic connectivity + ``face_hconn`` (same as WSE pipeline).
-    2. ``reconstruct_face_velocities`` — C-stencil least-squares
-       reconstruction of full ``(Vx, Vy)`` at each face from the stored
-       face-normal velocity scalar.
-    3. ``compute_facepoint_velocities`` — inverse-face-length weighted
-       averaging of face velocity vectors to facepoints.
-    3.5. ``replace_face_velocities_sloped`` — replace each face velocity
-         with the average of its two endpoint facepoint velocities.
-    4a. ``build_cell_id_raster`` — scan-line rasterize wet cell polygons.
-    4c. ``rasterize_rasmap`` — per-pixel barycentric interpolation of
-        facepoint velocity vectors; speed magnitude ``sqrt(Vx²+Vy²)``
-        computed per pixel.  ``"velocity"`` returns the speed band only;
-        ``"velocity_vector"`` returns all four bands.
+    **A.** ``compute_face_wss`` — hydraulic connectivity + ``face_hconn`` (same as WSE pipeline).
+
+    **2.** ``reconstruct_face_velocities`` — C-stencil least-squares
+    reconstruction of full ``(Vx, Vy)`` at each face from the stored
+    face-normal velocity scalar.
+
+    **3.** ``compute_facepoint_velocities`` — inverse-face-length weighted
+    averaging of face velocity vectors to facepoints.
+
+    **3.5.** ``replace_face_velocities_sloped`` — replace each face velocity
+    with the average of its two endpoint facepoint velocities.
+
+    **4a.** ``build_cell_id_raster`` — scan-line rasterize wet cell polygons.
+
+    **4c.** ``rasterize_rasmap`` — per-pixel barycentric interpolation of
+    facepoint velocity vectors; speed magnitude ``sqrt(Vx²+Vy²)``
+    computed per pixel.  ``"velocity"`` returns the speed band only;
+    ``"velocity_vector"`` returns all four bands.
 
     **velocity / velocity_vector — horizontal** (``render_mode="horizontal"``)
 
@@ -125,14 +133,9 @@ def rasterize_results(
     ----------
     variable:
         ``"wse"`` / ``"water_surface"`` — water-surface elevation (aliases).
-        ``"depth"``          — water depth (WSE minus terrain); requires
-                               *reference_raster* (DEM).
-        ``"velocity"``       — 1-band speed raster ``sqrt(Vx²+Vy²)``; requires
-                               *face_normal_velocity*.
-        ``"velocity_vector"``— 4-band velocity raster ``[Vx, Vy, speed,
-                               direction_deg]`` (bands 1–4); requires
-                               *face_normal_velocity*.  ``direction_deg`` is
-                               degrees clockwise from north.
+        ``"depth"`` — water depth (WSE minus terrain); requires *reference_raster* (DEM).
+        ``"velocity"`` — 1-band speed raster ``sqrt(Vx²+Vy²)``; requires *face_normal_velocity*.
+        ``"velocity_vector"`` — 4-band velocity raster ``[Vx, Vy, speed, direction_deg]`` (bands 1–4); requires *face_normal_velocity*. ``direction_deg`` is degrees clockwise from north.
     cell_wse:
         ``(n_cells,)`` water-surface elevation per cell.
     cell_min_elevation:

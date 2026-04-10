@@ -345,7 +345,7 @@ class FlowAreaResults(FlowArea):
             wetted face flow areas from the hydraulic property tables.
             ``"length_weighted"``: weights are face plan-view lengths.
             ``"flow_ratio"``: requires ``Face Flow`` output; back-calculates
-            flow area as |Q|/|V_n|.
+            flow area as \|Q\|/\|V_n\|.
         wse_interp:
             How to estimate face WSE when ``method="area_weighted"``.
             ``"average"`` (default): simple mean of the two adjacent cell WSEs.
@@ -1024,18 +1024,15 @@ class FlowAreaResults(FlowArea):
 
         Implements the pixel-perfect pipeline reverse-engineered from
         ``archive/DLLs/RasMapperLib/`` (decompiled C# source, HEC-RAS 6.6),
-        validated against RASMapper VRT exports — median |diff| = 0.000000.
+        validated against RASMapper VRT exports — median ``diff`` = 0.000000.
 
         Parameters
         ----------
         variable:
             ``"wse"`` / ``"water_surface"`` — water-surface elevation.
-            ``"depth"``    — water depth (WSE minus terrain); requires
-                             *reference_raster*.
-            ``"velocity"``        — 1-band speed raster ``sqrt(Vx²+Vy²)``; requires
-                                    an explicit *timestep*.
-            ``"velocity_vector"`` — 4-band raster ``[Vx, Vy, speed, direction_deg]``;
-                                    requires an explicit *timestep*.
+            ``"depth"`` — water depth (WSE minus terrain); requires *reference_raster*.
+            ``"velocity"`` — 1-band speed raster ``sqrt(Vx²+Vy²)``; requires an explicit *timestep*.
+            ``"velocity_vector"`` — 4-band raster ``[Vx, Vy, speed, direction_deg]``; requires an explicit *timestep*.
         timestep:
             0-based time index.  Pass ``None`` to use the time of maximum
             water-surface elevation (``"wse"``/``"water_surface"`` and

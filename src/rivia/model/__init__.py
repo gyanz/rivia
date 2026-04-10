@@ -651,7 +651,7 @@ class Project(MapperExtension):
 
         Raises
         ------
-        HecRasComputeError
+        ~rivia.controller.HecRasComputeError
             If HEC-RAS reports a computation failure or a COM error occurs.
         """
         if reload:

@@ -3,6 +3,7 @@
 .. currentmodule:: {{ module }}
 
 .. autoclass:: {{ objname }}
+   :no-index:
 
    {% block methods %}
    .. automethod:: __init__

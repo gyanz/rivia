@@ -17,14 +17,16 @@ all associated file objects (:attr:`~rivia.model.Project.plan`, :attr:`~rivia.mo
    :members:
    :no-index:
 
+.. autoclass:: rivia.model.MapperExtension
+   :members:
+   :show-inheritance:
+
 .. rubric:: Submodules
 
 .. autosummary::
    :toctree: generated
    :nosignatures:
-   :recursive:
 
-   ~rivia.model._mapper.MapperExtension
    ~rivia.model.project
    ~rivia.model.plan
    ~rivia.model.geometry

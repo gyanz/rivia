@@ -12,5 +12,5 @@ Shared helpers: path handling, validation, logging.
    :toctree: generated
    :recursive:
 
-   rivia.utils.fs
-   rivia.utils.helpers
+   fs
+   helpers

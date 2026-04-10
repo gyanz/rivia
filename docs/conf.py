@@ -40,6 +40,9 @@ extensions = [
 ]
 
 autosummary_generate = True
+autosummary_generate_overwrite = False
+suppress_warnings = ["py.duplicated_object"]
+html_copy_source = False
 autodoc_default_options = {
     "members": True,
     "undoc-members": False,
@@ -70,4 +73,4 @@ html_theme_options = {
 }
 
 templates_path = ["_templates"]
-exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
+exclude_patterns = ["_build", "Thumbs.db", ".DS_Store", "dev/sphinx_warnings_debug.md"]

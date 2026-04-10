@@ -13,4 +13,4 @@ Requires ``geopandas`` and ``rasterio`` (install with ``pip install rivia[geo]``
    :toctree: generated
    :recursive:
 
-   rivia.geo.raster
+   raster

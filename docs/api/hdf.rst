@@ -5,12 +5,11 @@ Reads HEC-RAS HDF5 geometry and plan result files (h5py-based).
 
 .. rubric:: Submodules
 
-.. autosummary::
-   :toctree: generated
-   :recursive:
+.. toctree::
+   :maxdepth: 1
 
-   rivia.hdf.geometry
-   rivia.hdf.steady_plan
-   rivia.hdf.unsteady_plan
-   rivia.hdf.terrain
-   rivia.hdf.velocity
+   generated/rivia.hdf.geometry
+   generated/rivia.hdf.steady_plan
+   generated/rivia.hdf.unsteady_plan
+   generated/rivia.hdf.terrain
+   generated/rivia.hdf.velocity

@@ -21,8 +21,6 @@ results, and exporting geospatial rasters — all from a single Python environme
 
 ---
 
----
-
 ## What it is not
 
 - **Not a HEC product** — rivia is an independent, community-developed tool and is not affiliated with, endorsed by, or supported by the U.S. Army Corps of Engineers or the Hydrologic Engineering Center.  It is designed to help researchers and engineers use HEC-RAS programmatically for research and automation work.

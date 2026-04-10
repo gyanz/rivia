@@ -397,7 +397,7 @@ def compute_all_cell_velocities(
         ``"area_weighted"`` (default, matches HEC-RAS),
         ``"length_weighted"`` (simpler, no table lookup), or
         ``"flow_ratio"`` (requires *face_flow*; back-calculates flow area
-        as |Q|/|V_n|, exactly as HEC-RAS computed internally).
+        as \|Q\|/\|V_n\|, exactly as HEC-RAS computed internally).
     face_flow : ndarray, shape ``(n_faces,)``, optional
         Volumetric face flows.  Required when ``method="flow_ratio"``.
     wse_interp : str
