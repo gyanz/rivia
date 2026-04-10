@@ -52,9 +52,9 @@ model = Project("path/to/project.prj")
 print(model.version)       # e.g. "6.30"
 
 # Switch plans
-model.change_plan(title="Base Condition")
-model.change_plan(short_id="BC")
-model.change_plan(index=0)
+model.set_plan(title="Base Condition")
+model.set_plan(short_id="BC")
+model.set_plan(index=0)
 
 # Run model
 model.run(hide_window=False)
