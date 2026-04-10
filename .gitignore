@@ -1,11 +1,22 @@
-# Root-level development scripts (not part of the package)
-/*.py
-/*.bat
+# Allow only known root-level entries; everything else is blocked.
+# This prevents accidental commits of test folders, scratch files, etc.
+/*
+!/src
+!/tests
+!/docs
+!/tools
+!/.gitignore
+!/.readthedocs.yaml
+!/pyproject.toml
+!/README.md
+!/LICENSE
+!/NOTICE
+!/CREDITS
+
+# Scratch / dev files that sometimes appear at root (belt-and-suspenders)
 *.xlsm
 *.tmp
 *.tmp.*
-/*.md
-!/README.MD
 
 # Python build and packaging
 __pycache__/
@@ -38,14 +49,11 @@ docs/_build/
 docs/api/generated/
 
 # IDE
-.vscode/
-.idea/
 *.swp
 *.swo
 
 # OS
-Thumbs.db
-.DS_Store
+*.DS_Store
 
 # Project-specific
 archive/
