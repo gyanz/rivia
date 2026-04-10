@@ -41,7 +41,7 @@ class HecRasComputeError(RuntimeError):
         self.com_error = com_error
 
 
-def controller(version: str | int):
+def connect(version: str | int):
     """Create a version-appropriate HEC-RAS controller for the given version.
 
     Closes any already-running instance of the requested HEC-RAS version before
