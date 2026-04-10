@@ -2596,6 +2596,13 @@ class CrossSectionResultsCollection(CrossSectionCollection):
 
     @property
     def names(self) -> list[str]:
+        """Cross section keys available in this result block.
+
+        Returns
+        -------
+        list[str]
+            Keys of the form ``"<river> <reach> <station>"``.
+        """
         return list(self._load_results().keys())
 
 

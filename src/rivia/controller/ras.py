@@ -67,6 +67,24 @@ def installed_ras_progid(version: str | int) -> tuple[int, dict[str, str | None]
 
 
 def installed_ras_display_name(version: str | int) -> str | None:
+    """Return the Windows display name for the given HEC-RAS version.
+
+    Parameters
+    ----------
+    version : str or int
+        HEC-RAS version string (e.g. ``"6.3"``) or integer code (e.g. ``6030``).
+
+    Returns
+    -------
+    str or None
+        Display name as recorded in the Windows registry (e.g.
+        ``"HEC-RAS 6.3"``), or ``None`` when the registry entry has no name.
+
+    Raises
+    ------
+    RuntimeError
+        If the requested HEC-RAS version is not found in the registry.
+    """
     xxx = ras_registry_xxx(version)
     entry = next((e for e in _cached_installs() if e.get("registry_xxx") == xxx), None)
     if entry is None:
@@ -75,6 +93,24 @@ def installed_ras_display_name(version: str | int) -> str | None:
     return entry["display_name"]
 
 def installed_ras_directory(version: str | int) -> str | None:
+    """Return the installation directory for the given HEC-RAS version.
+
+    Parameters
+    ----------
+    version : str or int
+        HEC-RAS version string (e.g. ``"6.3"``) or integer code (e.g. ``6030``).
+
+    Returns
+    -------
+    str or None
+        Absolute path to the HEC-RAS installation folder, or ``None`` when the
+        registry entry has no location recorded.
+
+    Raises
+    ------
+    RuntimeError
+        If the requested HEC-RAS version is not found in the registry.
+    """
     xxx = ras_registry_xxx(version)
     entry = next((e for e in _cached_installs() if e.get("registry_xxx") == xxx), None)
     if entry is None:

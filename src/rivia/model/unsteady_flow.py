@@ -897,6 +897,7 @@ class UnsteadyFlow:
 
     @property
     def flow_title(self) -> str | None:
+        """Flow file title (``Flow Title=``), or ``None`` if absent."""
         return self._header_get("Flow Title")
 
     @flow_title.setter
@@ -905,6 +906,7 @@ class UnsteadyFlow:
 
     @property
     def program_version(self) -> str | None:
+        """HEC-RAS version string (``Program Version=``), or ``None`` if absent."""
         return self._header_get("Program Version")
 
     @property
@@ -970,18 +972,22 @@ class UnsteadyFlow:
 
     @property
     def flow_hydrographs(self) -> list[FlowHydrograph]:
+        """All :class:`FlowHydrograph` boundaries, in file order."""
         return [b for b in self.boundaries if isinstance(b, FlowHydrograph)]
 
     @property
     def lateral_inflows(self) -> list[LateralInflow]:
+        """All :class:`LateralInflow` boundaries, in file order."""
         return [b for b in self.boundaries if isinstance(b, LateralInflow)]
 
     @property
     def gate_boundaries(self) -> list[GateBoundary]:
+        """All :class:`GateBoundary` boundaries, in file order."""
         return [b for b in self.boundaries if isinstance(b, GateBoundary)]
 
     @property
     def friction_slopes(self) -> list[FrictionSlope]:
+        """All :class:`FrictionSlope` boundaries, in file order."""
         return [b for b in self.boundaries if isinstance(b, FrictionSlope)]
 
     # ------------------------------------------------------------------

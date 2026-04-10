@@ -4,7 +4,12 @@ import math
 
 
 class GeometryBase(object):
-    """ """
+    """COM geometry interface wrapper for HEC-RAS.
+
+    Thin wrapper around the ``HECRASGeometry`` COM object, translating between
+    Python calling conventions and the raw COM tuple returns. Provides node
+    lookup, river/reach enumeration, and coordinate access.
+    """
 
     def nNode(self, riv, rch):
         """
@@ -195,6 +200,10 @@ class GeometryBase(object):
         ----------
         riv : int
             The river ID.
+
+        Returns
+        -------
+        int
         """
         geo = self._geometry
         res = geo.nReach(riv)
@@ -289,6 +298,12 @@ class GeometryBase(object):
         ----------
         riv : int
             The river ID.
+        rch : int
+            The reach ID.
+
+        Returns
+        -------
+        str
         """
         geo = self._geometry
         res = geo.ReachName(riv, rch)

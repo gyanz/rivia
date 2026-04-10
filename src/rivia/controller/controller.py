@@ -121,19 +121,42 @@ class _ControllerBase:
     def __exit__(self, type, value, traceback):
         self.close()
 
-    def pause(self, time):
+    def pause(self, time: float) -> None:
+        """Pause execution for the given number of seconds.
+
+        Parameters
+        ----------
+        time : float
+            Seconds to pause.
+        """
         self._runtime.pause(time)
 
-    def runtime(self):
+    def runtime(self) -> Runtime:
+        """Return the :class:`~rivia.controller._runtime.Runtime` for this session."""
         return self._runtime
 
-    def ras_version(self, descriptive=False):
+    def ras_version(self, descriptive: bool = False) -> str | int:
+        """Return the HEC-RAS version for this controller.
+
+        Parameters
+        ----------
+        descriptive : bool, optional
+            If ``True``, return the human-readable version string from the COM
+            interface (e.g. ``"HEC-RAS 6.3.1"``).  If ``False`` (default),
+            return the integer version code (e.g. ``6031``).
+
+        Returns
+        -------
+        str or int
+            Version string when *descriptive* is ``True``; integer code otherwise.
+        """
         if descriptive:
             return self.HECRASVersion()
         return self._rasver
 
     @property
-    def exe(self):
+    def exe(self) -> str:
+        """Absolute path to the HEC-RAS executable for this controller."""
         return self._runtime.exe
 
     @property
@@ -154,7 +177,12 @@ class _ControllerBase:
         except pywintypes.com_error:
             return False
 
-    def close(self):
+    def close(self) -> None:
+        """Close the HEC-RAS process if it is still running.
+
+        Safe to call multiple times; does nothing when the process has already
+        exited.
+        """
         if self.is_alive:
             self._runtime.close()
 
@@ -311,6 +339,12 @@ class _ControllerBase:
         messages : tuple[str, ...]
             Messages returned by HEC-RAS during computation. Empty for
             versions below 5.0.3.
+
+        Raises
+        ------
+        HecRasComputeError
+            If HEC-RAS reports ``success=False`` or a COM-level error occurs
+            during computation.
         """
         rc = self._rc
         version = self.ras_version()
