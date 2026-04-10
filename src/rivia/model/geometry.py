@@ -240,11 +240,15 @@ def _fmt_levee_line(left: LeveeData | None, right: LeveeData | None) -> str:
 class ManningEntry:
     """One horizontal Manning's n zone.
 
-    Attributes:
-        station:   Left boundary station of this n zone.
-        n_value:   Manning's roughness coefficient.
-        variation: Third column in the HEC-RAS file.  Usually ``0``; used
-                   for vertical-n or alternative-n assignments.
+    Attributes
+    ----------
+    station:
+        Left boundary station of this n zone.
+    n_value:
+        Manning's roughness coefficient.
+    variation:
+        Third column in the HEC-RAS file.  Usually ``0``; used
+        for vertical-n or alternative-n assignments.
     """
 
     station: float
@@ -260,12 +264,17 @@ class ManningEntry:
 class IneffArea:
     """One ineffective flow area interval.
 
-    Attributes:
-        x_start:   Left boundary station.
-        x_end:     Right boundary station.
-        elevation: Activation elevation (area is ineffective below this).
-        permanent: ``True`` if always active (``T`` flag), ``False`` if
-                   elevation-triggered (``F`` flag).
+    Attributes
+    ----------
+    x_start:
+        Left boundary station.
+    x_end:
+        Right boundary station.
+    elevation:
+        Activation elevation (area is ineffective below this).
+    permanent:
+        ``True`` if always active (``T`` flag), ``False`` if
+        elevation-triggered (``F`` flag).
     """
 
     x_start: float
@@ -281,11 +290,15 @@ class LeveeData:
     Encoded on the ``Levee=`` line as a ``-1`` active flag followed by
     station and elevation.
 
-    Attributes:
-        station:           Lateral station of the levee crest.
-        elevation:         Levee crest elevation.
-        failure_elevation: Elevation at which the levee fails; ``None`` if
-                           not specified.
+    Attributes
+    ----------
+    station:
+        Lateral station of the levee crest.
+    elevation:
+        Levee crest elevation.
+    failure_elevation:
+        Elevation at which the levee fails; ``None`` if
+        not specified.
     """
 
     station: float
@@ -300,10 +313,14 @@ class BlockedObstruction:
     Flow area between *x_start* and *x_end* is blocked up to *elevation*.
     Use a very large elevation (e.g. ``999``) for a permanently blocked zone.
 
-    Attributes:
-        x_start:   Left boundary station.
-        x_end:     Right boundary station.
-        elevation: Elevation ceiling of the blocked zone.
+    Attributes
+    ----------
+    x_start:
+        Left boundary station.
+    x_end:
+        Right boundary station.
+    elevation:
+        Elevation ceiling of the blocked zone.
     """
 
     x_start: float
@@ -315,9 +332,12 @@ class BlockedObstruction:
 class VerticalNStation:
     """Manning's n values at one cross-section station, varying by depth or flow.
 
-    Attributes:
-        station:  Lateral station (same coordinate system as ``#Sta/Elev``).
-        n_values: n-value at each breakpoint in :class:`VerticalN`.
+    Attributes
+    ----------
+    station:
+        Lateral station (same coordinate system as ``#Sta/Elev``).
+    n_values:
+        n-value at each breakpoint in :class:`VerticalN`.
     """
 
     station: float
@@ -333,14 +353,18 @@ class VerticalN:
     block in the same XS still defines zone boundaries but carries
     placeholder zero n-values.
 
-    Attributes:
-        breakpoints: Water-surface elevations (``by_flow=False``) or
-                     flow values (``by_flow=True``) at which n is
-                     tabulated.  Length N.
-        by_flow:     ``True`` when breakpoints are flows
-                     (``Vertical n Flow=-1``); ``False`` when they
-                     are WSE (``Vertical n Flow= 0``).
-        stations:    Per-station n-value curves, each with N entries.
+    Attributes
+    ----------
+    breakpoints:
+        Water-surface elevations (``by_flow=False``) or
+        flow values (``by_flow=True``) at which n is
+        tabulated.  Length N.
+    by_flow:
+        ``True`` when breakpoints are flows
+        (``Vertical n Flow=-1``); ``False`` when they
+        are WSE (``Vertical n Flow= 0``).
+    stations:
+        Per-station n-value curves, each with N entries.
     """
 
     breakpoints: list[float]
@@ -356,37 +380,63 @@ class CrossSection:
     with the targeted setters on :class:`Geometry` (``set_mannings``,
     ``set_stations``, ``set_bank_stations``, ``set_exp_cntr``).
 
-    Attributes:
-        river:          River name.
-        reach:          Reach name.
-        rs:             River station string (normalised: no trailing
-                        whitespace or ``*`` interpolation marker).
-        description:    Node description from ``BEGIN/END DESCRIPTION``.
-        stations:       Station values from ``#Sta/Elev``.
-        elevations:     Elevation values from ``#Sta/Elev``.
-        mann_entries:   Manning's n zones from ``#Mann``.
-        mann_type:      Type flag from ``#Mann= N , type , alt`` header.
-        mann_alt:       Alt flag from ``#Mann= N , type , alt`` header.
-        bank_left:      Left bank station (``Bank Sta``).
-        bank_right:     Right bank station (``Bank Sta``).
-        ineff_areas:    Ineffective flow areas (``#XS Ineff``).
-        expansion:      Expansion loss coefficient (``Exp/Cntr``).
-        contraction:    Contraction loss coefficient (``Exp/Cntr``).
-        left_length:    Left overbank reach length from node header.
-        channel_length: Channel reach length from node header.
-        right_length:   Right overbank reach length from node header.
-        interpolated:           ``True`` if the RS string had a trailing ``*``
-                                (HEC-RAS interpolated cross section).
-        vertical_n:             Vertical (depth/flow-varying) Manning's n, or
-                                ``None`` if the cross section uses flat n-values.
-        levee_left:             Left-bank levee (``Levee=`` line), or ``None``.
-        levee_right:            Right-bank levee (``Levee=`` line), or ``None``.
-        blocked_obstructions:   Blocked-obstruction intervals
-                                (``#Block Obstruct``).
-        htab_starting_elevation: Starting elevation for the hydraulic table
-                                 (``XS HTab Starting El and Incr``).
-        htab_increment:         Elevation increment for the hydraulic table.
-        htab_count:             Number of entries in the hydraulic table.
+    Attributes
+    ----------
+    river:
+        River name.
+    reach:
+        Reach name.
+    rs:
+        River station string (normalised: no trailing
+        whitespace or ``*`` interpolation marker).
+    description:
+        Node description from ``BEGIN/END DESCRIPTION``.
+    stations:
+        Station values from ``#Sta/Elev``.
+    elevations:
+        Elevation values from ``#Sta/Elev``.
+    mann_entries:
+        Manning's n zones from ``#Mann``.
+    mann_type:
+        Type flag from ``#Mann= N , type , alt`` header.
+    mann_alt:
+        Alt flag from ``#Mann= N , type , alt`` header.
+    bank_left:
+        Left bank station (``Bank Sta``).
+    bank_right:
+        Right bank station (``Bank Sta``).
+    ineff_areas:
+        Ineffective flow areas (``#XS Ineff``).
+    expansion:
+        Expansion loss coefficient (``Exp/Cntr``).
+    contraction:
+        Contraction loss coefficient (``Exp/Cntr``).
+    left_length:
+        Left overbank reach length from node header.
+    channel_length:
+        Channel reach length from node header.
+    right_length:
+        Right overbank reach length from node header.
+    interpolated:
+        ``True`` if the RS string had a trailing ``*``
+        (HEC-RAS interpolated cross section).
+    vertical_n:
+        Vertical (depth/flow-varying) Manning's n, or
+        ``None`` if the cross section uses flat n-values.
+    levee_left:
+        Left-bank levee (``Levee=`` line), or ``None``.
+    levee_right:
+        Right-bank levee (``Levee=`` line), or ``None``.
+    blocked_obstructions:
+        Blocked-obstruction intervals
+        (``#Block Obstruct``).
+    htab_starting_elevation:
+        Starting elevation for the hydraulic table
+        (``XS HTab Starting El and Incr``).
+    htab_increment:
+        Elevation increment for the hydraulic table.
+    htab_count:
+        Number of entries in the hydraulic table.
     """
 
     river: str
@@ -425,13 +475,17 @@ class CrossSection:
 class GateOpening:
     """One gate opening within a gate group.
 
-    Attributes:
-        name:    Opening name from ``IW Gate Opening=`` line; empty string
-                 when the line is absent.
-        station: Lateral station of the gate opening (8-char fixed-width column).
-        gis:     GIS (x, y) coordinate pairs from the data line following the
-                 ``IW Gate Opening=`` line (16-char fixed-width columns).
-                 Empty list when the GIS point count is zero.
+    Attributes
+    ----------
+    name:
+        Opening name from ``IW Gate Opening=`` line; empty string
+        when the line is absent.
+    station:
+        Lateral station of the gate opening (8-char fixed-width column).
+    gis:
+        GIS (x, y) coordinate pairs from the data line following the
+        ``IW Gate Opening=`` line (16-char fixed-width columns).
+        Empty list when the GIS point count is zero.
     """
 
     name: str
@@ -458,41 +512,64 @@ class GateGroup:
         SpillHt,DesHd,#Openings,trunnion_height,orifice_coef,
         head_ref,radial_coef,,is_sharp_crested,weir_p1,weir_p2,weir_p3
 
-    Attributes:
-        name:                     Group name (index 0).
-        width:                    Gate width — ``Wd`` (index 1).
-        height:                   Gate height — ``H`` (index 2).
-        invert:                   Gate invert elevation — ``Inv`` (index 3).
-        gate_coefficient:         Gate discharge coefficient (applies to all
-                                  gate types) — ``GCoef`` (index 4).  The HDF
-                                  version names this field
-                                  ``sluice_coefficient``.
-        trunnion_exponent:        Trunnion arm exponent — ``Exp_T`` (index 5).
-        opening_exponent:         Gate opening exponent — ``Exp_O`` (index 6).
-        height_exponent:          Gate height exponent — ``Exp_H`` (index 7).
-        gate_type:                Gate type string — ``Type`` (index 8):
-                                  ``'sluice'``, ``'radial'``,
-                                  ``'overflow_closed_top'``,
-                                  ``'overflow_open'``, or
-                                  ``'user_defined_curves'``.
-        weir_coefficient:         Overflow weir coefficient — ``WCoef``
-                                  (index 9).
-        is_ogee:                  ``True`` when ``Is_Ogee`` (index 10) is
-                                  ``-1`` (ogee crest shape).
-        spillway_approach_height: Spillway approach height — ``SpillHt``
-                                  (index 11).
-        design_energy_head:       Design energy head — ``DesHd`` (index 12).
-        trunnion_height:          Trunnion height (index 14).
-        orifice_coefficient:      Orifice coefficient (index 15).
-        head_reference:           Head reference point — 0 = sill,
-                                  1 = centre of opening (index 16).
-        radial_coefficient:       Radial (Tainter) gate discharge coefficient
-                                  (index 17).
-        is_sharp_crested:         ``True`` when index 19 is ``-1``.
-        use_weir_param1:          ``True`` when index 20 is ``-1``.
-        use_weir_param2:          ``True`` when index 21 is ``-1``.
-        use_weir_param3:          ``True`` when index 22 is ``-1``.
-        openings:                 Individual gate openings (stations + names).
+    Attributes
+    ----------
+    name:
+        Group name (index 0).
+    width:
+        Gate width — ``Wd`` (index 1).
+    height:
+        Gate height — ``H`` (index 2).
+    invert:
+        Gate invert elevation — ``Inv`` (index 3).
+    gate_coefficient:
+        Gate discharge coefficient (applies to all
+        gate types) — ``GCoef`` (index 4).  The HDF
+        version names this field
+        ``sluice_coefficient``.
+    trunnion_exponent:
+        Trunnion arm exponent — ``Exp_T`` (index 5).
+    opening_exponent:
+        Gate opening exponent — ``Exp_O`` (index 6).
+    height_exponent:
+        Gate height exponent — ``Exp_H`` (index 7).
+    gate_type:
+        Gate type string — ``Type`` (index 8):
+        ``'sluice'``, ``'radial'``,
+        ``'overflow_closed_top'``,
+        ``'overflow_open'``, or
+        ``'user_defined_curves'``.
+    weir_coefficient:
+        Overflow weir coefficient — ``WCoef``
+        (index 9).
+    is_ogee:
+        ``True`` when ``Is_Ogee`` (index 10) is
+        ``-1`` (ogee crest shape).
+    spillway_approach_height:
+        Spillway approach height — ``SpillHt``
+        (index 11).
+    design_energy_head:
+        Design energy head — ``DesHd`` (index 12).
+    trunnion_height:
+        Trunnion height (index 14).
+    orifice_coefficient:
+        Orifice coefficient (index 15).
+    head_reference:
+        Head reference point — 0 = sill,
+        1 = centre of opening (index 16).
+    radial_coefficient:
+        Radial (Tainter) gate discharge coefficient
+        (index 17).
+    is_sharp_crested:
+        ``True`` when index 19 is ``-1``.
+    use_weir_param1:
+        ``True`` when index 20 is ``-1``.
+    use_weir_param2:
+        ``True`` when index 21 is ``-1``.
+    use_weir_param3:
+        ``True`` when index 22 is ``-1``.
+    openings:
+        Individual gate openings (stations + names).
     """
 
     name: str
@@ -570,33 +647,46 @@ class Weir:
       .. TODO: Identify whether this flag is persisted anywhere in the
          ``.g**`` file and add parsing when found.
 
-    Attributes:
-        width:                    Weir width (``WD``, index 1).
-        coefficient:              Weir discharge coefficient (``Coef``, index 2).
-        shape:                    ``'Broad Crested'`` or ``'Ogee'``
-                                  (``Is_Ogee``, index 6).
-        max_submergence:          Maximum submergence ratio (``MaxSub``,
-                                  index 4).
-        min_elevation:            Minimum weir crest elevation (``Min_El``,
-                                  index 5); ``nan`` when blank.
-        skew:                     Weir skew angle in degrees (``Skew``,
-                                  index 3).
-        dist:                     Distance from the upstream XS to the weir
-                                  face (index 0 of the ``IW Dist`` data line);
-                                  ``nan`` for bridges and laterals (not stored
-                                  in those formats).
-        spillway_approach_height: Spillway approach height — ``SpillHt``
-                                  (index 7 of the ``IW Dist`` data line);
-                                  ``nan`` for bridges and laterals.
-        design_energy_head:       Design energy head — ``DesHd`` (index 8 of
-                                  the ``IW Dist`` data line); ``nan`` for
-                                  bridges and laterals.
-        us_slope:                 Upstream face slope H:V; ``nan`` — not in
-                                  text format.
-        ds_slope:                 Downstream face slope H:V; ``nan`` — not in
-                                  text format.
-        use_water_surface:        Use water surface as weir reference head;
-                                  always ``False`` — not in text format.
+    Attributes
+    ----------
+    width:
+        Weir width (``WD``, index 1).
+    coefficient:
+        Weir discharge coefficient (``Coef``, index 2).
+    shape:
+        ``'Broad Crested'`` or ``'Ogee'``
+        (``Is_Ogee``, index 6).
+    max_submergence:
+        Maximum submergence ratio (``MaxSub``,
+        index 4).
+    min_elevation:
+        Minimum weir crest elevation (``Min_El``,
+        index 5); ``nan`` when blank.
+    skew:
+        Weir skew angle in degrees (``Skew``,
+        index 3).
+    dist:
+        Distance from the upstream XS to the weir
+        face (index 0 of the ``IW Dist`` data line);
+        ``nan`` for bridges and laterals (not stored
+        in those formats).
+    spillway_approach_height:
+        Spillway approach height — ``SpillHt``
+        (index 7 of the ``IW Dist`` data line);
+        ``nan`` for bridges and laterals.
+    design_energy_head:
+        Design energy head — ``DesHd`` (index 8 of
+        the ``IW Dist`` data line); ``nan`` for
+        bridges and laterals.
+    us_slope:
+        Upstream face slope H:V; ``nan`` — not in
+        text format.
+    ds_slope:
+        Downstream face slope H:V; ``nan`` — not in
+        text format.
+    use_water_surface:
+        Use water surface as weir reference head;
+        always ``False`` — not in text format.
     """
 
     width: float
@@ -622,29 +712,49 @@ class CulvertGroup:
         shape, span, rise, length, n, Ke, exit_loss, inlet_type, outlet_type,
         us_invert, us_station, ds_invert, ds_station, name, ?, chart_number
 
-    Attributes:
-        name:           Culvert identifier (index 13), e.g. ``'Culvert # 1'``.
-        shape_code:     Shape code (index 0) — see :data:`_CULVERT_SHAPES`.
-        shape_name:     Human-readable shape, e.g. ``'Circular'``, ``'Box'``.
-        span:           Width or diameter (index 1).
-        rise:           Height (index 2); ``0.0`` when blank.
-        length:         Barrel length (index 3).
-        n_top:          Manning's roughness coefficient (index 4).
-        entrance_loss:  Entrance loss coefficient Ke (index 5).
-        exit_loss:      Exit loss coefficient (index 6).
-        inlet_type:     Inlet control type code (index 7).
-        outlet_type:    Outlet control type code (index 8).
-        upstream_invert:   Upstream invert elevation (index 9).
-        upstream_station:  Upstream station location (index 10).
-        downstream_invert: Downstream invert elevation (index 11).
-        downstream_station: Downstream station location (index 12).
-        chart_number:   Inlet control chart number (index 15).
-        num_barrels:    Number of barrels — from ``BC Culvert Barrel=`` line;
-                        ``1`` when that line is absent.
-        n_bottom:       Bottom Manning's n — from ``Culvert Bottom n=``;
-                        ``None`` when absent.
-        depth_n_bottom: Bottom fill depth — from ``Culvert Bottom Depth=``;
-                        ``None`` when absent.
+    Attributes
+    ----------
+    name:
+        Culvert identifier (index 13), e.g. ``'Culvert # 1'``.
+    shape_code:
+        Shape code (index 0) — see :data:`_CULVERT_SHAPES`.
+    shape_name:
+        Human-readable shape, e.g. ``'Circular'``, ``'Box'``.
+    span:
+        Width or diameter (index 1).
+    rise:
+        Height (index 2); ``0.0`` when blank.
+    length:
+        Barrel length (index 3).
+    n_top:
+        Manning's roughness coefficient (index 4).
+    entrance_loss:
+        Entrance loss coefficient Ke (index 5).
+    exit_loss:
+        Exit loss coefficient (index 6).
+    inlet_type:
+        Inlet control type code (index 7).
+    outlet_type:
+        Outlet control type code (index 8).
+    upstream_invert:
+        Upstream invert elevation (index 9).
+    upstream_station:
+        Upstream station location (index 10).
+    downstream_invert:
+        Downstream invert elevation (index 11).
+    downstream_station:
+        Downstream station location (index 12).
+    chart_number:
+        Inlet control chart number (index 15).
+    num_barrels:
+        Number of barrels — from ``BC Culvert Barrel=`` line;
+        ``1`` when that line is absent.
+    n_bottom:
+        Bottom Manning's n — from ``Culvert Bottom n=``;
+        ``None`` when absent.
+    depth_n_bottom:
+        Bottom fill depth — from ``Culvert Bottom Depth=``;
+        ``None`` when absent.
 
     .. TODO: ``Multiple Barrel Culv=`` uses a different field layout
        (no ``us_station`` / ``ds_station`` columns; barrel stations appear on
@@ -686,16 +796,26 @@ class Pier:
         downstream_count widths
         downstream_count elevations
 
-    Attributes:
-        skew:                 Pier skew angle in degrees; ``0.0`` when blank.
-        upstream_station:     Station of the upstream pier face.
-        upstream_count:       Number of upstream pier elements.
-        downstream_station:   Station of the downstream pier face.
-        downstream_count:     Number of downstream pier elements.
-        upstream_widths:      Width of each upstream pier element.
-        upstream_elevations:  Top-of-pier elevation for each upstream element.
-        downstream_widths:    Width of each downstream pier element.
-        downstream_elevations: Top-of-pier elevation for each downstream element.
+    Attributes
+    ----------
+    skew:
+        Pier skew angle in degrees; ``0.0`` when blank.
+    upstream_station:
+        Station of the upstream pier face.
+    upstream_count:
+        Number of upstream pier elements.
+    downstream_station:
+        Station of the downstream pier face.
+    downstream_count:
+        Number of downstream pier elements.
+    upstream_widths:
+        Width of each upstream pier element.
+    upstream_elevations:
+        Top-of-pier elevation for each upstream element.
+    downstream_widths:
+        Width of each downstream pier element.
+    downstream_elevations:
+        Top-of-pier elevation for each downstream element.
     """
 
     skew: float
@@ -725,28 +845,43 @@ class Roadway:
     ``lo_chord_up`` / ``lo_chord_dn`` will be an empty list when the
     corresponding block is all-blank (some culvert files omit low-chord data).
 
-    Attributes:
-        dist:             Distance from the upstream cross section to the
-                          bridge face (index 0).
-        width:            Deck/roadway width (index 1).
-        weir_coefficient: Overflow weir discharge coefficient (index 2).
-        skew:             Bridge skew angle in degrees (index 3).
-        max_submergence:  Maximum submergence ratio (index 8); ``nan`` when
-                          blank.
-        shape:            Overflow weir crest shape — ``'Broad Crested'`` or
-                          ``'Ogee'`` (from Is_Ogee flag, index 9).
-        min_lo_chord:     Minimum low-chord elevation (index 6); ``nan`` when
-                          blank.
-        max_hi_chord:     Maximum high-chord elevation (index 7); ``nan`` when
-                          blank.
-        stations_up:      Upstream deck station values.
-        hi_chord_up:      Upstream high-chord (top of deck) elevations.
-        lo_chord_up:      Upstream low-chord (soffit) elevations; empty list
-                          when the block is all-blank.
-        stations_dn:      Downstream deck station values.
-        hi_chord_dn:      Downstream high-chord elevations.
-        lo_chord_dn:      Downstream low-chord elevations; empty list when
-                          all-blank.
+    Attributes
+    ----------
+    dist:
+        Distance from the upstream cross section to the
+        bridge face (index 0).
+    width:
+        Deck/roadway width (index 1).
+    weir_coefficient:
+        Overflow weir discharge coefficient (index 2).
+    skew:
+        Bridge skew angle in degrees (index 3).
+    max_submergence:
+        Maximum submergence ratio (index 8); ``nan`` when
+        blank.
+    shape:
+        Overflow weir crest shape — ``'Broad Crested'`` or
+        ``'Ogee'`` (from Is_Ogee flag, index 9).
+    min_lo_chord:
+        Minimum low-chord elevation (index 6); ``nan`` when
+        blank.
+    max_hi_chord:
+        Maximum high-chord elevation (index 7); ``nan`` when
+        blank.
+    stations_up:
+        Upstream deck station values.
+    hi_chord_up:
+        Upstream high-chord (top of deck) elevations.
+    lo_chord_up:
+        Upstream low-chord (soffit) elevations; empty list
+        when the block is all-blank.
+    stations_dn:
+        Downstream deck station values.
+    hi_chord_dn:
+        Downstream high-chord elevations.
+    lo_chord_dn:
+        Downstream low-chord elevations; empty list when
+        all-blank.
 
     .. TODO: The ``Bridge Culvert-`` flags line (immediately before
        ``Deck Dist``) encodes open-deck / culvert-only options and is not yet
@@ -789,21 +924,25 @@ class Structure:
          from the ``*.rasmap`` file or the HDF geometry file alongside the
          text file, and populate this field when available.
 
-    Attributes:
-        mode:           HEC-RAS mode string (e.g. ``'Weir/Gate/Culverts'``).
-                        Always ``''`` for inline structures — not stored in
-                        the text format.
+    Attributes
+    ----------
+    mode:
+        HEC-RAS mode string (e.g. ``'Weir/Gate/Culverts'``).
+        Always ``''`` for inline structures — not stored in
+        the text format.
 
-                        .. TODO: Check whether ``Mode=`` or equivalent is
-                           written to the ``.g**`` file for any structure type
-                           and parse it when found.
-
-        upstream_type:  Connection type on the upstream side (``'XS'``,
-                        ``'SA'``, ``'2D'``, or ``'--'``).  Always ``'XS'``
-                        for inline structures.
-        downstream_type: Connection type on the downstream side.
-        centerline:     GIS centreline as ``[(x, y), ...]``; always ``[]``
-                        from text files.
+        .. TODO: Check whether ``Mode=`` or equivalent is
+        written to the ``.g**`` file for any structure type
+        and parse it when found.
+    upstream_type:
+        Connection type on the upstream side (``'XS'``,
+        ``'SA'``, ``'2D'``, or ``'--'``).  Always ``'XS'``
+        for inline structures.
+    downstream_type:
+        Connection type on the downstream side.
+    centerline:
+        GIS centreline as ``[(x, y), ...]``; always ``[]``
+        from text files.
     """
 
     mode: str
@@ -838,20 +977,29 @@ class InlineStructure(Structure):
     - ``crest_profile``: station/elevation pairs defining the weir crest
       geometry — from the ``#Inline Weir SE=`` block; no equivalent in HDF.
 
-    Attributes:
-        location:        ``(river, reach, rs)`` of this structure.
-        upstream_node:   ``(river, reach, rs)`` of the nearest upstream XS;
-                         ``("", "", "")`` when none found.
-        downstream_node: ``(river, reach, rs)`` of the nearest downstream XS;
-                         ``("", "", "")`` when none found.
-        weir:            Overflow weir data from ``IW Dist`` block; ``None``
-                         if no ``IW Dist`` line is present.
-        gate_groups:     Gate group definitions from ``IW Gate Name`` blocks.
-        description:     Node description from ``BEGIN/END DESCRIPTION``.
-        pilot_flow:      Minimum (pilot) flow through the structure —
-                         ``IW Pilot Flow=``; ``0.0`` when absent.
-        crest_profile:   Weir crest station/elevation pairs from the
-                         ``#Inline Weir SE=`` block; empty list when absent.
+    Attributes
+    ----------
+    location:
+        ``(river, reach, rs)`` of this structure.
+    upstream_node:
+        ``(river, reach, rs)`` of the nearest upstream XS;
+        ``("", "", "")`` when none found.
+    downstream_node:
+        ``(river, reach, rs)`` of the nearest downstream XS;
+        ``("", "", "")`` when none found.
+    weir:
+        Overflow weir data from ``IW Dist`` block; ``None``
+        if no ``IW Dist`` line is present.
+    gate_groups:
+        Gate group definitions from ``IW Gate Name`` blocks.
+    description:
+        Node description from ``BEGIN/END DESCRIPTION``.
+    pilot_flow:
+        Minimum (pilot) flow through the structure —
+        ``IW Pilot Flow=``; ``0.0`` when absent.
+    crest_profile:
+        Weir crest station/elevation pairs from the
+        ``#Inline Weir SE=`` block; empty list when absent.
     """
 
     location: tuple[str, str, str] = ("", "", "")
@@ -888,28 +1036,42 @@ class Bridge(Structure):
     - ``description``: text-file-specific field from
       ``BEGIN/END DESCRIPTION``; no equivalent in HDF.
 
-    Attributes:
-        location:        ``(river, reach, rs)`` of this structure.
-        upstream_node:   ``(river, reach, rs)`` of the nearest upstream XS;
-                         ``("", "", "")`` when none found.
-        downstream_node: ``(river, reach, rs)`` of the nearest downstream XS;
-                         ``("", "", "")`` when none found.
-        weir:            Overflow weir scalars from the ``Deck Dist`` line;
-                         ``None`` if the line is absent.
-        gate_groups:     Always ``[]``.
-        description:     Node description from ``BEGIN/END DESCRIPTION``.
-        roadway:         Full deck geometry (stations, hi/lo chords) from the
-                         ``Deck Dist`` block; ``None`` when absent.
-        culvert_groups:  Barrel definitions from ``Culvert=`` lines.
-        piers:           Pier groups from ``Pier Skew, ...`` blocks.
-        node_name:       Node name from ``Node Name=``; empty string when
-                         absent.
-        htab_hw_max:     Max headwater elevation from ``BC HTab HWMax=``;
-                         ``None`` when absent.
-        htab_tw_max:     Max tailwater elevation from ``BC HTab TWMax=``;
-                         ``None`` when absent.
-        htab_max_flow:   Max flow from ``BC HTab MaxFlow=``; ``None`` when
-                         absent.
+    Attributes
+    ----------
+    location:
+        ``(river, reach, rs)`` of this structure.
+    upstream_node:
+        ``(river, reach, rs)`` of the nearest upstream XS;
+        ``("", "", "")`` when none found.
+    downstream_node:
+        ``(river, reach, rs)`` of the nearest downstream XS;
+        ``("", "", "")`` when none found.
+    weir:
+        Overflow weir scalars from the ``Deck Dist`` line;
+        ``None`` if the line is absent.
+    gate_groups:
+        Always ``[]``.
+    description:
+        Node description from ``BEGIN/END DESCRIPTION``.
+    roadway:
+        Full deck geometry (stations, hi/lo chords) from the
+        ``Deck Dist`` block; ``None`` when absent.
+    culvert_groups:
+        Barrel definitions from ``Culvert=`` lines.
+    piers:
+        Pier groups from ``Pier Skew, ...`` blocks.
+    node_name:
+        Node name from ``Node Name=``; empty string when
+        absent.
+    htab_hw_max:
+        Max headwater elevation from ``BC HTab HWMax=``;
+        ``None`` when absent.
+    htab_tw_max:
+        Max tailwater elevation from ``BC HTab TWMax=``;
+        ``None`` when absent.
+    htab_max_flow:
+        Max flow from ``BC HTab MaxFlow=``; ``None`` when
+        absent.
     """
 
     location: tuple[str, str, str] = ("", "", "")
@@ -950,28 +1112,40 @@ class LateralStructure(Structure):
     - ``description``: text-file-specific field from
       ``BEGIN/END DESCRIPTION``; no equivalent in HDF.
 
-    Attributes:
-        location:        ``(river, reach, rs)`` of this structure.
-        upstream_node:   ``(river, reach, rs)`` of the nearest upstream XS;
-                         ``("", "", "")`` when none found.
-        downstream_node: Connected river+reach as ``"river reach"``
-                         (from ``Lateral Weir End=``); empty string when
-                         absent.
-        weir:            Overflow weir data from ``Lateral Weir`` lines;
-                         ``None`` if no ``Lateral Weir WD=`` line is present.
-        gate_groups:     Always ``[]``.
-        description:     Node description from ``BEGIN/END DESCRIPTION``.
-        pos:             Bank side of the weir — ``0`` = left, ``1`` = right
-                         (from ``Lateral Weir Pos=``).
-        distance:        Setback distance from the upstream cross section
-                         (from ``Lateral Weir Distance=``); ``nan`` when
-                         absent.
-        crest_profile:   Weir crest station/elevation pairs from the
-                         ``Lateral Weir SE=`` block; empty list when absent.
-        flap_gates:      ``True`` when ``Lateral Weir Flap Gates= -1`` or
-                         ``1``; ``False`` when ``0`` or absent.
-        tw_multiple_xs:  ``True`` when tailwater uses multiple XS averaging
-                         (``Lateral Weir TW Multiple XS=`` non-zero).
+    Attributes
+    ----------
+    location:
+        ``(river, reach, rs)`` of this structure.
+    upstream_node:
+        ``(river, reach, rs)`` of the nearest upstream XS;
+        ``("", "", "")`` when none found.
+    downstream_node:
+        Connected river+reach as ``"river reach"``
+        (from ``Lateral Weir End=``); empty string when
+        absent.
+    weir:
+        Overflow weir data from ``Lateral Weir`` lines;
+        ``None`` if no ``Lateral Weir WD=`` line is present.
+    gate_groups:
+        Always ``[]``.
+    description:
+        Node description from ``BEGIN/END DESCRIPTION``.
+    pos:
+        Bank side of the weir — ``0`` = left, ``1`` = right
+        (from ``Lateral Weir Pos=``).
+    distance:
+        Setback distance from the upstream cross section
+        (from ``Lateral Weir Distance=``); ``nan`` when
+        absent.
+    crest_profile:
+        Weir crest station/elevation pairs from the
+        ``Lateral Weir SE=`` block; empty list when absent.
+    flap_gates:
+        ``True`` when ``Lateral Weir Flap Gates= -1`` or
+        ``1``; ``False`` when ``0`` or absent.
+    tw_multiple_xs:
+        ``True`` when tailwater uses multiple XS averaging
+        (``Lateral Weir TW Multiple XS=`` non-zero).
 
     .. TODO: ``Lateral Weir Hagers EQN=`` (Hager's weir equation on/off flag
        and six coefficients) is not yet parsed.
@@ -1721,19 +1895,28 @@ class Geometry:
         If *mann_type* or *mann_alt* are ``None``, the existing values from
         the file are preserved.
 
-        Args:
-            river:     River name (case-insensitive).
-            reach:     Reach name (case-insensitive).
-            rs:        River station string (leading/trailing whitespace and
-                       trailing ``*`` are ignored in comparisons).
-            entries:   New Manning's n zones (station, n_value, variation).
-            mann_type: Type flag for the ``#Mann=`` header.  ``None`` keeps
-                       the existing value.
-            mann_alt:  Alt flag for the ``#Mann=`` header.  ``None`` keeps
-                       the existing value.
+        Parameters
+        ----------
+        river:
+            River name (case-insensitive).
+        reach:
+            Reach name (case-insensitive).
+        rs:
+            River station string (leading/trailing whitespace and
+            trailing ``*`` are ignored in comparisons).
+        entries:
+            New Manning's n zones (station, n_value, variation).
+        mann_type:
+            Type flag for the ``#Mann=`` header.  ``None`` keeps
+            the existing value.
+        mann_alt:
+            Alt flag for the ``#Mann=`` header.  ``None`` keeps
+            the existing value.
 
-        Raises:
-            KeyError: No matching node or no ``#Mann=`` line found.
+        Raises
+        ------
+        KeyError
+            No matching node or no ``#Mann=`` line found.
         """
         start = self._find_node_start(river, reach, rs)
         if start is None:
@@ -1772,16 +1955,25 @@ class Geometry:
     ) -> None:
         """Replace the station/elevation data for the given cross section.
 
-        Args:
-            river:      River name (case-insensitive).
-            reach:      Reach name (case-insensitive).
-            rs:         River station string.
-            stations:   New station values.
-            elevations: New elevation values (must match length of *stations*).
+        Parameters
+        ----------
+        river:
+            River name (case-insensitive).
+        reach:
+            Reach name (case-insensitive).
+        rs:
+            River station string.
+        stations:
+            New station values.
+        elevations:
+            New elevation values (must match length of *stations*).
 
-        Raises:
-            ValueError: *stations* and *elevations* have different lengths.
-            KeyError:   No matching node or no ``#Sta/Elev=`` line found.
+        Raises
+        ------
+        ValueError
+            *stations* and *elevations* have different lengths.
+        KeyError
+            No matching node or no ``#Sta/Elev=`` line found.
         """
         if len(stations) != len(elevations):
             raise ValueError(
@@ -1815,8 +2007,10 @@ class Geometry:
     ) -> None:
         """Set the left and right bank stations for the given cross section.
 
-        Raises:
-            KeyError: No matching node or no ``Bank Sta=`` line found.
+        Raises
+        ------
+        KeyError
+            No matching node or no ``Bank Sta=`` line found.
         """
         start = self._find_node_start(river, reach, rs)
         if start is None:
@@ -1837,8 +2031,10 @@ class Geometry:
     ) -> None:
         """Set the expansion/contraction loss coefficients.
 
-        Raises:
-            KeyError: No matching node or no ``Exp/Cntr=`` line found.
+        Raises
+        ------
+        KeyError
+            No matching node or no ``Exp/Cntr=`` line found.
         """
         start = self._find_node_start(river, reach, rs)
         if start is None:
@@ -1867,14 +2063,21 @@ class Geometry:
         contains valid zone boundary stations.  When vertical n is active
         HEC-RAS expects those n-values to be ``0`` (placeholders).
 
-        Args:
-            river:      River name (case-insensitive).
-            reach:      Reach name (case-insensitive).
-            rs:         River station string.
-            vertical_n: New vertical n data, or ``None`` to remove.
+        Parameters
+        ----------
+        river:
+            River name (case-insensitive).
+        reach:
+            Reach name (case-insensitive).
+        rs:
+            River station string.
+        vertical_n:
+            New vertical n data, or ``None`` to remove.
 
-        Raises:
-            KeyError: No matching cross-section node found.
+        Raises
+        ------
+        KeyError
+            No matching cross-section node found.
         """
         start = self._find_node_start(river, reach, rs)
         if start is None:
@@ -1934,15 +2137,23 @@ class Geometry:
         exists; otherwise it is inserted before ``#XS Ineff=`` or
         ``Bank Sta=``.
 
-        Args:
-            river: River name (case-insensitive).
-            reach: Reach name (case-insensitive).
-            rs:    River station string.
-            left:  Left-bank levee definition, or ``None`` to clear.
-            right: Right-bank levee definition, or ``None`` to clear.
+        Parameters
+        ----------
+        river:
+            River name (case-insensitive).
+        reach:
+            Reach name (case-insensitive).
+        rs:
+            River station string.
+        left:
+            Left-bank levee definition, or ``None`` to clear.
+        right:
+            Right-bank levee definition, or ``None`` to clear.
 
-        Raises:
-            KeyError: No matching cross-section node found.
+        Raises
+        ------
+        KeyError
+            No matching cross-section node found.
         """
         start = self._find_node_start(river, reach, rs)
         if start is None:
@@ -1979,14 +2190,21 @@ class Geometry:
         Pass an empty list to remove any existing ``#Block Obstruct=`` block.
         When no block exists, the new block is inserted before ``Bank Sta=``.
 
-        Args:
-            river:        River name (case-insensitive).
-            reach:        Reach name (case-insensitive).
-            rs:           River station string.
-            obstructions: New obstruction list (empty = remove).
+        Parameters
+        ----------
+        river:
+            River name (case-insensitive).
+        reach:
+            Reach name (case-insensitive).
+        rs:
+            River station string.
+        obstructions:
+            New obstruction list (empty = remove).
 
-        Raises:
-            KeyError: No matching cross-section node found.
+        Raises
+        ------
+        KeyError
+            No matching cross-section node found.
         """
         start = self._find_node_start(river, reach, rs)
         if start is None:
@@ -2034,16 +2252,25 @@ class Geometry:
         Replaces the ``XS HTab Starting El and Incr=`` line in-place, or
         inserts it after ``XS Rating Curve=`` if absent.
 
-        Args:
-            river:              River name (case-insensitive).
-            reach:              Reach name (case-insensitive).
-            rs:                 River station string.
-            starting_elevation: First elevation in the hydraulic table.
-            increment:          Elevation increment between table entries.
-            count:              Number of entries in the hydraulic table.
+        Parameters
+        ----------
+        river:
+            River name (case-insensitive).
+        reach:
+            Reach name (case-insensitive).
+        rs:
+            River station string.
+        starting_elevation:
+            First elevation in the hydraulic table.
+        increment:
+            Elevation increment between table entries.
+        count:
+            Number of entries in the hydraulic table.
 
-        Raises:
-            KeyError: No matching cross-section node found.
+        Raises
+        ------
+        KeyError
+            No matching cross-section node found.
         """
         start = self._find_node_start(river, reach, rs)
         if start is None:

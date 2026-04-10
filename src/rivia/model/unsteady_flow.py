@@ -261,9 +261,11 @@ class _Boundary:
     ) -> tuple[str, str, str] | tuple[str, str, float]:
         """Return ``(river, reach, river_station)``.
 
-        Args:
-            rs_float: If ``True``, river_station is returned as ``float``
-                      (strips trailing ``'*'``); otherwise as ``str`` (default).
+        Parameters
+        ----------
+        rs_float:
+            If ``True``, river_station is returned as ``float``
+            (strips trailing ``'*'``); otherwise as ``str`` (default).
         """
         if rs_float:
             return (self.river, self.reach, self._rs_float())
@@ -1011,10 +1013,12 @@ class UnsteadyFlow:
     def sort_flow_hydrographs(self, *, descending: bool = True) -> None:
         """Sort :class:`FlowHydrograph` entries by river station.
 
-        Args:
-            descending: If ``True`` (default), highest station first
-                        (upstream → downstream for standard RAS numbering).
-                        Pass ``False`` for ascending order (lowest station first).
+        Parameters
+        ----------
+        descending:
+            If ``True`` (default), highest station first
+            (upstream → downstream for standard RAS numbering).
+            Pass ``False`` for ascending order (lowest station first).
         """
         self._sort_type(FlowHydrograph, descending=descending)
 
@@ -1023,20 +1027,24 @@ class UnsteadyFlow:
 
         Other boundary types remain at their original positions.
 
-        Args:
-            descending: If ``True`` (default), highest station first
-                        (upstream → downstream for standard RAS numbering).
-                        Pass ``False`` for ascending order (lowest station first).
+        Parameters
+        ----------
+        descending:
+            If ``True`` (default), highest station first
+            (upstream → downstream for standard RAS numbering).
+            Pass ``False`` for ascending order (lowest station first).
         """
         self._sort_type(GateBoundary, descending=descending)
 
     def sort_lateral_inflows(self, *, descending: bool = True) -> None:
         """Sort :class:`LateralInflow` entries by river station.
 
-        Args:
-            descending: If ``True`` (default), highest station first
-                        (upstream → downstream for standard RAS numbering).
-                        Pass ``False`` for ascending order (lowest station first).
+        Parameters
+        ----------
+        descending:
+            If ``True`` (default), highest station first
+            (upstream → downstream for standard RAS numbering).
+            Pass ``False`` for ascending order (lowest station first).
         """
         self._sort_type(LateralInflow, descending=descending)
 
@@ -1047,10 +1055,13 @@ class UnsteadyFlow:
     def set_flow_hydrograph(self, index: int, values: _Values) -> None:
         """Set flow hydrograph values by position in :attr:`flow_hydrographs`.
 
-        Args:
-            index: Position in the filtered flow-hydrograph list.
-            values: New flow values.  A scalar is broadcast to the length of
-                the existing time series.
+        Parameters
+        ----------
+        index:
+            Position in the filtered flow-hydrograph list.
+        values:
+            New flow values.  A scalar is broadcast to the length of
+            the existing time series.
         """
         bc = self.flow_hydrographs[index]
         bc.values = _coerce_values(values, len(bc.values))
@@ -1059,9 +1070,11 @@ class UnsteadyFlow:
     def set_lateral_inflow(self, index: int, values: _Values) -> None:
         """Set lateral inflow values by position in :attr:`lateral_inflows`.
 
-        Args:
-            values: New flow values.  A scalar is broadcast to the length of
-                the existing time series.
+        Parameters
+        ----------
+        values:
+            New flow values.  A scalar is broadcast to the length of
+            the existing time series.
         """
         bc = self.lateral_inflows[index]
         bc.values = _coerce_values(values, len(bc.values))
@@ -1070,12 +1083,14 @@ class UnsteadyFlow:
     def set_all_lateral_inflows(self, values: list[float | list[float]]) -> None:
         """Set lateral inflow values across all :class:`LateralInflow` boundaries.
 
-        Args:
-            values: One entry per lateral inflow (in file order).
-                Each entry is either a scalar ``float`` (broadcast to the
-                boundary's existing time-series length) or a ``list[float]``
-                (used as-is).  If ``values`` is shorter than the total number
-                of lateral inflows, the remaining boundaries are left unchanged.
+        Parameters
+        ----------
+        values:
+            One entry per lateral inflow (in file order).
+            Each entry is either a scalar ``float`` (broadcast to the
+            boundary's existing time-series length) or a ``list[float]``
+            (used as-is).  If ``values`` is shorter than the total number
+            of lateral inflows, the remaining boundaries are left unchanged.
         """
         for bc, v in zip(self.lateral_inflows, values, strict=False):
             bc.values = _coerce_values(v, len(bc.values))
@@ -1086,11 +1101,15 @@ class UnsteadyFlow:
     ) -> None:
         """Set gate opening values by position in :attr:`gate_boundaries`.
 
-        Args:
-            index: Position in the filtered gate-boundary list.
-            values: New opening values.  A scalar is broadcast to the length
-                of the existing gate opening time series.
-            gate_index: Which gate within the boundary (default 0).
+        Parameters
+        ----------
+        index:
+            Position in the filtered gate-boundary list.
+        values:
+            New opening values.  A scalar is broadcast to the length
+            of the existing gate opening time series.
+        gate_index:
+            Which gate within the boundary (default 0).
         """
         gate = self.gate_boundaries[index].gates[gate_index]
         gate.values = _coerce_values(values, len(gate.values))
@@ -1099,12 +1118,14 @@ class UnsteadyFlow:
     def set_all_gate_openings(self, values: list[float | list[float]]) -> None:
         """Set gate opening values across all gates in all :class:`GateBoundary`.
 
-        Args:
-            values: One entry per gate (in order across all boundaries).
-                Each entry is either a scalar ``float`` (broadcast to the
-                gate's existing time-series length) or a ``list[float]``
-                (used as-is).  If ``values`` is shorter than the total number
-                of gates, the remaining gates are left unchanged.
+        Parameters
+        ----------
+        values:
+            One entry per gate (in order across all boundaries).
+            Each entry is either a scalar ``float`` (broadcast to the
+            gate's existing time-series length) or a ``list[float]``
+            (used as-is).  If ``values`` is shorter than the total number
+            of gates, the remaining gates are left unchanged.
 
         Derived from: ``archive/ras_tools/unsteadyFlowParser.py``
         """
@@ -1135,8 +1156,10 @@ class UnsteadyFlow:
     ) -> None:
         """Set flow hydrograph values by location.
 
-        Args:
-            values: A scalar is broadcast to the existing time-series length.
+        Parameters
+        ----------
+        values:
+            A scalar is broadcast to the existing time-series length.
         """
         b = self._find_boundary(river, reach, rs)
         if not isinstance(b, FlowHydrograph):
@@ -1149,8 +1172,10 @@ class UnsteadyFlow:
     ) -> None:
         """Set lateral inflow values by location.
 
-        Args:
-            values: A scalar is broadcast to the existing time-series length.
+        Parameters
+        ----------
+        values:
+            A scalar is broadcast to the existing time-series length.
         """
         b = self._find_boundary(river, reach, rs)
         if not isinstance(b, LateralInflow):
@@ -1163,10 +1188,13 @@ class UnsteadyFlow:
     ) -> None:
         """Set gate opening values by location and gate name or index.
 
-        Args:
-            gate: Gate name string, or a zero-based integer index into
-                the boundary's gate list.
-            values: A scalar is broadcast to the existing time-series length.
+        Parameters
+        ----------
+        gate:
+            Gate name string, or a zero-based integer index into
+            the boundary's gate list.
+        values:
+            A scalar is broadcast to the existing time-series length.
         """
         b = self._find_boundary(river, reach, rs)
         if not isinstance(b, GateBoundary):
@@ -1197,12 +1225,17 @@ class UnsteadyFlow:
     def set_initial_flow(self, index: int, flow: float) -> None:
         """Update the initial flow at *index* in :attr:`initial_flow_locs`.
 
-        Args:
-            index: Zero-based position in ``initial_flow_locs``.
-            flow: New flow value.
+        Parameters
+        ----------
+        index:
+            Zero-based position in ``initial_flow_locs``.
+        flow:
+            New flow value.
 
-        Raises:
-            IndexError: *index* is out of range.
+        Raises
+        ------
+        IndexError
+            *index* is out of range.
         """
         self.initial_flow_locs[index].flow = flow
         self._modified = True
@@ -1210,14 +1243,21 @@ class UnsteadyFlow:
     def set_initial_flow_at(self, river: str, reach: str, rs: str, flow: float) -> None:
         """Update the initial flow at the given location.
 
-        Args:
-            river: River name (case-insensitive match).
-            reach: Reach name (case-insensitive match).
-            rs: River station string.
-            flow: New flow value.
+        Parameters
+        ----------
+        river:
+            River name (case-insensitive match).
+        reach:
+            Reach name (case-insensitive match).
+        rs:
+            River station string.
+        flow:
+            New flow value.
 
-        Raises:
-            KeyError: No matching ``Initial Flow Loc`` entry found.
+        Raises
+        ------
+        KeyError
+            No matching ``Initial Flow Loc`` entry found.
         """
         r = river.strip().lower()
         rc = reach.strip().lower()
@@ -1381,8 +1421,10 @@ class UnsteadyFlow:
         3. Boundary section (reconstructed from :attr:`boundaries`)
         4. Trailing lines (verbatim from parse)
 
-        Args:
-            path: Destination path.  Overwrites the source file if omitted.
+        Parameters
+        ----------
+        path:
+            Destination path.  Overwrites the source file if omitted.
         """
         dest = Path(path) if path is not None else self._path
 

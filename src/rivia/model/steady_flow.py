@@ -421,14 +421,21 @@ class SteadyFlow:
         The number of values in *values* need not match the current count;
         the data lines are replaced wholesale.
 
-        Args:
-            river: River name (case-insensitive match).
-            reach: Reach name (case-insensitive match).
-            rs: River station string (stripped comparison).
-            values: New flow values, one per profile.
+        Parameters
+        ----------
+        river:
+            River name (case-insensitive match).
+        reach:
+            Reach name (case-insensitive match).
+        rs:
+            River station string (stripped comparison).
+        values:
+            New flow values, one per profile.
 
-        Raises:
-            KeyError: No matching ``River Rch & RM`` line found.
+        Raises
+        ------
+        KeyError
+            No matching ``River Rch & RM`` line found.
         """
         loc_i = self._find_flow_location(river, reach, rs)
         if loc_i is None:
@@ -514,8 +521,10 @@ class SteadyFlow:
         to the set type are omitted (e.g. ``Dn Slope=`` is not written when
         ``dn_type != 3``).
 
-        Raises:
-            KeyError: No matching ``Boundary for River Rch & Prof#`` line found.
+        Raises
+        ------
+        KeyError
+            No matching ``Boundary for River Rch & Prof#`` line found.
         """
         river, reach, profile = boundary.river, boundary.reach, boundary.profile
         loc_i = self._find_boundary_location(river, reach, profile)

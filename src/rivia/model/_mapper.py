@@ -398,10 +398,13 @@ class MapperExtension:
         ``Terrain Layername`` in the geometry HDF file, then matched against
         the ``<Terrains>`` section of the ``.rasmap`` file.
 
-        Raises:
-            FileNotFoundError: if the geometry HDF file does not exist.
-            KeyError: if the HDF has no ``Terrain Layername`` attribute, or the
-                name does not match any layer in ``<Terrains>``.
+        Raises
+        ------
+        FileNotFoundError
+            if the geometry HDF file does not exist.
+        KeyError
+            if the HDF has no ``Terrain Layername`` attribute, or the
+            name does not match any layer in ``<Terrains>``.
         """
         import h5py
 
