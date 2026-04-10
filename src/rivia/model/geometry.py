@@ -932,8 +932,8 @@ class Structure:
         the text format.
 
         .. TODO: Check whether ``Mode=`` or equivalent is
-        written to the ``.g**`` file for any structure type
-        and parse it when found.
+           written to the ``.g**`` file for any structure type
+           and parse it when found.
     upstream_type:
         Connection type on the upstream side (``'XS'``,
         ``'SA'``, ``'2D'``, or ``'--'``).  Always ``'XS'``
