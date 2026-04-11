@@ -14,6 +14,7 @@ Exposes:
 
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import re
 from dataclasses import dataclass
@@ -302,12 +303,19 @@ class UnsteadyRuntimeLog(RuntimeLog):
             Columns:
 
             * ``datetime`` — :class:`datetime.datetime`
-            * ``location`` — str, river name (1-D) or 2-D flow area name
-            * ``reach`` — str, reach name for 1-D rows; empty string for 2-D rows
-            * ``rs_or_cell`` — str, river station (1-D) or cell identifier (2-D)
+            * ``location_type`` — str, one of ``"1D"``, ``"FlowArea"``,
+              or ``"StorageArea"``
+            * ``location`` — str, river name (1-D), 2-D flow area name,
+              or storage area name
+            * ``reach`` — str, reach name for 1-D rows; empty string otherwise
+            * ``rs_or_cell`` — str, river station (1-D) or cell identifier
+              (2-D); empty string for storage-area rows
             * ``wsel`` — float, water-surface elevation (ft or m)
             * ``error`` — float, iteration error
             * ``iterations`` — int, number of iterations at this step
+            * ``timestep`` — float, active adaptive timestep in seconds at
+              the time of this row; ``NaN`` when no adaptive-timestep change
+              has been logged yet or the run uses a fixed timestep
 
             Rows are in log order (chronological).  Returns an empty
             DataFrame if no iteration lines are found.
@@ -315,25 +323,31 @@ class UnsteadyRuntimeLog(RuntimeLog):
         Notes
         -----
         Adaptive-timestep change lines share the same datestamp prefix but
-        contain the word ``timestep`` and are excluded here.
+        contain the word ``timestep``; they are not returned as rows but are
+        used to populate the ``timestep`` column of subsequent iteration rows.
         """
         _COLS = [
-            "datetime", "location", "reach",
-            "rs_or_cell", "wsel", "error", "iterations",
+            "datetime", "location_type", "location", "reach",
+            "rs_or_cell", "wsel", "error", "iterations", "timestep",
         ]
         records: list[dict] = []
+        current_timestep: float = float("nan")
         for line in self.lines:
             m = _RE_DATESTAMP.match(line)
             if m is None:
                 continue
             rest = line[m.end():].strip()
-            # Exclude adaptive-timestep lines
-            if re.match(r"timestep\s*=", rest, re.IGNORECASE):
+            # Capture adaptive-timestep lines and keep scanning
+            ts_m = re.match(r"timestep\s*=\s*(\S+)\s*\(sec\)", rest, re.IGNORECASE)
+            if ts_m:
+                with contextlib.suppress(ValueError):
+                    current_timestep = float(ts_m.group(1))
                 continue
             parts = rest.split("\t")
             try:
                 if len(parts) == 6:
                     # 1-D layout: river \t reach \t rs \t wsel \t error \t iters
+                    location_type = "1D"
                     location = parts[0].strip()
                     reach = parts[1].strip()
                     rs_or_cell = parts[2].strip()
@@ -342,6 +356,7 @@ class UnsteadyRuntimeLog(RuntimeLog):
                     iterations = int(parts[5].strip())
                 elif len(parts) == 5:
                     # 2-D layout: area \t cell \t wsel \t error \t iters
+                    location_type = "FlowArea"
                     location = parts[0].strip()
                     reach = ""
                     rs_or_cell = parts[1].strip()
@@ -350,6 +365,7 @@ class UnsteadyRuntimeLog(RuntimeLog):
                     iterations = int(parts[4].strip())
                 elif len(parts) == 4:
                     # Storage area layout: name \t wsel \t error \t iters
+                    location_type = "StorageArea"
                     location = parts[0].strip()
                     reach = ""
                     rs_or_cell = ""
@@ -363,12 +379,84 @@ class UnsteadyRuntimeLog(RuntimeLog):
             records.append(
                 {
                     "datetime": _parse_hec_datetime(m.group("date"), m.group("time")),
+                    "location_type": location_type,
                     "location": location,
                     "reach": reach,
                     "rs_or_cell": rs_or_cell,
                     "wsel": wsel,
                     "error": error,
                     "iterations": iterations,
+                    "timestep": current_timestep,
+                }
+            )
+        if not records:
+            return pd.DataFrame(columns=_COLS)
+        return pd.DataFrame(records)
+
+    # ------------------------------------------------------------------
+    # max_1d2d_iterations
+    # ------------------------------------------------------------------
+
+    def max_1d2d_iterations(self) -> pd.DataFrame:
+        """Per-timestep maximum 1D/2D connection iteration summary.
+
+        Parses lines from the ``Maximum 1D/2D iterations`` section of the
+        compute log.  These lines record timesteps at which the 1D/2D
+        interface flow equation failed to converge within the iteration
+        limit.  They are distinct from the per-element rows returned by
+        :meth:`max_iterations` and are absent from plans that have no
+        1D/2D connections.
+
+        Each data line has the form::
+
+            DD<MON>YYYY HH:MM:SS    1D/2D Flow error\\t<flow_error>\\t
+                <river>   <reach>   <rs>
+
+        where the third tab field holds river name, reach name, and river
+        station separated by two or more spaces.
+
+        Returns
+        -------
+        pandas.DataFrame
+            Columns:
+
+            * ``datetime`` — :class:`datetime.datetime`
+            * ``flow_error`` — float, flow error at the 1D/2D interface
+              (cfs or cms; can be negative)
+            * ``river`` — str, river name
+            * ``reach`` — str, reach name
+            * ``rs`` — str, river station
+
+            Rows are in log order (chronological).  Returns an empty
+            DataFrame if no 1D/2D iteration lines are found.
+        """
+        _COLS = ["datetime", "flow_error", "river", "reach", "rs"]
+        records: list[dict] = []
+        for line in self.lines:
+            m = _RE_DATESTAMP.match(line)
+            if m is None:
+                continue
+            rest = line[m.end():].strip()
+            parts = rest.split("\t")
+            if len(parts) != 3 or parts[0].strip() != "1D/2D Flow error":
+                continue
+            try:
+                flow_error = float(parts[1])
+                connection = parts[2].strip()
+                tokens = re.split(r"\s{2,}", connection)
+                if len(tokens) == 3:
+                    river, reach, rs = tokens[0], tokens[1], tokens[2]
+                else:
+                    river, reach, rs = connection, "", ""
+            except (ValueError, IndexError):
+                continue
+            records.append(
+                {
+                    "datetime": _parse_hec_datetime(m.group("date"), m.group("time")),
+                    "flow_error": flow_error,
+                    "river": river,
+                    "reach": reach,
+                    "rs": rs,
                 }
             )
         if not records:
