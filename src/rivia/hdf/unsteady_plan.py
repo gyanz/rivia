@@ -28,6 +28,7 @@ import pandas as pd
 
 from rivia.utils import log_call, parse_interval, timed
 
+from ._base import _PlanHdf
 from .geometry import (
     _SA_ROOT,
     Bridge,
@@ -45,6 +46,7 @@ from .geometry import (
     StructureCollection,
     _decode,
 )
+from .log import UnsteadyRuntimeLog
 
 if TYPE_CHECKING:
     import h5py
@@ -3049,7 +3051,7 @@ class ComputeSummary:
         return False
 
 
-class UnsteadyPlan(Geometry):
+class UnsteadyPlan(_PlanHdf, Geometry):
     """Read HEC-RAS plan HDF5 output files (``*.p*.hdf``).
 
     A plan HDF file contains the same ``Geometry/`` data as a geometry HDF
@@ -3094,6 +3096,28 @@ class UnsteadyPlan(Geometry):
         self._plan_cross_sections_instantaneous: (
             CrossSectionResultsCollection | None
         ) = None
+
+    # ------------------------------------------------------------------
+    # Runtime log
+    # ------------------------------------------------------------------
+
+    def runtime_log(self) -> UnsteadyRuntimeLog:
+        """Read the runtime compute log from ``Results/Summary/``.
+
+        Returns
+        -------
+        UnsteadyRuntimeLog
+            Log container with the full text/RTF compute messages, the
+            compute-process table, and unsteady-specific parsing methods
+            such as :meth:`~UnsteadyRuntimeLog.max_iterations` and
+            :meth:`~UnsteadyRuntimeLog.adaptive_timesteps`.
+
+        Raises
+        ------
+        KeyError
+            If ``Results/Summary`` is absent from the HDF file.
+        """
+        return UnsteadyRuntimeLog(*self._runtime_log_raw())
 
     # ------------------------------------------------------------------
     # File metadata

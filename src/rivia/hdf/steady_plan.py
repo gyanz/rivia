@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, overload
 
 import numpy as np
 
+from ._base import _PlanHdf
 from .geometry import (
     _SA_ROOT,
     CrossSection,
@@ -43,6 +44,7 @@ from .geometry import (
 from .geometry import (
     StructureCollection as _GeomStructureCollection,
 )
+from .log import SteadyRuntimeLog
 
 if TYPE_CHECKING:
     import h5py
@@ -1038,7 +1040,7 @@ class StructureResultsCollection(_GeomStructureCollection):
 # ---------------------------------------------------------------------------
 
 
-class SteadyPlan(Geometry):
+class SteadyPlan(_PlanHdf, Geometry):
     """Read HEC-RAS steady-flow plan HDF5 output files (``*.p*.hdf``).
 
     A steady plan HDF file contains the same ``Geometry/`` data as a geometry
@@ -1073,6 +1075,27 @@ class SteadyPlan(Geometry):
         self._steady_cross_sections: CrossSectionResultsCollection | None = None
         self._steady_storage_areas: StorageAreaResultsCollection | None = None
         self._steady_structures: StructureResultsCollection | None = None
+
+    # ------------------------------------------------------------------
+    # Runtime log
+    # ------------------------------------------------------------------
+
+    def runtime_log(self) -> SteadyRuntimeLog:
+        """Read the runtime compute log from ``Results/Summary/``.
+
+        Returns
+        -------
+        SteadyRuntimeLog
+            Log container with the full text/RTF compute messages and the
+            compute-process table.  Steady-specific parsing methods will be
+            added to :class:`SteadyRuntimeLog` as the library evolves.
+
+        Raises
+        ------
+        KeyError
+            If ``Results/Summary`` is absent from the HDF file.
+        """
+        return SteadyRuntimeLog(*self._runtime_log_raw())
 
     # ------------------------------------------------------------------
     # File metadata

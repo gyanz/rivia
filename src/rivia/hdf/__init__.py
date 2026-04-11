@@ -5,6 +5,12 @@
 # user-constructed.  They are importable on demand for type annotations:
 #   from rivia.hdf import FlowArea, CrossSection, Bridge  # works
 # but are intentionally absent from __all__.
+from .log import (  # noqa: F401
+    ComputeProcess,
+    RuntimeLog,
+    SteadyRuntimeLog,
+    UnsteadyRuntimeLog,
+)
 from .geometry import (  # noqa: F401
     BoundaryConditionCollection,
     BoundaryConditionLine,
@@ -53,7 +59,11 @@ from .unsteady_plan import (  # noqa: F401
 )
 
 __all__ = [
+    "ComputeProcess",
     "Geometry",
+    "RuntimeLog",
     "SteadyPlan",
+    "SteadyRuntimeLog",
     "UnsteadyPlan",
+    "UnsteadyRuntimeLog",
 ]
