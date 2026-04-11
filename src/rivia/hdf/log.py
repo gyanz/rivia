@@ -16,11 +16,14 @@ from __future__ import annotations
 
 import contextlib
 import datetime as dt
+import logging
 import re
 from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
+
+logger = logging.getLogger("rivia.hdf")
 
 # ---------------------------------------------------------------------------
 # Regex helpers used in UnsteadyRuntimeLog
@@ -229,6 +232,36 @@ class RuntimeLog:
                         return dt.datetime.strptime(raw, fmt)
                     except ValueError:
                         continue
+        return None
+
+    def computation_time(self) -> float | None:
+        """Computation time in seconds for the flow-computations process.
+
+        Searches :attr:`compute_processes` for the entry whose ``process``
+        attribute ends with ``"Flow Computations"`` (case-insensitive,
+        ignoring leading/trailing whitespace) and returns its recorded
+        elapsed time converted to seconds.
+
+        Returns
+        -------
+        float or None
+            Elapsed time in seconds, or ``None`` when no matching process
+            entry is found.
+
+        Examples
+        --------
+        ::
+
+            log = plan.runtime_log()
+            secs = log.computation_time()
+            if secs is not None:
+                print(f"Flow computations took {secs:.1f} s")
+        """
+        for proc in self.compute_processes:
+            if proc.process.strip().lower().endswith("flow computations"):
+                secs = proc.compute_time_ms / 1000.0
+                logger.info("Flow computation time: %.3f seconds", secs)
+                return secs
         return None
 
 
