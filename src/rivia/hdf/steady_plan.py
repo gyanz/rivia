@@ -22,10 +22,11 @@ Derived from examination of HEC-RAS 6.6 steady-flow plan HDF output at
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 from collections.abc import Iterator
 from pathlib import Path
-from typing import TYPE_CHECKING, overload
+from typing import TYPE_CHECKING, Any, overload
 
 import numpy as np
 
@@ -1036,6 +1037,81 @@ class StructureResultsCollection(_GeomStructureCollection):
 
 
 # ---------------------------------------------------------------------------
+# ComputeSummary dataclasses
+# ---------------------------------------------------------------------------
+
+_STEADY_SUMMARY = "Results/Steady/Summary"
+
+
+@dataclasses.dataclass
+class RunStatus:
+    """Run metadata from ``Results/Steady/Summary``.
+
+    Attributes
+    ----------
+    solution:
+        HEC-RAS solution status string, e.g.
+        ``"Steady Finished Successfully"``.
+    run_window:
+        Wall-clock window during which the simulation ran, e.g.
+        ``"11APR2026 11:53:38 to 11APR2026 11:53:39"``.
+    """
+
+    solution: str
+    run_window: str
+
+    def to_dict(self) -> dict[str, str]:
+        """Return a dict with short, meaningful keys."""
+        return {"solution": self.solution, "run_window": self.run_window}
+
+    def ok(self) -> bool:
+        """Return ``True`` if the solution string indicates success."""
+        return "successfully" in self.solution.lower()
+
+
+@dataclasses.dataclass
+class ComputeSummary:
+    """Steady simulation summary for a plan HDF file.
+
+    Wraps the attributes stored under ``Results/Steady/Summary``.
+    Steady-flow runs do not produce volume-accounting output; only
+    run metadata is available.
+
+    Attributes
+    ----------
+    run:
+        Solution status and wall-clock run window.
+    """
+
+    run: RunStatus
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a nested dict with short, meaningful keys.
+
+        Top-level key: ``"run"``.
+        """
+        return {"run": self.run.to_dict()}
+
+    def ok(self) -> bool:
+        """Return ``True`` if the simulation finished successfully.
+
+        Logs a ``CRITICAL`` message when the solution string does not
+        contain ``"successfully"``.
+
+        Returns
+        -------
+        bool
+        """
+        passed = self.run.ok()
+        if not passed:
+            logger.critical(
+                "Steady solution did not finish successfully: %r",
+                self.run.solution,
+            )
+        return passed
+
+
+# ---------------------------------------------------------------------------
 # SteadyPlan - public entry point
 # ---------------------------------------------------------------------------
 
@@ -1096,6 +1172,53 @@ class SteadyPlan(_PlanHdf, Geometry):
             If ``Results/Summary`` is absent from the HDF file.
         """
         return SteadyRuntimeLog(*self._runtime_log_raw())
+
+    def compute_summary(self) -> ComputeSummary:
+        """Return the steady simulation summary.
+
+        Reads the ``Results/Steady/Summary`` group and returns a
+        :class:`ComputeSummary` dataclass with run metadata.
+
+        Steady-flow runs do not produce volume accounting; call
+        :meth:`ComputeSummary.ok` to check whether the solution
+        finished successfully.
+
+        Returns
+        -------
+        ComputeSummary
+
+        Raises
+        ------
+        KeyError
+            If ``Results/Steady/Summary`` is absent from the HDF file.
+
+        Examples
+        --------
+        ::
+
+            with SteadyPlan("Baxter.p01") as hdf:
+                s = hdf.compute_summary()
+                print(s.run.solution)
+                if s.ok():
+                    print("Run completed successfully")
+        """
+        grp = self._hdf.get(_STEADY_SUMMARY)
+        if grp is None:
+            raise KeyError(
+                f"'{_STEADY_SUMMARY}' not found. "
+                "Ensure this is a steady-flow plan HDF file that has been run."
+            )
+
+        def _str(key: str) -> str:
+            v = grp.attrs[key]
+            return v.decode() if isinstance(v, (bytes, np.bytes_)) else str(v)
+
+        return ComputeSummary(
+            run=RunStatus(
+                solution=_str("Solution"),
+                run_window=_str("Run Time Window"),
+            )
+        )
 
     # ------------------------------------------------------------------
     # File metadata

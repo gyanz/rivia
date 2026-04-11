@@ -33,9 +33,11 @@ from .geometry import (  # noqa: F401
     Weir,
 )
 from .steady_plan import (  # noqa: F401
+    ComputeSummary as SteadyComputeSummary,
     CrossSectionResults as SteadyCrossSectionResults,
     CrossSectionResultsCollection as SteadyCrossSectionResultsCollection,
     LateralResults as SteadyLateralResults,
+    RunStatus as SteadyRunStatus,
     SteadyPlan,
     StorageAreaResults as SteadyStorageAreaResults,
     StorageAreaResultsCollection as SteadyStorageAreaResultsCollection,
