@@ -2669,6 +2669,40 @@ class RunStatus:
             "timestamp_unstable": self.timestamp_unstable,
         }
 
+    def parse_run_window(
+        self,
+    ) -> tuple[dt.datetime, dt.datetime] | None:
+        """Parse :attr:`run_window` into ``(start, end)`` datetimes.
+
+        Splits the raw string on ``" to "`` and parses each half with
+        the HEC-RAS timestamp format ``"%d%b%Y %H:%M:%S"``.
+
+        Returns
+        -------
+        tuple[datetime, datetime] or None
+            ``(start, end)`` as timezone-naive :class:`datetime.datetime`
+            objects, or ``None`` when the string is missing, malformed,
+            or cannot be parsed.
+
+        Examples
+        --------
+        ::
+
+            s = hdf.compute_summary()
+            window = s.run.parse_run_window()
+            if window:
+                start, end = window
+                print(end - start)   # wall-clock duration
+        """
+        try:
+            left, right = self.run_window.split(" to ", maxsplit=1)
+            return (
+                dt.datetime.strptime(left.strip(), _RAS_TS_FMT),
+                dt.datetime.strptime(right.strip(), _RAS_TS_FMT),
+            )
+        except (ValueError, AttributeError):
+            return None
+
 
 @dataclasses.dataclass
 class VolumeAccounting:

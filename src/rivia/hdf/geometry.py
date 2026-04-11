@@ -30,6 +30,7 @@ logger = logging.getLogger("rivia.hdf")
 # ---------------------------------------------------------------------------
 # HDF path constants
 # ---------------------------------------------------------------------------
+_GEOM_ROOT = "Geometry"
 _GEOM_2D_ROOT = "Geometry/2D Flow Areas"
 _GEOM_2D_ATTRS = f"{_GEOM_2D_ROOT}/Attributes"
 _SA_ROOT = "Geometry/Storage Areas"
@@ -2613,6 +2614,81 @@ class CrossSectionCollection:
         return f"{type(self).__name__}({len(self)} cross sections)"
 
 
+# ---------------------------------------------------------------------------
+# GeometrySummary
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class LayerRef:
+    """Reference to a RASMapper HDF layer.
+
+    Attributes
+    ----------
+    filename:
+        Relative path to the HDF file containing this layer.
+    layername:
+        Layer name inside the HDF file.
+    file_date:
+        Timestamp string of the HDF file.
+    date_modified:
+        Timestamp string when the layer was last modified, or ``None``
+        when HEC-RAS does not record a modification date (e.g. terrain).
+    """
+
+    filename: str
+    layername: str
+    file_date: str
+    date_modified: str | None
+
+
+@dataclass
+class GeometrySummary:
+    """Metadata from the ``Geometry/`` group attributes.
+
+    Attributes
+    ----------
+    title:
+        Geometry title string set in RASMapper.
+    version:
+        Geometry schema version, e.g. ``"1.0.20 (20Sep2024)"``.
+    complete:
+        ``True`` when the geometry was fully preprocessed.
+    si_units:
+        ``True`` when the model uses SI units; ``False`` for US Customary.
+    extents:
+        Bounding box as ``(xmin, xmax, ymin, ymax)`` in model coordinates,
+        or ``None`` when the geometry has no spatial reference.
+    preprocessed_at:
+        Timestamp string when RASMapper last preprocessed the geometry,
+        e.g. ``"02Mar2026 17:45:03"``.
+    terrain:
+        Terrain layer reference, or ``None`` for non-geospatial models.
+    land_cover:
+        Land-cover (Manning's n) layer reference, or ``None`` when absent.
+    infiltration:
+        Infiltration layer reference, or ``None`` when absent.
+    pct_impervious:
+        Percent-impervious layer reference, or ``None`` when absent.
+    """
+
+    title: str
+    version: str
+    complete: bool
+    si_units: bool
+    extents: tuple[float, float, float, float] | None
+    preprocessed_at: str
+    terrain: LayerRef | None
+    land_cover: LayerRef | None
+    infiltration: LayerRef | None
+    pct_impervious: LayerRef | None
+
+
+# ---------------------------------------------------------------------------
+# Geometry — public entry point
+# ---------------------------------------------------------------------------
+
+
 class Geometry(_HdfFile):
     """Read HEC-RAS geometry HDF5 output files (``*.g*.hdf``).
 
@@ -2677,6 +2753,85 @@ class Geometry(_HdfFile):
         if self._cross_sections is None:
             self._cross_sections = CrossSectionCollection(self._hdf)
         return self._cross_sections
+
+    def geometry_summary(self) -> GeometrySummary:
+        """Return metadata from the ``Geometry/`` group attributes.
+
+        Reads the top-level attributes of the ``Geometry`` HDF group and
+        returns a :class:`GeometrySummary` dataclass.  The method is
+        available on :class:`Geometry`, :class:`~rivia.hdf.SteadyPlan`,
+        and :class:`~rivia.hdf.UnsteadyPlan` because both plan types
+        inherit from :class:`Geometry`.
+
+        Returns
+        -------
+        GeometrySummary
+
+        Raises
+        ------
+        KeyError
+            If the ``Geometry`` group is absent from the HDF file.
+
+        Examples
+        --------
+        ::
+
+            with Geometry("MyModel.g01") as g:
+                s = g.geometry_summary()
+                print(s.title)
+                print(s.extents)
+                print(s.si_units)
+        """
+        grp = self._hdf.get(_GEOM_ROOT)
+        if grp is None:
+            raise KeyError(
+                f"'{_GEOM_ROOT}' group not found in {self._filename!r}."
+            )
+
+        a = grp.attrs
+
+        def _str(key: str) -> str:
+            v = a[key]
+            return v.decode() if isinstance(v, (bytes, np.bytes_)) else str(v)
+
+        def _bool(key: str) -> bool:
+            return _str(key).strip().lower() == "true"
+
+        def _opt_str(key: str) -> str | None:
+            v = a.get(key)
+            if v is None:
+                return None
+            return v.decode() if isinstance(v, (bytes, np.bytes_)) else str(v)
+
+        def _layer(prefix: str) -> LayerRef | None:
+            filename = _opt_str(f"{prefix} Filename")
+            if filename is None:
+                return None
+            return LayerRef(
+                filename=filename,
+                layername=_opt_str(f"{prefix} Layername") or "",
+                file_date=_opt_str(f"{prefix} File Date") or "",
+                date_modified=_opt_str(f"{prefix} Date Last Modified"),
+            )
+
+        raw_ext = a.get("Extents")
+        extents: tuple[float, float, float, float] | None = None
+        if raw_ext is not None:
+            ext = np.asarray(raw_ext, dtype=float)
+            extents = (float(ext[0]), float(ext[1]), float(ext[2]), float(ext[3]))
+
+        return GeometrySummary(
+            title=_str("Title"),
+            version=_str("Version"),
+            complete=_bool("Complete Geometry"),
+            si_units=_bool("SI Units"),
+            extents=extents,
+            preprocessed_at=_str("Geometry Time"),
+            terrain=_layer("Terrain"),
+            land_cover=_layer("Land Cover"),
+            infiltration=_layer("Infiltration"),
+            pct_impervious=_layer("Percent Impervious"),
+        )
 
 
 

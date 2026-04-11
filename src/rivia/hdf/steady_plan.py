@@ -23,6 +23,7 @@ Derived from examination of HEC-RAS 6.6 steady-flow plan HDF output at
 from __future__ import annotations
 
 import dataclasses
+import datetime as dt
 import logging
 from collections.abc import Iterator
 from pathlib import Path
@@ -1041,6 +1042,8 @@ class StructureResultsCollection(_GeomStructureCollection):
 # ---------------------------------------------------------------------------
 
 _STEADY_SUMMARY = "Results/Steady/Summary"
+# Timestamp format written by HEC-RAS (e.g. "11APR2026 11:53:38")
+_RAS_TS_FMT = "%d%b%Y %H:%M:%S"
 
 
 @dataclasses.dataclass
@@ -1067,6 +1070,40 @@ class RunStatus:
     def ok(self) -> bool:
         """Return ``True`` if the solution string indicates success."""
         return "successfully" in self.solution.lower()
+
+    def parse_run_window(
+        self,
+    ) -> tuple[dt.datetime, dt.datetime] | None:
+        """Parse :attr:`run_window` into ``(start, end)`` datetimes.
+
+        Splits the raw string on ``" to "`` and parses each half with
+        the HEC-RAS timestamp format ``"%d%b%Y %H:%M:%S"``.
+
+        Returns
+        -------
+        tuple[datetime, datetime] or None
+            ``(start, end)`` as timezone-naive :class:`datetime.datetime`
+            objects, or ``None`` when the string is missing, malformed,
+            or cannot be parsed.
+
+        Examples
+        --------
+        ::
+
+            s = hdf.compute_summary()
+            window = s.run.parse_run_window()
+            if window:
+                start, end = window
+                print(end - start)   # wall-clock duration
+        """
+        try:
+            left, right = self.run_window.split(" to ", maxsplit=1)
+            return (
+                dt.datetime.strptime(left.strip(), _RAS_TS_FMT),
+                dt.datetime.strptime(right.strip(), _RAS_TS_FMT),
+            )
+        except (ValueError, AttributeError):
+            return None
 
 
 @dataclasses.dataclass
