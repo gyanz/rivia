@@ -408,7 +408,7 @@ class ResultStaleness:
         if self.run_completion.finished:
             return ()
         rc = self.run_completion
-        reasons: list[str] = ["yes"]
+        reasons: list[str] = []
         if rc.user_stopped:
             reasons.append("user stopped")
         if rc.process_error:
@@ -416,6 +416,7 @@ class ResultStaleness:
             reasons.append(f"process error: {msg}")
         if not reasons:
             reasons.append("run did not complete")
+        reasons.insert(0,"yes")
         return tuple(reasons)
 
     def __repr__(self) -> str:
