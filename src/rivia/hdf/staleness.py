@@ -102,6 +102,58 @@ def _runtime_log_from_hdf(hdf) -> RuntimeLog | None:  # hdf: h5py.File
         return None
 
 
+def _read_compute_scalars(
+    hdf,  # h5py.File
+) -> tuple[bool | None, float | None, float | None]:
+    """Read ``(compute_ok, volume_error_pct, time_unstable)`` from the plan HDF.
+
+    Tries ``Results/Unsteady/Summary`` first, then ``Results/Steady/Summary``.
+    Returns ``(None, None, None)`` when neither group is present or readable.
+
+    For unsteady plans:
+    * ``compute_ok`` — ``True`` when ``"Time Solution Went Unstable"`` is NaN
+      (i.e. the solution did not go unstable).
+    * ``volume_error_pct`` — overall volume balance error % from
+      ``Volume Accounting/Error Percent``.
+    * ``time_unstable`` — elapsed sim time (days) at instability, or ``None``.
+
+    For steady plans:
+    * ``compute_ok`` — ``True`` when ``"Solution"`` attribute contains
+      ``"successfully"`` (case-insensitive).
+    * ``volume_error_pct`` — ``None`` (steady runs have no volume accounting).
+    * ``time_unstable`` — ``None`` (not applicable).
+    """
+    def _decode(v: object) -> str:
+        return v.decode("utf-8", errors="replace") if isinstance(v, (bytes, np.bytes_)) else str(v)  # type: ignore[union-attr]
+
+    # --- unsteady ---
+    grp = hdf.get("Results/Unsteady/Summary")
+    if grp is not None:
+        try:
+            t_raw = float(grp.attrs["Time Solution Went Unstable"])
+            time_unstable: float | None = None if np.isnan(t_raw) else t_raw
+            compute_ok: bool | None = time_unstable is None
+            volume_error_pct: float | None = None
+            va = grp.get("Volume Accounting")
+            if va is not None:
+                volume_error_pct = float(va.attrs["Error Percent"])
+            return compute_ok, volume_error_pct, time_unstable
+        except (KeyError, TypeError, ValueError):
+            pass
+
+    # --- steady ---
+    grp = hdf.get("Results/Steady/Summary")
+    if grp is not None:
+        try:
+            solution = _decode(grp.attrs["Solution"])
+            compute_ok = "successfully" in solution.lower()
+            return compute_ok, None, None
+        except (KeyError, TypeError):
+            pass
+
+    return None, None, None
+
+
 # ---------------------------------------------------------------------------
 # Public dataclasses
 # ---------------------------------------------------------------------------
@@ -271,9 +323,9 @@ class ResultStaleness:
         ``True`` when the plan text file is newer than the plan HDF,
         indicating plan settings may have changed since the last run.
         ``None`` when the plan HDF is absent.
-    temp_hdf_exists:
-        ``True`` when a temporary results HDF (``*.p**.tmp.hdf``) is
-        present — indicating a run is currently in progress.
+
+    Plan HDF-sourced
+    ----------------
     run_window:
         Raw ``"Run Time Window"`` attribute string from the plan HDF
         results group, e.g. ``"01OCT2024 00:00:00 to 02OCT2024 00:00:00"``.
@@ -282,6 +334,25 @@ class ResultStaleness:
         Parsed start of :attr:`run_window`, or ``None``.
     run_window_end:
         Parsed end of :attr:`run_window`, or ``None``.
+    compute_ok:
+        ``True`` when the solution finished without instability — for
+        unsteady plans ``"Time Solution Went Unstable"`` is NaN; for
+        steady plans ``"Solution"`` contains ``"successfully"``.  ``None``
+        when the summary group is absent or unreadable.
+    volume_error_pct:
+        Overall volume balance error as a percentage of total inflow
+        (unsteady plans only).  ``None`` for steady plans or when the
+        ``Volume Accounting`` group is absent.
+    time_unstable:
+        Elapsed simulation time in days when the solution went unstable
+        (unsteady plans only).  ``None`` when the run was stable or for
+        steady plans.
+
+    Runtime log-sourced
+    -------------------
+    temp_hdf_exists:
+        ``True`` when a temporary results HDF (``*.p**.tmp.hdf``) is
+        present — indicating a run is currently in progress.
     simulation_start:
         Wall-clock start time parsed from ``"Simulation started at:"`` in
         the runtime log.  ``None`` when absent.
@@ -297,13 +368,55 @@ class ResultStaleness:
     plan_hdf_disk_mtime: dt.datetime | None
     plan_text_disk_mtime: dt.datetime
     plan_text_newer_than_hdf: bool | None
-    temp_hdf_exists: bool
+    # Plan HDF-sourced
     run_window: str | None
     run_window_start: dt.datetime | None
     run_window_end: dt.datetime | None
+    compute_ok: bool | None
+    volume_error_pct: float | None
+    time_unstable: float | None
+    # Runtime log-sourced
+    temp_hdf_exists: bool
     simulation_start: dt.datetime | None
     last_simulation_time: dt.datetime | None
     run_completion: RunCompletion | None
+
+    def is_stale(self) -> tuple[str, ...]:
+        """Return the reasons the results are stale, or an empty tuple when complete.
+
+        Staleness is defined as: results are present in the plan HDF **and**
+        the runtime log indicates the run did not finish.  Returns an empty
+        tuple when the run completed normally, when the plan HDF is absent,
+        or when no runtime log is available (indeterminate).
+
+        Returns
+        -------
+        tuple[str, ...]
+            Empty when results are not stale (or indeterminate).  One or more
+            of the following when stale:
+
+            * ``"user stopped"`` — user halted the computation.
+            * ``"process error: <msg>"`` — ``"Error with program:"`` was found
+              in the runtime log.
+            * ``"run did not complete"`` — run ended abnormally with no
+              specific cause identified.
+        """
+        if self.plan_hdf_disk_mtime is None:
+            return ()
+        if self.run_completion is None:
+            return ()
+        if self.run_completion.finished:
+            return ()
+        rc = self.run_completion
+        reasons: list[str] = ["yes"]
+        if rc.user_stopped:
+            reasons.append("user stopped")
+        if rc.process_error:
+            msg = rc.error_message or "unknown error"
+            reasons.append(f"process error: {msg}")
+        if not reasons:
+            reasons.append("run did not complete")
+        return tuple(reasons)
 
     def __repr__(self) -> str:
         def _dt(d: dt.datetime | None) -> str:
@@ -315,36 +428,56 @@ class ResultStaleness:
         rc = self.run_completion
         finished = rc.finished if rc is not None else None
 
-        rows: list[tuple[str, str]] = [
-            ("plan HDF mtime",        _dt(self.plan_hdf_disk_mtime)),
-            ("plan text mtime",       _dt(self.plan_text_disk_mtime)),
-            ("text newer than HDF",   _bool(self.plan_text_newer_than_hdf)),
-            ("run in progress",       _bool(self.temp_hdf_exists)),
-            ("run window",            self.run_window or "—"),
-            ("simulation start",      _dt(self.simulation_start)),
-            ("last sim timestep",     _dt(self.last_simulation_time)),
-            ("run complete",          _bool(finished)),
+        if self.run_window_start is not None and self.run_window_end is not None:
+            rw_val = f"{_dt(self.run_window_start)} to {_dt(self.run_window_end)}"
+        elif self.run_window is not None:
+            rw_val = self.run_window
+        else:
+            rw_val = "—"
+
+        Row = tuple[str, str]
+        top_rows: list[Row] = [
+            ("plan HDF mtime",      _dt(self.plan_hdf_disk_mtime)),
+            ("plan text mtime",     _dt(self.plan_text_disk_mtime)),
+            ("text newer than HDF", _bool(self.plan_text_newer_than_hdf)),
+        ]
+        hdf_rows: list[Row] = [
+            ("run window",          rw_val),
+            ("compute ok",          _bool(self.compute_ok)),
+            ("volume error %",      f"{self.volume_error_pct:.4f}" if self.volume_error_pct is not None else "—"),
+            ("time unstable (d)",   f"{self.time_unstable}" if self.time_unstable is not None else "—"),
+        ]
+        log_rows: list[Row] = [
+            ("run in progress",   _bool(self.temp_hdf_exists)),
+            ("simulation start",  _dt(self.simulation_start)),
+            ("last sim timestep", _dt(self.last_simulation_time)),
+            ("run complete",      _bool(finished)),
         ]
         if rc is not None:
-            rows.append(("finish message", rc.finish_message or "—"))
+            log_rows.append(("finish message", rc.finish_message or "—"))
             if rc.user_stopped:
-                rows.append(("user stopped", "yes"))
+                log_rows.append(("user stopped", "yes"))
             if rc.process_error:
-                rows.append(("process error", rc.error_message or "yes"))
+                log_rows.append(("process error", rc.error_message or "yes"))
 
-        w = max(len(k) for k, _ in rows)
-        lines = ["ResultStaleness"] + [f"  {k:<{w}} : {v}" for k, v in rows]
+        w = max(len(k) for k, _ in top_rows + hdf_rows + log_rows + [("stale", "")])
 
-        if rc is not None and rc.computation_summary:
-            lines.append("  computation summary :")
-            sw = max(len(t) for t in rc.computation_summary)
-            for task, t in rc.computation_summary.items():
-                lines.append(f"    {task:<{sw}}  {t}")
-            if rc.computation_speed:
-                lines.append("  computation speed :")
-                for task, spd in rc.computation_speed.items():
-                    lines.append(f"    {task:<{sw}}  {spd}")
+        def _row(k: str, v: str) -> str:
+            return f"  {k:<{w}} : {v}"
 
+        def _header(label: str) -> str:
+            return f"  ({label})"
+
+        stale_reasons = self.is_stale()
+        stale_val = ", ".join(stale_reasons) if stale_reasons else "no"
+
+        lines = ["ResultStaleness"]
+        lines += [_row(k, v) for k, v in top_rows]
+        lines.append(_row("stale", stale_val))
+        lines.append(_header("Plan HDF Results"))
+        lines += [_row(k, v) for k, v in hdf_rows]
+        lines.append(_header("Runtime Log Information"))
+        lines += [_row(k, v) for k, v in log_rows]
         return "\n".join(lines)
 
 
@@ -504,8 +637,10 @@ def check_plan_staleness(plan_file: str | Path) -> PlanStalenessReport:
     geom_complete_in_plan: bool | None = None
     run_window_raw: str | None = None
     run_completion: RunCompletion | None = None
-
     _simulation_start: dt.datetime | None = None
+    _compute_ok: bool | None = None
+    _volume_error_pct: float | None = None
+    _time_unstable: float | None = None
 
     if plan_hdf_exists:
         with Geometry(plan_hdf_path) as g:
@@ -543,13 +678,14 @@ def check_plan_staleness(plan_file: str | Path) -> PlanStalenessReport:
             except KeyError:
                 pass  # no Geometry group — 1D-only plan or never preprocessed
 
-            # run window and runtime log via the underlying h5py handle
+            # run window, runtime log, and compute-summary scalars via h5py handle
             hdf = g._hdf
             run_window_raw = _read_run_window(hdf)
             log = _runtime_log_from_hdf(hdf)
             if log is not None:
                 run_completion = log.run_completion()
                 _simulation_start = log.simulation_start
+            _compute_ok, _volume_error_pct, _time_unstable = _read_compute_scalars(hdf)
 
     # --- read geometry HDF --------------------------------------------------
     geom_hdf_preprocessed_at: dt.datetime | None = None
@@ -601,10 +737,13 @@ def check_plan_staleness(plan_file: str | Path) -> PlanStalenessReport:
         plan_hdf_disk_mtime=plan_hdf_mtime,
         plan_text_disk_mtime=plan_text_mtime,  # type: ignore[arg-type]
         plan_text_newer_than_hdf=plan_text_newer,
-        temp_hdf_exists=temp_hdf_exists,
         run_window=run_window_raw,
         run_window_start=run_window_start,
         run_window_end=run_window_end,
+        compute_ok=_compute_ok,
+        volume_error_pct=_volume_error_pct,
+        time_unstable=_time_unstable,
+        temp_hdf_exists=temp_hdf_exists,
         simulation_start=_simulation_start,
         last_simulation_time=(
             run_completion.last_simulation_time if run_completion is not None else None
