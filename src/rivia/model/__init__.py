@@ -431,8 +431,13 @@ class Project(MapperExtension):
             ))
         return cache
 
-    def _resolve_plan_path(self, plan: "PlanSummary | int | str") -> Path:
-        """Resolve *plan* (PlanSummary, index, or short_id) to a plan file Path."""
+    def _resolve_plan_path(self, plan: "PlanSummary | int | str | None") -> Path:
+        """Resolve *plan* (PlanSummary, index, short_id, or None) to a plan file Path.
+
+        ``None`` resolves to the currently active plan via the COM controller.
+        """
+        if plan is None:
+            return self.plan_path
         all_plans = self.plans()
         if isinstance(plan, PlanSummary):
             return plan.path
@@ -447,7 +452,9 @@ class Project(MapperExtension):
             raise KeyError(f"No plan with short_id={plan!r}")
         return matches[0].path
 
-    def plan_staleness(self, plan: "PlanSummary | int | str") -> "PlanStalenessReport":
+    def plan_staleness(
+        self, plan: "PlanSummary | int | str | None" = None
+    ) -> "PlanStalenessReport":
         """Return a detailed staleness diagnostic report for one plan.
 
         Inspects the plan text file, plan HDF, and geometry HDF to report
@@ -463,7 +470,9 @@ class Project(MapperExtension):
         plan:
             Identifies the plan to inspect.  Accepts a
             :class:`PlanSummary` (from :meth:`plans`), an integer index,
-            or a ``short_id`` string.
+            a ``short_id`` string, or ``None`` (default).  When ``None``,
+            the currently active plan (as reported by the COM controller)
+            is used.
 
         Returns
         -------
@@ -480,10 +489,14 @@ class Project(MapperExtension):
         --------
         ::
 
-            report = model.plan_staleness(0)
+            # active plan
+            report = model.plan_staleness()
             print(report)
             if not report.run_appears_complete:
                 print("Results may be from a prior or incomplete run.")
+
+            # specific plan by index
+            report = model.plan_staleness(2)
         """
         from rivia.hdf.staleness import PlanStalenessReport, check_plan_staleness
 
