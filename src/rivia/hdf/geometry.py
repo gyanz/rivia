@@ -2684,6 +2684,39 @@ class GeometrySummary:
     infiltration: LayerRef | None
     pct_impervious: LayerRef | None
 
+    def __repr__(self) -> str:
+        def _layer(ref: LayerRef | None) -> str:
+            if ref is None:
+                return "\u2014"
+            file_date = ref.file_date.strftime("%Y-%m-%d %H:%M:%S")
+            suffix = f"  file -> {file_date}"
+            if ref.date_modified is not None:
+                suffix += f"  mod -> {ref.date_modified.strftime('%Y-%m-%d %H:%M:%S')}"
+            return f"{ref.filename.stem} :: {ref.layername}{suffix}"
+
+        def _extents(e: tuple[float, float, float, float] | None) -> str:
+            if e is None:
+                return "\u2014"
+            return f"x [{e[0]:.2f}, {e[1]:.2f}]  y [{e[2]:.2f}, {e[3]:.2f}]"
+
+        rows = [
+            ("title",          self.title),
+            ("version",        self.version),
+            ("complete",       str(self.complete)),
+            ("units",          "SI" if self.si_units else "US Customary"),
+            ("extents",        _extents(self.extents)),
+            ("preprocessed",   self.preprocessed_at.strftime("%Y-%m-%d %H:%M:%S")),
+            ("terrain",        _layer(self.terrain)),
+            ("land_cover",     _layer(self.land_cover)),
+            ("infiltration",   _layer(self.infiltration)),
+            ("pct_impervious", _layer(self.pct_impervious)),
+        ]
+        width = max(len(k) for k, _ in rows)
+        lines = [type(self).__name__] + [
+            f"  {k:<{width}} : {v}" for k, v in rows
+        ]
+        return "\n".join(lines)
+
 
 # ---------------------------------------------------------------------------
 # Geometry — public entry point
