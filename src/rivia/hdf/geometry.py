@@ -2626,7 +2626,8 @@ class LayerRef:
     Attributes
     ----------
     filename:
-        Relative path to the HDF file containing this layer.
+        Absolute path to the HDF file containing this layer, resolved
+        relative to the project directory at read time.
     layername:
         Layer name inside the HDF file.
     file_date:
@@ -2636,7 +2637,7 @@ class LayerRef:
         when HEC-RAS does not record a modification date (e.g. terrain).
     """
 
-    filename: str
+    filename: Path
     layername: str
     file_date: str
     date_modified: str | None
@@ -2803,12 +2804,14 @@ class Geometry(_HdfFile):
                 return None
             return v.decode() if isinstance(v, (bytes, np.bytes_)) else str(v)
 
+        root = Path(self._filename).parent
+
         def _layer(prefix: str) -> LayerRef | None:
-            filename = _opt_str(f"{prefix} Filename")
-            if filename is None:
+            raw = _opt_str(f"{prefix} Filename")
+            if not raw:
                 return None
             return LayerRef(
-                filename=filename,
+                filename=(root / raw).resolve(),
                 layername=_opt_str(f"{prefix} Layername") or "",
                 file_date=_opt_str(f"{prefix} File Date") or "",
                 date_modified=_opt_str(f"{prefix} Date Last Modified"),
