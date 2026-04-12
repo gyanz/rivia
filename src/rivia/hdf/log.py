@@ -305,7 +305,13 @@ class UnsteadyRuntimeLog(RuntimeLog):
     # max_iterations
     # ------------------------------------------------------------------
 
-    def max_iterations(self) -> pd.DataFrame:
+    def max_iterations(
+        self,
+        *,
+        groupby: bool = False,
+        sortby: str | list[str] | None = None,
+        ascending: bool | list[bool] = False,
+    ) -> pd.DataFrame:
         """Per-timestep maximum-iteration summary.
 
         Parses datestamped iteration lines.  HEC-RAS writes two layouts
@@ -330,6 +336,23 @@ class UnsteadyRuntimeLog(RuntimeLog):
 
         Mixed 1-D/2-D/storage-area plans produce multiple layouts in the same log.
 
+        Parameters
+        ----------
+        groupby : bool, optional
+            When ``True``, collapse to one row per
+            ``(location_type, location, reach, rs_or_cell)`` — the row
+            with the highest ``error`` for that group.  A ``count`` column
+            is added recording how many timesteps each location appeared as
+            the controlling element.  Default ``False`` returns every row.
+        sortby : str or list[str], optional
+            Column name(s) to sort the result by.  Typical values:
+            ``"error"``, ``"iterations"``, ``"timestep"``, ``"datetime"``.
+            Default ``None`` preserves log order (or group-collapse order
+            when *groupby* is ``True``).
+        ascending : bool or list[bool], optional
+            Sort direction passed directly to :meth:`pandas.DataFrame.sort_values`.
+            Default ``False`` (descending — worst first).
+
         Returns
         -------
         pandas.DataFrame
@@ -349,9 +372,13 @@ class UnsteadyRuntimeLog(RuntimeLog):
             * ``timestep`` — float, active adaptive timestep in seconds at
               the time of this row; ``NaN`` when no adaptive-timestep change
               has been logged yet or the run uses a fixed timestep
+            * ``count`` — int, number of timesteps the location appeared as
+              the controlling element (**only present when** *groupby* is
+              ``True``)
 
-            Rows are in log order (chronological).  Returns an empty
-            DataFrame if no iteration lines are found.
+            Rows are in log order (chronological) when both *groupby* and
+            *sortby* are omitted.  Returns an empty DataFrame if no
+            iteration lines are found.
 
         Notes
         -----
@@ -424,7 +451,19 @@ class UnsteadyRuntimeLog(RuntimeLog):
             )
         if not records:
             return pd.DataFrame(columns=_COLS)
-        return pd.DataFrame(records)
+        df = pd.DataFrame(records)
+
+        if groupby:
+            _GROUP_COLS = ["location_type", "location", "reach", "rs_or_cell"]
+            counts = df.groupby(_GROUP_COLS, sort=False).size().rename("count")
+            idx = df.groupby(_GROUP_COLS, sort=False)["error"].idxmax()
+            df = df.loc[idx].reset_index(drop=True)
+            df = df.merge(counts.reset_index(), on=_GROUP_COLS)
+
+        if sortby is not None:
+            df = df.sort_values(sortby, ascending=ascending).reset_index(drop=True)
+
+        return df
 
     # ------------------------------------------------------------------
     # max_1d2d_iterations
