@@ -431,6 +431,65 @@ class Project(MapperExtension):
             ))
         return cache
 
+    def _resolve_plan_path(self, plan: "PlanSummary | int | str") -> Path:
+        """Resolve *plan* (PlanSummary, index, or short_id) to a plan file Path."""
+        all_plans = self.plans()
+        if isinstance(plan, PlanSummary):
+            return plan.path
+        if isinstance(plan, int):
+            matches = [p for p in all_plans if p.index == plan]
+            if not matches:
+                raise IndexError(f"No plan with index {plan!r}")
+            return matches[0].path
+        # str → match by short_id
+        matches = [p for p in all_plans if p.short_id == plan]
+        if not matches:
+            raise KeyError(f"No plan with short_id={plan!r}")
+        return matches[0].path
+
+    def plan_staleness(self, plan: "PlanSummary | int | str") -> "PlanStalenessReport":
+        """Return a detailed staleness diagnostic report for one plan.
+
+        Inspects the plan text file, plan HDF, and geometry HDF to report
+        whether geometry layers are stale, whether the geometry was
+        re-preprocessed since the plan was run, and whether the simulation
+        results appear complete.
+
+        No active HEC-RAS simulation is required — the check is purely
+        file-based.
+
+        Parameters
+        ----------
+        plan:
+            Identifies the plan to inspect.  Accepts a
+            :class:`PlanSummary` (from :meth:`plans`), an integer index,
+            or a ``short_id`` string.
+
+        Returns
+        -------
+        PlanStalenessReport
+
+        Raises
+        ------
+        IndexError
+            If *plan* is an integer that does not match any plan index.
+        KeyError
+            If *plan* is a string that does not match any ``short_id``.
+
+        Examples
+        --------
+        ::
+
+            report = model.plan_staleness(0)
+            print(report)
+            if not report.run_appears_complete:
+                print("Results may be from a prior or incomplete run.")
+        """
+        from rivia.hdf.staleness import PlanStalenessReport, check_plan_staleness
+
+        path = self._resolve_plan_path(plan)
+        return check_plan_staleness(path)
+
     @contextlib.contextmanager
     def editing(self):
         """Context manager for batch file edits with automatic save and reload.

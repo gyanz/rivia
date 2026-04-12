@@ -7,9 +7,17 @@
 # but are intentionally absent from __all__.
 from .log import (  # noqa: F401
     ComputeProcess,
+    RunCompletion,
     RuntimeLog,
     SteadyRuntimeLog,
     UnsteadyRuntimeLog,
+)
+from .staleness import (  # noqa: F401
+    GeomVersionStaleness,
+    LayerStaleness,
+    PlanStalenessReport,
+    ResultStaleness,
+    check_plan_staleness,
 )
 from .geometry import (  # noqa: F401
     BoundaryConditionCollection,
@@ -63,8 +71,14 @@ from .unsteady_plan import (  # noqa: F401
 )
 
 __all__ = [
+    "check_plan_staleness",
     "ComputeProcess",
     "Geometry",
+    "GeomVersionStaleness",
+    "LayerStaleness",
+    "PlanStalenessReport",
+    "ResultStaleness",
+    "RunCompletion",
     "RuntimeLog",
     "SteadyPlan",
     "SteadyRuntimeLog",

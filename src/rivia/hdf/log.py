@@ -7,6 +7,7 @@ unsteady, sediment, quasi-steady, water quality).
 Exposes:
 
 * :class:`ComputeProcess` — one row of the Compute Processes table.
+* :class:`RunCompletion` — outcome of a single simulation run.
 * :class:`RuntimeLog` — common log container, valid for all plan types.
 * :class:`SteadyRuntimeLog` — steady-specific subclass (stub; methods TBD).
 * :class:`UnsteadyRuntimeLog` — unsteady-specific parsed methods.
@@ -43,6 +44,11 @@ _RE_TIMESTEP = re.compile(
 # Matches the Computation Speed section lines:
 #   Unsteady Flow Computations<tab>9.10x
 _RE_SPEED = re.compile(r"^(?P<task>.+?)\t(?P<speed>\S+x)\s*$")
+# Matches any "Finished * Simulation" completion line:
+#   Finished Unsteady Flow Simulation
+#   Finished Steady Flow Simulation
+#   Finished Sediment Transport Simulation
+_RE_FINISHED = re.compile(r"^Finished\s+.+Simulation\s*$")
 
 _HEC_DATE_FMT = "%d%b%Y %H:%M:%S"  # e.g. "01OCT2024 00:00:02"
 
@@ -62,6 +68,55 @@ def _parse_hec_datetime(date_str: str, time_str: str) -> dt.datetime:
     datetime.datetime
     """
     return dt.datetime.strptime(f"{date_str} {time_str}", _HEC_DATE_FMT)
+
+
+# ---------------------------------------------------------------------------
+# RunCompletion
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class RunCompletion:
+    """Outcome of a HEC-RAS simulation run as read from the runtime log text.
+
+    Attributes
+    ----------
+    finished:
+        ``True`` when *both* a ``"Finished * Simulation"`` line **and** a
+        ``"Complete Process"`` entry in :attr:`computation_summary` are
+        present.  This is the primary completion signal.
+    finish_message:
+        The exact ``"Finished ..."`` line, or ``None`` when absent.
+    user_stopped:
+        ``True`` when ``"Note - Computations stopped by the user"`` was found.
+        Informational — explains *why* the run did not finish.
+    process_error:
+        ``True`` when an ``"Error with program:"`` line was found.
+        Informational — may indicate a crash or abnormal exit.
+    error_message:
+        The exact ``"Error with program: ..."`` line, or ``None``.
+    last_simulation_time:
+        Last simulation-time datestamp parsed from iteration lines
+        (unsteady / sediment plans only).  ``None`` for steady or if no
+        datestamped lines were found.
+    computation_summary:
+        Task-to-time mapping from the ``Computations Summary`` block,
+        e.g. ``{"Unsteady Flow Computations": "21:52:33",
+        "Complete Process": "21:52:42"}``.  Present even for aborted runs.
+    computation_speed:
+        Task-to-speed mapping from the ``Computation Speed`` block,
+        e.g. ``{"Unsteady Flow Computations": "1.65x"}``.
+        Empty dict when the section is absent.
+    """
+
+    finished: bool
+    finish_message: str | None
+    user_stopped: bool
+    process_error: bool
+    error_message: str | None
+    last_simulation_time: dt.datetime | None
+    computation_summary: dict[str, str]
+    computation_speed: dict[str, str]
 
 
 # ---------------------------------------------------------------------------
@@ -263,6 +318,129 @@ class RuntimeLog:
                 logger.info("Flow computation time: %.3f seconds", secs)
                 return secs
         return None
+
+    def run_completion(self) -> RunCompletion:
+        """Parse the run outcome from the plain-text compute log.
+
+        Makes a single forward pass through :attr:`lines` to detect the
+        completion signal, abort indicators, the last simulation timestep,
+        and both summary tables.
+
+        Returns
+        -------
+        RunCompletion
+            A :class:`RunCompletion` dataclass populated from the log text.
+            ``finished`` is ``True`` only when *both* a
+            ``"Finished * Simulation"`` line and a ``"Complete Process"``
+            entry in :attr:`RunCompletion.computation_summary` are present.
+
+        Examples
+        --------
+        ::
+
+            log = plan.runtime_log()
+            rc = log.run_completion()
+            if rc.finished:
+                print("Run completed normally")
+            elif rc.user_stopped:
+                print("User stopped the run")
+            else:
+                print("Run did not complete (crash or power loss)")
+            print(rc.computation_summary)
+        """
+        finish_message: str | None = None
+        user_stopped = False
+        process_error = False
+        error_message: str | None = None
+        last_simulation_time: dt.datetime | None = None
+        computation_summary: dict[str, str] = {}
+        computation_speed: dict[str, str] = {}
+
+        # Section-tracking state
+        _IN_NONE = 0
+        _IN_SUMMARY = 1
+        _IN_SPEED = 2
+        section = _IN_NONE
+        summary_past_header = False  # True once we've seen the "Computation Task\tTime" header
+
+        for line in self.lines:
+            stripped = line.strip()
+
+            # --- completion signal ---
+            if _RE_FINISHED.match(stripped):
+                finish_message = stripped
+                section = _IN_NONE
+                continue
+
+            # --- abort indicators ---
+            if "Note - Computations stopped by the user" in line:
+                user_stopped = True
+                continue
+            if "Error with program:" in line:
+                process_error = True
+                error_message = stripped
+                continue
+
+            # --- last simulation timestep (unsteady / sediment) ---
+            m = _RE_DATESTAMP.match(line)
+            if m:
+                with contextlib.suppress(ValueError):
+                    last_simulation_time = _parse_hec_datetime(
+                        m.group("date"), m.group("time")
+                    )
+                continue
+
+            # --- section transitions ---
+            if stripped == "Computations Summary":
+                section = _IN_SUMMARY
+                summary_past_header = False
+                continue
+            if stripped == "Computation Speed\tSimulation/Runtime":
+                section = _IN_SPEED
+                continue
+            if not stripped:
+                # blank lines within sections are ignored; outside they reset nothing
+                continue
+
+            # --- parse Computations Summary rows ---
+            if section == _IN_SUMMARY:
+                if not summary_past_header:
+                    # Skip the "Computation Task\tTime(hh:mm:ss)" header row
+                    if stripped.startswith("Computation Task"):
+                        summary_past_header = True
+                    continue
+                parts = line.split("\t", 1)
+                if len(parts) == 2:
+                    task = parts[0].strip()
+                    time_val = parts[1].strip()
+                    if task:
+                        computation_summary[task] = time_val
+                else:
+                    # Non-tab line after header ends the section
+                    section = _IN_NONE
+                continue
+
+            # --- parse Computation Speed rows ---
+            if section == _IN_SPEED:
+                m2 = _RE_SPEED.match(line)
+                if m2:
+                    computation_speed[m2.group("task").strip()] = m2.group("speed")
+                else:
+                    section = _IN_NONE
+                continue
+
+        finished = finish_message is not None and "Complete Process" in computation_summary
+
+        return RunCompletion(
+            finished=finished,
+            finish_message=finish_message,
+            user_stopped=user_stopped,
+            process_error=process_error,
+            error_message=error_message,
+            last_simulation_time=last_simulation_time,
+            computation_summary=computation_summary,
+            computation_speed=computation_speed,
+        )
 
 
 # ---------------------------------------------------------------------------
