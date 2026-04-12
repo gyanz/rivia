@@ -149,6 +149,28 @@ class LayerStaleness:
     delta_seconds: float | None
     is_stale: bool
 
+    def __repr__(self) -> str:
+        def _dt(d: dt.datetime | None) -> str:
+            return d.strftime("%Y-%m-%d %H:%M:%S") if d else "—"
+
+        stale_tag = "  [STALE]" if self.is_stale else ""
+        rows: list[tuple[str, str]] = [
+            ("layer file",         str(self.layer_file)),
+            ("file exists",        "yes" if self.layer_file_exists else "no"),
+            ("recorded file date", _dt(self.recorded_file_date)),
+            ("disk mtime",         _dt(self.layer_file_disk_mtime)),
+        ]
+        if self.delta_seconds is not None:
+            sign = "+" if self.delta_seconds >= 0 else ""
+            rows.append(("delta (s)", f"{sign}{self.delta_seconds:.0f}"))
+        if self.recorded_modified_date is not None:
+            rows.append(("recorded mod date", _dt(self.recorded_modified_date)))
+        w = max(len(k) for k, _ in rows)
+        lines = [f"LayerStaleness  {self.name}{stale_tag}"] + [
+            f"  {k:<{w}} : {v}" for k, v in rows
+        ]
+        return "\n".join(lines)
+
 
 @dataclass
 class GeomVersionStaleness:
@@ -199,6 +221,40 @@ class GeomVersionStaleness:
     geom_reprocessed_since_run: bool | None
     preprocessed_at_delta_seconds: float | None
 
+    def __repr__(self) -> str:
+        def _dt(d: dt.datetime | None) -> str:
+            return d.strftime("%Y-%m-%d %H:%M:%S") if d else "—"
+
+        def _bool(v: bool | None) -> str:
+            return "—" if v is None else ("yes" if v else "no")
+
+        stale_tag = ""
+        if self.geom_reprocessed_since_run is True:
+            stale_tag = "  [STALE]"
+        elif self.geom_reprocessed_since_run is None:
+            stale_tag = "  [unknown]"
+
+        rows: list[tuple[str, str]] = [
+            ("geom HDF",              str(self.geom_hdf_path) if self.geom_hdf_path else "—"),
+            ("geom HDF exists",       _bool(self.geom_hdf_exists)),
+            ("geom HDF mtime",        _dt(self.geom_hdf_disk_mtime)),
+            ("preprocessed (plan HDF)", _dt(self.plan_hdf_geom_preprocessed_at)),
+            ("preprocessed (geom HDF)", _dt(self.geom_hdf_geom_preprocessed_at)),
+        ]
+        if self.preprocessed_at_delta_seconds is not None:
+            sign = "+" if self.preprocessed_at_delta_seconds >= 0 else ""
+            rows.append(("delta (s)", f"{sign}{self.preprocessed_at_delta_seconds:.0f}"))
+        rows += [
+            ("complete (plan HDF)", _bool(self.geom_complete_in_plan_hdf)),
+            ("complete (geom HDF)", _bool(self.geom_complete_in_geom_hdf)),
+            ("reprocessed since run", _bool(self.geom_reprocessed_since_run)),
+        ]
+        w = max(len(k) for k, _ in rows)
+        lines = [f"GeomVersionStaleness{stale_tag}"] + [
+            f"  {k:<{w}} : {v}" for k, v in rows
+        ]
+        return "\n".join(lines)
+
 
 @dataclass
 class ResultStaleness:
@@ -248,6 +304,48 @@ class ResultStaleness:
     simulation_start: dt.datetime | None
     last_simulation_time: dt.datetime | None
     run_completion: RunCompletion | None
+
+    def __repr__(self) -> str:
+        def _dt(d: dt.datetime | None) -> str:
+            return d.strftime("%Y-%m-%d %H:%M:%S") if d else "—"
+
+        def _bool(v: bool | None) -> str:
+            return "—" if v is None else ("yes" if v else "no")
+
+        rc = self.run_completion
+        finished = rc.finished if rc is not None else None
+
+        rows: list[tuple[str, str]] = [
+            ("plan HDF mtime",        _dt(self.plan_hdf_disk_mtime)),
+            ("plan text mtime",       _dt(self.plan_text_disk_mtime)),
+            ("text newer than HDF",   _bool(self.plan_text_newer_than_hdf)),
+            ("run in progress",       _bool(self.temp_hdf_exists)),
+            ("run window",            self.run_window or "—"),
+            ("simulation start",      _dt(self.simulation_start)),
+            ("last sim timestep",     _dt(self.last_simulation_time)),
+            ("run complete",          _bool(finished)),
+        ]
+        if rc is not None:
+            rows.append(("finish message", rc.finish_message or "—"))
+            if rc.user_stopped:
+                rows.append(("user stopped", "yes"))
+            if rc.process_error:
+                rows.append(("process error", rc.error_message or "yes"))
+
+        w = max(len(k) for k, _ in rows)
+        lines = ["ResultStaleness"] + [f"  {k:<{w}} : {v}" for k, v in rows]
+
+        if rc is not None and rc.computation_summary:
+            lines.append("  computation summary :")
+            sw = max(len(t) for t in rc.computation_summary)
+            for task, t in rc.computation_summary.items():
+                lines.append(f"    {task:<{sw}}  {t}")
+            if rc.computation_speed:
+                lines.append("  computation speed :")
+                for task, spd in rc.computation_speed.items():
+                    lines.append(f"    {task:<{sw}}  {spd}")
+
+        return "\n".join(lines)
 
 
 @dataclass
@@ -302,79 +400,31 @@ class PlanStalenessReport:
     run_in_progress: bool
 
     def __repr__(self) -> str:
-        def _dt(d: dt.datetime | None) -> str:
-            return d.strftime("%Y-%m-%d %H:%M:%S") if d else "—"
-
         def _bool(v: bool | None) -> str:
-            if v is None:
-                return "—"
-            return "yes" if v else "no"
+            return "—" if v is None else ("yes" if v else "no")
+
+        def _indent(text: str, prefix: str = "  ") -> str:
+            return "\n".join(prefix + line for line in text.splitlines())
 
         lines = [f"PlanStalenessReport  {self.plan_path.name}"]
-        lines.append(f"  plan HDF exists        : {_bool(self.plan_hdf_exists)}")
-        lines.append(f"  run complete           : {_bool(self.run_appears_complete)}")
-        lines.append(f"  run in progress        : {_bool(self.run_in_progress)}")
-        lines.append(f"  geom stale             : {_bool(self.geom_stale)}")
-        lines.append(f"  any layer stale        : {_bool(self.any_layer_stale)}")
+        lines.append(f"  plan HDF exists         : {_bool(self.plan_hdf_exists)}")
+        lines.append(f"  run complete            : {_bool(self.run_appears_complete)}")
+        lines.append(f"  run in progress         : {_bool(self.run_in_progress)}")
+        lines.append(f"  geom stale              : {_bool(self.geom_stale)}")
+        lines.append(f"  any layer stale         : {_bool(self.any_layer_stale)}")
         lines.append(f"  plan text newer than HDF: {_bool(self.results.plan_text_newer_than_hdf)}")
 
-        # results timing
         lines.append("")
-        lines.append("  Results")
-        lines.append(f"    plan HDF mtime       : {_dt(self.results.plan_hdf_disk_mtime)}")
-        lines.append(f"    plan text mtime      : {_dt(self.results.plan_text_disk_mtime)}")
-        lines.append(f"    run window           : {self.results.run_window or '—'}")
-        lines.append(f"    simulation start     : {_dt(self.results.simulation_start)}")
-        lines.append(f"    last sim timestep    : {_dt(self.results.last_simulation_time)}")
-        if self.results.run_completion is not None:
-            rc = self.results.run_completion
-            lines.append(f"    finish message       : {rc.finish_message or '—'}")
-            if rc.user_stopped:
-                lines.append( "    user stopped         : yes")
-            if rc.process_error:
-                lines.append(f"    process error        : {rc.error_message or 'yes'}")
-            if rc.computation_summary:
-                lines.append("    computation summary  :")
-                for task, t in rc.computation_summary.items():
-                    lines.append(f"      {task:<40} {t}")
+        lines.append(_indent(repr(self.results)))
 
-        # geometry version
         lines.append("")
-        lines.append("  Geometry version")
-        lines.append(
-            f"    preprocessed (plan HDF) : "
-            f"{_dt(self.geom_version.plan_hdf_geom_preprocessed_at)}"
-        )
-        lines.append(
-            f"    preprocessed (geom HDF) : "
-            f"{_dt(self.geom_version.geom_hdf_geom_preprocessed_at)}"
-        )
-        lines.append(
-            f"    geom HDF mtime          : {_dt(self.geom_version.geom_hdf_disk_mtime)}"
-        )
-        lines.append(
-            f"    complete (plan HDF)     : {_bool(self.geom_version.geom_complete_in_plan_hdf)}"
-        )
-        lines.append(
-            f"    complete (geom HDF)     : {_bool(self.geom_version.geom_complete_in_geom_hdf)}"
-        )
+        lines.append(_indent(repr(self.geom_version)))
 
-        # layers
         if self.geometry_layers:
             lines.append("")
             lines.append("  Geometry layers")
             for ls in self.geometry_layers:
-                stale_flag = " [STALE]" if ls.is_stale else ""
-                lines.append(f"    {ls.name}{stale_flag}")
-                lines.append(f"      recorded file date   : {_dt(ls.recorded_file_date)}")
-                lines.append(f"      disk mtime           : {_dt(ls.layer_file_disk_mtime)}")
-                if ls.delta_seconds is not None:
-                    sign = "+" if ls.delta_seconds >= 0 else ""
-                    lines.append(f"      delta (s)            : {sign}{ls.delta_seconds:.0f}")
-                if ls.recorded_modified_date is not None:
-                    lines.append(
-                        f"      recorded mod date    : {_dt(ls.recorded_modified_date)}"
-                    )
+                lines.append(_indent(repr(ls), prefix="    "))
 
         return "\n".join(lines)
 
