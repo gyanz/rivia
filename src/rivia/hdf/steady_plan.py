@@ -31,7 +31,7 @@ from typing import TYPE_CHECKING, Any, overload
 
 import numpy as np
 
-from ._base import _PlanHdf
+from ._base import _PlanHdf, _RAS_TS_FMT
 from .geometry import (
     _SA_ROOT,
     CrossSection,
@@ -1042,8 +1042,6 @@ class StructureResultsCollection(_GeomStructureCollection):
 # ---------------------------------------------------------------------------
 
 _STEADY_SUMMARY = "Results/Steady/Summary"
-# Timestamp format written by HEC-RAS (e.g. "11APR2026 11:53:38")
-_RAS_TS_FMT = "%d%b%Y %H:%M:%S"
 
 
 @dataclasses.dataclass

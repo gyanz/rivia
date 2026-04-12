@@ -17,6 +17,10 @@ import h5py
 import numpy as np
 
 
+# Timestamp format written by HEC-RAS (e.g. "11APR2026 11:53:38")
+_RAS_TS_FMT = "%d%b%Y %H:%M:%S"
+
+
 def _resolve_hdf_path(filename: str | Path) -> Path:
     """Return *filename* as a Path, appending '.hdf' if the suffix is absent."""
     path = Path(filename)

@@ -28,7 +28,7 @@ import pandas as pd
 
 from rivia.utils import log_call, parse_interval, timed
 
-from ._base import _PlanHdf
+from ._base import _PlanHdf, _RAS_TS_FMT
 from .geometry import (
     _SA_ROOT,
     Bridge,
@@ -99,8 +99,6 @@ _POSTPROC_GEOM_ATTRS = (
     "/Cross Section Attributes"
 )
 
-# Timestamp format written by HEC-RAS (e.g. "03Jan2000 00:00:00")
-_RAS_TS_FMT = "%d%b%Y %H:%M:%S"
 # Timestamp format used in Post Process Profile Dates (e.g. "01JAN2026 0002")
 _POSTPROC_TS_FMT = "%d%b%Y %H%M"
 

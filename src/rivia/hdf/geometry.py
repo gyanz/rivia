@@ -11,6 +11,7 @@ archive/ras_tools/r2d/ras2d_cell_velocity.py.
 
 from __future__ import annotations
 
+import datetime as dt
 import logging
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
@@ -20,7 +21,7 @@ from typing import TYPE_CHECKING, Generic, TypeVar, overload
 import numpy as np
 import pandas as pd
 
-from ._base import _HdfFile
+from ._base import _HdfFile, _RAS_TS_FMT
 
 if TYPE_CHECKING:
     import h5py
@@ -2631,16 +2632,16 @@ class LayerRef:
     layername:
         Layer name inside the HDF file.
     file_date:
-        Timestamp string of the HDF file.
+        Timestamp of the HDF file.
     date_modified:
-        Timestamp string when the layer was last modified, or ``None``
+        Timestamp when the layer was last modified, or ``None``
         when HEC-RAS does not record a modification date (e.g. terrain).
     """
 
     filename: Path
     layername: str
-    file_date: str
-    date_modified: str | None
+    file_date: dt.datetime
+    date_modified: dt.datetime | None
 
 
 @dataclass
@@ -2661,8 +2662,7 @@ class GeometrySummary:
         Bounding box as ``(xmin, xmax, ymin, ymax)`` in model coordinates,
         or ``None`` when the geometry has no spatial reference.
     preprocessed_at:
-        Timestamp string when RASMapper last preprocessed the geometry,
-        e.g. ``"02Mar2026 17:45:03"``.
+        Timestamp when RASMapper last preprocessed the geometry.
     terrain:
         Terrain layer reference, or ``None`` for non-geospatial models.
     land_cover:
@@ -2678,7 +2678,7 @@ class GeometrySummary:
     complete: bool
     si_units: bool
     extents: tuple[float, float, float, float] | None
-    preprocessed_at: str
+    preprocessed_at: dt.datetime
     terrain: LayerRef | None
     land_cover: LayerRef | None
     infiltration: LayerRef | None
@@ -2804,6 +2804,17 @@ class Geometry(_HdfFile):
                 return None
             return v.decode() if isinstance(v, (bytes, np.bytes_)) else str(v)
 
+        def _parse_ts(s: str) -> dt.datetime:
+            return dt.datetime.strptime(s.strip(), _RAS_TS_FMT)
+
+        def _parse_ts_opt(s: str | None) -> dt.datetime | None:
+            if not s:
+                return None
+            try:
+                return _parse_ts(s)
+            except ValueError:
+                return None
+
         root = Path(self._filename).parent
 
         def _layer(prefix: str) -> LayerRef | None:
@@ -2813,8 +2824,8 @@ class Geometry(_HdfFile):
             return LayerRef(
                 filename=(root / raw).resolve(),
                 layername=_opt_str(f"{prefix} Layername") or "",
-                file_date=_opt_str(f"{prefix} File Date") or "",
-                date_modified=_opt_str(f"{prefix} Date Last Modified"),
+                file_date=_parse_ts(_opt_str(f"{prefix} File Date") or ""),
+                date_modified=_parse_ts_opt(_opt_str(f"{prefix} Date Last Modified")),
             )
 
         raw_ext = a.get("Extents")
@@ -2829,7 +2840,7 @@ class Geometry(_HdfFile):
             complete=_bool("Complete Geometry"),
             si_units=_bool("SI Units"),
             extents=extents,
-            preprocessed_at=_str("Geometry Time"),
+            preprocessed_at=_parse_ts(_str("Geometry Time")),
             terrain=_layer("Terrain"),
             land_cover=_layer("Land Cover"),
             infiltration=_layer("Infiltration"),
