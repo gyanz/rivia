@@ -2634,8 +2634,11 @@ class LayerRef:
     file_date:
         Timestamp of the HDF file.
     date_modified:
-        Timestamp when the layer was last modified, or ``None``
-        when HEC-RAS does not record a modification date (e.g. terrain).
+        Timestamp when the layer was last modified, or ``None`` when
+        HEC-RAS does not record a modification date.  For terrain layers
+        in models with 2-D flow areas this is the terrain HDF mtime
+        recorded by each flow area at preprocessing time (the most recent
+        across all flow areas is used).
     """
 
     filename: Path
@@ -2867,6 +2870,29 @@ class Geometry(_HdfFile):
             ext = np.asarray(raw_ext, dtype=float)
             extents = (float(ext[0]), float(ext[1]), float(ext[2]), float(ext[3]))
 
+        terrain = _layer("Terrain")
+
+        # Terrain Date Last Modified is not stored at the Geometry group level.
+        # For models with 2D flow areas each flow area stores a "Terrain File Date"
+        # equal to the terrain HDF mtime at the time that flow area was preprocessed.
+        # Use the most recent of those as date_modified on the terrain LayerRef.
+        if terrain is not None:
+            fa_grp = self._hdf.get(_GEOM_2D_ROOT)
+            if fa_grp is not None:
+                fa_dates: list[dt.datetime] = []
+                for fa_name in fa_grp:
+                    fa = fa_grp[fa_name]
+                    if not hasattr(fa, "attrs"):
+                        continue
+                    raw_fa = fa.attrs.get("Terrain File Date")
+                    if raw_fa is not None:
+                        s = raw_fa.decode() if isinstance(raw_fa, (bytes, np.bytes_)) else str(raw_fa)
+                        parsed = _parse_ts_opt(s)
+                        if parsed is not None:
+                            fa_dates.append(parsed)
+                if fa_dates:
+                    terrain.date_modified = max(fa_dates)
+
         return GeometrySummary(
             title=_str("Title"),
             version=_str("Version"),
@@ -2874,7 +2900,7 @@ class Geometry(_HdfFile):
             si_units=_bool("SI Units"),
             extents=extents,
             preprocessed_at=_parse_ts(_str("Geometry Time")),
-            terrain=_layer("Terrain"),
+            terrain=terrain,
             land_cover=_layer("Land Cover"),
             infiltration=_layer("Infiltration"),
             pct_impervious=_layer("Percent Impervious"),
