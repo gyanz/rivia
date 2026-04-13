@@ -5,8 +5,6 @@ cell centres, face connectivity, hydraulic property tables, etc.
 
 Also provides access to storage areas and boundary condition lines.
 
-Derived from archive/ras_tools/r2d/ras_io.py and
-archive/ras_tools/r2d/ras2d_cell_velocity.py.
 """
 
 from __future__ import annotations
@@ -1471,9 +1469,6 @@ class FlowAreaCollection(Mapping[str, "FlowArea"]):
         Reads from ``Geometry/2D Flow Areas/Attributes`` structured array.
         Falls back to the Water Surface result shape if Attributes lookup
         fails, then to the coordinate array length as a last resort.
-
-        Derived from archive/ras_tools/r2d/ras2d_cell_velocity.py
-        ``RAS2DCellVelocity._get_real_cell_count``.
 
         TODO: this may be uncessary single the 'Cell Count' in summary/attributes
           is reliably populated by HEC-RAS.

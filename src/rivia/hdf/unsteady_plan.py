@@ -9,8 +9,6 @@ summary DataFrames, and computed depth / velocity methods.  Raster export
 methods delegate to ``rivia.geo`` via a deferred import so this module is
 fully usable without rasterio or scipy installed.
 
-Derived from archive/ras_tools/r2d/ras_io.py and
-archive/ras_tools/r2d/ras2d_cell_velocity.py.
 """
 
 from __future__ import annotations
@@ -510,7 +508,7 @@ class FlowAreaResults(FlowArea):
           adjacent cell is averaged to give a single face vector.
 
         Replicates ``ReconstructFaceVelocitiesLeastSquares`` from
-        ``archive/DLLs/RasMapperLib/MeshFV2D.cs``.
+        ``RasMapperLib/MeshFV2D.cs``.
 
         Parameters
         ----------
@@ -558,7 +556,7 @@ class FlowAreaResults(FlowArea):
           facepoint.
 
         Replicates ``ComputeVertexVelocities`` from
-        ``archive/DLLs/RasMapperLib/MeshFV2D.cs``.
+        ``RasMapperLib/MeshFV2D.cs``.
 
         Parameters
         ----------
@@ -1023,7 +1021,7 @@ class FlowAreaResults(FlowArea):
         """Rasterize a result variable using the RASMapper-exact algorithm.
 
         Implements the pixel-perfect pipeline reverse-engineered from
-        ``archive/DLLs/RasMapperLib/`` (decompiled C# source, HEC-RAS 6.6),
+        ``RasMapperLib/`` (decompiled C# source, HEC-RAS 6.6),
         validated against RASMapper VRT exports — median ``diff`` = 0.000000.
 
         Parameters

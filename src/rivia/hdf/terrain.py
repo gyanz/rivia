@@ -6,13 +6,10 @@ modifications stored in the same HDF, and writes the result to a GeoTIFF or
 GDAL VRT.
 
 Derived from analysis of:
-  archive/DLLs/RasMapperLib/RasMapperLib/TerrainLayer.cs
-  archive/DLLs/RasMapperLib/RasMapperLib.Terrain/RasterFileInfo.cs
-  archive/DLLs/RasMapperLib/RasMapperLib/GroundLineModificationLayer.cs
-  archive/DLLs/RasMapperLib/RasMapperLib/ElevationModificationGroup.cs
-
-See archive/docs/terrain_export.md for a full description of the HDF structure and
-the modification-rasterisation algorithm.
+  RasMapperLib/RasMapperLib/TerrainLayer.cs
+  RasMapperLib/RasMapperLib.Terrain/RasterFileInfo.cs
+  RasMapperLib/RasMapperLib/GroundLineModificationLayer.cs
+  RasMapperLib/RasMapperLib/ElevationModificationGroup.cs
 """
 
 from __future__ import annotations

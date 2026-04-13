@@ -5,8 +5,6 @@ parsed into typed dataclass objects and may be sorted by river station.
 ``save()`` reconstructs the boundary section from the objects; trailing
 meteorological / non-Newtonian lines are still written verbatim.
 
-Derived from: ``archive/ras_tools/unsteadyFlowParser.py``
-
 Convention
 ----------
 ``get_*`` methods return ``None`` when the requested item is not found.
@@ -771,7 +769,6 @@ class UnsteadyFlow:
         are reordered or values are changed, because the file is reconstructed
         from parsed objects — the file is reconstructed from parsed data.
 
-    Derived from: ``archive/ras_tools/unsteadyFlowParser.py``
     """
 
     def __init__(self, path: str | Path) -> None:
@@ -1133,7 +1130,6 @@ class UnsteadyFlow:
             (used as-is).  If ``values`` is shorter than the total number
             of gates, the remaining gates are left unchanged.
 
-        Derived from: ``archive/ras_tools/unsteadyFlowParser.py``
         """
         all_gates = [gate for gb in self.gate_boundaries for gate in gb.gates]
         for gate, v in zip(all_gates, values, strict=False):

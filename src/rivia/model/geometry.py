@@ -51,9 +51,6 @@ and ``Exp/Cntr=`` when active:
 When vertical n is active, ``#Mann= N , 0 , 0`` stores zone boundary stations
 only; n-values in that block are all zero (placeholders).
 
-Derived from format inspection of HEC-RAS 6.6 example files and
-``archive/ras_tools/geomParser.py``.
-
 Convention
 ----------
 ``get_*`` methods return ``None`` when the requested item is not found.
@@ -1311,8 +1308,6 @@ class Geometry:
     ``save()`` writes all in-memory lines back to disk; a no-op parse+save
     produces a byte-identical file.
 
-    Derived from format inspection of HEC-RAS 6.6 example files and
-    ``archive/ras_tools/geomParser.py``.
     """
 
     def __init__(self, path: str | Path) -> None:

@@ -41,7 +41,6 @@ class Plan:
     Unknown lines and lines without an ``=`` (e.g. ``Subcritical Flow``) are
     preserved verbatim so round-trips are faithful.
 
-    Derived from: ``archive/ras_tools/planParser.py``
     """
 
     def __init__(self, path: str | Path) -> None:
