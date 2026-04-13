@@ -3403,6 +3403,29 @@ class Geometry(_HdfFile):
             self._river_geometry = RiverGeometry(self._hdf)
         return self._river_geometry
 
+    @property
+    def projection(self) -> str | None:
+        """WKT projection string stored in the HDF root attribute, or ``None``.
+
+        HEC-RAS writes the model CRS as a WKT string in the root-level
+        ``Projection`` attribute.  Returns ``None`` when the attribute is
+        absent (older files or models without a defined projection).
+
+        The raw WKT string can be converted to a ``pyproj.CRS`` or a
+        ``rasterio.crs.CRS`` object if needed::
+
+            import pyproj
+            crs = pyproj.CRS.from_wkt(geom.projection)
+
+        Returns
+        -------
+        str or None
+        """
+        raw = self._hdf.attrs.get("Projection")
+        if raw is None:
+            return None
+        return raw.decode() if isinstance(raw, (bytes, np.bytes_)) else str(raw)
+
     def geometry_summary(self) -> GeometrySummary:
         """Return metadata from the ``Geometry/`` group attributes.
 
@@ -3518,7 +3541,98 @@ class Geometry(_HdfFile):
             pct_impervious=_layer("Percent Impervious"),
         )
 
+    def center_coordinates(
+        self,
+        location: tuple[str, str | None, str | None],
+    ) -> np.ndarray:
+        """Return the centre coordinates for a cross section, storage area,
+        or 2-D flow area cell.
 
+        The *location* tuple is interpreted differently depending on which
+        element type is identified:
+
+        * **Cross section** — ``(river, reach, rs)``
+          Both *river* and *reach* must be non-empty.
+          Returns the intersection of the XS cut line with the river
+          centreline polyline (i.e. :attr:`CrossSection.centerline_coordinates
+          <rivia.hdf.geometry.CrossSection.centerline_coordinates>`).
+
+        * **Storage area** — ``(name, "", "")`` or ``(name, None, None)``
+          *reach* is empty or ``None``.
+          Returns the area-weighted centroid of the boundary polygon
+          (i.e. :attr:`StorageArea.centroid`).
+
+        * **2-D flow area cell** — ``(area_name, "", cell_index)`` or
+          ``(area_name, None, cell_index)``
+          *reach* is empty or ``None``; *cell_index* is the integer cell
+          number as a string.
+          Returns the cell centre coordinate from
+          :attr:`FlowArea.cell_centers`.
+
+        Parameters
+        ----------
+        location:
+            Three-element tuple ``(a, b, c)`` described above.
+
+        Returns
+        -------
+        ndarray, shape ``(2,)``
+            ``[x, y]`` of the requested centre point.
+
+        Raises
+        ------
+        KeyError
+            If the named cross section, storage area, or flow area is not
+            found in the HDF.
+        ValueError
+            If the cross section has no centreline match (its
+            ``centerline_coordinates`` is ``None``), or *cell_index* is not
+            a valid integer or is out of range for the flow area.
+
+        Examples
+        --------
+        ::
+
+            with Geometry("MyModel.g01") as g:
+                # 1-D cross section
+                xy = g.center_coordinates(("Bald Eagle Cr.", "Lock Haven", "137520"))
+                # Storage area
+                xy = g.center_coordinates(("Reservoir", "", ""))
+                # 2-D flow area cell 42
+                xy = g.center_coordinates(("Perimeter 1", "", "42"))
+        """
+        a, b, c = location
+
+        if b:
+            # --- Cross section (river, reach, rs) ---
+            xs = self.cross_sections[(a, b, c)]
+            coords = xs.centerline_coordinates
+            if coords is None:
+                raise ValueError(
+                    f"Cross section ({a!r}, {b!r}, {c!r}) has no river "
+                    "centreline match; centerline_coordinates is None."
+                )
+            return coords
+
+        if not c:
+            # --- Storage area (name, "", "") ---
+            return self.storage_areas[a].centroid
+
+        # --- 2-D flow area cell (area_name, "", cell_index) ---
+        try:
+            idx = int(c)
+        except ValueError:
+            raise ValueError(
+                f"Cell index {c!r} is not a valid integer."
+            ) from None
+        centers = self.flow_areas[a].cell_centers
+        n = len(centers)
+        if idx < 0 or idx >= n:
+            raise ValueError(
+                f"Cell index {idx} is out of range for flow area {a!r} "
+                f"(n_cells={n})."
+            )
+        return centers[idx]
 
 
 

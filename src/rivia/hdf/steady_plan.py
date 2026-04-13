@@ -1297,18 +1297,6 @@ class SteadyPlan(_PlanHdf, Geometry):
         raw = self._hdf.attrs["File Version"]
         return raw.decode() if isinstance(raw, (bytes, bytes)) else str(raw)
 
-    @property
-    def projection(self) -> str | None:
-        """WKT projection string stored in the plan HDF root, or ``None``.
-
-        Returns ``None`` when the attribute is absent (older files or models
-        without a defined projection).
-        """
-        raw = self._hdf.attrs.get("Projection")
-        if raw is None:
-            return None
-        return raw.decode() if isinstance(raw, (bytes, bytes)) else str(raw)
-
     # ------------------------------------------------------------------
     # Collections (override Geometry equivalents with results-aware types)
     # ------------------------------------------------------------------

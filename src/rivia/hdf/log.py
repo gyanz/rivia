@@ -20,6 +20,8 @@ import datetime as dt
 import logging
 import re
 from dataclasses import dataclass
+from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
@@ -27,6 +29,9 @@ import pandas as pd
 from rivia.utils import parse_hec_datetime
 
 from ._base import _RAS_TS_FMT
+
+if TYPE_CHECKING:
+    from .geometry import Geometry
 
 logger = logging.getLogger("rivia.hdf")
 
@@ -487,6 +492,8 @@ class UnsteadyRuntimeLog(RuntimeLog):
         groupby: bool = False,
         sortby: str | list[str] | None = None,
         ascending: bool | list[bool] = False,
+        geometry: Geometry | None = None,
+        out_shapefile: str | Path | None = None,
     ) -> pd.DataFrame:
         """Per-timestep maximum-iteration summary.
 
@@ -528,10 +535,26 @@ class UnsteadyRuntimeLog(RuntimeLog):
         ascending : bool or list[bool], optional
             Sort direction passed directly to :meth:`pandas.DataFrame.sort_values`.
             Default ``False`` (descending — worst first).
+        geometry : Geometry, optional
+            Open :class:`~rivia.hdf.Geometry` (or plan) instance used to
+            resolve spatial coordinates when *out_shapefile* is set.
+            Required when *out_shapefile* is not ``None``; ignored otherwise.
+        out_shapefile : str or Path, optional
+            If given, write a point shapefile to this path before returning.
+            Requires *geometry*.  For each row the centre coordinate is
+            obtained by calling
+            :meth:`~rivia.hdf.Geometry.center_coordinates` with the
+            ``(location, reach, rs_or_cell)`` tuple.  Rows for which no
+            spatial match can be found (``KeyError`` or ``ValueError``) are
+            written with a ``None`` geometry and a warning is logged.
 
         Returns
         -------
-        pandas.DataFrame
+        pandas.DataFrame or geopandas.GeoDataFrame
+            Returns a plain :class:`~pandas.DataFrame` when *out_shapefile*
+            is ``None``, or a :class:`~geopandas.GeoDataFrame` (with CRS
+            taken from :attr:`~rivia.hdf.Geometry.projection`) otherwise.
+            Columns are the same in both cases — see below.
             Columns:
 
             * ``datetime`` — :class:`datetime.datetime`
@@ -556,12 +579,19 @@ class UnsteadyRuntimeLog(RuntimeLog):
             *sortby* are omitted.  Returns an empty DataFrame if no
             iteration lines are found.
 
+        Raises
+        ------
+        ValueError
+            If *out_shapefile* is set but *geometry* is ``None``.
+
         Notes
         -----
         Adaptive-timestep change lines share the same datestamp prefix but
         contain the word ``timestep``; they are not returned as rows but are
         used to populate the ``timestep`` column of subsequent iteration rows.
         """
+        if out_shapefile is not None and geometry is None:
+            raise ValueError("geometry must be provided when out_shapefile is set")
         _COLS = [
             "datetime", "location_type", "location", "reach",
             "rs_or_cell", "wsel", "error", "iterations", "timestep",
@@ -638,6 +668,29 @@ class UnsteadyRuntimeLog(RuntimeLog):
 
         if sortby is not None:
             df = df.sort_values(sortby, ascending=ascending).reset_index(drop=True)
+
+        if out_shapefile is not None:
+            import geopandas as gpd  # lazy: geo dependency optional
+            from shapely.geometry import Point
+
+            coords_cache: dict[tuple[str, str, str], tuple[float, float] | None] = {}
+            geoms = []
+            for _, row in df.iterrows():
+                key = (row["location"], row["reach"], row["rs_or_cell"])
+                if key not in coords_cache:
+                    try:
+                        xy = geometry.center_coordinates(key)  # type: ignore[union-attr]
+                        coords_cache[key] = (float(xy[0]), float(xy[1]))
+                    except (KeyError, ValueError) as exc:
+                        logger.warning("center_coordinates failed for %s: %s", key, exc)
+                        coords_cache[key] = None
+                xy = coords_cache[key]
+                geoms.append(Point(xy) if xy is not None else None)
+
+            crs = geometry.projection  # type: ignore[union-attr]
+            gdf = gpd.GeoDataFrame(df, geometry=geoms, crs=crs)
+            gdf.to_file(out_shapefile)
+            return gdf
 
         return df
 

@@ -3358,25 +3358,6 @@ class UnsteadyPlan(_PlanHdf, Geometry):
         raw = self._plan_info_attr("Base Output Interval")
         return None if raw is None else parse_interval(raw)
 
-    @property
-    def projection(self) -> str | None:
-        """WKT projection string stored in the plan HDF root, or ``None``.
-
-        HEC-RAS writes the model CRS as a WKT string in the root attribute
-        ``Projection``.  Returns ``None`` when the attribute is absent (older
-        files or models without a defined projection).
-
-        The raw WKT string can be converted to a ``pyproj.CRS`` or a
-        ``rasterio.crs.CRS`` object if needed::
-
-            import pyproj
-            crs = pyproj.CRS.from_wkt(hdf.projection)
-        """
-        raw = self._hdf.attrs.get("Projection")
-        if raw is None:
-            return None
-        return raw.decode() if isinstance(raw, (bytes, np.bytes_)) else str(raw)
-
     # ------------------------------------------------------------------
     # Time stamps
     # ------------------------------------------------------------------
