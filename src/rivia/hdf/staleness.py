@@ -28,6 +28,8 @@ from pathlib import Path
 
 import numpy as np
 
+from rivia.utils import parse_hec_datetime
+
 from ._base import _RAS_TS_FMT, _SUMMARY_ROOT, _MSG_TEXT, _MSG_RTF, _PROCESSES
 from .geometry import Geometry
 from .log import RunCompletion, RuntimeLog
@@ -82,8 +84,8 @@ def _parse_run_window(
     if len(parts) != 2:
         return None
     try:
-        start = dt.datetime.strptime(parts[0].strip(), _RAS_TS_FMT)
-        end = dt.datetime.strptime(parts[1].strip(), _RAS_TS_FMT)
+        start = parse_hec_datetime(parts[0].strip(), fmt=_RAS_TS_FMT)
+        end = parse_hec_datetime(parts[1].strip(), fmt=_RAS_TS_FMT)
         return start, end
     except ValueError:
         return None

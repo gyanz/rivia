@@ -255,6 +255,118 @@ def normalize_sim_start_time(date: str, time: str) -> tuple[str, str]:
     return nxt.strftime("%d%b%Y").upper(), "0000"
 
 
+def parse_hec_datetime(text: str, fmt: str | None = None) -> dt.datetime:
+    """Parse any HEC-RAS combined datetime string.
+
+    The date part is always ``DDMONYYYY`` (9 characters), followed by a
+    separator (space or comma), then a time part in one of the supported
+    variants:
+
+    * ``HH:MM:SS`` — 24-hour with colons (HDF timestamps, runtime log lines)
+    * ``HH:MM:SS AM/PM`` — 12-hour with colons (``Simulation started at:`` lines)
+    * ``HHMMSS`` — 6-digit, no colons (space or comma separator)
+    * ``HHMM`` — 4-digit, no colons (space or comma separator)
+
+    ``HH=24`` is handled in all variants: treated as ``00:XX:XX`` on the
+    following day, matching HEC-RAS end-of-day midnight convention.
+
+    Parameters
+    ----------
+    text : str
+        HEC-RAS datetime string in any supported format.
+    fmt : str, optional
+        ``strptime`` format string.  When provided, skips auto-detection and
+        uses this format directly.  ``HH=24`` is still handled unconditionally
+        because the hour always occupies positions 10–11 in the raw string.
+
+    Returns
+    -------
+    datetime.datetime
+
+    Raises
+    ------
+    ValueError
+        If the string is too short, has an unsupported separator, or uses an
+        unrecognised time variant (auto-detect path only).
+
+    Examples
+    --------
+    >>> parse_hec_datetime("01OCT2024 00:00:02")
+    datetime.datetime(2024, 10, 1, 0, 0, 2)
+    >>> parse_hec_datetime("01JAN2026 24:00:00")
+    datetime.datetime(2026, 1, 2, 0, 0)
+    >>> parse_hec_datetime("01JAN2026,2400")
+    datetime.datetime(2026, 1, 2, 0, 0)
+    >>> parse_hec_datetime("01JAN2026 0002", fmt="%d%b%Y %H%M")
+    datetime.datetime(2026, 1, 1, 0, 2)
+    """
+    text = text.strip()
+    # HH always occupies positions 10-11 (9-char date + 1-char separator).
+    extra_day = len(text) > 11 and text[10:12] == "24"
+    if extra_day:
+        text = text[:10] + "00" + text[12:]
+
+    if fmt is not None:
+        result = dt.datetime.strptime(text, fmt)
+        return result + dt.timedelta(days=1) if extra_day else result
+
+    # Auto-detect format from separator and time-part shape.
+    if len(text) < 14:
+        raise ValueError(
+            f"Cannot parse HEC-RAS datetime {text!r}: string too short "
+            "(minimum 14 characters for 'DDMONYYYY HHMM')"
+        )
+    sep = text[9]
+    if sep not in (" ", ","):
+        raise ValueError(
+            f"Cannot parse HEC-RAS datetime {text!r}: expected space or "
+            f"comma at position 9, got {sep!r}"
+        )
+    time_str = text[10:]
+    if ":" in time_str:
+        upper = time_str.upper()
+        if upper.endswith(" AM") or upper.endswith(" PM"):
+            auto_fmt = f"%d%b%Y{sep}%I:%M:%S %p"
+        else:
+            auto_fmt = f"%d%b%Y{sep}%H:%M:%S"
+    elif len(time_str) == 6:
+        auto_fmt = f"%d%b%Y{sep}%H%M%S"
+    elif len(time_str) == 4:
+        auto_fmt = f"%d%b%Y{sep}%H%M"
+    else:
+        raise ValueError(
+            f"Cannot parse HEC-RAS datetime {text!r}: "
+            f"unrecognised time part {time_str!r}"
+        )
+    result = dt.datetime.strptime(text, auto_fmt)
+    return result + dt.timedelta(days=1) if extra_day else result
+
+
+def format_hec_datetime(d: dt.datetime) -> str:
+    """Format a :class:`datetime.datetime` as a HEC-RAS ``"DDMONYYYY HH:MM:SS"`` string.
+
+    This is the canonical format used in HEC-RAS HDF5 attributes and runtime
+    log timestamps (space separator, colon-separated 24-hour time, uppercase
+    month abbreviation).
+
+    Parameters
+    ----------
+    d : datetime.datetime
+
+    Returns
+    -------
+    str
+        e.g. ``"01OCT2024 00:00:02"``
+
+    Examples
+    --------
+    >>> import datetime as dt
+    >>> format_hec_datetime(dt.datetime(2024, 10, 1, 0, 0, 2))
+    '01OCT2024 00:00:02'
+    """
+    return d.strftime("%d%b%Y %H:%M:%S").upper()
+
+
 def fix_ras_dates(dates: list) -> list[dt.datetime]:
     """Convert HEC-RAS date serial numbers to datetime objects.
 

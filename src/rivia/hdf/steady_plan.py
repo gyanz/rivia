@@ -31,6 +31,8 @@ from typing import TYPE_CHECKING, Any, overload
 
 import numpy as np
 
+from rivia.utils import parse_hec_datetime
+
 from ._base import _PlanHdf, _RAS_TS_FMT
 from .geometry import (
     _SA_ROOT,
@@ -1097,8 +1099,8 @@ class RunStatus:
         try:
             left, right = self.run_window.split(" to ", maxsplit=1)
             return (
-                dt.datetime.strptime(left.strip(), _RAS_TS_FMT),
-                dt.datetime.strptime(right.strip(), _RAS_TS_FMT),
+                parse_hec_datetime(left.strip(), fmt=_RAS_TS_FMT),
+                parse_hec_datetime(right.strip(), fmt=_RAS_TS_FMT),
             )
         except (ValueError, AttributeError):
             return None

@@ -19,6 +19,8 @@ from typing import TYPE_CHECKING, Generic, TypeVar, overload
 import numpy as np
 import pandas as pd
 
+from rivia.utils import parse_hec_datetime
+
 from ._base import _HdfFile, _RAS_TS_FMT
 
 if TYPE_CHECKING:
@@ -3385,7 +3387,7 @@ class Geometry(_HdfFile):
             return v.decode() if isinstance(v, (bytes, np.bytes_)) else str(v)
 
         def _parse_ts(s: str) -> dt.datetime:
-            return dt.datetime.strptime(s.strip(), _RAS_TS_FMT)
+            return parse_hec_datetime(s.strip(), fmt=_RAS_TS_FMT)
 
         def _parse_ts_opt(s: str | None) -> dt.datetime | None:
             if not s:

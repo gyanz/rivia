@@ -24,9 +24,9 @@ from typing import TYPE_CHECKING, Any, Literal, overload
 import numpy as np
 import pandas as pd
 
-from rivia.utils import log_call, parse_interval, timed
+from rivia.utils import log_call, parse_hec_datetime, parse_interval, timed
 
-from ._base import _PlanHdf, _RAS_TS_FMT
+from ._base import _PlanHdf, _POSTPROC_TS_FMT, _RAS_TS_FMT, _parse_hec_ts_array
 from .geometry import (
     _SA_ROOT,
     Bridge,
@@ -96,9 +96,6 @@ _POSTPROC_GEOM_ATTRS = (
     "Results/Post Process/Steady/Output/Geometry Info"
     "/Cross Section Attributes"
 )
-
-# Timestamp format used in Post Process Profile Dates (e.g. "01JAN2026 0002")
-_POSTPROC_TS_FMT = "%d%b%Y %H%M"
 
 
 # ---------------------------------------------------------------------------
@@ -2693,8 +2690,8 @@ class RunStatus:
         try:
             left, right = self.run_window.split(" to ", maxsplit=1)
             return (
-                dt.datetime.strptime(left.strip(), _RAS_TS_FMT),
-                dt.datetime.strptime(right.strip(), _RAS_TS_FMT),
+                parse_hec_datetime(left.strip(), fmt=_RAS_TS_FMT),
+                parse_hec_datetime(right.strip(), fmt=_RAS_TS_FMT),
             )
         except (ValueError, AttributeError):
             return None
@@ -3397,7 +3394,7 @@ class UnsteadyPlan(_PlanHdf, Geometry):
                 "Ensure this is an unsteady-flow plan HDF file."
             )
         raw = np.array(ds).astype(str)
-        return pd.to_datetime(raw, format=_RAS_TS_FMT)
+        return _parse_hec_ts_array(raw, _RAS_TS_FMT)
 
     @property
     def output_timestamps(self) -> pd.DatetimeIndex:
@@ -3413,7 +3410,7 @@ class UnsteadyPlan(_PlanHdf, Geometry):
                 "Ensure DSS hydrograph output was written for this plan."
             )
         raw = np.array(ds).astype(str)
-        return pd.to_datetime(raw, format=_RAS_TS_FMT)
+        return _parse_hec_ts_array(raw, _RAS_TS_FMT)
 
     @property
     def output_interval(self) -> dt.timedelta | None:
@@ -3426,7 +3423,7 @@ class UnsteadyPlan(_PlanHdf, Geometry):
         if ds is None or len(ds) < 2:
             return None
         raw = np.array(ds[:2]).astype(str)
-        ts = pd.to_datetime(raw, format=_RAS_TS_FMT)
+        ts = _parse_hec_ts_array(raw, _RAS_TS_FMT)
         return ts[1] - ts[0]
 
     @property
@@ -3440,8 +3437,8 @@ class UnsteadyPlan(_PlanHdf, Geometry):
         ds = self._hdf.get(_POSTPROC_PROFILE_DATES)
         if ds is None or len(ds) < 3:
             return None
-        t1 = pd.to_datetime(ds[1].decode(), format=_POSTPROC_TS_FMT)
-        t2 = pd.to_datetime(ds[2].decode(), format=_POSTPROC_TS_FMT)
+        t1 = parse_hec_datetime(ds[1].decode(), fmt=_POSTPROC_TS_FMT)
+        t2 = parse_hec_datetime(ds[2].decode(), fmt=_POSTPROC_TS_FMT)
         return t2 - t1
 
     @property
@@ -3468,7 +3465,7 @@ class UnsteadyPlan(_PlanHdf, Geometry):
                 "Ensure this plan has Post Process steady results."
             )
         raw = np.array(ds[1:]).astype(str)
-        return pd.to_datetime(raw, format=_POSTPROC_TS_FMT)
+        return _parse_hec_ts_array(raw, _POSTPROC_TS_FMT)
 
     @property
     def n_mapping_timestamps(self) -> int | None:

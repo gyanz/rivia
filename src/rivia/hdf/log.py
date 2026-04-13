@@ -24,6 +24,10 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from rivia.utils import parse_hec_datetime
+
+from ._base import _RAS_TS_FMT
+
 logger = logging.getLogger("rivia.hdf")
 
 # ---------------------------------------------------------------------------
@@ -50,8 +54,6 @@ _RE_SPEED = re.compile(r"^(?P<task>.+?)\t(?P<speed>\S+x)\s*$")
 #   Finished Sediment Transport Simulation
 _RE_FINISHED = re.compile(r"^Finished\s+.+Simulation\s*$")
 
-_HEC_DATE_FMT = "%d%b%Y %H:%M:%S"  # e.g. "01OCT2024 00:00:02"
-
 
 def _parse_hec_datetime(date_str: str, time_str: str) -> dt.datetime:
     """Parse a HEC-RAS date + time token pair into a :class:`datetime.datetime`.
@@ -67,7 +69,7 @@ def _parse_hec_datetime(date_str: str, time_str: str) -> dt.datetime:
     -------
     datetime.datetime
     """
-    return dt.datetime.strptime(f"{date_str} {time_str}", _HEC_DATE_FMT)
+    return parse_hec_datetime(f"{date_str} {time_str}", fmt=_RAS_TS_FMT)
 
 
 # ---------------------------------------------------------------------------
@@ -281,12 +283,8 @@ class RuntimeLog:
         for line in self.lines:
             m = re.match(r"^Simulation started at:\s*(.+)$", line)
             if m:
-                raw = m.group(1).strip()
-                for fmt in ("%d%b%Y %I:%M:%S %p", "%d%b%Y %H:%M:%S"):
-                    try:
-                        return dt.datetime.strptime(raw, fmt)
-                    except ValueError:
-                        continue
+                with contextlib.suppress(ValueError):
+                    return parse_hec_datetime(m.group(1).strip())
         return None
 
     def computation_time(self) -> float | None:

@@ -12,13 +12,51 @@ and ``self._filename`` via the MRO of the concrete plan class.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import h5py
 import numpy as np
 
+from rivia.utils import parse_hec_datetime
 
-# Timestamp format written by HEC-RAS (e.g. "11APR2026 11:53:38")
+if TYPE_CHECKING:
+    import pandas as pd
+
+# ---------------------------------------------------------------------------
+# HEC-RAS datetime format constants — single authoritative definitions.
+# All hdf/ modules import from here; never redefine locally.
+# ---------------------------------------------------------------------------
+
+# HDF attribute timestamps and runtime-log datestamps: "11APR2026 11:53:38"
 _RAS_TS_FMT = "%d%b%Y %H:%M:%S"
+
+# Post-process profile dates (instantaneous output): "01JAN2026 0002"
+_POSTPROC_TS_FMT = "%d%b%Y %H%M"
+
+
+def _parse_hec_ts_array(raw: np.ndarray, fmt: str) -> pd.DatetimeIndex:
+    """Convert an array of HEC-RAS timestamp strings to a :class:`pandas.DatetimeIndex`.
+
+    Delegates each element to :func:`~rivia.utils.parse_hec_datetime` so that
+    ``HH=24`` midnight values are handled correctly.
+
+    Parameters
+    ----------
+    raw : numpy.ndarray
+        1-D array of HEC-RAS timestamp strings (any dtype castable to ``str``).
+    fmt : str
+        ``strptime`` format string passed through to
+        :func:`~rivia.utils.parse_hec_datetime`.  Use :data:`_RAS_TS_FMT` for
+        standard HDF timestamps or :data:`_POSTPROC_TS_FMT` for post-process
+        profile dates.
+
+    Returns
+    -------
+    pandas.DatetimeIndex
+    """
+    import pandas as pd  # local import — pandas is optional at module level
+
+    return pd.DatetimeIndex([parse_hec_datetime(str(s), fmt=fmt) for s in raw])
 
 
 def _resolve_hdf_path(filename: str | Path) -> Path:
