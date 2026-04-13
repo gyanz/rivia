@@ -11,17 +11,10 @@ from ..utils.helpers import check_sim_time as _check_sim_time
 
 logger = logging.getLogger("rivia.model")
 
-_MONTHS = {"JAN", "FEB", "MAR", "APR", "MAY", "JUN",
-           "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"}
-
-_MONTH_ABBR = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN",
-               "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"]
-
-
 def _to_sim_date_str(bound: str | tuple[str, str] | datetime) -> str:
     """Normalise a simulation window bound to ``"DDMONYYYY,HHMM"`` format."""
     if isinstance(bound, datetime):
-        return f"{bound.day:02d}{_MONTH_ABBR[bound.month - 1]}{bound.year},{bound.hour:02d}{bound.minute:02d}"
+        return bound.strftime("%d%b%Y,%H%M").upper()
     if isinstance(bound, tuple):
         _check_sim_date(bound[0])
         _check_sim_time(bound[1])

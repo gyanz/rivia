@@ -20,7 +20,7 @@ from math import ceil
 from pathlib import Path
 from typing import Literal
 
-from rivia.utils import check_sim_date, check_sim_time, parse_interval
+from rivia.utils import parse_hec_datetime, parse_interval
 
 logger = logging.getLogger("rivia.model")
 
@@ -50,21 +50,7 @@ def _parse_window(
     """
     if not use_fixed_start:
         return None
-    date_str, time_str = fixed_start.split(",", 1)
-    date_str = date_str.strip()
-    time_str = time_str.strip()
-    check_sim_date(date_str)
-    check_sim_time(time_str)
-    # HEC-RAS uses "2400" / "240000" to mean midnight at the end of the day
-    # (i.e. 00:00 the following day).  strptime rejects hour 24, so normalise
-    # before parsing.
-    extra_day = time_str.startswith("24")
-    if extra_day:
-        time_str = "00" + time_str[2:]
-    fmt = "%d%b%Y%H%M%S" if len(time_str) == 6 else "%d%b%Y%H%M"
-    start = dt.datetime.strptime(date_str + time_str, fmt)
-    if extra_day:
-        start += dt.timedelta(days=1)
+    start = parse_hec_datetime(fixed_start)
     if n_values == 0:
         return start, start
     end = start + (n_values - 1) * parse_interval(interval)
