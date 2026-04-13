@@ -1549,6 +1549,44 @@ class StorageArea:
         """Volume column of the rating curve.  Shape ``(n_pairs,)``."""
         return self.volume_elevation[:, 1]
 
+    @property
+    def centroid(self) -> np.ndarray:
+        """Centroid of the boundary polygon, shape ``(2,)``.
+
+        Computed using the standard shoelace formula so the result is
+        exact for any simple (non-self-intersecting) polygon and is not
+        biased by uneven vertex spacing along the boundary.
+
+        Returns
+        -------
+        ndarray, shape ``(2,)``
+            ``[x, y]`` of the polygon centroid.
+
+        Raises
+        ------
+        ValueError
+            If ``boundary`` has fewer than three points.
+        """
+        pts = self.boundary
+        if len(pts) < 3:
+            raise ValueError(
+                f"Storage area {self.name!r} boundary has fewer than 3 points "
+                f"({len(pts)}); cannot compute centroid."
+            )
+        x, y = pts[:, 0], pts[:, 1]
+        # Shoelace cross products: A_i = x_i * y_{i+1} - x_{i+1} * y_i
+        cross = x[:-1] * y[1:] - x[1:] * y[:-1]
+        # Close the polygon (last→first edge)
+        cross_close = x[-1] * y[0] - x[0] * y[-1]
+        signed_area = (cross.sum() + cross_close) / 2.0
+        if signed_area == 0.0:
+            # Degenerate (collinear points): fall back to vertex mean
+            return pts.mean(axis=0)
+        cx = ((x[:-1] + x[1:]) * cross).sum() + (x[-1] + x[0]) * cross_close
+        cy = ((y[:-1] + y[1:]) * cross).sum() + (y[-1] + y[0]) * cross_close
+        factor = 1.0 / (6.0 * signed_area)
+        return np.array([cx * factor, cy * factor])
+
     def volume_at_elevation(self, wse: float) -> float:
         """Return interpolated stored volume at *wse*.
 
