@@ -2861,22 +2861,32 @@ class CrossSectionCollection:
             )
 
         # Populate centerline_polyline on each XS by matching river+reach
-        # from Geometry/River Centerlines.
+        # from Geometry/River Centerlines.  Two HDF formats exist:
+        #   Newer: "Attributes" structured dataset with "River Name"/"Reach Name" fields
+        #   Older: separate "River Names"/"Reach Names" byte-string arrays only
         cl_root = self._hdf.get(_RIVER_CL_ROOT)
         if cl_root is not None:
-            cl_attrs = np.array(cl_root["Attributes"])
-            cl_fn = cl_attrs.dtype.names
             cl_polylines = _read_polyline_group(cl_root)
-
-            def _cls(row, f: str) -> str:
-                return _decode(row[f]) if f in cl_fn else ""
-
             cl_map: dict[tuple[str, str], np.ndarray] = {}
-            for ci, crow in enumerate(cl_attrs):
-                cl_river = _cls(crow, "River Name")
-                cl_reach = _cls(crow, "Reach Name")
-                if ci < len(cl_polylines):
-                    cl_map[(cl_river, cl_reach)] = cl_polylines[ci]
+
+            if "Attributes" in cl_root:
+                cl_attrs = np.array(cl_root["Attributes"])
+                cl_fn = cl_attrs.dtype.names
+
+                def _cls(row, f: str) -> str:
+                    return _decode(row[f]) if f in cl_fn else ""
+
+                for ci, crow in enumerate(cl_attrs):
+                    cl_river = _cls(crow, "River Name")
+                    cl_reach = _cls(crow, "Reach Name")
+                    if ci < len(cl_polylines):
+                        cl_map[(cl_river, cl_reach)] = cl_polylines[ci]
+            else:
+                cl_rivers = [_decode(v) for v in np.array(cl_root["River Names"])]
+                cl_reaches = [_decode(v) for v in np.array(cl_root["Reach Names"])]
+                for ci, (rv, rc) in enumerate(zip(cl_rivers, cl_reaches, strict=True)):
+                    if ci < len(cl_polylines):
+                        cl_map[(rv, rc)] = cl_polylines[ci]
 
             for xs in items.values():
                 poly = cl_map.get((xs.river, xs.reach))
@@ -3070,29 +3080,47 @@ class RiverGeometry:
             self._centerlines = []
             return self._centerlines
 
-        attrs = np.array(root["Attributes"])
-        fn = attrs.dtype.names
         polylines = _read_polyline_group(root)
-
-        def _s(row, f: str) -> str:
-            return _decode(row[f]) if f in fn else ""
-
-        def _f(row, f: str) -> float:
-            return float(row[f]) if f in fn else float("nan")
-
         result: list[RiverCenterline] = []
-        for i, row in enumerate(attrs):
-            result.append(RiverCenterline(
-                river=_s(row, "River Name"),
-                reach=_s(row, "Reach Name"),
-                upstream_type=_s(row, "US Type"),
-                upstream_name=_s(row, "US Name"),
-                downstream_type=_s(row, "DS Type"),
-                downstream_name=_s(row, "DS Name"),
-                junction_to_us_xs=_f(row, "Junction to US XS"),
-                ds_xs_to_junction=_f(row, "DS XS to Junction"),
-                polyline=polylines[i] if i < len(polylines) else np.empty((0, 2)),
-            ))
+
+        if "Attributes" in root:
+            attrs = np.array(root["Attributes"])
+            fn = attrs.dtype.names
+
+            def _s(row, f: str) -> str:
+                return _decode(row[f]) if f in fn else ""
+
+            def _f(row, f: str) -> float:
+                return float(row[f]) if f in fn else float("nan")
+
+            for i, row in enumerate(attrs):
+                result.append(RiverCenterline(
+                    river=_s(row, "River Name"),
+                    reach=_s(row, "Reach Name"),
+                    upstream_type=_s(row, "US Type"),
+                    upstream_name=_s(row, "US Name"),
+                    downstream_type=_s(row, "DS Type"),
+                    downstream_name=_s(row, "DS Name"),
+                    junction_to_us_xs=_f(row, "Junction to US XS"),
+                    ds_xs_to_junction=_f(row, "DS XS to Junction"),
+                    polyline=polylines[i] if i < len(polylines) else np.empty((0, 2)),
+                ))
+        else:
+            cl_rivers = [_decode(v) for v in np.array(root["River Names"])]
+            cl_reaches = [_decode(v) for v in np.array(root["Reach Names"])]
+            for i, (rv, rc) in enumerate(zip(cl_rivers, cl_reaches, strict=True)):
+                result.append(RiverCenterline(
+                    river=rv,
+                    reach=rc,
+                    upstream_type="",
+                    upstream_name="",
+                    downstream_type="",
+                    downstream_name="",
+                    junction_to_us_xs=float("nan"),
+                    ds_xs_to_junction=float("nan"),
+                    polyline=polylines[i] if i < len(polylines) else np.empty((0, 2)),
+                ))
+
         self._centerlines = result
         return self._centerlines
 

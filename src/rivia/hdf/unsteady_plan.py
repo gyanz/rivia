@@ -2046,6 +2046,7 @@ class _CrossSectionResultsBase(CrossSection):
             station_elevation=geom.station_elevation,
             mannings_n=geom.mannings_n,
             cut_line=geom.cut_line,
+            centerline_polyline=geom.centerline_polyline,
         )
         self._hdf = hdf
         self._index = index
