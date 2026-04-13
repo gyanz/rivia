@@ -115,7 +115,7 @@ class CrossSectionResults(CrossSection):
             expansion=geom.expansion,
             station_elevation=geom.station_elevation,
             mannings_n=geom.mannings_n,
-            centerline=geom.centerline,
+            cut_line=geom.cut_line,
         )
         self._hdf = hdf
         self._index = index
@@ -798,7 +798,7 @@ class LateralResults(LateralStructure):
             mode=geom.mode,
             upstream_type=geom.upstream_type,
             downstream_type=geom.downstream_type,
-            centerline=geom.centerline,
+            cut_line=geom.cut_line,
             location=geom.location,
             upstream_node=geom.upstream_node,
             downstream_node=geom.downstream_node,

@@ -36,6 +36,9 @@ _SA_ROOT = "Geometry/Storage Areas"
 _BC_ROOT = "Geometry/Boundary Condition Lines"
 _STRUCT_ROOT = "Geometry/Structures"
 _XS_ROOT = "Geometry/Cross Sections"
+_RIVER_CL_ROOT = "Geometry/River Centerlines"
+_RIVER_BANK_ROOT = "Geometry/River Bank Lines"
+_RIVER_EDGE_ROOT = "Geometry/River Edge Lines"
 
 
 # ---------------------------------------------------------------------------
@@ -2432,37 +2435,187 @@ class StructureCollection:
 # ---------------------------------------------------------------------------
 
 
+def _walk_polyline(
+    polyline: np.ndarray, stations: np.ndarray
+) -> np.ndarray:
+    """Interpolate (x, y) along a polyline at given cumulative distances.
+
+    Parameters
+    ----------
+    polyline:
+        Ordered vertices of the line, shape ``(n_pts, 2)``.
+    stations:
+        Cumulative distances at which to interpolate, shape ``(n,)``.
+        Must be non-negative and not exceed the total polyline length.
+
+    Returns
+    -------
+    ndarray, shape ``(n, 2)``
+        Interpolated ``(x, y)`` coordinates.
+    """
+    if len(polyline) < 2:
+        return np.tile(polyline[0], (len(stations), 1))
+
+    # Segment lengths and cumulative distances along polyline
+    diffs = np.diff(polyline, axis=0)
+    seg_len = np.hypot(diffs[:, 0], diffs[:, 1])
+    cum_len = np.concatenate([[0.0], np.cumsum(seg_len)])
+    total = cum_len[-1]
+
+    # Clamp stations to [0, total]
+    t = np.clip(stations, 0.0, total)
+
+    # For each query station find which segment it falls in
+    seg_idx = np.searchsorted(cum_len, t, side="right") - 1
+    seg_idx = np.clip(seg_idx, 0, len(seg_len) - 1)
+
+    # Fractional position within segment
+    seg_start = cum_len[seg_idx]
+    seg_end = cum_len[seg_idx + 1]
+    denom = seg_end - seg_start
+    # Avoid divide-by-zero for zero-length segments
+    frac = np.where(denom > 0.0, (t - seg_start) / denom, 0.0)
+    frac = frac[:, np.newaxis]
+
+    return polyline[seg_idx] + frac * diffs[seg_idx]
+
+
+def _polyline_intersect(
+    a: np.ndarray, b: np.ndarray
+) -> np.ndarray | None:
+    """Return the first intersection point of two 2-D polylines, or ``None``.
+
+    Uses the parametric line-segment intersection formula for each pair of
+    segments.  Returns the exact intersection coordinates ``(x, y)`` as a
+    shape-``(2,)`` array, or ``None`` when the polylines do not intersect.
+
+    Parameters
+    ----------
+    a, b:
+        Ordered vertices of each polyline, shape ``(n, 2)`` and
+        ``(m, 2)`` respectively.  Both must have at least two points.
+    """
+    if len(a) < 2 or len(b) < 2:
+        return None
+
+    # Vectorise over all pairs of segments between a and b
+    a0 = a[:-1]   # (na, 2)  segment starts
+    a1 = a[1:]    # (na, 2)  segment ends
+    b0 = b[:-1]   # (nb, 2)
+    b1 = b[1:]
+
+    da = a1 - a0  # (na, 2)
+    db = b1 - b0  # (nb, 2)
+
+    # For each (i, j) pair: a0[i] + t*da[i] == b0[j] + u*db[j]
+    # Cross-product denominator: da[i] × db[j]
+    # Broadcast: (na, 1, 2) and (1, nb, 2)
+    da_ = da[:, np.newaxis, :]   # (na, 1, 2)
+    db_ = db[np.newaxis, :, :]   # (1, nb, 2)
+    a0_ = a0[:, np.newaxis, :]   # (na, 1, 2)
+    b0_ = b0[np.newaxis, :, :]   # (1, nb, 2)
+
+    denom = da_[..., 0] * db_[..., 1] - da_[..., 1] * db_[..., 0]  # (na, nb)
+    diff = b0_ - a0_  # (na, nb, 2)
+
+    # Avoid divide-by-zero for parallel segments
+    parallel = np.abs(denom) < 1e-12
+    denom_safe = np.where(parallel, 1.0, denom)
+
+    t = (diff[..., 0] * db_[..., 1] - diff[..., 1] * db_[..., 0]) / denom_safe
+    u = (diff[..., 0] * da_[..., 1] - diff[..., 1] * da_[..., 0]) / denom_safe
+
+    # Valid intersection: t in [0,1], u in [0,1], not parallel
+    valid = (~parallel) & (t >= 0.0) & (t <= 1.0) & (u >= 0.0) & (u <= 1.0)
+
+    idx = np.argwhere(valid)
+    if len(idx) == 0:
+        return None
+
+    # Return the first hit (lowest i, then j)
+    i, j = idx[0]
+    return a0[i] + t[i, j] * da[i]
+
+
 @dataclass
 class CrossSection:
     """One HEC-RAS 1-D cross section from ``Geometry/Cross Sections/Attributes``.
 
     Attributes
     ----------
-    river, reach, rs:
-        Location identity — river name, reach name, river station.
+    river:
+        River name (HDF ``River`` field).
+    reach:
+        Reach name (HDF ``Reach`` field).
+    rs:
+        River station string (HDF ``RS`` field).
     name:
         Optional user label (HDF ``Name`` field).
-    left_bank, right_bank:
-        Bank stations (feet or metres) separating LOB / channel / ROB.
-    len_left, len_channel, len_right:
-        Reach lengths for left overbank, channel, and right overbank.
-    contraction, expansion:
-        Energy loss coefficients.
+    description:
+        Optional extended description (HDF ``Description`` field).
+    left_bank:
+        Left bank station separating LOB from the channel (HDF ``Left Bank``).
+    right_bank:
+        Right bank station separating the channel from ROB (HDF ``Right Bank``).
+    len_left:
+        Reach length for the left overbank (HDF ``Len Left``).
+    len_channel:
+        Reach length for the main channel (HDF ``Len Channel``).
+    len_right:
+        Reach length for the right overbank (HDF ``Len Right``).
+    contraction:
+        Contraction energy loss coefficient (HDF ``Contr``).
+    expansion:
+        Expansion energy loss coefficient (HDF ``Expan``).
+    friction_mode:
+        Friction mode string, e.g. ``'Basic Mann n'`` (HDF ``Friction Mode``).
+    hp_count:
+        Number of rows in the precomputed hydraulic-property table
+        (HDF ``HP Count``).
+    hp_start_elev:
+        Starting elevation for the hydraulic-property table
+        (HDF ``HP Start Elev``).
+    hp_vert_incr:
+        Vertical elevation increment between hydraulic-property table rows
+        (HDF ``HP Vert Incr``).
     station_elevation:
-        Cross-section survey points, shape ``(n, 2)``:
-        columns are ``[station, elevation]``.
+        Cross-section survey points, shape ``(n, 2)``.
+        Columns: ``[station, elevation]``.
+        Source: ``Geometry/Cross Sections/Station Elevation Values``.
     mannings_n:
-        Manning's *n* breakpoints, shape ``(n, 2)``:
-        columns are ``[station, n_value]``.
-    centerline:
-        Plan-view centreline coordinates, shape ``(n, 2)``:
-        columns are ``[x, y]``.
+        Manning's *n* breakpoints, shape ``(n, 2)``.
+        Columns: ``[station, n_value]``.
+        Source: ``Geometry/Cross Sections/Manning's n Values``.
+    ineffective_areas:
+        Ineffective-flow block regions, shape ``(n, 3)``.
+        Columns: ``[left_sta, right_sta, elevation]``.
+        Source: ``Geometry/Cross Sections/Ineffective Blocks``.
+        Empty ``(0, 3)`` when no ineffective areas are defined.
+    cut_line:
+        Plan-view GIS cut-line coordinates, shape ``(n, 2)``.
+        Columns: ``[x, y]``.
+        This is the polyline drawn across the floodplain from the left edge
+        to the right edge of the cross section.  Use
+        :meth:`station_coordinates` to project survey stations onto this
+        line and obtain 3-D point coordinates.
+        Source: ``Geometry/Cross Sections/Polyline Points``.
+    orthogonal_vector:
+        Unit vector perpendicular to the cut line, shape ``(2,)``:
+        ``[cos θ, sin θ]`` where θ is measured CCW from the x-axis.
+        Source: ``Geometry/Cross Sections/Orthogonal Vectors``.
+    centerline_polyline:
+        Plan-view river centreline polyline for this reach, shape ``(n, 2)``.
+        Populated automatically by :class:`CrossSectionCollection` from
+        ``Geometry/River Centerlines`` by matching on *river* and *reach*.
+        Empty ``(0, 2)`` when no matching centreline is found.
+        Used by :attr:`centerline_coordinates`.
     """
 
     river: str = ""
     reach: str = ""
     rs: str = ""
     name: str = ""
+    description: str = ""
     left_bank: float = float("nan")
     right_bank: float = float("nan")
     len_left: float = float("nan")
@@ -2470,14 +2623,133 @@ class CrossSection:
     len_right: float = float("nan")
     contraction: float = float("nan")
     expansion: float = float("nan")
+    friction_mode: str = ""
+    hp_count: int = 0
+    hp_start_elev: float = float("nan")
+    hp_vert_incr: float = float("nan")
     station_elevation: np.ndarray = field(default_factory=lambda: np.empty((0, 2)))
     mannings_n: np.ndarray = field(default_factory=lambda: np.empty((0, 2)))
-    centerline: np.ndarray = field(default_factory=lambda: np.empty((0, 2)))
+    ineffective_areas: np.ndarray = field(default_factory=lambda: np.empty((0, 3)))
+    cut_line: np.ndarray = field(default_factory=lambda: np.empty((0, 2)))
+    orthogonal_vector: np.ndarray = field(default_factory=lambda: np.zeros(2))
+    centerline_polyline: np.ndarray = field(
+        default_factory=lambda: np.empty((0, 2)),
+        repr=False,
+        compare=False,
+    )
 
     @property
     def location(self) -> tuple[str, str, str]:
         """``(river, reach, rs)`` identity tuple for this cross section."""
         return (self.river, self.reach, self.rs)
+
+    def station_coordinates(self) -> np.ndarray:
+        """Project each survey station onto the GIS cut line to get 3-D coordinates.
+
+        Interpolates ``(x, y)`` for every row of :attr:`station_elevation` by
+        walking the :attr:`cut_line` polyline.  The leftmost survey station
+        maps to the first cut-line vertex; the rightmost maps to the last.
+        Elevation values are taken directly from :attr:`station_elevation`.
+
+        Returns
+        -------
+        ndarray, shape ``(n, 3)``
+            Columns: ``[x, y, elevation]`` for each station/elevation point.
+            Returns an empty ``(0, 3)`` array when :attr:`cut_line` or
+            :attr:`station_elevation` contains no points.
+
+        Notes
+        -----
+        The mapping assumes the cut line runs from the left bank (station = min)
+        to the right bank (station = max) in the same direction as the survey.
+        This matches the HEC-RAS convention stored in the HDF file.
+        """
+        if len(self.cut_line) < 2 or len(self.station_elevation) == 0:
+            return np.empty((0, 3))
+
+        stations = self.station_elevation[:, 0]
+        elevations = self.station_elevation[:, 1]
+
+        # Map survey stations to cumulative distance along cut line
+        sta_min, sta_max = stations.min(), stations.max()
+        if sta_min == sta_max:
+            # Degenerate XS — all points collapse to cut-line midpoint
+            diffs = np.diff(self.cut_line, axis=0)
+            total = np.sum(np.hypot(diffs[:, 0], diffs[:, 1]))
+            t = np.full(len(stations), total / 2.0)
+        else:
+            diffs_cl = np.diff(self.cut_line, axis=0)
+            total = np.sum(np.hypot(diffs_cl[:, 0], diffs_cl[:, 1]))
+            t = (stations - sta_min) / (sta_max - sta_min) * total
+
+        xy = _walk_polyline(self.cut_line, t)
+        return np.column_stack([xy, elevations])
+
+    @property
+    def left_bank_coordinates(self) -> np.ndarray:
+        """Spatial coordinates of the left bank station, shape ``(3,)``.
+
+        Interpolates ``[x, y, elevation]`` at :attr:`left_bank` from the
+        output of :meth:`station_coordinates`.
+
+        Returns
+        -------
+        ndarray, shape ``(3,)``
+            ``[x, y, elevation]``.  Returns ``array([nan, nan, nan])``
+            when :meth:`station_coordinates` returns no points or when
+            :attr:`left_bank` is ``NaN``.
+        """
+        coords = self.station_coordinates()
+        if len(coords) == 0 or np.isnan(self.left_bank):
+            return np.full(3, np.nan)
+        stations = self.station_elevation[:, 0]
+        return np.array([
+            np.interp(self.left_bank, stations, coords[:, 0]),
+            np.interp(self.left_bank, stations, coords[:, 1]),
+            np.interp(self.left_bank, stations, coords[:, 2]),
+        ])
+
+    @property
+    def right_bank_coordinates(self) -> np.ndarray:
+        """Spatial coordinates of the right bank station, shape ``(3,)``.
+
+        Interpolates ``[x, y, elevation]`` at :attr:`right_bank` from the
+        output of :meth:`station_coordinates`.
+
+        Returns
+        -------
+        ndarray, shape ``(3,)``
+            ``[x, y, elevation]``.  Returns ``array([nan, nan, nan])``
+            when :meth:`station_coordinates` returns no points or when
+            :attr:`right_bank` is ``NaN``.
+        """
+        coords = self.station_coordinates()
+        if len(coords) == 0 or np.isnan(self.right_bank):
+            return np.full(3, np.nan)
+        stations = self.station_elevation[:, 0]
+        return np.array([
+            np.interp(self.right_bank, stations, coords[:, 0]),
+            np.interp(self.right_bank, stations, coords[:, 1]),
+            np.interp(self.right_bank, stations, coords[:, 2]),
+        ])
+
+    @property
+    def centerline_coordinates(self) -> np.ndarray | None:
+        """Intersection of the cut line with the river centreline, shape ``(2,)``.
+
+        Computes the point where :attr:`cut_line` crosses
+        :attr:`centerline_polyline`.  Returns ``None`` when
+        :attr:`centerline_polyline` is empty (no centreline matched this
+        reach), or when the two polylines do not intersect.
+
+        Returns
+        -------
+        ndarray, shape ``(2,)`` or None
+            ``[x, y]`` of the intersection, or ``None``.
+        """
+        if len(self.centerline_polyline) < 2 or len(self.cut_line) < 2:
+            return None
+        return _polyline_intersect(self.cut_line, self.centerline_polyline)
 
 
 class CrossSectionCollection:
@@ -2521,9 +2793,14 @@ class CrossSectionCollection:
         se_vals = np.array(root["Station Elevation Values"]) # (total, 2)
         mn_info = np.array(root["Manning's n Info"])          # (n_xs, 2)
         mn_vals = np.array(root["Manning's n Values"])        # (total, 2)
-        # Polyline Info (n_xs, 4): col0=start, col1=count in Polyline Points
+        # Polyline Info (n_xs, 4): col0=pt_start, col1=pt_count, col2=part_start, col3=part_count
         pl_info = np.array(root["Polyline Info"])
         pl_pts  = np.array(root["Polyline Points"])           # (total, 2)
+        # Ineffective flow areas: Info (n_xs, 2) → [start, count] into Blocks
+        ineff_info  = np.array(root["Ineffective Info"])      # (n_xs, 2)
+        ineff_blks  = np.array(root["Ineffective Blocks"])    # structured (total,)
+        # Orthogonal vectors: one (cos θ, sin θ) unit vector per XS
+        orth_vecs   = np.array(root["Orthogonal Vectors"])    # (n_xs, 2)
 
         items: dict[str, CrossSection] = {}
         for i, row in enumerate(attrs):
@@ -2534,9 +2811,21 @@ class CrossSectionCollection:
             if key in items:
                 key = f"{key}_{i}"
 
-            se_start, se_count = int(se_info[i, 0]), int(se_info[i, 1])
-            mn_start, mn_count = int(mn_info[i, 0]), int(mn_info[i, 1])
-            pl_start, pl_count = int(pl_info[i, 0]), int(pl_info[i, 1])
+            se_start, se_count     = int(se_info[i, 0]),   int(se_info[i, 1])
+            mn_start, mn_count     = int(mn_info[i, 0]),   int(mn_info[i, 1])
+            pl_start, pl_count     = int(pl_info[i, 0]),   int(pl_info[i, 1])
+            ineff_start, ineff_cnt = int(ineff_info[i, 0]), int(ineff_info[i, 1])
+
+            # Ineffective areas: extract Left Sta / Right Sta / Elevation as float (n, 3)
+            ineff_slice = ineff_blks[ineff_start : ineff_start + ineff_cnt]
+            if len(ineff_slice):
+                ineff_arr = np.column_stack([
+                    ineff_slice["Left Sta"].astype(float),
+                    ineff_slice["Right Sta"].astype(float),
+                    ineff_slice["Elevation"].astype(float),
+                ])
+            else:
+                ineff_arr = np.empty((0, 3))
 
             self._loc_index[(river, reach, rs)] = key
             items[key] = CrossSection(
@@ -2544,6 +2833,7 @@ class CrossSectionCollection:
                 reach=reach,
                 rs=rs,
                 name=_s(row, "Name"),
+                description=_s(row, "Description"),
                 left_bank=_f(row, "Left Bank"),
                 right_bank=_f(row, "Right Bank"),
                 len_left=_f(row, "Len Left"),
@@ -2551,16 +2841,45 @@ class CrossSectionCollection:
                 len_right=_f(row, "Len Right"),
                 contraction=_f(row, "Contr"),
                 expansion=_f(row, "Expan"),
+                friction_mode=_s(row, "Friction Mode"),
+                hp_count=int(row["HP Count"]) if "HP Count" in fn else 0,
+                hp_start_elev=_f(row, "HP Start Elev"),
+                hp_vert_incr=_f(row, "HP Vert Incr"),
                 station_elevation=(
                     se_vals[se_start : se_start + se_count].astype(float)
                 ),
                 mannings_n=(
                     mn_vals[mn_start : mn_start + mn_count].astype(float)
                 ),
-                centerline=(
+                ineffective_areas=ineff_arr,
+                cut_line=(
                     pl_pts[pl_start : pl_start + pl_count].astype(float)
                 ),
+                orthogonal_vector=orth_vecs[i].astype(float),
             )
+
+        # Populate centerline_polyline on each XS by matching river+reach
+        # from Geometry/River Centerlines.
+        cl_root = self._hdf.get(_RIVER_CL_ROOT)
+        if cl_root is not None:
+            cl_attrs = np.array(cl_root["Attributes"])
+            cl_fn = cl_attrs.dtype.names
+            cl_polylines = _read_polyline_group(cl_root)
+
+            def _cls(row, f: str) -> str:
+                return _decode(row[f]) if f in cl_fn else ""
+
+            cl_map: dict[tuple[str, str], np.ndarray] = {}
+            for ci, crow in enumerate(cl_attrs):
+                cl_river = _cls(crow, "River Name")
+                cl_reach = _cls(crow, "Reach Name")
+                if ci < len(cl_polylines):
+                    cl_map[(cl_river, cl_reach)] = cl_polylines[ci]
+
+            for xs in items.values():
+                poly = cl_map.get((xs.river, xs.reach))
+                if poly is not None:
+                    xs.centerline_polyline = poly
 
         self._items = items
         return self._items
@@ -2608,6 +2927,226 @@ class CrossSectionCollection:
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}({len(self)} cross sections)"
+
+
+# ---------------------------------------------------------------------------
+# River Centerlines / Bank Lines / Edge Lines
+# ---------------------------------------------------------------------------
+
+
+def _read_polyline_group(
+    root: "h5py.Group",
+) -> list[np.ndarray]:
+    """Read a ``Polyline Info / Polyline Points`` pair into a list of arrays.
+
+    Parameters
+    ----------
+    root:
+        HDF group containing ``Polyline Info`` and ``Polyline Points``
+        datasets.
+
+    Returns
+    -------
+    list of ndarray, each shape ``(n_pts, 2)``
+        One array per polyline feature.
+    """
+    info = np.array(root["Polyline Info"])   # (n, 4): pt_start, pt_count, ...
+    pts  = np.array(root["Polyline Points"]) # (total, 2)
+    result = []
+    for row in info:
+        start, count = int(row[0]), int(row[1])
+        result.append(pts[start : start + count].astype(float))
+    return result
+
+
+@dataclass
+class RiverCenterline:
+    """One HEC-RAS river centreline from ``Geometry/River Centerlines``.
+
+    Attributes
+    ----------
+    river:
+        River name (HDF ``River Name`` field).
+    reach:
+        Reach name (HDF ``Reach Name`` field).
+    upstream_type:
+        Upstream connection type (HDF ``US Type`` field).
+        Common values: ``'XS'`` (cross section), ``'2D Flow Area'``,
+        ``'Storage Area'``, ``'External'``.
+    upstream_name:
+        Name of the upstream connected element (HDF ``US Name`` field).
+    downstream_type:
+        Downstream connection type (HDF ``DS Type`` field).
+        Same vocabulary as *upstream_type*.
+    downstream_name:
+        Name of the downstream connected element (HDF ``DS Name`` field).
+    junction_to_us_xs:
+        Distance from the upstream junction to the nearest upstream cross
+        section (HDF ``Junction to US XS`` field).  ``NaN`` when the
+        upstream connection is not a junction.
+    ds_xs_to_junction:
+        Distance from the nearest downstream cross section to the
+        downstream junction (HDF ``DS XS to Junction`` field).  ``NaN``
+        when the downstream connection is not a junction.
+    polyline:
+        Plan-view centreline coordinates, shape ``(n, 2)``.
+        Columns: ``[x, y]``.
+        Source: ``Geometry/River Centerlines/Polyline Points``.
+    """
+
+    river: str
+    reach: str
+    upstream_type: str
+    upstream_name: str
+    downstream_type: str
+    downstream_name: str
+    junction_to_us_xs: float
+    ds_xs_to_junction: float
+    polyline: np.ndarray  # (n, 2)
+
+
+@dataclass
+class RiverBankLine:
+    """One HEC-RAS river bank line from ``Geometry/River Bank Lines``.
+
+    Bank lines are stored as an ordered pair — index 0 is the left bank,
+    index 1 is the right bank (as drawn in RASMapper).
+
+    Attributes
+    ----------
+    polyline:
+        Plan-view bank-line coordinates, shape ``(n, 2)``: ``[x, y]``.
+    """
+
+    polyline: np.ndarray  # (n, 2)
+
+
+@dataclass
+class RiverEdgeLine:
+    """One HEC-RAS river edge line from ``Geometry/River Edge Lines``.
+
+    Edge lines define the extents of the 1-D floodplain corridor.
+
+    Attributes
+    ----------
+    polyline:
+        Plan-view edge-line coordinates, shape ``(n, 2)``: ``[x, y]``.
+    """
+
+    polyline: np.ndarray  # (n, 2)
+
+
+class RiverGeometry:
+    """Lazy-loaded river geometry lines from a HEC-RAS geometry HDF.
+
+    Provides access to river centrelines, left/right bank lines, and
+    edge lines stored under ``Geometry/`` in geometry or plan HDF files.
+
+    Parameters
+    ----------
+    hdf:
+        Open ``h5py.File`` handle.
+    """
+
+    def __init__(self, hdf: "h5py.File") -> None:
+        self._hdf = hdf
+        self._centerlines: list[RiverCenterline] | None = None
+        self._bank_lines: tuple[RiverBankLine | None, RiverBankLine | None] | None = None
+        self._edge_lines: tuple[RiverEdgeLine | None, RiverEdgeLine | None] | None = None
+
+    @property
+    def centerlines(self) -> list[RiverCenterline]:
+        """River centrelines.  One :class:`RiverCenterline` per reach.
+
+        Returns an empty list when no centreline data is present.
+        """
+        if self._centerlines is not None:
+            return self._centerlines
+
+        root = self._hdf.get(_RIVER_CL_ROOT)
+        if root is None:
+            self._centerlines = []
+            return self._centerlines
+
+        attrs = np.array(root["Attributes"])
+        fn = attrs.dtype.names
+        polylines = _read_polyline_group(root)
+
+        def _s(row, f: str) -> str:
+            return _decode(row[f]) if f in fn else ""
+
+        def _f(row, f: str) -> float:
+            return float(row[f]) if f in fn else float("nan")
+
+        result: list[RiverCenterline] = []
+        for i, row in enumerate(attrs):
+            result.append(RiverCenterline(
+                river=_s(row, "River Name"),
+                reach=_s(row, "Reach Name"),
+                upstream_type=_s(row, "US Type"),
+                upstream_name=_s(row, "US Name"),
+                downstream_type=_s(row, "DS Type"),
+                downstream_name=_s(row, "DS Name"),
+                junction_to_us_xs=_f(row, "Junction to US XS"),
+                ds_xs_to_junction=_f(row, "DS XS to Junction"),
+                polyline=polylines[i] if i < len(polylines) else np.empty((0, 2)),
+            ))
+        self._centerlines = result
+        return self._centerlines
+
+    @property
+    def bank_lines(self) -> tuple[RiverBankLine | None, RiverBankLine | None]:
+        """Left and right bank lines as a ``(left, right)`` tuple.
+
+        Each element is a :class:`RiverBankLine` or ``None`` when absent.
+        HEC-RAS stores exactly two bank lines (index 0 = left, 1 = right).
+        """
+        if self._bank_lines is not None:
+            return self._bank_lines
+
+        root = self._hdf.get(_RIVER_BANK_ROOT)
+        if root is None:
+            self._bank_lines = (None, None)
+            return self._bank_lines
+
+        polylines = _read_polyline_group(root)
+        left  = RiverBankLine(polylines[0]) if len(polylines) > 0 else None
+        right = RiverBankLine(polylines[1]) if len(polylines) > 1 else None
+        self._bank_lines = (left, right)
+        return self._bank_lines
+
+    @property
+    def edge_lines(self) -> tuple[RiverEdgeLine | None, RiverEdgeLine | None]:
+        """Left and right edge lines as a ``(left, right)`` tuple.
+
+        Each element is a :class:`RiverEdgeLine` or ``None`` when absent.
+        """
+        if self._edge_lines is not None:
+            return self._edge_lines
+
+        root = self._hdf.get(_RIVER_EDGE_ROOT)
+        if root is None:
+            self._edge_lines = (None, None)
+            return self._edge_lines
+
+        polylines = _read_polyline_group(root)
+        left  = RiverEdgeLine(polylines[0]) if len(polylines) > 0 else None
+        right = RiverEdgeLine(polylines[1]) if len(polylines) > 1 else None
+        self._edge_lines = (left, right)
+        return self._edge_lines
+
+    def __repr__(self) -> str:
+        n_cl = len(self.centerlines)
+        bl, br = self.bank_lines
+        el, er = self.edge_lines
+        n_banks = sum(1 for b in (bl, br) if b is not None)
+        n_edges = sum(1 for e in (el, er) if e is not None)
+        return (
+            f"{type(self).__name__}("
+            f"{n_cl} centerline(s), "
+            f"{n_banks} bank line(s), "
+            f"{n_edges} edge line(s))"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -2660,7 +3199,9 @@ class GeometrySummary:
         Bounding box as ``(xmin, xmax, ymin, ymax)`` in model coordinates,
         or ``None`` when the geometry has no spatial reference.
     preprocessed_at:
-        Timestamp when RASMapper last preprocessed the geometry.
+        Timestamp when RASMapper last preprocessed the geometry, or ``None``
+        when the geometry has never been preprocessed (HEC-RAS stores the
+        sentinel ``'00JAN0000 00:00:00'`` in that case).
     terrain:
         Terrain layer reference, or ``None`` for non-geospatial models.
     land_cover:
@@ -2676,7 +3217,7 @@ class GeometrySummary:
     complete: bool
     si_units: bool
     extents: tuple[float, float, float, float] | None
-    preprocessed_at: dt.datetime
+    preprocessed_at: dt.datetime | None
     terrain: LayerRef | None
     land_cover: LayerRef | None
     infiltration: LayerRef | None
@@ -2703,7 +3244,7 @@ class GeometrySummary:
             ("complete",       str(self.complete)),
             ("units",          "SI" if self.si_units else "US Customary"),
             ("extents",        _extents(self.extents)),
-            ("preprocessed",   self.preprocessed_at.strftime("%Y-%m-%d %H:%M:%S")),
+            ("preprocessed",   self.preprocessed_at.strftime("%Y-%m-%d %H:%M:%S") if self.preprocessed_at else "\u2014"),
             ("terrain",        _layer(self.terrain)),
             ("land_cover",     _layer(self.land_cover)),
             ("infiltration",   _layer(self.infiltration)),
@@ -2746,6 +3287,7 @@ class Geometry(_HdfFile):
         self._boundary_condition_lines: BoundaryConditionCollection | None = None
         self._structures: StructureCollection | None = None
         self._cross_sections: CrossSectionCollection | None = None
+        self._river_geometry: RiverGeometry | None = None
 
     # ------------------------------------------------------------------
     # Collections
@@ -2785,6 +3327,13 @@ class Geometry(_HdfFile):
         if self._cross_sections is None:
             self._cross_sections = CrossSectionCollection(self._hdf)
         return self._cross_sections
+
+    @property
+    def river_geometry(self) -> RiverGeometry:
+        """Access river centrelines, bank lines, and edge lines."""
+        if self._river_geometry is None:
+            self._river_geometry = RiverGeometry(self._hdf)
+        return self._river_geometry
 
     def geometry_summary(self) -> GeometrySummary:
         """Return metadata from the ``Geometry/`` group attributes.
@@ -2894,7 +3443,7 @@ class Geometry(_HdfFile):
             complete=_bool("Complete Geometry"),
             si_units=_bool("SI Units"),
             extents=extents,
-            preprocessed_at=_parse_ts(_str("Geometry Time")),
+            preprocessed_at=_parse_ts_opt(_str("Geometry Time")),
             terrain=terrain,
             land_cover=_layer("Land Cover"),
             infiltration=_layer("Infiltration"),
