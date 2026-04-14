@@ -3116,6 +3116,7 @@ class UnsteadyPlan(_PlanHdf, Geometry):
     def __init__(self, filename: str | Path, program_directory: str | Path | None = None) -> None:
         super().__init__(filename)
         self._program_directory = Path(program_directory) if program_directory else None
+        self._geom_view: Geometry | None = None
         self._plan_flow_areas: FlowAreaResultsCollection | None = None
         self._plan_storage_areas: StorageAreaResultsCollection | None = None
         self._plan_structures: StructureResultsCollection | None = None
@@ -3327,13 +3328,6 @@ class UnsteadyPlan(_PlanHdf, Geometry):
         """
         raw = self._hdf.attrs["File Version"]
         return raw.decode() if isinstance(raw, (bytes, np.bytes_)) else str(raw)
-
-    @staticmethod
-
-    def _plan_info_attr(self, name: str) -> bytes | np.bytes_ | str | None:
-        """Return a ``Plan Data/Plan Information`` attribute by name, or ``None``."""
-        grp = self._hdf.get("Plan Data/Plan Information")
-        return None if grp is None else grp.attrs.get(name)
 
     @property
     def computation_interval(self) -> dt.timedelta | None:

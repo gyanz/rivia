@@ -11,6 +11,7 @@ and ``self._filename`` via the MRO of the concrete plan class.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -21,6 +22,7 @@ from rivia.utils import parse_hec_datetime
 
 if TYPE_CHECKING:
     import pandas as pd
+    from .geometry import Geometry
 
 # ---------------------------------------------------------------------------
 # HEC-RAS datetime format constants — single authoritative definitions.
@@ -134,6 +136,53 @@ _SUMMARY_ROOT = "Results/Summary"
 _MSG_TEXT = f"{_SUMMARY_ROOT}/Compute Messages (text)"
 _MSG_RTF = f"{_SUMMARY_ROOT}/Compute Messages (rtf)"
 _PROCESSES = f"{_SUMMARY_ROOT}/Compute Processes"
+_PLAN_INFO = "Plan Data/Plan Information"
+
+
+@dataclass
+class PlanInformation:
+    """Metadata from the ``Plan Data/Plan Information`` HDF attribute group.
+
+    Attributes
+    ----------
+    geometry_filename :
+        Name of the text geometry file referenced by the plan,
+        e.g. ``"KagmanWatershed.g03"``.  Append ``.hdf`` and join with the
+        plan folder to get the geometry HDF path.
+    raw :
+        All attributes decoded to ``str``, keyed by attribute name.
+        Use this to access fields not yet promoted to named attributes.
+    """
+
+    geometry_filename: str
+    raw: dict[str, str]
+
+    @classmethod
+    def _from_hdf(cls, hdf: "h5py.File") -> "PlanInformation":
+        """Read plan information from an open HDF file.
+
+        Parameters
+        ----------
+        hdf :
+            Open ``h5py.File`` handle for the plan HDF.
+
+        Raises
+        ------
+        KeyError
+            If the ``Plan Data/Plan Information`` group is absent.
+        """
+        grp = hdf.get(_PLAN_INFO)
+        if grp is None:
+            raise KeyError(
+                f"'{_PLAN_INFO}' group not found. "
+                "Ensure this is a plan HDF file (not a geometry HDF)."
+            )
+        raw: dict[str, str] = {}
+        for k, v in grp.attrs.items():
+            raw[k] = v.decode() if isinstance(v, (bytes, np.bytes_)) else str(v)
+
+        geom_filename = raw.get("Geometry Filename", "")
+        return cls(geometry_filename=geom_filename, raw=raw)
 
 
 class _PlanHdf:
@@ -151,6 +200,125 @@ class _PlanHdf:
     The MRO for both becomes ``Plan → _PlanHdf → Geometry → _HdfFile``,
     so ``self._hdf`` is always available when :meth:`runtime_log` runs.
     """
+
+    # ------------------------------------------------------------------
+    # Plan information
+    # ------------------------------------------------------------------
+
+    def _plan_info_attr(self, name: str) -> bytes | np.bytes_ | str | None:
+        """Return a ``Plan Data/Plan Information`` attribute by name, or ``None``."""
+        grp = self._hdf.get(_PLAN_INFO)  # type: ignore[attr-defined]
+        return None if grp is None else grp.attrs.get(name)
+
+    @property
+    def plan_information(self) -> PlanInformation:
+        """Metadata from ``Plan Data/Plan Information``.
+
+        Returns
+        -------
+        PlanInformation
+            Dataclass with :attr:`~PlanInformation.geometry_filename` and a
+            :attr:`~PlanInformation.raw` dict of all decoded attributes.
+
+        Raises
+        ------
+        KeyError
+            If the ``Plan Data/Plan Information`` group is absent.
+        """
+        return PlanInformation._from_hdf(self._hdf)  # type: ignore[attr-defined]
+
+    @property
+    def geometry_hdf_path(self) -> Path:
+        """Path to the geometry HDF file referenced by this plan.
+
+        Derived from the ``geometry Filename`` attribute in
+        ``Plan Data/Plan Information`` (e.g. ``"KagmanWatershed.g03"``) by
+        appending ``.hdf`` and resolving against the plan HDF folder.
+
+        Returns
+        -------
+        pathlib.Path
+            Absolute path to the geometry HDF file.
+
+        Raises
+        ------
+        KeyError
+            If ``Plan Data/Plan Information`` is absent.
+        FileNotFoundError
+            If the resolved geometry HDF file does not exist.
+        """
+        geom_name = self.plan_information.geometry_filename
+        if not geom_name:
+            raise KeyError(
+                f"'Geometry Filename' attribute is absent or empty in "
+                f"'{_PLAN_INFO}' of {self._filename!r}."  # type: ignore[attr-defined]
+            )
+        path = self._filename.parent / (geom_name + ".hdf")  # type: ignore[attr-defined]
+        if not path.is_file():
+            raise FileNotFoundError(
+                f"Geometry HDF file not found: {path}. "
+                f"Expected alongside plan HDF '{self._filename}'."  # type: ignore[attr-defined]
+            )
+        return path
+
+    @property
+    def geometry(self) -> "Geometry":
+        """Geometry-only view of the plan's geometry HDF file.
+
+        Opens the geometry HDF file (``*.g*.hdf``) referenced by this plan and
+        returns a :class:`~rivia.hdf.Geometry` instance.  The instance is
+        cached; subsequent accesses return the same object without re-opening
+        the file.
+
+        Unlike accessing geometry data directly on the plan object, this
+        property always uses the standalone geometry HDF file, so all geometry
+        methods work even when plan results are absent or incomplete (e.g. the
+        simulation was terminated prematurely).
+
+        Returns
+        -------
+        Geometry
+            Geometry reader for the associated ``*.g*.hdf`` file.
+
+        Raises
+        ------
+        KeyError
+            If ``Plan Data/Plan Information`` is absent from the plan HDF.
+        FileNotFoundError
+            If the geometry HDF file cannot be found alongside the plan HDF.
+
+        Examples
+        --------
+        ::
+
+            with UnsteadyPlan("KagmanWatershed.p03.hdf") as plan:
+                # Works even when the plan run was terminated prematurely:
+                xy = plan.geometry.center_coordinates(("Kagman", "", "40583"))
+                centers = plan.geometry.flow_areas["Kagman"].cell_centers
+        """
+        from .geometry import Geometry  # local import — avoids circular dependency
+
+        geom: Geometry | None = getattr(self, "_geom_view", None)
+        if geom is None:
+            geom = Geometry(self.geometry_hdf_path)
+            self._geom_view: Geometry = geom
+        return geom
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
+    def close(self) -> None:
+        """Close the geometry view (if open) then the plan HDF handle."""
+        geom: Geometry | None = getattr(self, "_geom_view", None)
+        if geom is not None:
+            geom.close()
+            self._geom_view = None  # type: ignore[assignment]
+        super().close()  # type: ignore[misc]  # closes self._hdf via MRO
+
+    # ------------------------------------------------------------------
+    # Runtime log
+    # ------------------------------------------------------------------
 
     def _runtime_log_raw(self) -> tuple[bytes, bytes, np.ndarray]:
         """Read raw runtime-log data from ``Results/Summary/``.

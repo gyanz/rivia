@@ -1186,6 +1186,7 @@ class SteadyPlan(_PlanHdf, Geometry):
 
     def __init__(self, filename: str | Path) -> None:
         super().__init__(filename)
+        self._geom_view: Geometry | None = None
         self._steady_cross_sections: CrossSectionResultsCollection | None = None
         self._steady_storage_areas: StorageAreaResultsCollection | None = None
         self._steady_structures: StructureResultsCollection | None = None
