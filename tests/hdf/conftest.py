@@ -7,8 +7,6 @@ without the example files on disk.
 
 from __future__ import annotations
 
-import io
-import tempfile
 from pathlib import Path
 
 import h5py
@@ -36,128 +34,137 @@ skip_if_no_example = pytest.mark.skipif(
 # ---------------------------------------------------------------------------
 
 
+def _write_geometry_groups(
+    f: h5py.File,
+    n_cells: int,
+    n_faces: int,
+    area_name: str,
+    rng: np.random.Generator,
+) -> None:
+    """Write ``Geometry/2D Flow Areas`` into an open HDF file handle *f*."""
+    geom_root = f.create_group("Geometry/2D Flow Areas")
+
+    # Attributes structured array (one row per area)
+    attrs_dtype = np.dtype([("Name", "S16"), ("Cell Count", "<i4")])
+    attrs_data = np.array([(area_name.encode(), n_cells)], dtype=attrs_dtype)
+    geom_root.create_dataset("Attributes", data=attrs_data)
+
+    g = geom_root.create_group(area_name)
+
+    # Include ghost cells (n_cells + 2) in coordinate array
+    all_cells = n_cells + 2
+    g.create_dataset(
+        "Cells Center Coordinate",
+        data=rng.uniform(0, 100, (all_cells, 2)).astype("f8"),
+    )
+    g.create_dataset(
+        "Cells Minimum Elevation", data=rng.uniform(0, 5, (all_cells,)).astype("f4")
+    )
+    g.create_dataset(
+        "Cells Center Manning's n", data=np.full(all_cells, 0.04, "f4")
+    )
+    g.create_dataset(
+        "Cells Surface Area", data=rng.uniform(10, 100, (all_cells,)).astype("f4")
+    )
+
+    # Volume-elevation tables (one entry per cell)
+    vol_info = np.zeros((all_cells, 2), dtype="i4")
+    vol_values = np.zeros((all_cells * 2, 2), dtype="f4")
+    for i in range(all_cells):
+        vol_info[i] = [i * 2, 2]
+        vol_values[i * 2] = [0.0, 0.0]
+        vol_values[i * 2 + 1] = [10.0, 500.0]
+    g.create_dataset("Cells Volume Elevation Info", data=vol_info)
+    g.create_dataset("Cells Volume Elevation Values", data=vol_values)
+
+    # Cell-face connectivity (each cell has 3 faces for simplicity)
+    faces_per_cell = 3
+    total_cf = all_cells * faces_per_cell
+    cf_info = np.array(
+        [[i * faces_per_cell, faces_per_cell] for i in range(all_cells)],
+        dtype="i4",
+    )
+    cf_values = np.zeros((total_cf, 2), dtype="i4")
+    for i in range(all_cells):
+        for j in range(faces_per_cell):
+            cf_values[i * faces_per_cell + j] = [
+                (i * faces_per_cell + j) % n_faces,
+                1,
+            ]
+    g.create_dataset("Cells Face and Orientation Info", data=cf_info)
+    g.create_dataset("Cells Face and Orientation Values", data=cf_values)
+    g.create_dataset(
+        "Cells FacePoint Indexes", data=np.zeros((all_cells, 8), dtype="i4")
+    )
+
+    # Face normals: random unit vectors + length
+    angles = rng.uniform(0, 2 * np.pi, n_faces)
+    normals = np.column_stack(
+        [np.cos(angles), np.sin(angles), rng.uniform(5, 20, n_faces)]
+    ).astype("f4")
+    g.create_dataset("Faces NormalUnitVector and Length", data=normals)
+
+    # Face-cell indexes: left and right cell
+    fci = np.column_stack(
+        [np.arange(n_faces) % n_cells, (np.arange(n_faces) + 1) % n_cells]
+    ).astype("i4")
+    g.create_dataset("Faces Cell Indexes", data=fci)
+
+    g.create_dataset(
+        "Faces Minimum Elevation", data=rng.uniform(0, 3, n_faces).astype("f4")
+    )
+    g.create_dataset(
+        "Faces FacePoint Indexes", data=np.zeros((n_faces, 2), dtype="i4")
+    )
+    g.create_dataset(
+        "FacePoints Coordinate",
+        data=rng.uniform(0, 100, (n_faces * 2, 2)).astype("f8"),
+    )
+
+    # Area-elevation tables (two entries per face)
+    ae_info = np.array([[i * 2, 2] for i in range(n_faces)], dtype="i4")
+    ae_values = np.zeros((n_faces * 2, 4), dtype="f4")
+    for i in range(n_faces):
+        ae_values[i * 2] = [0.0, 0.0, 0.0, 0.04]
+        ae_values[i * 2 + 1] = [10.0, 50.0, 20.0, 0.04]
+    g.create_dataset("Faces Area Elevation Info", data=ae_info)
+    g.create_dataset("Faces Area Elevation Values", data=ae_values)
+
+    # Face perimeter info/values
+    g.create_dataset("Faces Perimeter Info", data=np.zeros((n_faces, 2), dtype="i4"))
+    g.create_dataset("Faces Perimeter Values", data=np.zeros((4, 2), dtype="f8"))
+    g.create_dataset("Perimeter", data=rng.uniform(0, 100, (8, 2)).astype("f8"))
+
+
 def _make_synthetic_hdf(
     path: Path,
     n_cells: int = 10,
     n_faces: int = 20,
     n_timesteps: int = 5,
     area_name: str = "TestArea",
+    geom_filename: str | None = None,
 ) -> None:
-    """Write a minimal but structurally correct HEC-RAS plan HDF to *path*."""
+    """Write a minimal but structurally correct HEC-RAS plan HDF to *path*.
+
+    Parameters
+    ----------
+    geom_filename :
+        When given, write a ``Plan Data/Plan Information`` group whose
+        ``geometry Filename`` attribute is set to this value (e.g.
+        ``"MyModel.g01"``).  Omit to skip writing that group (for fixtures
+        that test the missing-group error path).
+    """
     rng = np.random.default_rng(0)
 
     with h5py.File(path, "w") as f:
         # ── Geometry ──────────────────────────────────────────────────
-        geom_root = f.create_group("Geometry/2D Flow Areas")
+        _write_geometry_groups(f, n_cells, n_faces, area_name, rng)
 
-        # Attributes structured array (one row per area)
-        attrs_dtype = np.dtype(
-            [
-                ("Name", "S16"),
-                ("Cell Count", "<i4"),
-            ]
-        )
-        attrs_data = np.array(
-            [(area_name.encode(), n_cells)],
-            dtype=attrs_dtype,
-        )
-        geom_root.create_dataset("Attributes", data=attrs_data)
-
-        g = geom_root.create_group(area_name)
-
-        # Include ghost cells (n_cells + 2) in coordinate array
-        all_cells = n_cells + 2
-        g.create_dataset(
-            "Cells Center Coordinate",
-            data=rng.uniform(0, 100, (all_cells, 2)).astype("f8"),
-        )
-        g.create_dataset(
-            "Cells Minimum Elevation", data=rng.uniform(0, 5, (all_cells,)).astype("f4")
-        )
-        g.create_dataset(
-            "Cells Center Manning's n", data=np.full(all_cells, 0.04, "f4")
-        )
-        g.create_dataset(
-            "Cells Surface Area", data=rng.uniform(10, 100, (all_cells,)).astype("f4")
-        )
-
-        # Volume-elevation tables (one entry per cell)
-        vol_info = np.zeros((all_cells, 2), dtype="i4")
-        vol_values = np.zeros((all_cells * 2, 2), dtype="f4")
-        for i in range(all_cells):
-            vol_info[i] = [i * 2, 2]
-            vol_values[i * 2] = [0.0, 0.0]
-            vol_values[i * 2 + 1] = [10.0, 500.0]
-        g.create_dataset("Cells Volume Elevation Info", data=vol_info)
-        g.create_dataset("Cells Volume Elevation Values", data=vol_values)
-
-        # Cell-face connectivity (each cell has 3 faces for simplicity)
-        faces_per_cell = 3
-        total_cf = all_cells * faces_per_cell
-        cf_info = np.array(
-            [[i * faces_per_cell, faces_per_cell] for i in range(all_cells)],
-            dtype="i4",
-        )
-        cf_values = np.zeros((total_cf, 2), dtype="i4")
-        for i in range(all_cells):
-            for j in range(faces_per_cell):
-                cf_values[i * faces_per_cell + j] = [
-                    (i * faces_per_cell + j) % n_faces,
-                    1,
-                ]
-        g.create_dataset("Cells Face and Orientation Info", data=cf_info)
-        g.create_dataset("Cells Face and Orientation Values", data=cf_values)
-        # FacePoint indexes (not used in computation but present in real files)
-        g.create_dataset(
-            "Cells FacePoint Indexes", data=np.zeros((all_cells, 8), dtype="i4")
-        )
-
-        # Face normals: random unit vectors + length
-        angles = rng.uniform(0, 2 * np.pi, n_faces)
-        normals = np.column_stack(
-            [
-                np.cos(angles),
-                np.sin(angles),
-                rng.uniform(5, 20, n_faces),
-            ]
-        ).astype("f4")
-        g.create_dataset("Faces NormalUnitVector and Length", data=normals)
-
-        # Face-cell indexes: left and right cell
-        fci = np.column_stack(
-            [
-                np.arange(n_faces) % n_cells,
-                (np.arange(n_faces) + 1) % n_cells,
-            ]
-        ).astype("i4")
-        g.create_dataset("Faces Cell Indexes", data=fci)
-
-        g.create_dataset(
-            "Faces Minimum Elevation", data=rng.uniform(0, 3, n_faces).astype("f4")
-        )
-        g.create_dataset(
-            "Faces FacePoint Indexes", data=np.zeros((n_faces, 2), dtype="i4")
-        )
-        g.create_dataset(
-            "FacePoints Coordinate",
-            data=rng.uniform(0, 100, (n_faces * 2, 2)).astype("f8"),
-        )
-
-        # Area-elevation tables (two entries per face)
-        ae_info = np.array([[i * 2, 2] for i in range(n_faces)], dtype="i4")
-        ae_values = np.zeros((n_faces * 2, 4), dtype="f4")
-        for i in range(n_faces):
-            ae_values[i * 2] = [0.0, 0.0, 0.0, 0.04]
-            ae_values[i * 2 + 1] = [10.0, 50.0, 20.0, 0.04]
-        g.create_dataset("Faces Area Elevation Info", data=ae_info)
-        g.create_dataset("Faces Area Elevation Values", data=ae_values)
-
-        # Face perimeter info/values
-        g.create_dataset(
-            "Faces Perimeter Info", data=np.zeros((n_faces, 2), dtype="i4")
-        )
-        g.create_dataset("Faces Perimeter Values", data=np.zeros((4, 2), dtype="f8"))
-        g.create_dataset("Perimeter", data=rng.uniform(0, 100, (8, 2)).astype("f8"))
+        # ── Plan Data / Plan Information ───────────────────────────────
+        if geom_filename is not None:
+            grp = f.create_group("Plan Data/Plan Information")
+            grp.attrs["Geometry Filename"] = geom_filename
+            grp.attrs["Plan Name"] = "Synthetic Test Plan"
 
         # ── Results ───────────────────────────────────────────────────
         ts_path = (
@@ -180,7 +187,6 @@ def _make_synthetic_hdf(
         area_ts = ts_root.create_group(f"2D Flow Areas/{area_name}")
         bed = np.array(f[f"Geometry/2D Flow Areas/{area_name}/Cells Minimum Elevation"])
         wse_data = rng.uniform(3, 8, (n_timesteps, n_cells)).astype("f4")
-        # ensure WSE > bed for all real cells
         wse_data = np.maximum(wse_data, bed[:n_cells][np.newaxis, :] + 0.5)
         area_ts.create_dataset("Water Surface", data=wse_data)
         area_ts.create_dataset(
@@ -201,9 +207,37 @@ def _make_synthetic_hdf(
         )
 
 
+def _make_synthetic_geometry_hdf(
+    path: Path,
+    n_cells: int = 10,
+    n_faces: int = 20,
+    area_name: str = "TestArea",
+) -> None:
+    """Write a minimal geometry-only HDF file (no results) to *path*."""
+    rng = np.random.default_rng(0)
+    with h5py.File(path, "w") as f:
+        _write_geometry_groups(f, n_cells, n_faces, area_name, rng)
+
+
 @pytest.fixture(scope="session")
 def synthetic_plan_hdf(tmp_path_factory) -> Path:
-    """Session-scoped path to a synthetic plan HDF file."""
+    """Session-scoped path to a synthetic plan HDF file (no Plan Information group)."""
     path = tmp_path_factory.mktemp("hdf") / "synthetic.p01.hdf"
     _make_synthetic_hdf(path)
     return path
+
+
+@pytest.fixture(scope="session")
+def plan_with_geometry_hdfs(tmp_path_factory) -> tuple[Path, Path]:
+    """Session-scoped (plan_hdf_path, geometry_hdf_path) pair in the same folder.
+
+    The plan HDF has a ``Plan Data/Plan Information`` group whose
+    ``geometry Filename`` attribute points to the geometry HDF.
+    The geometry HDF is a standalone geometry-only file (no results).
+    """
+    folder = tmp_path_factory.mktemp("hdf_with_geom")
+    plan_path = folder / "MyModel.p01.hdf"
+    geom_path = folder / "MyModel.g01.hdf"
+    _make_synthetic_hdf(plan_path, geom_filename="MyModel.g01")
+    _make_synthetic_geometry_hdf(geom_path)
+    return plan_path, geom_path
