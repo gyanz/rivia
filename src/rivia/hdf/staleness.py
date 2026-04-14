@@ -432,7 +432,13 @@ class ResultStaleness:
         finished = rc.finished if rc is not None else None
 
         if self.run_window_start is not None and self.run_window_end is not None:
-            rw_val = f"{_dt(self.run_window_start)} to {_dt(self.run_window_end)}"
+            duration_h = (
+                (self.run_window_end - self.run_window_start).total_seconds() / 3600
+            )
+            rw_val = (
+                f"{_dt(self.run_window_start)} to {_dt(self.run_window_end)}"
+                f" ({duration_h:.2f} hr)"
+            )
         elif self.run_window is not None:
             rw_val = self.run_window
         else:
