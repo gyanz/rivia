@@ -1243,8 +1243,8 @@ class FlowAreaResultsCollection(FlowAreaCollection):
 
     def __getitem__(self, name: str) -> FlowAreaResults:
         if name not in self._cache:
-            root = self._hdf["Geometry/2D Flow Areas"]
-            if name not in root:
+            root = self._hdf.get("Geometry/2D Flow Areas")
+            if root is None or name not in root:
                 raise KeyError(
                     f"2D flow area {name!r} not found. Available: {self.names}"
                 )
