@@ -1414,7 +1414,18 @@ class FlowAreaCollection(Mapping[str, "FlowArea"]):
 
         Columns include ``name``, ``cell_count``, and all other fields from
         the ``Geometry/2D Flow Areas/Attributes`` structured dataset.
+
+        Raises
+        ------
+        KeyError
+            If the ``Geometry/2D Flow Areas`` group is absent (e.g. a 1D-only
+            geometry file).
         """
+        if _GEOM_2D_ROOT not in self._hdf:
+            raise KeyError(
+                f"No 2D flow areas found in {self._hdf.filename!r}. "
+                "The file may be a 1D-only geometry."
+            )
         attrs_ds = self._hdf[_GEOM_2D_ATTRS]
         data = np.array(attrs_ds)
         df = pd.DataFrame(data)
@@ -1433,7 +1444,9 @@ class FlowAreaCollection(Mapping[str, "FlowArea"]):
         """Names of all 2-D flow areas in the file."""
         import h5py
 
-        root = self._hdf[_GEOM_2D_ROOT]
+        root = self._hdf.get(_GEOM_2D_ROOT)
+        if root is None:
+            return []
         return [
             k
             for k, v in root.items()
@@ -1446,8 +1459,8 @@ class FlowAreaCollection(Mapping[str, "FlowArea"]):
 
     def __getitem__(self, name: str) -> FlowArea:
         if name not in self._cache:
-            root = self._hdf[_GEOM_2D_ROOT]
-            if name not in root:
+            root = self._hdf.get(_GEOM_2D_ROOT)
+            if root is None or name not in root:
                 raise KeyError(
                     f"2D flow area {name!r} not found. Available: {self.names}"
                 )
