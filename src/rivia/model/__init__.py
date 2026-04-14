@@ -17,7 +17,10 @@ import logging
 import re
 import shutil
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:
+    from rivia.hdf.staleness import PlanStalenessReport
 
 from rivia.hdf import SteadyPlan, UnsteadyPlan
 
@@ -498,7 +501,7 @@ class Project(MapperExtension):
             # specific plan by index
             report = model.plan_staleness(2)
         """
-        from rivia.hdf.staleness import PlanStalenessReport, check_plan_staleness
+        from rivia.hdf.staleness import check_plan_staleness
 
         path = self._resolve_plan_path(plan)
         return check_plan_staleness(path)

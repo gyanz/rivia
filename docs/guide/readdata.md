@@ -10,7 +10,7 @@ rivia exposes HEC-RAS data through four entry points depending on the source:
   - Entry point
   - What you get
 * - Text files (`.prj` / `.p*` / `.g*` / `.u*`)
-  - `model.project` / `model.plan` / `model.geom` / `model.flow`
+  - `model.project` / `model.plan` / `model.geometry` / `model.flow`
   - Python dataclasses, readable and writable
 * - Plan HDF (`.px.hdf`) — 2D mesh results, 1D XS, structures, storage areas
   - `model.results` → `UnsteadyPlan` / `SteadyPlan`
@@ -29,14 +29,14 @@ rivia exposes HEC-RAS data through four entry points depending on the source:
 |---|---|
 | List all plans, units, file paths in the project | `model.project` |
 | Read/edit plan settings (intervals, window, flow file) | `model.plan` |
-| Read/edit cross-section geometry, Manning's n | `model.geom` |
+| Read/edit cross-section geometry, Manning's n | `model.geometry` |
 | Read/edit boundary conditions and flow hydrographs | `model.flow` |
 | 2D mesh results (WSE, velocity) at specific timesteps | `model.results.flow_areas` |
 | Maximum/minimum summary over all timesteps | `model.results.flow_areas` |
 | 1D cross-section results from the latest run | `model.results.cross_sections` |
 | 1D results spanning multiple restart-file runs | `model.dss` |
 | Inline/lateral structure results | `model.results.structures` or `model.dss` |
-| Mesh geometry only (no results) | `GeometryHdf` directly |
+| Mesh geometry only (no results) | `hdf.Geometry` directly |
 
 
 ## Text Input Files
@@ -98,9 +98,9 @@ geom.set_stations("Butte Cr", "Upper", "7", stations, elevations)
 geom.save()
 
 # Typed structure access (geometry only, no results)
-geom.structures.inlines          # StructureIndex[Inline]
+geom.structures.inlines          # StructureIndex[InlineStructure]
 geom.structures.bridges          # StructureIndex[Bridge]
-geom.structures.laterals         # StructureIndex[Lateral]
+geom.structures.laterals         # StructureIndex[LateralStructure]
 ```
 
 ### `model.flow` — flow file
@@ -146,7 +146,7 @@ UnsteadyPlan
 │           ├── .water_surface         np.ndarray    shape (n_t,)
 │           └── .max_water_surface     pd.DataFrame  columns [value, time]
 │
-├── .structures          → PlanStructureCollection
+├── .structures          → StructureResultsCollection
 │     │   full mixed collection  → [name | "River Reach RS" | index | (river, reach, rs)]
 │     ├── .connections   → StructureIndex[SA2DConnectionResults]  keyed by connection name
 │     ├── .bridges       → StructureIndex[BridgeResults]          keyed by "River Reach RS"
@@ -158,10 +158,10 @@ UnsteadyPlan
 │     └── ["River Reach RS" | index | (river, reach, rs)]  → CrossSectionResults
 │
 ├── .cross_sections_output         → CrossSectionResultsCollection  (DSS output interval)
-│     └── ["River Reach RS" | index | (river, reach, rs)]  → CrossSectionResultsDss
+│     └── ["River Reach RS" | index | (river, reach, rs)]  → CrossSectionResultsDSS
 │
 └── .cross_sections_instantaneous  → CrossSectionResultsCollection  (instantaneous output interval)
-      └── ["River Reach RS" | index | (river, reach, rs)]  → CrossSectionResultsInst
+      └── ["River Reach RS" | index | (river, reach, rs)]  → CrossSectionResultsInstantaneous
 ```
 
 ### 2D flow areas
@@ -185,13 +185,13 @@ area.max_face_velocity                 # pd.DataFrame, max velocity per face
 
 ### Cross-section results (1D)
 
-`PlanHdf` exposes three collections depending on which output interval you need:
+`model.results` (`UnsteadyPlan`) exposes three collections depending on which output interval you need:
 
 | Property | Class | Interval |
 |---|---|---|
 | `.cross_sections` | `CrossSectionResults` | Mapping output interval |
-| `.cross_sections_output` | `CrossSectionResultsDss` | DSS output interval |
-| `.cross_sections_instantaneous` | `CrossSectionResultsInst` | Instantaneous output interval |
+| `.cross_sections_output` | `CrossSectionResultsDSS` | DSS output interval |
+| `.cross_sections_instantaneous` | `CrossSectionResultsInstantaneous` | Instantaneous output interval |
 
 All three collections (`cross_sections`, `cross_sections_output`, `cross_sections_instantaneous`)
 accept any of three key types:
@@ -315,8 +315,8 @@ Geometry
 │     │   full mixed collection  → [name | "River Reach RS" | index | (river, reach, rs)]
 │     ├── .connections  → StructureIndex[SA2DConnection]  keyed by connection name
 │     ├── .bridges      → StructureIndex[Bridge]          keyed by "River Reach RS"
-│     ├── .inlines      → StructureIndex[Inline]          keyed by "River Reach RS"
-│     └── .laterals     → StructureIndex[Lateral]         keyed by "River Reach RS"
+│     ├── .inlines      → StructureIndex[InlineStructure]  keyed by "River Reach RS"
+│     └── .laterals     → StructureIndex[LateralStructure] keyed by "River Reach RS"
 │
 └── .cross_sections    → CrossSectionCollection
       └── ["River Reach RS" | index | (river, reach, rs)]  → CrossSection (geometry only, no time-series)

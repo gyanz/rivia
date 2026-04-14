@@ -47,12 +47,12 @@ ingested and the session closes normally.
 ## 2. Switching plans
 
 ```python
-model.change_plan(title="Base Condition")
-model.change_plan(short_id="BC")
-model.change_plan(index=0)
+model.set_plan(title="Base Condition")
+model.set_plan(short_id="BC")
+model.set_plan(index=0)
 ```
 
-After switching, `model.plan`, `model.hdf`, and all path properties
+After switching, `model.plan`, `model.results`, and all path properties
 reflect the newly active plan.
 
 ## 3. Reloading after changes
