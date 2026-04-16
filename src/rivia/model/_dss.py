@@ -135,7 +135,7 @@ class DssReader:
     @property
     def dss_file(self) -> Path:
         """Path to the DSS output file (project file with ``.dss`` extension)."""
-        return self._model.project_file.with_suffix(".dss")
+        return self._model.dss_path
 
     # ------------------------------------------------------------------
     # Generic timeseries
@@ -232,7 +232,7 @@ class DssReader:
         if not self.dss_file.is_file():
             raise FileNotFoundError(f"DSS file not found: {self.dss_file}")
 
-        node_type = self._model.geom.node_type(river, reach, rs)
+        node_type = self._model.geometry.node_type(river, reach, rs)
         if node_type is None:
             raise ValueError(
                 f"Node not found in geometry: river={river!r}, "
@@ -255,7 +255,7 @@ class DssReader:
 
         gate_name: str | None
         if isinstance(gate, int):
-            groups = self._model.geom.inline_gate_groups(river, reach, rs)
+            groups = self._model.geometry.inline_gate_groups(river, reach, rs)
             try:
                 gate_name = groups[gate]
             except IndexError as exc:
@@ -340,7 +340,7 @@ class DssReader:
             If the node is not found or its type is not a cross section or
             inline structure.
         """
-        node_type = self._model.geom.node_type(river, reach, rs)
+        node_type = self._model.geometry.node_type(river, reach, rs)
         if node_type is None:
             raise ValueError(
                 f"Node not found in geometry: river={river!r}, "
@@ -392,7 +392,7 @@ class DssReader:
         ValueError
             If the node at *(river, reach, rs)* is not a cross section.
         """
-        node_type = self._model.geom.node_type(river, reach, rs)
+        node_type = self._model.geometry.node_type(river, reach, rs)
         if node_type is None:
             raise ValueError(
                 f"Node not found in geometry: river={river!r}, "
@@ -440,7 +440,7 @@ class DssReader:
         ValueError
             If the node at *(river, reach, rs)* is not an inline structure.
         """
-        _assert_inline(self._model.geom.node_type(river, reach, rs), river, reach, rs)
+        _assert_inline(self._model.geometry.node_type(river, reach, rs), river, reach, rs)
         start, end = window if window is not None else (None, None)
         return self.timeseries(river, reach, rs, INL_STAGE_HW, start=start, end=end)
 
@@ -477,7 +477,7 @@ class DssReader:
         ValueError
             If the node at *(river, reach, rs)* is not an inline structure.
         """
-        _assert_inline(self._model.geom.node_type(river, reach, rs), river, reach, rs)
+        _assert_inline(self._model.geometry.node_type(river, reach, rs), river, reach, rs)
         start, end = window if window is not None else (None, None)
         return self.timeseries(river, reach, rs, INL_STAGE_TW, start=start, end=end)
 
@@ -519,7 +519,7 @@ class DssReader:
         ValueError
             If the node at *(river, reach, rs)* is not an inline structure.
         """
-        _assert_inline(self._model.geom.node_type(river, reach, rs), river, reach, rs)
+        _assert_inline(self._model.geometry.node_type(river, reach, rs), river, reach, rs)
         start, end = window if window is not None else (None, None)
         return self.timeseries(
             river, reach, rs, INL_GATE_OPENING, gate=gate, start=start, end=end
@@ -562,7 +562,7 @@ class DssReader:
         ValueError
             If the node at *(river, reach, rs)* is not an inline structure.
         """
-        _assert_inline(self._model.geom.node_type(river, reach, rs), river, reach, rs)
+        _assert_inline(self._model.geometry.node_type(river, reach, rs), river, reach, rs)
         start, end = window if window is not None else (None, None)
         return self.timeseries(
             river, reach, rs, INL_FLOW_GATE, gate="GATE TOTAL", start=start, end=end
@@ -601,7 +601,7 @@ class DssReader:
         ValueError
             If the node at *(river, reach, rs)* is not an inline structure.
         """
-        _assert_inline(self._model.geom.node_type(river, reach, rs), river, reach, rs)
+        _assert_inline(self._model.geometry.node_type(river, reach, rs), river, reach, rs)
         start, end = window if window is not None else (None, None)
         return self.timeseries(river, reach, rs, INL_FLOW_WEIR, start=start, end=end)
 
@@ -638,7 +638,7 @@ class DssReader:
         ValueError
             If the node at *(river, reach, rs)* is not a cross section.
         """
-        node_type = self._model.geom.node_type(river, reach, rs)
+        node_type = self._model.geometry.node_type(river, reach, rs)
         if node_type is None:
             raise ValueError(
                 f"Node not found in geometry: river={river!r}, "

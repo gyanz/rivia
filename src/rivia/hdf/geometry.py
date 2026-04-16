@@ -2850,8 +2850,11 @@ class CrossSectionCollection:
         pl_info = np.array(root["Polyline Info"])
         pl_pts  = np.array(root["Polyline Points"])           # (total, 2)
         # Ineffective flow areas: Info (n_xs, 2) → [start, count] into Blocks
-        ineff_info  = np.array(root["Ineffective Info"])      # (n_xs, 2)
-        ineff_blks  = np.array(root["Ineffective Blocks"])    # structured (total,)
+        # These datasets are absent when no XS has ineffective areas defined.
+        _ineff_info_ds = root.get("Ineffective Info")
+        _ineff_blks_ds = root.get("Ineffective Blocks")
+        ineff_info = np.array(_ineff_info_ds) if _ineff_info_ds is not None else np.zeros((len(attrs), 2), dtype=int)
+        ineff_blks = np.array(_ineff_blks_ds) if _ineff_blks_ds is not None else np.empty(0, dtype=[("Left Sta", float), ("Right Sta", float), ("Elevation", float)])
         # Orthogonal vectors: one (cos θ, sin θ) unit vector per XS
         orth_vecs   = np.array(root["Orthogonal Vectors"])    # (n_xs, 2)
 
