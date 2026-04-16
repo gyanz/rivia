@@ -3479,8 +3479,16 @@ class Geometry(_HdfFile):
             v = a[key]
             return v.decode() if isinstance(v, (bytes, np.bytes_)) else str(v)
 
-        def _bool(key: str) -> bool:
-            return _str(key).strip().lower() == "true"
+        def _bool_opt(key: str, default: bool = False) -> bool:
+            raw = a.get(key)
+            if raw is None:
+                logger.warning(
+                    "Geometry group attribute %r not found in %r; defaulting to %r",
+                    key, self._filename, default,
+                )
+                return default
+            v = raw.decode() if isinstance(raw, (bytes, np.bytes_)) else str(raw)
+            return v.strip().lower() == "true"
 
         def _opt_str(key: str) -> str | None:
             v = a.get(key)
@@ -3544,8 +3552,8 @@ class Geometry(_HdfFile):
         return GeometrySummary(
             title=_str("Title"),
             version=_str("Version"),
-            complete=_bool("Complete Geometry"),
-            si_units=_bool("SI Units"),
+            complete=_bool_opt("Complete Geometry"),
+            si_units=_bool_opt("SI Units"),
             extents=extents,
             preprocessed_at=_parse_ts_opt(_str("Geometry Time")),
             terrain=terrain,
