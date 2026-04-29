@@ -16,6 +16,8 @@ import datetime as dt
 import logging
 import re
 import shutil
+import threading
+import weakref
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -25,6 +27,7 @@ if TYPE_CHECKING:
 from rivia.hdf import SteadyPlan, UnsteadyPlan
 
 from .. import controller
+from ..controller.ras import installed_ras_progid as _installed_ras_progid
 from ..utils import normalize_sim_end_time, normalize_sim_start_time
 from ._dss import DssReader
 from ._mapper import MapperExtension
@@ -144,7 +147,27 @@ class Project(MapperExtension):
     Use this class in preference to `com.open`. While `com.open` returns a raw HEC-RAS
     controller instance that is not associated with any project, `Project` binds the COM
     object to a specific HEC-RAS project file and provides project-aware operations.
+
+    .. warning::
+        ``Project`` is bound to the thread that constructs it (COM STA constraint).
+        All method calls must originate from that thread. For parallel simulations
+        use separate processes, not threads.
+
+    At most one ``Project`` per HEC-RAS version may be live within a process at a
+    time. Constructing a second ``Project`` for the same version while the first is
+    still alive raises ``RuntimeError``. Use ``with Project(...) as m:`` or call
+    ``close()`` explicitly to free the slot.
     """
+
+    _instances: "weakref.WeakValueDictionary[int, Project]" = (
+        weakref.WeakValueDictionary()
+    )
+    _registry_lock = threading.Lock()
+
+    @staticmethod
+    def _unregister(version_xxxx: int) -> None:
+        with Project._registry_lock:
+            Project._instances.pop(version_xxxx, None)
 
     def __init__(
         self,
@@ -152,33 +175,96 @@ class Project(MapperExtension):
         ras_version: str | int | None = None,
         backup: bool = False,
     ):
+        """Open a HEC-RAS project and connect to its COM server.
+
+        Parameters
+        ----------
+        project_file : str or Path
+            Path to the HEC-RAS project file (``.prj``).
+        ras_version : str, int, or None, optional
+            HEC-RAS version to use (e.g. ``"6.3"``, ``6031``). When ``None``
+            (default) the version is read from the ``Program Version=`` line
+            in the current plan file.
+        backup : bool, optional
+            If ``True``, back up all project files before opening and restore
+            them on interpreter exit.  Use :meth:`reset` to restore manually.
+
+        Raises
+        ------
+        RuntimeError
+            If a ``Project`` for the same HEC-RAS version is already live in
+            this process and its controller has a project loaded.  Close the
+            existing instance (or let it go out of scope) before constructing
+            another.
+        OSError
+            If *project_file* does not exist or the version cannot be
+            determined from the plan file.
+        """
+        if getattr(self, "_initialised", False):
+            return
+
         self._project_path = Path(project_file)
         self._backup = backup
+        self._finalizer: weakref.finalize | None = None
 
-        # restore if there are any backup files
         model_files = _get_project_files(project_file)
-        _restore_backups(model_files)
 
         if ras_version is None:
             ras_version = _get_ras_version_from_project_file(project_file)
 
-        if backup:
-            _create_backups(model_files)
-            # Bypassing __del__ which is unreliable during interpreter teardown
-            atexit.register(_restore_backups, model_files)
+        version_xxxx, _ = _installed_ras_progid(ras_version)
 
-        self._controller = controller.connect(ras_version)
-        self._ras_version = self._controller.ras_version()
-        self._controller.Project_Open(str(self._project_path))
-        self._plan: Plan | None = None
-        self._project: Proj | None = None
-        self._geometry: Geometry | None = None
-        self._flow: SteadyFlow | UnsteadyFlow | None = None
-        self._hdf = None
-        self._dss: DssReader | None = None
-        self._run_history: collections.deque[dict] = collections.deque(maxlen=5)
-        self._chaining = _ChainingState()
-        self._plans_file_cache: list[PlanSummary] | None = None
+        with type(self)._registry_lock:
+            existing = type(self)._instances.get(version_xxxx)
+            if existing is not None:
+                ctrl = getattr(existing, "_controller", None)
+                # Only block if the controller is alive AND has a project loaded.
+                # A dead controller or an empty one means the slot is effectively
+                # abandoned — allow the new Project to take it over.
+                if ctrl is not None and ctrl.is_alive and not ctrl.is_empty:
+                    raise RuntimeError(
+                        f"A Project for HEC-RAS {version_xxxx} is already live "
+                        f"({existing.path.name!r}). Close it or let it go out of "
+                        "scope before creating another."
+                    )
+                # Stale entry: disarm the old finalizer without running it.
+                # If we let it fire later (when the old object is GC'd) it would
+                # call _unregister(version_xxxx) and silently remove the new
+                # entry we're about to insert.
+                old_fin = getattr(existing, "_finalizer", None)
+                if old_fin is not None:
+                    old_fin.detach()
+            # Claim the slot and register a finalizer that frees it on GC.
+            type(self)._instances[version_xxxx] = self
+            self._finalizer = weakref.finalize(
+                self, type(self)._unregister, version_xxxx
+            )
+
+        try:
+            # Restore runs after the slot is claimed so that a duplicate-version
+            # RuntimeError (raised above) never touches backup files.
+            _restore_backups(model_files)
+            if backup:
+                _create_backups(model_files)
+                atexit.register(_restore_backups, model_files)
+
+            self._controller = controller.connect(ras_version)
+            self._ras_version = self._controller.ras_version()
+            self._controller.Project_Open(str(self._project_path))
+            self._plan: Plan | None = None
+            self._project: Proj | None = None
+            self._geometry: Geometry | None = None
+            self._flow: SteadyFlow | UnsteadyFlow | None = None
+            self._hdf = None
+            self._dss: DssReader | None = None
+            self._run_history: collections.deque[dict] = collections.deque(maxlen=5)
+            self._chaining = _ChainingState()
+            self._plans_file_cache: list[PlanSummary] | None = None
+        except Exception:
+            self._finalizer()
+            raise
+
+        self._initialised = True
 
     @property
     def version(self) -> int:
@@ -1000,8 +1086,11 @@ class Project(MapperExtension):
         """Close the COM connection and release all cached file handles.
 
         Safe to call multiple times.  Called automatically on ``__exit__``
-        when used as a context manager.
+        when used as a context manager.  Frees the per-version slot immediately
+        so a new ``Project`` of the same version can be constructed right away.
         """
+        if getattr(self, "_finalizer", None) is not None:
+            self._finalizer()
         with contextlib.suppress(Exception):
             if self._hdf is not None:
                 self._hdf.close()
@@ -1018,13 +1107,10 @@ class Project(MapperExtension):
 
     def __repr__(self) -> str:
         return (
-            f"Project({self.path.name!r}, plan={self.plan_path.name!r})"
+            f"Project({self.path.name!r}, ras={self._ras_version},"
+            f" plan={self.plan_path.name!r})"
         )
 
-    def __del__(self):
-        with contextlib.suppress(Exception):
-            logger.debug("Executing Project destructor.")
-        self.close()
 
 
 @dataclasses.dataclass

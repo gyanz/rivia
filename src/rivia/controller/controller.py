@@ -1,4 +1,7 @@
 import logging
+import os
+import threading
+import weakref
 
 import psutil
 import pywintypes
@@ -12,9 +15,12 @@ from ._ver500 import Controller as C500
 from ._ver500 import RASEvents as E500
 from ._ver503 import Controller as C503
 from ._ver503 import RASEvents as E503
-from .ras import installed_ras_display_name, installed_ras_progid
+from .ras import installed_ras_display_name, installed_ras_progid, installed_ras_directory 
 
 logger = logging.getLogger("rivia.controller")
+
+_controllers: "weakref.WeakValueDictionary[int, _ControllerBase]" = weakref.WeakValueDictionary()
+_connect_lock = threading.Lock()
 
 
 class HecRasComputeError(RuntimeError):
@@ -42,11 +48,12 @@ class HecRasComputeError(RuntimeError):
 
 
 def connect(version: str | int):
-    """Create a version-appropriate HEC-RAS controller for the given version.
+    """Return a version-appropriate HEC-RAS controller, reusing a live one if available.
 
-    Closes any already-running instance of the requested HEC-RAS version before
-    launching a new one, leaving other installed versions untouched. Selects the
-    correct controller class based on the resolved version number.
+    If a controller for the requested version is already alive (process running and
+    COM responsive), it is returned directly without killing or relaunching HEC-RAS.
+    Only when no live controller exists is a new one launched; any stale HEC-RAS
+    process for that version is terminated first.
 
     Parameters
     ----------
@@ -73,28 +80,33 @@ def connect(version: str | int):
     flow_progid = info["flow"]
     controller_progid = info["controller"]
 
-    # Close any existing instance of this specific HEC-RAS version before
-    # opening a new one, leaving other versions or unrelated sessions untouched.
     if controller_progid is not None:
-        kill_hecras_version(installed_ras_display_name(version_xxxx))
-        _rc = _dispatch(controller_progid)
-        _geom = _dispatch(geometry_progid)
-        _flow = _dispatch(flow_progid) if flow_progid is not None else None
-        _events = None
+        with _connect_lock:
+            existing = _controllers.get(version_xxxx)
+            if existing is not None and existing.is_alive and existing.is_empty:
+                logger.debug("Reusing live controller for HEC-RAS %d with pid %r.", version_xxxx, existing._runtime.parent_pid)
+                return existing
 
-        if version_xxxx < 5000:
-            _events = _bind_events(_rc, E400)
-            rc = _Controller400(_rc, _geom, _flow, _events, version_xxxx)
+            kill_hecras_version(installed_ras_display_name(version_xxxx))
+            _rc = _dispatch(controller_progid)
+            _geom = _dispatch(geometry_progid)
+            _flow = _dispatch(flow_progid) if flow_progid is not None else None
+            _events = None
 
-        elif version_xxxx < 5030:
-            _events = _bind_events(_rc, E500)
-            rc = _Controller500(_rc, _geom, _flow, _events, version_xxxx)
+            if version_xxxx < 5000:
+                _events = _bind_events(_rc, E400)
+                rc = _Controller400(_rc, _geom, _flow, _events, version_xxxx)
 
-        else:
-            _events = _bind_events(_rc, E503)
-            rc = _Controller503(_rc, _geom, _flow, _events, version_xxxx)
+            elif version_xxxx < 5030:
+                _events = _bind_events(_rc, E500)
+                rc = _Controller500(_rc, _geom, _flow, _events, version_xxxx)
 
-        return rc
+            else:
+                _events = _bind_events(_rc, E503)
+                rc = _Controller503(_rc, _geom, _flow, _events, version_xxxx)
+
+            _controllers[version_xxxx] = rc
+            return rc
 
 
 def _dispatch(prog_id: str):
@@ -157,7 +169,12 @@ class _ControllerBase:
     @property
     def exe(self) -> str:
         """Absolute path to the HEC-RAS executable for this controller."""
-        return self._runtime.exe
+        return os.path.join(installed_ras_directory(self.ras_version()), "Ras.exe")
+
+    @property
+    def is_empty(self) -> bool:
+        """Return True if the controller is alive but no project file is currently loaded."""
+        return self.Project_Current().strip() == "prj"
 
     @property
     def is_alive(self) -> bool:
