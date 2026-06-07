@@ -346,7 +346,7 @@ class MapperExtension:
         if timestep < 0:
             raise ValueError("timestep must be >= 0 or None")
 
-        ts = self.hdf.mapping_timestamps
+        ts = self.results.mapping_timestamps
         if timestep >= len(ts):
             raise IndexError(
                 f"timestep index {timestep} out of range; "
@@ -491,7 +491,7 @@ class MapperExtension:
             If no ``.rasmap`` file is found, or if multiple candidates exist
             and the preferred name is absent.
         """
-        rasmap = self.project_file.with_suffix(".rasmap")
+        rasmap = self.path.with_suffix(".rasmap")
         if rasmap.exists():
             return rasmap
 
@@ -507,6 +507,29 @@ class MapperExtension:
             "Multiple .rasmap files found in project folder; "
             f"could not infer which one to use: {[str(p) for p in candidates]}"
         )
+
+    def store_map_context(self) -> dict:
+        """Snapshot the per-plan values store_map() needs, resolved here via COM /
+        filesystem on the CURRENT thread.
+
+        The HEC-RAS COM controller is a single-threaded apartment object: calling it
+        from another thread raises ``RPC_E_WRONG_THREAD``. To drive several
+        ``RasMapperStoreMap.exe`` exports concurrently, snapshot this context once on the
+        main thread (after :meth:`set_plan`) and pass it to ``store_map(..., **context)``
+        from worker threads — together with a ``profile_name`` from
+        :meth:`timestep_to_profile_name` (also computed on the main thread, per timestep) —
+        so the workers never touch COM.
+
+        Returns a dict with keys ``plan_short_id``, ``project_dir``, ``result_hdf``,
+        ``rasmap_src``, ``ras_version`` matching store_map's override keyword arguments.
+        """
+        return {
+            "plan_short_id": self.plan.short_id,
+            "project_dir": _resolve(self.plan_path.parent),
+            "result_hdf": _resolve(self.plan_hdf_path),
+            "rasmap_src": _resolve(self._locate_project_rasmap()),
+            "ras_version": self.version,
+        }
 
     @log_call(logging.INFO)
     @timed()
@@ -533,6 +556,13 @@ class MapperExtension:
         tight_extent: bool = True,
         stream_output: bool = True,
         timeout: int | None = None,
+        *,
+        plan_short_id: str | None = None,
+        project_dir: "Path | str | None" = None,
+        result_hdf: "Path | str | None" = None,
+        rasmap_src: "Path | str | None" = None,
+        profile_name: str | None = None,
+        ras_version: int | None = None,
     ) -> "VrtMap":
         """Store one hydraulic result map via RasMapperStoreMap.exe.
 
@@ -639,18 +669,24 @@ class MapperExtension:
             )
 
         # -- Common setup --
-        plan_short_id = self.plan.short_id
+        # Each value below falls back to a COM/h5py read on self when the caller did
+        # not supply it. Supplying all of them (e.g. from store_map_context() snapshotted
+        # on the main thread) lets store_map run on a worker thread without touching the
+        # single-threaded-apartment HEC-RAS COM controller.
+        plan_short_id = plan_short_id if plan_short_id is not None else self.plan.short_id
         if not plan_short_id:
             raise ValueError(
-                "self.plan.short_id is empty; set a plan short id before storing maps"
+                "plan short id is empty; set a plan short id before storing maps"
             )
 
-        project_dir = _resolve(self.plan_path.parent)
+        project_dir = _resolve(project_dir) if project_dir is not None \
+            else _resolve(self.plan_path.parent)
 
-        program_dir = _resolve(Path(installed_ras_directory(self.version)))
+        _ras_version = ras_version if ras_version is not None else self.version
+        program_dir = _resolve(Path(installed_ras_directory(_ras_version)))
         if not program_dir:
             raise FileNotFoundError(
-                f"Could not find installed HEC-RAS directory for version {self.version}"
+                f"Could not find installed HEC-RAS directory for version {_ras_version}"
             )
         if render_mode is not None:
             _VALID_RENDER_MODES = {"sloping", "hybrid", "horizontal"}
@@ -675,11 +711,13 @@ class MapperExtension:
                 "and copy RasMapperStoreMap.exe to src/rivia/bin/."
             )
 
-        result_hdf = _resolve(self.plan_hdf_path)
+        result_hdf = _resolve(result_hdf) if result_hdf is not None \
+            else _resolve(self.plan_hdf_path)
         if not result_hdf.exists():
             raise FileNotFoundError(f"Plan HDF file not found: {result_hdf}")
 
-        profile_name = self.timestep_to_profile_name(timestep)
+        profile_name = profile_name if profile_name is not None \
+            else self.timestep_to_profile_name(timestep)
         profile_index = 2147483647 if timestep is None else timestep
         safe_profile = profile_name.replace(":", " ").replace("/", "_")
 
@@ -687,7 +725,8 @@ class MapperExtension:
         if raster_name is None:
             raster_name = f"{display_name} ({safe_profile})"
 
-        rasmap_src = _resolve(self._locate_project_rasmap())
+        rasmap_src = _resolve(rasmap_src) if rasmap_src is not None \
+            else _resolve(self._locate_project_rasmap())
 
         # StoreAllMaps: By default it outputs rasters to relative 'project_dir / plan_short_id'
         # Here we always use absolute path in OverwriteFilname to reduce complexity
@@ -784,25 +823,25 @@ class MapperExtension:
             #   • The candidate auto-discovery paths only cover 6.1–6.6;
             #     6.0 and 5.x must supply -RasMapperLibDir explicitly and
             #     will still likely fail at the StoreAllMapsCommand lookup.
-            if self.version < 6100:
+            if _ras_version < 6100:
                 logger.warning(
                     "RasMapperStoreMap.exe requires HEC-RAS 6.1+. "
                     "Version %s may not have StoreAllMapsCommand in "
                     "RasMapperLib.Scripting — the stub is likely to fail.",
-                    self.version,
+                    _ras_version,
                 )
             # SetSlopingPrettyRenderingMode was added to SharedData in
             # roughly HEC-RAS 6.3.  Earlier 6.x builds have
             # SetSlopingRenderingMode and SetHorizontalRenderingMode but
             # not the three-mode pretty variant.
-            if render_mode == "hybrid" and self.version < 6300:
+            if render_mode == "hybrid" and _ras_version < 6300:
                 logger.warning(
                     "render_mode='hybrid' calls "
                     "SharedData.SetSlopingPrettyRenderingMode(), which may "
                     "not exist in HEC-RAS %s (introduced ~6.3). "
                     "The stub will raise InvalidOperationException if the "
                     "method is absent.",
-                    self.version,
+                    _ras_version,
                 )
             # ConsoleProgressReporter lives in Utility.Core.dll.  In some
             # older HEC-RAS installs the utility assembly is named
