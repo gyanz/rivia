@@ -190,6 +190,333 @@ class FlowAreaResults(FlowArea):
         return self._ts.get("Cell Velocity")
 
     # ------------------------------------------------------------------
+    # Single-feature time series (tidy pandas, `_at`-suffixed accessors)
+    # ------------------------------------------------------------------
+
+    @property
+    def timestamps(self) -> pd.DatetimeIndex:
+        """Result output time stamps as a ``pd.DatetimeIndex``.
+
+        Parsed from the ``Time Date Stamp`` dataset (sibling of the
+        ``2D Flow Areas`` group under ``Unsteady Time Series``).  Used to
+        index every ``_at`` accessor below.
+        """
+        ds = self._ts.parent.parent["Time Date Stamp"]
+        raw = np.array(ds).astype(str)
+        return _parse_hec_ts_array(raw, _RAS_TS_FMT)
+
+    def water_surface_at(self, cell: int) -> pd.Series:
+        """Water-surface elevation time series at a single cell.
+
+        Thin time-indexed slice of :attr:`water_surface` for one real cell -
+        the same series shown in RASMapper's cell context-menu plot.
+
+        Parameters
+        ----------
+        cell:
+            0-based real-cell index.
+
+        Returns
+        -------
+        pd.Series
+            Water-surface elevation (model units), indexed by
+            :attr:`timestamps`, named ``"Water Surface"``.
+        """
+        values = np.array(self.water_surface[:, cell])
+        return pd.Series(values, index=self.timestamps, name="Water Surface")
+
+    def face_velocity_at(self, face: int) -> pd.Series:
+        """Signed face-normal velocity time series at a single face.
+
+        Thin time-indexed slice of :attr:`face_velocity` for one face - the
+        same series shown in RASMapper's face context-menu plot.
+
+        Parameters
+        ----------
+        face:
+            0-based face index.
+
+        Returns
+        -------
+        pd.Series
+            Signed face-normal velocity (model units/s), indexed by
+            :attr:`timestamps`, named ``"Face Velocity"``.
+        """
+        values = np.array(self.face_velocity[:, face])
+        return pd.Series(values, index=self.timestamps, name="Face Velocity")
+
+    def face_flow_at(
+        self,
+        face: int,
+        *,
+        source: Literal["stored", "derived"] = "stored",
+    ) -> pd.Series:
+        """Volumetric flow time series through a single face.
+
+        Parameters
+        ----------
+        face:
+            0-based face index.
+        source:
+            ``"stored"`` (default): thin time-indexed slice of the stored
+            ``Face Flow`` output dataset (see :attr:`face_flow`).  Raises if
+            that optional dataset was not written for this plan.
+
+            ``"derived"``: computes ``flow = wetted_area(WS) * face_velocity``
+            at every output timestep, replicating
+            ``GetFaceFlow_PostProcessed``/``GetFaceWSELTimeSeries`` from
+            ``RasMapperLib/RASD2FlowArea.cs``.  Per-face water surface is
+            resolved with the hydraulic-connectivity algorithm RAS forces
+            for this computation (``FaceWSMethod.Ben``,
+            :func:`~rivia.geo._rasmapper_pipeline.compute_face_wss` - the
+            same "Ben" state machine, already ported as Step A of the
+            rasterization pipeline); whichever of the two per-face WS values
+            is valid is used (the larger, when both are valid).  Wetted area
+            is then looked up from
+            :meth:`~rivia.hdf.geometry.FlowArea.face_elevation_area` by
+            linear interpolation, linearly extrapolating above the table's
+            top elevation using the face's plan-view length
+            (:attr:`~rivia.hdf.geometry.FlowArea.face_lengths`) - mirroring
+            ``Point2DCollection.Query``'s ``exceededFinal`` branch.  Faces
+            with no active hydraulic connection (and that are not perimeter
+            faces) yield zero flow.
+
+        Returns
+        -------
+        pd.Series
+            Volumetric flow (model units³/s), indexed by :attr:`timestamps`,
+            named ``"Face Flow"``.
+
+        Raises
+        ------
+        KeyError
+            If ``source="stored"`` and the ``Face Flow`` dataset is absent.
+
+        Notes
+        -----
+        RAS forces ``MinWSPlotTolerance = 0`` for the duration of this
+        computation (then restores it), whereas :func:`compute_face_wss`
+        always uses ``0.001`` (model units).  This produces a negligible
+        sub-millimetre discrepancy versus RAS's own derived output right at
+        the dry/wet threshold.
+
+        The ``"derived"`` flavor calls the whole-mesh
+        :func:`compute_face_wss` once per output timestep, so it is
+        noticeably slower than ``"stored"`` for long simulations - prefer
+        ``"stored"`` whenever ``Face Flow`` output is available.
+        """
+        if source == "stored":
+            if self.face_flow is None:
+                raise KeyError(
+                    "Face Flow is not present in this HDF file. "
+                    "Enable 'Face Flow' in HEC-RAS HDF5 Write Parameters "
+                    "before running the simulation, or use source='derived'."
+                )
+            values = np.array(self.face_flow[:, face])
+            return pd.Series(values, index=self.timestamps, name="Face Flow")
+
+        from rivia.geo import _rasmapper_pipeline as _rasmap
+
+        _NODATA = -9999.0  # FaceValues sentinel (matches _rasmap._NODATA)
+
+        cell_wse = np.array(self.water_surface[:, :])  # (n_t, n_cells + n_ghost)
+        face_normal_vel = np.array(self.face_velocity[:, face])  # (n_t,)
+        cell_face_info, _ = self.cell_face_info
+        _cell_face_count = cell_face_info[:, 1].astype(np.int32)
+
+        cellB = int(self.face_cell_indexes[face, 1])
+        face_is_perimeter = bool(_cell_face_count[cellB] == 1)
+
+        elevations, areas = self.face_elevation_area(face)
+        face_length = float(self.face_lengths[face])
+
+        n_t = cell_wse.shape[0]
+        flow = np.zeros(n_t, dtype=np.float64)
+        for t in range(n_t):
+            face_value_a, face_value_b, face_hconn = _rasmap.compute_face_wss(
+                cell_wse[t], self._cell_min_elevation, self.face_min_elevation,
+                self.face_cell_indexes, _cell_face_count,
+            )
+            if face_hconn[face] == _rasmap.HC_NONE and not face_is_perimeter:
+                continue
+
+            value_a = float(face_value_a[face])
+            value_b = float(face_value_b[face])
+            if value_a == _NODATA:
+                ws = value_b
+            elif value_b != _NODATA:
+                ws = max(value_a, value_b)
+            else:
+                ws = value_a
+            if ws == _NODATA:
+                continue
+
+            if ws <= elevations[0]:
+                area = float(areas[0])
+            elif ws >= elevations[-1]:
+                area = float(areas[-1]) + (ws - float(elevations[-1])) * face_length
+            else:
+                area = float(np.interp(ws, elevations, areas))
+
+            flow[t] = area * float(face_normal_vel[t])
+
+        return pd.Series(flow, index=self.timestamps, name="Face Flow")
+
+    def _face_flow(self) -> np.ndarray:
+        """Derive the volumetric face-flow time series for the whole mesh.
+
+        Whole-mesh, all-timesteps counterpart to the
+        ``source="derived"`` branch of :meth:`face_flow_at` - same
+        ``flow = wetted_area(WS) * face_velocity`` algorithm
+        (``GetFaceFlow_PostProcessed``/``GetFaceWSELTimeSeries`` from
+        ``RasMapperLib/RASD2FlowArea.cs``), restructured so
+        :func:`~rivia.geo._rasmapper_pipeline.compute_face_wss` is called
+        only once per output timestep (not once per timestep *per face*),
+        then the per-face wetted-area lookup is vectorized across time.
+
+        Returns
+        -------
+        ndarray, shape ``(n_timesteps, n_faces)``
+            Derived volumetric flow (model units\\ :sup:`3`/s).
+
+        Notes
+        -----
+        Internal helper for use where the stored ``Face Flow`` output
+        (:attr:`face_flow`) is unavailable.  Carries the same accuracy
+        caveats documented on :meth:`face_flow_at`'s ``source="derived"``
+        option (RAS forces ``MinWSPlotTolerance = 0`` for this computation;
+        :func:`compute_face_wss` always uses ``0.001``, a sub-millimetre
+        discrepancy at the dry/wet threshold).
+        """
+        from rivia.geo import _rasmapper_pipeline as _rasmap
+
+        _NODATA = -9999.0  # FaceValues sentinel (matches _rasmap._NODATA)
+
+        cell_wse = np.array(self.water_surface[:, :])  # (n_t, n_cells + n_ghost)
+        face_normal_vel = np.array(self.face_velocity[:, :])  # (n_t, n_faces)
+        cell_face_info, _ = self.cell_face_info
+        _cell_face_count = cell_face_info[:, 1].astype(np.int32)
+
+        n_t, n_faces = face_normal_vel.shape
+        cellB = self.face_cell_indexes[:, 1]
+        face_is_perimeter = _cell_face_count[cellB] == 1
+        face_lengths = self.face_lengths
+
+        # Phase 1: run the whole-mesh hydraulic-connectivity solve once per
+        # timestep, collecting per-face WS values and connectivity flags.
+        value_a = np.empty((n_t, n_faces), dtype=np.float32)
+        value_b = np.empty((n_t, n_faces), dtype=np.float32)
+        hconn = np.empty((n_t, n_faces), dtype=np.uint8)
+        for t in range(n_t):
+            value_a[t], value_b[t], hconn[t] = _rasmap.compute_face_wss(
+                cell_wse[t], self._cell_min_elevation, self.face_min_elevation,
+                self.face_cell_indexes, _cell_face_count,
+            )
+
+        # Reduce (value_a, value_b) -> single face WS per (timestep, face),
+        # matching face_flow_at: prefer value_a unless it is _NODATA, in
+        # which case fall back to value_b; when both are valid take the max.
+        ws = np.where(
+            value_a == _NODATA, value_b,
+            np.where(value_b != _NODATA, np.maximum(value_a, value_b), value_a),
+        )
+        active = (hconn != _rasmap.HC_NONE) | face_is_perimeter[np.newaxis, :]
+        valid = active & (ws != _NODATA)
+
+        # Phase 2: per-face wetted-area lookup, vectorized across time.
+        flow = np.zeros((n_t, n_faces), dtype=np.float64)
+        for f in range(n_faces):
+            face_valid = valid[:, f]
+            if not face_valid.any():
+                continue
+
+            elevations, areas = self.face_elevation_area(f)
+            face_length = float(face_lengths[f])
+            w = ws[face_valid, f].astype(np.float64)
+
+            area = np.empty(w.shape, dtype=np.float64)
+            below = w <= elevations[0]
+            above = w >= elevations[-1]
+            mid = ~below & ~above
+            area[below] = areas[0]
+            area[above] = areas[-1] + (w[above] - elevations[-1]) * face_length
+            area[mid] = np.interp(w[mid], elevations, areas)
+
+            flow[face_valid, f] = area * face_normal_vel[face_valid, f]
+
+        return flow
+
+    def facepoint_velocity_at(self, facepoint: int) -> pd.DataFrame:
+        """Velocity time series at a single mesh facepoint (corner).
+
+        Replicates RASMapper's lightweight ad-hoc query
+        ``ComputeFacePointVelocity_FacePerpLeastSquares_Weighted_Local``
+        (``RasMapperLib/MeshFV2D.cs``) - a local weighted-least-squares fit
+        of the *raw stored* signed face-normal velocities (:attr:`face_velocity`,
+        not the reconstructed ``[Vx, Vy]`` field) at the faces meeting this
+        facepoint, weighted by each face's inverse plan-view length
+        (:attr:`~rivia.hdf.geometry.FlowArea.face_lengths`).  This is the
+        algorithm behind RASMapper's facepoint context-menu velocity plot -
+        distinct from, and cheaper/less accurate than, the RASMapper-exact
+        rasterization pipeline used by :meth:`facepoint_velocity_vectors`.
+
+        Parameters
+        ----------
+        facepoint:
+            0-based facepoint (mesh corner) index.
+
+        Returns
+        -------
+        pd.DataFrame
+            Columns ``['vx', 'vy', 'speed']``, indexed by :attr:`timestamps`.
+
+        Notes
+        -----
+        The weighting matrix depends only on mesh geometry (face normals and
+        lengths), so it is built once and reused across all timesteps; only
+        the right-hand-side vector varies with the stored velocities.
+        """
+        fp_face_info, fp_face_values = self.facepoint_face_orientation
+        start = int(fp_face_info[facepoint, 0])
+        count = int(fp_face_info[facepoint, 1])
+        faces = fp_face_values[start : start + count, 0].astype(np.int64)
+
+        normals = self.face_normals[faces, :2]              # (k, 2): [nx, ny]
+        # Guard against degenerate zero-length faces, matching the
+        # `face_inv_lengths` convention in `_rasmapper_pipeline`.
+        inv_lengths = 1.0 / np.maximum(self.face_lengths[faces], 1e-12)
+
+        # h5py fancy-indexing requires strictly increasing, duplicate-free
+        # indices; read each distinct face once in sorted order, then expand
+        # back to `faces`' original (possibly unsorted/repeated) order.
+        unique_faces, inverse = np.unique(faces, return_inverse=True)
+        raw_velocities = np.array(self.face_velocity[:, unique_faces])
+        velocities = raw_velocities[:, inverse]  # (n_t, k), original order
+
+        # FaceVelocityCoef: weighted normal-equations matrix (geometry-only,
+        # identical for every timestep) plus its closed-form 2x2 inverse.
+        m11 = float(np.sum(normals[:, 0] ** 2 * inv_lengths))
+        m22 = float(np.sum(normals[:, 1] ** 2 * inv_lengths))
+        m12 = float(np.sum(normals[:, 0] * normals[:, 1] * inv_lengths))
+        det = m11 * m22 - m12 * m12
+        if det == 0.0:
+            inv_matrix = np.eye(2) / count
+        else:
+            inv_matrix = np.array([[m22, -m12], [-m12, m11]]) / det
+
+        weighted_normals = normals * inv_lengths[:, None]  # (k, 2)
+        terms = weighted_normals[None, :, :] * velocities[:, :, None]
+        rhs = terms.sum(axis=1)  # (n_t, 2)
+        # inv_matrix is symmetric: (M^-1 @ rhs[i]) == (rhs[i] @ M^-1)
+        result = rhs @ inv_matrix
+
+        speed = np.linalg.norm(result, axis=1)
+        return pd.DataFrame(
+            {"vx": result[:, 0], "vy": result[:, 1], "speed": speed},
+            index=self.timestamps,
+        )
+
+    # ------------------------------------------------------------------
     # Eager summary results (small arrays, loaded once per access)
     # ------------------------------------------------------------------
 
@@ -925,27 +1252,6 @@ class FlowAreaResults(FlowArea):
     # ------------------------------------------------------------------
     # Derived results helpers (computed from HDF result arrays)
     # ------------------------------------------------------------------
-
-    def water_surface_at_facepoints(self, timestep: int) -> np.ndarray:
-        """WSE interpolated to facepoints for one timestep.
-
-        Convenience wrapper around :meth:`~FlowArea.wse_at_facepoints` that
-        reads the water-surface time series internally.
-
-        Parameters
-        ----------
-        timestep:
-            0-based index into the time dimension.
-
-        Returns
-        -------
-        ndarray, shape ``(n_facepoints,)``
-            Facepoint WSE.  ``nan`` where all adjacent cells are dry.
-        """
-        # Include ghost-cell WSE so perimeter facepoints receive a value
-        # from the adjacent boundary cell rather than returning NaN.
-        cell_wse = np.array(self.water_surface[timestep, :])
-        return self.wse_at_facepoints(cell_wse)
 
     def wet_cells(self, timestep: int, depth_min: float = 0.0) -> np.ndarray:
         """Boolean mask of wet cells for one timestep.
