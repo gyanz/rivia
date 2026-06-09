@@ -19,6 +19,7 @@ import logging
 import math
 from collections.abc import Iterator
 from pathlib import Path
+from abc import abstractmethod
 from typing import TYPE_CHECKING, Any, Literal, overload
 
 import numpy as np
@@ -99,111 +100,70 @@ _POSTPROC_GEOM_ATTRS = (
 
 
 # ---------------------------------------------------------------------------
-# FlowAreaResults - extends FlowArea with plan results
+# _FlowAreaResultsDerived - abstract parent with all derived/computed methods
 # ---------------------------------------------------------------------------
 
 
-class FlowAreaResults(FlowArea):
-    """Geometry *and* time-series results for one named 2-D flow area.
+class _FlowAreaResultsDerived(FlowArea):
+    """Abstract parent implementing all derived/computed methods for a 2-D flow area.
 
-    Inherits all geometry properties from :class:`FlowArea`.
+    Declares the minimal set of abstract properties that
+    :class:`FlowAreaResults` provides as direct HDF reads, allowing this class
+    to be type-checked without depending on ``_ts`` / ``_sum`` group handles.
 
-    Time-series properties return raw ``h5py.Dataset`` objects so the caller
-    controls how much data is loaded::
+    Concrete subclasses must implement the six abstract properties:
+    ``water_surface``, ``face_velocity``, ``face_flow``, ``timestamps``,
+    ``max_water_surface``, ``_max_water_surface``.
 
-        area.water_surface[10]          # one timestep -> ndarray (n_cells,)
-        area.water_surface[10:20]       # slice -> ndarray (10, n_cells)
-        area.water_surface[:]           # all -> ndarray (n_t, n_cells)
-
-    Parameters
-    ----------
-    geom_group:
-        ``h5py.Group`` at ``Geometry/2D Flow Areas/<name>``.
-    ts_group:
-        ``h5py.Group`` at the time-series result path for this area.
-    sum_group:
-        ``h5py.Group`` at the summary result path for this area.
-    name:
-        Flow area name.
-    n_cells:
-        Number of real computational cells.
+    New methods that compute a result from HDF data (any arithmetic, pipeline
+    calls, or pandas wrapping beyond a bare slice) belong in this class.
+    New methods that directly return an HDF dataset or a thin slice/summary
+    of one belong in :class:`FlowAreaResults`.
     """
 
-    def __init__(
-        self,
-        geom_group: "h5py.Group",
-        ts_group: "h5py.Group",
-        sum_group: "h5py.Group",
-        name: str,
-        n_cells: int,
-    ) -> None:
-        super().__init__(geom_group, name, n_cells)
-        self._ts = ts_group
-        self._sum = sum_group
-
-    def __repr__(self) -> str:
-        return (
-            f"FlowAreaResults({self.name!r},"
-            f" cells={self.n_cells}, faces={self.n_faces})"
-        )
-
     # ------------------------------------------------------------------
-    # Lazy time-series (h5py.Dataset - slice to control memory)
+    # Abstract stubs — implemented by FlowAreaResults
     # ------------------------------------------------------------------
 
     @property
+    @abstractmethod
     def water_surface(self) -> "h5py.Dataset":
-        """Water-surface elevation time series.
-
-        ``h5py.Dataset``, shape ``(n_timesteps, n_cells + n_ghost)``.
-        HEC-RAS stores ghost cell WSE (boundary condition stages) in the
-        trailing columns.  Slice with ``[:self.n_cells]`` for real cells only,
-        or ``[:]`` for all including ghost cells.
-        Slice to read: ``area.water_surface[10]``.
-        """
-        return self._ts["Water Surface"]
+        """Water-surface elevation time series, shape ``(n_t, n_cells + n_ghost)``."""
+        ...
 
     @property
+    @abstractmethod
     def face_velocity(self) -> "h5py.Dataset":
-        """Signed face-normal velocity time series.
-
-        ``h5py.Dataset``, shape ``(n_timesteps, n_faces)``.
-        """
-        return self._ts["Face Velocity"]
+        """Signed face-normal velocity time series, shape ``(n_t, n_faces)``."""
+        ...
 
     @property
+    @abstractmethod
     def face_flow(self) -> "h5py.Dataset | None":
-        """Volumetric face-flow time series, or ``None`` if not output.
-
-        ``h5py.Dataset``, shape ``(n_timesteps, n_faces)``.
-        """
-        return self._ts.get("Face Flow")
+        """Volumetric face-flow time series, or ``None`` if not output."""
+        ...
 
     @property
-    def cell_velocity(self) -> "h5py.Dataset | None":
-        """HEC-RAS cell-velocity *speed* scalar, or ``None`` if not output.
-
-        ``h5py.Dataset``, shape ``(n_timesteps, n_cells)``.
-        This is the optional output enabled in the HDF Write Parameters;
-        see :meth:`cell_velocity_vectors` for the derived vector field.
-        """
-        return self._ts.get("Cell Velocity")
-
-    # ------------------------------------------------------------------
-    # Single-feature time series (tidy pandas, `_at`-suffixed accessors)
-    # ------------------------------------------------------------------
-
-    @property
+    @abstractmethod
     def timestamps(self) -> pd.DatetimeIndex:
-        """Result output time stamps as a ``pd.DatetimeIndex``.
+        """Result output timestamps as a ``pd.DatetimeIndex``."""
+        ...
 
-        Parsed from the ``Time Date Stamp`` dataset (sibling of the
-        ``2D Flow Areas`` group under ``Unsteady Time Series``).  Used to
-        index every ``_at`` accessor below.
-        """
-        ds = self._ts.parent.parent["Time Date Stamp"]
-        raw = np.array(ds).astype(str)
-        return _parse_hec_ts_array(raw, _RAS_TS_FMT)
+    @property
+    @abstractmethod
+    def max_water_surface(self) -> pd.DataFrame:
+        """Maximum WSE per cell, columns ``['value', 'time']``. Real cells only."""
+        ...
+
+    @property
+    @abstractmethod
+    def _max_water_surface(self) -> pd.DataFrame:
+        """Maximum WSE including ghost cell rows."""
+        ...
+
+    # ------------------------------------------------------------------
+    # Thin time-indexed slices (derived from abstract HDF reads)
+    # ------------------------------------------------------------------
 
     def water_surface_at(self, cell: int) -> pd.Series:
         """Water-surface elevation time series at a single cell.
@@ -517,72 +477,7 @@ class FlowAreaResults(FlowArea):
         )
 
     # ------------------------------------------------------------------
-    # Eager summary results (small arrays, loaded once per access)
-    # ------------------------------------------------------------------
-
-    def _load_summary(self, key: str, n: int | None = None) -> pd.DataFrame:
-        """Load a ``(2, n_*)`` summary dataset as a tidy DataFrame.
-
-        The HDF summary datasets have shape ``(2, n_elements)`` where
-        ``[0, :]`` = maximum/minimum values and ``[1, :]`` = elapsed-time
-        (in days) at which the extremum occurred.  HEC-RAS stores entries
-        for ghost cells as well; pass *n* to clip to the first *n* entries.
-
-        Returns a DataFrame with columns ``['value', 'time']`` and
-        integer index corresponding to cell or face index.
-        """
-        raw = np.array(self._sum[key])  # shape (2, n_elements)
-        if n is not None:
-            raw = raw[:, :n]
-        return pd.DataFrame(
-            {"value": raw[0], "time": raw[1]},
-        )
-
-    @property
-    def max_water_surface(self) -> pd.DataFrame:
-        """Maximum WSE per cell.
-
-        DataFrame with columns ``['value', 'time']``.
-        ``value``: maximum water-surface elevation (model units).
-        ``time``: elapsed simulation time (days) when max occurred.
-        Index: 0-based cell index.  Real cells only (ghost rows excluded).
-        """
-        return self._load_summary("Maximum Water Surface", n=self.n_cells)
-
-    @property
-    def _max_water_surface(self) -> pd.DataFrame:
-        """Maximum WSE including ghost cell rows.  Same layout as
-        :attr:`max_water_surface` but shape ``(n_cells + n_ghost,)``.
-        Required when indexing with raw ``face_cell_indexes`` values.
-        """
-        return self._load_summary("Maximum Water Surface")
-
-    @property
-    def min_water_surface(self) -> pd.DataFrame:
-        """Minimum WSE per cell.  Same column layout as :attr:`max_water_surface`.
-        Real cells only (ghost rows excluded).
-        """
-        return self._load_summary("Minimum Water Surface", n=self.n_cells)
-
-    @property
-    def _min_water_surface(self) -> pd.DataFrame:
-        """Minimum WSE including ghost cell rows.  Same layout as
-        :attr:`min_water_surface` but shape ``(n_cells + n_ghost,)``.
-        Required when indexing with raw ``face_cell_indexes`` values.
-        """
-        return self._load_summary("Minimum Water Surface")
-
-    @property
-    def max_face_velocity(self) -> pd.DataFrame:
-        """Maximum face velocity per face.
-
-        DataFrame with columns ``['value', 'time']``.
-        Index: 0-based face index.
-        """
-        return self._load_summary("Maximum Face Velocity", n=self.n_faces)
-
-    # ------------------------------------------------------------------
-    # Computed results - pure numpy, no geo dependency
+    # Computed results — pure numpy, no geo dependency
     # ------------------------------------------------------------------
 
     def wse(self, timestep: int) -> np.ndarray:
@@ -641,6 +536,50 @@ class FlowAreaResults(FlowArea):
         df = self.max_water_surface
         df["value"] = np.maximum(0.0, df["value"].to_numpy() - self.cell_min_elevation)
         return df
+
+    def wet_cells(self, timestep: int, depth_min: float = 0.0) -> np.ndarray:
+        """Boolean mask of wet cells for one timestep.
+
+        A cell is wet when ``WSE - cell_min_elevation > depth_min``.
+
+        Parameters
+        ----------
+        timestep:
+            0-based index into the time dimension.
+        depth_min:
+            Minimum depth threshold in model units.  Default ``0.0``.
+
+        Returns
+        -------
+        ndarray, shape ``(n_cells,)``, dtype bool
+        """
+        wse = np.array(self.water_surface[timestep, : self.n_cells])
+        return (wse - self.cell_min_elevation) > depth_min
+
+    def wet_faces(self, timestep: int, depth_min: float = 0.0) -> np.ndarray:
+        """Boolean mask of wet faces for one timestep.
+
+        A face is wet when at least one of its adjacent cells is wet
+        (see :meth:`wet_cells`).  Boundary faces are wet when their single
+        adjacent real cell is wet.
+
+        Parameters
+        ----------
+        timestep:
+            0-based index into the time dimension.
+        depth_min:
+            Minimum cell depth threshold passed to :meth:`wet_cells`.
+
+        Returns
+        -------
+        ndarray, shape ``(n_faces,)``, dtype bool
+        """
+        wc = self.wet_cells(timestep, depth_min)
+        fci = self.face_cell_indexes  # (n_faces, 2)
+        n = self.n_cells
+        c0_wet = np.where(fci[:, 0] >= 0, wc[np.clip(fci[:, 0], 0, n - 1)], False)
+        c1_wet = np.where(fci[:, 1] >= 0, wc[np.clip(fci[:, 1], 0, n - 1)], False)
+        return c0_wet | c1_wet
 
     def cell_velocity_vectors(
         self,
@@ -926,6 +865,10 @@ class FlowAreaResults(FlowArea):
             if len(vecs):
                 result[fp] = vecs.mean(axis=0)
         return result
+
+    # ------------------------------------------------------------------
+    # Visualization
+    # ------------------------------------------------------------------
 
     def velocity_plot(
         self,
@@ -1250,57 +1193,7 @@ class FlowAreaResults(FlowArea):
         return ax
 
     # ------------------------------------------------------------------
-    # Derived results helpers (computed from HDF result arrays)
-    # ------------------------------------------------------------------
-
-    def wet_cells(self, timestep: int, depth_min: float = 0.0) -> np.ndarray:
-        """Boolean mask of wet cells for one timestep.
-
-        A cell is wet when ``WSE - cell_min_elevation > depth_min``.
-
-        Parameters
-        ----------
-        timestep:
-            0-based index into the time dimension.
-        depth_min:
-            Minimum depth threshold in model units.  Default ``0.0``.
-
-        Returns
-        -------
-        ndarray, shape ``(n_cells,)``, dtype bool
-        """
-        wse = np.array(self.water_surface[timestep, : self.n_cells])
-        return (wse - self.cell_min_elevation) > depth_min
-
-    def wet_faces(self, timestep: int, depth_min: float = 0.0) -> np.ndarray:
-        """Boolean mask of wet faces for one timestep.
-
-        A face is wet when at least one of its adjacent cells is wet
-        (see :meth:`wet_cells`).  Boundary faces are wet when their single
-        adjacent real cell is wet.
-
-        Parameters
-        ----------
-        timestep:
-            0-based index into the time dimension.
-        depth_min:
-            Minimum cell depth threshold passed to :meth:`wet_cells`.
-
-        Returns
-        -------
-        ndarray, shape ``(n_faces,)``, dtype bool
-        """
-        wc = self.wet_cells(timestep, depth_min)
-        fci = self.face_cell_indexes  # (n_faces, 2)
-        n = self.n_cells
-        c0_wet = np.where(fci[:, 0] >= 0, wc[np.clip(fci[:, 0], 0, n - 1)], False)
-        c1_wet = np.where(fci[:, 1] >= 0, wc[np.clip(fci[:, 1], 0, n - 1)], False)
-        return c0_wet | c1_wet
-
-
-
-    # ------------------------------------------------------------------
-    # Raster export - delegates to rivia.geo (deferred import)
+    # Raster export — delegates to rivia.geo (deferred import)
     # ------------------------------------------------------------------
 
     @log_call(logging.INFO)
@@ -1532,6 +1425,180 @@ class FlowAreaResults(FlowArea):
                 "velocity", output_path=velocity_path, **common
             ),
         }
+
+
+# ---------------------------------------------------------------------------
+# FlowAreaResults - direct HDF reads; inherits derived methods above
+# ---------------------------------------------------------------------------
+
+
+class FlowAreaResults(_FlowAreaResultsDerived):
+    """Geometry *and* time-series results for one named 2-D flow area.
+
+    Inherits all geometry properties from :class:`FlowArea` and all
+    derived/computed methods from :class:`_FlowAreaResultsDerived`.
+
+    Time-series properties return raw ``h5py.Dataset`` objects so the caller
+    controls how much data is loaded::
+
+        area.water_surface[10]          # one timestep -> ndarray (n_cells,)
+        area.water_surface[10:20]       # slice -> ndarray (10, n_cells)
+        area.water_surface[:]           # all -> ndarray (n_t, n_cells)
+
+    Parameters
+    ----------
+    geom_group:
+        ``h5py.Group`` at ``Geometry/2D Flow Areas/<name>``.
+    ts_group:
+        ``h5py.Group`` at the time-series result path for this area.
+    sum_group:
+        ``h5py.Group`` at the summary result path for this area.
+    name:
+        Flow area name.
+    n_cells:
+        Number of real computational cells.
+    """
+
+    def __init__(
+        self,
+        geom_group: "h5py.Group",
+        ts_group: "h5py.Group",
+        sum_group: "h5py.Group",
+        name: str,
+        n_cells: int,
+    ) -> None:
+        super().__init__(geom_group, name, n_cells)
+        self._ts = ts_group
+        self._sum = sum_group
+
+    def __repr__(self) -> str:
+        return (
+            f"FlowAreaResults({self.name!r},"
+            f" cells={self.n_cells}, faces={self.n_faces})"
+        )
+
+    # ------------------------------------------------------------------
+    # Lazy time-series (h5py.Dataset - slice to control memory)
+    # ------------------------------------------------------------------
+
+    @property
+    def water_surface(self) -> "h5py.Dataset":
+        """Water-surface elevation time series.
+
+        ``h5py.Dataset``, shape ``(n_timesteps, n_cells + n_ghost)``.
+        HEC-RAS stores ghost cell WSE (boundary condition stages) in the
+        trailing columns.  Slice with ``[:self.n_cells]`` for real cells only,
+        or ``[:]`` for all including ghost cells.
+        Slice to read: ``area.water_surface[10]``.
+        """
+        return self._ts["Water Surface"]
+
+    @property
+    def face_velocity(self) -> "h5py.Dataset":
+        """Signed face-normal velocity time series.
+
+        ``h5py.Dataset``, shape ``(n_timesteps, n_faces)``.
+        """
+        return self._ts["Face Velocity"]
+
+    @property
+    def face_flow(self) -> "h5py.Dataset | None":
+        """Volumetric face-flow time series, or ``None`` if not output.
+
+        ``h5py.Dataset``, shape ``(n_timesteps, n_faces)``.
+        """
+        return self._ts.get("Face Flow")
+
+    @property
+    def cell_velocity(self) -> "h5py.Dataset | None":
+        """HEC-RAS cell-velocity *speed* scalar, or ``None`` if not output.
+
+        ``h5py.Dataset``, shape ``(n_timesteps, n_cells)``.
+        This is the optional output enabled in the HDF Write Parameters;
+        see :meth:`cell_velocity_vectors` for the derived vector field.
+        """
+        return self._ts.get("Cell Velocity")
+
+    # ------------------------------------------------------------------
+    # Single-feature time series (tidy pandas, `_at`-suffixed accessors)
+    # ------------------------------------------------------------------
+
+    @property
+    def timestamps(self) -> pd.DatetimeIndex:
+        """Result output time stamps as a ``pd.DatetimeIndex``.
+
+        Parsed from the ``Time Date Stamp`` dataset (sibling of the
+        ``2D Flow Areas`` group under ``Unsteady Time Series``).  Used to
+        index every ``_at`` accessor below.
+        """
+        ds = self._ts.parent.parent["Time Date Stamp"]
+        raw = np.array(ds).astype(str)
+        return _parse_hec_ts_array(raw, _RAS_TS_FMT)
+
+    # ------------------------------------------------------------------
+    # Eager summary results (small arrays, loaded once per access)
+    # ------------------------------------------------------------------
+
+    def _load_summary(self, key: str, n: int | None = None) -> pd.DataFrame:
+        """Load a ``(2, n_*)`` summary dataset as a tidy DataFrame.
+
+        The HDF summary datasets have shape ``(2, n_elements)`` where
+        ``[0, :]`` = maximum/minimum values and ``[1, :]`` = elapsed-time
+        (in days) at which the extremum occurred.  HEC-RAS stores entries
+        for ghost cells as well; pass *n* to clip to the first *n* entries.
+
+        Returns a DataFrame with columns ``['value', 'time']`` and
+        integer index corresponding to cell or face index.
+        """
+        raw = np.array(self._sum[key])  # shape (2, n_elements)
+        if n is not None:
+            raw = raw[:, :n]
+        return pd.DataFrame(
+            {"value": raw[0], "time": raw[1]},
+        )
+
+    @property
+    def max_water_surface(self) -> pd.DataFrame:
+        """Maximum WSE per cell.
+
+        DataFrame with columns ``['value', 'time']``.
+        ``value``: maximum water-surface elevation (model units).
+        ``time``: elapsed simulation time (days) when max occurred.
+        Index: 0-based cell index.  Real cells only (ghost rows excluded).
+        """
+        return self._load_summary("Maximum Water Surface", n=self.n_cells)
+
+    @property
+    def _max_water_surface(self) -> pd.DataFrame:
+        """Maximum WSE including ghost cell rows.  Same layout as
+        :attr:`max_water_surface` but shape ``(n_cells + n_ghost,)``.
+        Required when indexing with raw ``face_cell_indexes`` values.
+        """
+        return self._load_summary("Maximum Water Surface")
+
+    @property
+    def min_water_surface(self) -> pd.DataFrame:
+        """Minimum WSE per cell.  Same column layout as :attr:`max_water_surface`.
+        Real cells only (ghost rows excluded).
+        """
+        return self._load_summary("Minimum Water Surface", n=self.n_cells)
+
+    @property
+    def _min_water_surface(self) -> pd.DataFrame:
+        """Minimum WSE including ghost cell rows.  Same layout as
+        :attr:`min_water_surface` but shape ``(n_cells + n_ghost,)``.
+        Required when indexing with raw ``face_cell_indexes`` values.
+        """
+        return self._load_summary("Minimum Water Surface")
+
+    @property
+    def max_face_velocity(self) -> pd.DataFrame:
+        """Maximum face velocity per face.
+
+        DataFrame with columns ``['value', 'time']``.
+        Index: 0-based face index.
+        """
+        return self._load_summary("Maximum Face Velocity", n=self.n_faces)
 
 
 
