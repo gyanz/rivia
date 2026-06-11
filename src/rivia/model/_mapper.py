@@ -346,7 +346,7 @@ class MapperExtension:
         if timestep < 0:
             raise ValueError("timestep must be >= 0 or None")
 
-        ts = self.hdf.mapping_timestamps
+        ts = self.results.mapping_timestamps
         if timestep >= len(ts):
             raise IndexError(
                 f"timestep index {timestep} out of range; "
@@ -491,7 +491,7 @@ class MapperExtension:
             If no ``.rasmap`` file is found, or if multiple candidates exist
             and the preferred name is absent.
         """
-        rasmap = self.project_file.with_suffix(".rasmap")
+        rasmap = self.path.with_suffix(".rasmap")
         if rasmap.exists():
             return rasmap
 

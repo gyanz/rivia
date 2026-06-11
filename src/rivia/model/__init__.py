@@ -291,8 +291,16 @@ class Project(MapperExtension):
 
     @property
     def plan_path(self) -> Path:
-        """Return the current plan file path."""
-        return Path(self.controller.CurrentPlanFile())
+        """Return the current plan file path.
+
+        Reads from the parsed project file rather than the COM controller so
+        the value is available off the main thread (the controller is a
+        single-threaded apartment object).
+        """
+        plan_file = self.project.current_plan_file
+        if plan_file is None:
+            raise ValueError("Project has no current plan set.")
+        return plan_file
 
     @property
     def plan_hdf_path(self) -> Path:
@@ -766,6 +774,7 @@ class Project(MapperExtension):
         self._geometry = None
         self._flow = None
         self._dss = None
+        self._project = None  # re-parse .prj so plan_path reflects set_plan()
         if self._hdf is not None:
             self._hdf.close()
             self._hdf = None
