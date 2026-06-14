@@ -17,7 +17,7 @@ import dataclasses
 import datetime as dt
 import logging
 import math
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from pathlib import Path
 from abc import abstractmethod
 from typing import TYPE_CHECKING, Any, Literal, overload
@@ -205,24 +205,39 @@ class _FlowAreaResultsDerived(FlowArea):
         values = np.array(self.face_velocity[:, face])
         return pd.Series(values, index=self.timestamps, name="Face Velocity")
 
+    @overload
     def face_flow_at(
         self,
         face: int,
         *,
-        source: Literal["stored", "derived"] = "stored",
-    ) -> pd.Series:
-        """Volumetric flow time series through a single face.
+        source: Literal["stored", "derived"] = ...,
+    ) -> pd.Series: ...
+
+    @overload
+    def face_flow_at(
+        self,
+        face: Iterable[int],
+        *,
+        source: Literal["stored", "derived"] = ...,
+    ) -> pd.DataFrame: ...
+
+    def face_flow_at(
+        self,
+        face: int | Iterable[int],
+        *,
+        source: Literal["stored", "derived"] = "derived",
+    ) -> pd.Series | pd.DataFrame:
+        """Volumetric flow time series through one or more faces.
 
         Parameters
         ----------
         face:
-            0-based face index.
+            0-based face index, or an iterable of 0-based face indices.
+            When an iterable is supplied the return type is
+            :class:`~pandas.DataFrame` (columns = face indices) rather
+            than :class:`~pandas.Series`.
         source:
-            ``"stored"`` (default): thin time-indexed slice of the stored
-            ``Face Flow`` output dataset (see :attr:`face_flow`).  Raises if
-            that optional dataset was not written for this plan.
-
-            ``"derived"``: computes ``flow = wetted_area(WS) * face_velocity``
+            ``"derived"`` (default): computes ``flow = wetted_area(WS) * face_velocity``
             at every output timestep, replicating
             ``GetFaceFlow_PostProcessed``/``GetFaceWSELTimeSeries`` from
             ``RasMapperLib/RASD2FlowArea.cs``.  Per-face water surface is
@@ -241,11 +256,26 @@ class _FlowAreaResultsDerived(FlowArea):
             with no active hydraulic connection (and that are not perimeter
             faces) yield zero flow.
 
+            When multiple faces are requested with ``source="derived"``,
+            :func:`compute_face_wss` is called once per output timestep
+            (not once per timestep per face), making bulk queries
+            significantly cheaper than repeated single-face calls.
+
+            ``"stored"``: thin time-indexed slice of the stored ``Face Flow``
+            output dataset (see :attr:`face_flow`).  Raises if that optional
+            dataset was not written for this plan.  Prefer this when
+            ``Face Flow`` output is available — it is significantly faster
+            than ``"derived"`` for long simulations.
+
         Returns
         -------
         pd.Series
             Volumetric flow (model units³/s), indexed by :attr:`timestamps`,
-            named ``"Face Flow"``.
+            named ``"Face Flow"``.  Returned when *face* is a single integer.
+        pd.DataFrame
+            Volumetric flow (model units³/s), indexed by :attr:`timestamps`,
+            columns = requested face indices.  Returned when *face* is an
+            iterable.
 
         Raises
         ------
@@ -260,11 +290,14 @@ class _FlowAreaResultsDerived(FlowArea):
         sub-millimetre discrepancy versus RAS's own derived output right at
         the dry/wet threshold.
 
-        The ``"derived"`` flavor calls the whole-mesh
-        :func:`compute_face_wss` once per output timestep, so it is
-        noticeably slower than ``"stored"`` for long simulations - prefer
-        ``"stored"`` whenever ``Face Flow`` output is available.
         """
+        if isinstance(face, Iterable):
+            face_idxs: list[int] = list(face)
+            multi = True
+        else:
+            face_idxs = [face]
+            multi = False
+
         if source == "stored":
             if self.face_flow is None:
                 raise KeyError(
@@ -272,7 +305,12 @@ class _FlowAreaResultsDerived(FlowArea):
                     "Enable 'Face Flow' in HEC-RAS HDF5 Write Parameters "
                     "before running the simulation, or use source='derived'."
                 )
-            values = np.array(self.face_flow[:, face])
+            if multi:
+                cols = [np.array(self.face_flow[:, f]) for f in face_idxs]
+                return pd.DataFrame(
+                    np.column_stack(cols), index=self.timestamps, columns=face_idxs,
+                )
+            values = np.array(self.face_flow[:, face_idxs[0]])
             return pd.Series(values, index=self.timestamps, name="Face Flow")
 
         from rivia.geo import _rasmapper_pipeline as _rasmap
@@ -280,47 +318,58 @@ class _FlowAreaResultsDerived(FlowArea):
         _NODATA = -9999.0  # FaceValues sentinel (matches _rasmap._NODATA)
 
         cell_wse = np.array(self.water_surface[:, :])  # (n_t, n_cells + n_ghost)
-        face_normal_vel = np.array(self.face_velocity[:, face])  # (n_t,)
+        all_face_vel = np.array(self.face_velocity[:, :])  # (n_t, n_faces)
+        face_normal_vel = all_face_vel[:, face_idxs]  # (n_t, n_req)
         cell_face_info, _ = self.cell_face_info
         _cell_face_count = cell_face_info[:, 1].astype(np.int32)
 
-        cellB = int(self.face_cell_indexes[face, 1])
-        face_is_perimeter = bool(_cell_face_count[cellB] == 1)
-
-        elevations, areas = self.face_elevation_area(face)
-        face_length = float(self.face_lengths[face])
+        cellB = self.face_cell_indexes[face_idxs, 1]
+        face_is_perimeter = _cell_face_count[cellB] == 1  # (n_req,)
+        face_lengths = self.face_lengths
 
         n_t = cell_wse.shape[0]
-        flow = np.zeros(n_t, dtype=np.float64)
+        n_req = len(face_idxs)
+        value_a = np.empty((n_t, n_req), dtype=np.float32)
+        value_b = np.empty((n_t, n_req), dtype=np.float32)
+        hconn = np.empty((n_t, n_req), dtype=np.uint8)
         for t in range(n_t):
-            face_value_a, face_value_b, face_hconn = _rasmap.compute_face_wss(
+            fa, fb, fh = _rasmap.compute_face_wss(
                 cell_wse[t], self._cell_min_elevation, self.face_min_elevation,
                 self.face_cell_indexes, _cell_face_count,
             )
-            if face_hconn[face] == _rasmap.HC_NONE and not face_is_perimeter:
+            value_a[t] = fa[face_idxs]
+            value_b[t] = fb[face_idxs]
+            hconn[t] = fh[face_idxs]
+
+        ws = np.where(
+            value_a == _NODATA, value_b,
+            np.where(value_b != _NODATA, np.maximum(value_a, value_b), value_a),
+        )
+        active = (hconn != _rasmap.HC_NONE) | face_is_perimeter[np.newaxis, :]
+        valid = active & (ws != _NODATA)
+
+        flow = np.zeros((n_t, n_req), dtype=np.float64)
+        for i, f in enumerate(face_idxs):
+            face_valid = valid[:, i]
+            if not face_valid.any():
                 continue
+            elevations, areas = self.face_elevation_area(f)
+            face_length = float(face_lengths[f])
+            w = ws[face_valid, i].astype(np.float64)
 
-            value_a = float(face_value_a[face])
-            value_b = float(face_value_b[face])
-            if value_a == _NODATA:
-                ws = value_b
-            elif value_b != _NODATA:
-                ws = max(value_a, value_b)
-            else:
-                ws = value_a
-            if ws == _NODATA:
-                continue
+            area = np.empty(w.shape, dtype=np.float64)
+            below = w <= elevations[0]
+            above = w >= elevations[-1]
+            mid = ~below & ~above
+            area[below] = areas[0]
+            area[above] = areas[-1] + (w[above] - elevations[-1]) * face_length
+            area[mid] = np.interp(w[mid], elevations, areas)
 
-            if ws <= elevations[0]:
-                area = float(areas[0])
-            elif ws >= elevations[-1]:
-                area = float(areas[-1]) + (ws - float(elevations[-1])) * face_length
-            else:
-                area = float(np.interp(ws, elevations, areas))
+            flow[face_valid, i] = area * face_normal_vel[face_valid, i]
 
-            flow[t] = area * float(face_normal_vel[t])
-
-        return pd.Series(flow, index=self.timestamps, name="Face Flow")
+        if multi:
+            return pd.DataFrame(flow, index=self.timestamps, columns=face_idxs)
+        return pd.Series(flow[:, 0], index=self.timestamps, name="Face Flow")
 
     def _face_flow(self) -> np.ndarray:
         """Derive the volumetric face-flow time series for the whole mesh.
