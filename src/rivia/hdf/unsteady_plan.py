@@ -122,7 +122,7 @@ class _FlowAreaResultsDerived(FlowArea):
     """
 
     # ------------------------------------------------------------------
-    # Abstract stubs — implemented by FlowAreaResults
+    # Abstract stubs -- implemented by FlowAreaResults
     # ------------------------------------------------------------------
 
     @property
@@ -264,16 +264,16 @@ class _FlowAreaResultsDerived(FlowArea):
             ``"stored"``: thin time-indexed slice of the stored ``Face Flow``
             output dataset (see :attr:`face_flow`).  Raises if that optional
             dataset was not written for this plan.  Prefer this when
-            ``Face Flow`` output is available — it is significantly faster
+            ``Face Flow`` output is available -- it is significantly faster
             than ``"derived"`` for long simulations.
 
         Returns
         -------
         pd.Series
-            Volumetric flow (model units³/s), indexed by :attr:`timestamps`,
+            Volumetric flow (model units^3/s), indexed by :attr:`timestamps`,
             named ``"Face Flow"``.  Returned when *face* is a single integer.
         pd.DataFrame
-            Volumetric flow (model units³/s), indexed by :attr:`timestamps`,
+            Volumetric flow (model units^3/s), indexed by :attr:`timestamps`,
             columns = requested face indices.  Returned when *face* is an
             iterable.
 
@@ -442,7 +442,7 @@ class _FlowAreaResultsDerived(FlowArea):
         )
 
     # ------------------------------------------------------------------
-    # Computed results — pure numpy, no geo dependency
+    # Computed results -- pure numpy, no geo dependency
     # ------------------------------------------------------------------
 
     def wse(self, timestep: int) -> np.ndarray:
@@ -727,11 +727,11 @@ class _FlowAreaResultsDerived(FlowArea):
         Implements the RASMapper-exact C-stencil least-squares reconstruction
         (Step A + Step 2 from ``geo/_rasmapper_pipeline.py``):
 
-        * **Step A** — hydraulic connectivity: determines which faces are
+        * **Step A** -- hydraulic connectivity: determines which faces are
           actively conveying flow based on adjacent-cell WSE and bed elevation.
-        * **Step 2** — for each face, a 3-face C-stencil (the face itself plus
+        * **Step 2** -- for each face, a 3-face C-stencil (the face itself plus
           its clockwise and counter-clockwise neighbors within each adjacent
-          cell) solves a 2×2 WLS system to recover the full ``(Vx, Vy)``
+          cell) solves a 2*2 WLS system to recover the full ``(Vx, Vy)``
           vector from the stored face-normal scalar.  The result from each
           adjacent cell is averaged to give a single face vector.
 
@@ -773,11 +773,11 @@ class _FlowAreaResultsDerived(FlowArea):
 
         Implements the RASMapper-exact pipeline (Steps A + 2 + 3):
 
-        * **Step A** — hydraulic connectivity
+        * **Step A** -- hydraulic connectivity
           (:func:`~rivia.geo._rasmap.compute_face_wss`).
-        * **Step 2** — C-stencil face velocity reconstruction
+        * **Step 2** -- C-stencil face velocity reconstruction
           (:func:`~rivia.geo._rasmap.reconstruct_face_velocities`).
-        * **Step 3** — inverse-face-length weighted facepoint averaging
+        * **Step 3** -- inverse-face-length weighted facepoint averaging
           (:func:`~rivia.geo._rasmap.compute_facepoint_velocities`).
           Each facepoint has one arc-context velocity vector per adjacent
           face; these are averaged to produce a single ``[Vx, Vy]`` per
@@ -856,7 +856,7 @@ class _FlowAreaResultsDerived(FlowArea):
         Rasterizes the neighbourhood of *cell_index* using the RASMapper-exact
         pipeline (``rasterize_results`` with ``variable="velocity"``), then draws
         quiver arrows at the pixel centres of wet pixels.  Arrows show the
-        final, fully interpolated ``[Vx, Vy]`` value at each pixel — the same
+        final, fully interpolated ``[Vx, Vy]`` value at each pixel -- the same
         values that appear in RASMapper's velocity map.
 
         Mesh polygon outlines and cell index labels are drawn as context.
@@ -870,7 +870,7 @@ class _FlowAreaResultsDerived(FlowArea):
         cell_index:
             Target cell.  The neighbourhood is expanded by BFS from this cell.
         render_mode:
-            ``"horizontal"``, ``"sloping"`` (default), or ``"hybrid"`` —
+            ``"horizontal"``, ``"sloping"`` (default), or ``"hybrid"`` --
             passed to :meth:`export_raster`.
         buffer:
             Number of face-adjacency hops to expand from *cell_index*.
@@ -955,7 +955,7 @@ class _FlowAreaResultsDerived(FlowArea):
         y_max = float(all_verts[:, 1].max())
 
         # Local cell size: median face length in the neighbourhood.
-        # Always computed — used for arrow sizing and (when no reference_raster)
+        # Always computed -- used for arrow sizing and (when no reference_raster)
         # as the output pixel size.
         nb_face_idx: list[int] = []
         for c in neighbors:
@@ -985,9 +985,9 @@ class _FlowAreaResultsDerived(FlowArea):
         ])
 
         # -- 3. Rasterize velocity via full rasmap pipeline ---------------
-        # reference_raster enables pixel-level dry masking (WSE < terrain →
+        # reference_raster enables pixel-level dry masking (WSE < terrain ->
         # nodata) in addition to the coarser cell-level wet check.
-        # "velocity_vector" → 4-band [Vx, Vy, speed, direction]; quiver
+        # "velocity_vector" -> 4-band [Vx, Vy, speed, direction]; quiver
         # needs all four bands.
         fp_face_info, fp_face_values = self.facepoint_face_orientation
         ds = _raster.rasterize_results(
@@ -1045,7 +1045,7 @@ class _FlowAreaResultsDerived(FlowArea):
                 continue
             ring = ring_of.get(c, buffer)
             inside = _MPath(poly).contains_points(pts)
-            # Lower ring number = closer to focus cell → higher priority
+            # Lower ring number = closer to focus cell -> higher priority
             pixel_ring = np.where(inside & (ring < pixel_ring), ring, pixel_ring)
         pixel_ring = pixel_ring.reshape(height, width)
 
@@ -1053,12 +1053,12 @@ class _FlowAreaResultsDerived(FlowArea):
 
         # -- 5. Arrow scaling and subsampling ----------------------------
         # Arrow length is mapped linearly from [sp_min, sp_max] speed to
-        # [0.30, 0.85] × local_cell_size so every arrow is visible.
+        # [0.30, 0.85] * local_cell_size so every arrow is visible.
         # Outer rings are scaled down slightly to emphasise the focus area.
         wet_r, wet_c = np.where(wet)
 
         if len(wet_r) == 0:
-            # No wet pixels in neighbourhood — draw polygons only
+            # No wet pixels in neighbourhood -- draw polygons only
             if ax is None:
                 _, ax = plt.subplots()
         else:
@@ -1078,7 +1078,7 @@ class _FlowAreaResultsDerived(FlowArea):
             ring_weight = np.maximum(0.55, 1.0 - rings * 0.15)
             arrow_len *= ring_weight
 
-            # Unit direction × scaled length (data-coordinate arrows)
+            # Unit direction * scaled length (data-coordinate arrows)
             eps = 1e-12
             u_norm = np.where(speeds > eps, vx_grid[wet_r, wet_c] / speeds, 0.0)
             v_norm = np.where(speeds > eps, vy_grid[wet_r, wet_c] / speeds, 0.0)
@@ -1133,7 +1133,7 @@ class _FlowAreaResultsDerived(FlowArea):
             ax.set_ylabel("Y")
             return ax
 
-        # Fallback: no wet pixels — still draw polygons
+        # Fallback: no wet pixels -- still draw polygons
         if ax is None:
             _, ax = plt.subplots()
         for c in neighbors:
@@ -1160,7 +1160,7 @@ class _FlowAreaResultsDerived(FlowArea):
         return ax
 
     # ------------------------------------------------------------------
-    # Raster export — delegates to rivia.geo (deferred import)
+    # Raster export -- delegates to rivia.geo (deferred import)
     # ------------------------------------------------------------------
 
     @log_call(logging.INFO)
@@ -1185,15 +1185,15 @@ class _FlowAreaResultsDerived(FlowArea):
 
         Implements the pixel-perfect pipeline reverse-engineered from
         ``RasMapperLib/`` (decompiled C# source, HEC-RAS 6.6),
-        validated against RASMapper VRT exports — median ``diff`` = 0.000000.
+        validated against RASMapper VRT exports -- median ``diff`` = 0.000000.
 
         Parameters
         ----------
         variable:
-            ``"wse"`` / ``"water_surface"`` — water-surface elevation.
-            ``"depth"`` — water depth (WSE minus terrain); requires *reference_raster*.
-            ``"velocity"`` — 1-band speed raster ``sqrt(Vx²+Vy²)``; requires an explicit *timestep*.
-            ``"velocity_vector"`` — 4-band raster ``[Vx, Vy, speed, direction_deg]``; requires an explicit *timestep*.
+            ``"wse"`` / ``"water_surface"`` -- water-surface elevation.
+            ``"depth"`` -- water depth (WSE minus terrain); requires *reference_raster*.
+            ``"velocity"`` -- 1-band speed raster ``sqrt(Vx^2+Vy^2)``; requires an explicit *timestep*.
+            ``"velocity_vector"`` -- 4-band raster ``[Vx, Vy, speed, direction_deg]``; requires an explicit *timestep*.
         timestep:
             0-based time index.  Pass ``None`` to use the time of maximum
             water-surface elevation (``"wse"``/``"water_surface"`` and
@@ -1216,14 +1216,14 @@ class _FlowAreaResultsDerived(FlowArea):
         nodata:
             Fill value for dry / out-of-domain pixels (default ``-9999``).
         render_mode:
-            ``"sloping"`` (default) — RASMapper "Sloping Cell Corners";
+            ``"sloping"`` (default) -- RASMapper "Sloping Cell Corners";
             uses corner facepoints only.  RasMapperLib hardcodes
             ``shallow_to_flat=True`` for this mode; the user-supplied value
             is overridden.  Matches ``store_map(render_mode="sloping")``.
-            ``"hybrid"`` — "Sloping Cell Corners + Face Centers";
+            ``"hybrid"`` -- "Sloping Cell Corners + Face Centers";
             ``use_depth_weights`` and ``shallow_to_flat`` are honoured.
             Matches ``store_map(render_mode="hybrid")``.
-            ``"horizontal"`` — flat per-cell value; facepoint interpolation
+            ``"horizontal"`` -- flat per-cell value; facepoint interpolation
             is skipped.  Matches ``store_map(render_mode="horizontal")``.
         use_depth_weights:
             Weight face contributions by water depth.  **``hybrid`` only**;
@@ -1329,17 +1329,17 @@ class _FlowAreaResultsDerived(FlowArea):
     ) -> dict[str, Path | "rasterio.io.DatasetReader"]:
         """Export water-surface elevation, depth, and velocity rasters in one call.
 
-        Convenience wrapper that calls :meth:`export_raster` three times — once
-        each for ``"water_surface"``, ``"depth"``, and ``"velocity"`` — sharing
+        Convenience wrapper that calls :meth:`export_raster` three times -- once
+        each for ``"water_surface"``, ``"depth"``, and ``"velocity"`` -- sharing
         the same render settings.
 
         Parameters
         ----------
         timestep:
-            0-based time index.  Required — all three outputs need a specific
+            0-based time index.  Required -- all three outputs need a specific
             timestep (velocity has no max-value fallback).
         reference_raster:
-            Path to the terrain DEM GeoTIFF.  Required — used to derive depth
+            Path to the terrain DEM GeoTIFF.  Required -- used to derive depth
             (WSE minus DEM) and to inherit the output CRS and transform.
         wse_path:
             Destination ``.tif`` for the water-surface elevation raster.
@@ -1393,6 +1393,72 @@ class _FlowAreaResultsDerived(FlowArea):
             ),
         }
 
+    def discharge_along_line(
+        self,
+        xy: np.ndarray,
+        *,
+        method: Literal["walk", "shortest_path"] = "shortest_path",
+    ) -> pd.Series:
+        """Total volumetric discharge through a user-supplied profile line.
+
+        Identifies the mesh face "fence" that best approximates *xy* via
+        :meth:`faces_along_line`, then sums oriented face fluxes
+        ``face_area * face_velocity`` across that fence at every timestep,
+        returning a time-series of discharge.
+
+        The sign convention matches RASMapper: flow from left bank to right
+        bank (when facing from *xy* start to *xy* end) is **positive**.
+        Positive flow direction is ``rotate_ccw_90(xy[-1] - xy[0])``.
+
+        Parameters
+        ----------
+        xy : ndarray, shape ``(n_pts, 2)``
+            Profile polyline vertices ``(x, y)`` drawn from left bank to
+            right bank.
+        method : {"shortest_path", "walk"}, optional
+            Face-selection method passed to :meth:`faces_along_line`.
+            Default is ``"shortest_path"``.
+
+        Returns
+        -------
+        pd.Series
+            Index: :attr:`timestamps` (datetime).  Values: signed volumetric
+            discharge ``(m^3/s or ft^3/s depending on project units)`` across
+            the profile fence at each timestep.  Name is ``"discharge"``.
+
+        Raises
+        ------
+        ValueError
+            If the polyline does not intersect the mesh or no connected face
+            path can be found.
+        NotImplementedError
+            If ``method="walk"``.
+
+        See Also
+        --------
+        faces_along_line : identifies which faces are on the fence
+        face_flow_at : per-face volumetric flux time-series
+
+        Notes
+        -----
+        Each face contributes ``+face_flow`` when its stored normal agrees
+        with the positive-flow direction and ``-face_flow`` when it opposes
+        it.  ``face_flow_at`` already incorporates the face area and the
+        correct RAS sign, so no projection onto the profile line is needed:
+        the face-normal velocity is the full flux component across the face.
+        """
+        xy = np.asarray(xy, dtype=np.float64)
+        faces_df = self.faces_along_line(xy, method=method)
+
+        face_ids = faces_df["face"].tolist()
+        orientations = faces_df["orientation"].to_numpy(dtype=bool)  # True -> negate
+
+        flow_df: pd.DataFrame = self.face_flow_at(face_ids, source="derived")  # type: ignore[assignment]
+        signs = np.where(orientations, -1.0, 1.0)
+        discharge = (flow_df.values * signs[np.newaxis, :]).sum(axis=1)
+
+        return pd.Series(discharge, index=flow_df.index, name="discharge")
+
 
 # ---------------------------------------------------------------------------
 # FlowAreaResults - direct HDF reads; inherits derived methods above
@@ -1407,13 +1473,13 @@ class FlowAreaResults(_FlowAreaResultsDerived):
 
     **Method naming conventions**
 
-    *Raw dataset properties* — ``h5py.Dataset``; slice to control what is loaded::
+    *Raw dataset properties* -- ``h5py.Dataset``; slice to control what is loaded::
 
-        area.water_surface[t]        # one timestep  → ndarray (n_cells + n_ghost,)
-        area.water_surface[a:b]      # slice          → ndarray (b-a, n_cells + n_ghost)
-        area.water_surface[:]        # all            → ndarray (n_t, n_cells + n_ghost)
+        area.water_surface[t]        # one timestep  -> ndarray (n_cells + n_ghost,)
+        area.water_surface[a:b]      # slice          -> ndarray (b-a, n_cells + n_ghost)
+        area.water_surface[:]        # all            -> ndarray (n_t, n_cells + n_ghost)
 
-    *Snapshot methods* ``name(timestep)`` — one time, all locations → ndarray::
+    *Snapshot methods* ``name(timestep)`` -- one time, all locations -> ndarray::
 
         area.wse(t)                         # (n_cells,)        WSE at every cell
         area.depth(t)                       # (n_cells,)        depth at every cell
@@ -1421,14 +1487,14 @@ class FlowAreaResults(_FlowAreaResultsDerived):
         area.face_velocity_vectors(t)       # (n_faces, 2)
         area.facepoint_velocity_vectors(t)  # (n_facepoints, 2)
 
-    *Location time-series* ``name_at(location)`` — one location, all times → pandas::
+    *Location time-series* ``name_at(location)`` -- one location, all times -> pandas::
 
         area.water_surface_at(cell)         # Series            WSE over time
         area.face_velocity_at(face)         # Series            velocity over time
         area.face_flow_at(face)             # Series            flow over time
         area.facepoint_velocity_at(fp)      # DataFrame         [vx, vy, speed] over time
 
-    *Summary properties* — aggregate over the full time span, all locations::
+    *Summary properties* -- aggregate over the full time span, all locations::
 
         area.max_water_surface              # DataFrame ['value', 'time']  per cell
         area.max_face_velocity              # DataFrame ['value', 'time']  per face
@@ -2073,8 +2139,8 @@ class SA2DConnectionResults(_StructureResultsMixin, SA2DConnection):
             upstream_node=geom.upstream_node,
             downstream_node=geom.downstream_node,
         )
-        # Plan result group name may differ from geometry name for 2D↔2D connections
-        # (HEC-RAS prefixes the flow-area name, e.g. "Lower Levee" →
+        # Plan result group name may differ from geometry name for 2D<->2D connections
+        # (HEC-RAS prefixes the flow-area name, e.g. "Lower Levee" ->
         #  "BaldEagleCr Lower Levee").
         self._plan_name: str = group.name.split("/")[-1]
         self._g = group
@@ -2109,17 +2175,17 @@ class SA2DConnectionResults(_StructureResultsMixin, SA2DConnection):
     def tailwater_cells(self) -> np.ndarray | None:
         """2-D mesh cell indices on the tailwater side, or ``None`` if absent.
 
-        For 2D↔2D connections (levees) these are stored as a flat ``int32``
-        dataset at the group root.  For SA↔2D connections (e.g. a dam with a
+        For 2D<->2D connections (levees) these are stored as a flat ``int32``
+        dataset at the group root.  For SA<->2D connections (e.g. a dam with a
         storage-area headwater) they are stored as fixed-width byte strings in
         ``HW TW Segments/Tailwater Cells`` and are decoded here.
 
         Shape ``(n_cells,)``.
         """
-        # 2D↔2D: flat int32 at group root
+        # 2D<->2D: flat int32 at group root
         if "Tailwater Cells" in self._g:
             return self._load("Tailwater Cells")
-        # SA↔2D: string-encoded cell indices in HW TW Segments subgroup
+        # SA<->2D: string-encoded cell indices in HW TW Segments subgroup
         seg = self._g.get("HW TW Segments")
         if seg is not None and "Tailwater Cells" in seg:
             raw = seg["Tailwater Cells"][:]
@@ -2292,13 +2358,13 @@ class StructureResultsCollection(StructureCollection):
     Overrides :class:`~rivia.hdf.StructureCollection` so each item carries
     both geometry attributes *and* time-series result access:
 
-    * :class:`SA2DConnection` → :class:`SA2DConnectionResults`
+    * :class:`SA2DConnection` -> :class:`SA2DConnectionResults`
       (Base Output ``SA 2D Area Conn``)
-    * :class:`InlineStructure` → :class:`InlineResults`
+    * :class:`InlineStructure` -> :class:`InlineResults`
       (DSS Hydrograph Output ``Inline Structures``)
-    * :class:`LateralStructure` → :class:`LateralResults`
+    * :class:`LateralStructure` -> :class:`LateralResults`
       (DSS Hydrograph Output ``Lateral Structures``)
-    * :class:`Bridge` → :class:`BridgeResults`
+    * :class:`Bridge` -> :class:`BridgeResults`
       (DSS Hydrograph Output ``Bridge``)
 
     When no plan result group is found for a structure (e.g. DSS output was
@@ -2331,8 +2397,8 @@ class StructureResultsCollection(StructureCollection):
 
             if isinstance(geom, SA2DConnection):
                 # Derive plan result group name from geometry fields:
-                #   2D↔2D (levee): "{upstream_2d_area} {connection}"
-                #   SA↔2D / SA↔SA (one end is SA or '--'): Connection name
+                #   2D<->2D (levee): "{upstream_2d_area} {connection}"
+                #   SA<->2D / SA<->SA (one end is SA or '--'): Connection name
                 if (
                     geom.upstream_type == "2D"
                     and geom.downstream_type == "2D"
@@ -2448,11 +2514,11 @@ class CrossSectionResults(_CrossSectionResultsBase):
     geom:
         Geometry object from :class:`CrossSectionCollection`.
     hdf:
-        Open ``h5py.File`` — kept alive by the parent ``UnsteadyPlan`` context.
+        Open ``h5py.File`` -- kept alive by the parent ``UnsteadyPlan`` context.
     index:
         Column index of this XS in the ``(n_t, n_xs)`` result datasets.
     root:
-        HDF path prefix — ``_TS_XS``.
+        HDF path prefix -- ``_TS_XS``.
     """
 
     @property
@@ -2488,11 +2554,11 @@ class CrossSectionResultsDSS(_CrossSectionResultsBase):
     geom:
         Geometry object from :class:`CrossSectionCollection`.
     hdf:
-        Open ``h5py.File`` — kept alive by the parent ``UnsteadyPlan`` context.
+        Open ``h5py.File`` -- kept alive by the parent ``UnsteadyPlan`` context.
     index:
         Column index of this XS in the ``(n_t, n_xs)`` result datasets.
     root:
-        HDF path prefix — ``_DSS_XS``.
+        HDF path prefix -- ``_DSS_XS``.
     """
 
     @property
@@ -2523,11 +2589,11 @@ class CrossSectionResultsInstantaneous(_CrossSectionResultsBase):
     geom:
         Geometry object from :class:`CrossSectionCollection`.
     hdf:
-        Open ``h5py.File`` — kept alive by the parent ``UnsteadyPlan`` context.
+        Open ``h5py.File`` -- kept alive by the parent ``UnsteadyPlan`` context.
     index:
         Column index of this XS in the ``(n_profiles, n_xs)`` result datasets.
     root:
-        HDF path prefix — ``_POSTPROC_XS``.
+        HDF path prefix -- ``_POSTPROC_XS``.
     """
 
     # ------------------------------------------------------------------
@@ -2543,7 +2609,7 @@ class CrossSectionResultsInstantaneous(_CrossSectionResultsBase):
         return self._load("Energy Grade")
 
     # ------------------------------------------------------------------
-    # Additional Variables — generic accessor
+    # Additional Variables -- generic accessor
     # ------------------------------------------------------------------
 
     def additional_variable(self, name: str) -> np.ndarray:
@@ -2568,78 +2634,78 @@ class CrossSectionResultsInstantaneous(_CrossSectionResultsBase):
         return self._load(f"Additional Variables/{name}")
 
     # ------------------------------------------------------------------
-    # Additional Variables — explicit properties
+    # Additional Variables -- explicit properties
     # Each delegates to additional_variable() so caching is shared.
     # ------------------------------------------------------------------
 
     @property
     def alpha(self) -> np.ndarray:
-        """Velocity-head correction factor α.  Shape ``(n_profiles,)``."""
+        """Velocity-head correction factor alpha.  Shape ``(n_profiles,)``."""
         return self.additional_variable("Alpha")
 
     @property
     def beta(self) -> np.ndarray:
-        """Momentum correction factor β.  Shape ``(n_profiles,)``."""
+        """Momentum correction factor beta.  Shape ``(n_profiles,)``."""
         return self.additional_variable("Beta")
 
     @property
     def flow_area_channel(self) -> np.ndarray:
-        """Channel flow area (m²).  Shape ``(n_profiles,)``."""
+        """Channel flow area (m^2).  Shape ``(n_profiles,)``."""
         return self.additional_variable("Area Flow Channel")
 
     @property
     def flow_area_left_ob(self) -> np.ndarray:
-        """Left overbank flow area (m²).  Shape ``(n_profiles,)``."""
+        """Left overbank flow area (m^2).  Shape ``(n_profiles,)``."""
         return self.additional_variable("Area Flow Left OB")
 
     @property
     def flow_area_right_ob(self) -> np.ndarray:
-        """Right overbank flow area (m²).  Shape ``(n_profiles,)``."""
+        """Right overbank flow area (m^2).  Shape ``(n_profiles,)``."""
         return self.additional_variable("Area Flow Right OB")
 
     @property
     def flow_area_total(self) -> np.ndarray:
-        """Total flow area (m²).  Shape ``(n_profiles,)``."""
+        """Total flow area (m^2).  Shape ``(n_profiles,)``."""
         return self.additional_variable("Area Flow Total")
 
     @property
     def ineffective_area_channel(self) -> np.ndarray:
-        """Channel area including ineffective zones (m²).  Shape ``(n_profiles,)``."""
+        """Channel area including ineffective zones (m^2).  Shape ``(n_profiles,)``."""
         return self.additional_variable("Area including Ineffective Channel")
 
     @property
     def ineffective_area_left_ob(self) -> np.ndarray:
-        """Left overbank area including ineffective zones (m²).  Shape ``(n_profiles,)``."""
+        """Left overbank area including ineffective zones (m^2).  Shape ``(n_profiles,)``."""
         return self.additional_variable("Area including Ineffective Left OB")
 
     @property
     def ineffective_area_right_ob(self) -> np.ndarray:
-        """Right overbank area including ineffective zones (m²).  Shape ``(n_profiles,)``."""
+        """Right overbank area including ineffective zones (m^2).  Shape ``(n_profiles,)``."""
         return self.additional_variable("Area including Ineffective Right OB")
 
     @property
     def ineffective_area_total(self) -> np.ndarray:
-        """Total area including ineffective zones (m²).  Shape ``(n_profiles,)``."""
+        """Total area including ineffective zones (m^2).  Shape ``(n_profiles,)``."""
         return self.additional_variable("Area including Ineffective Total")
 
     @property
     def conveyance_channel(self) -> np.ndarray:
-        """Channel conveyance (m³/s).  Shape ``(n_profiles,)``."""
+        """Channel conveyance (m^3/s).  Shape ``(n_profiles,)``."""
         return self.additional_variable("Conveyance Channel")
 
     @property
     def conveyance_left_ob(self) -> np.ndarray:
-        """Left overbank conveyance (m³/s).  Shape ``(n_profiles,)``."""
+        """Left overbank conveyance (m^3/s).  Shape ``(n_profiles,)``."""
         return self.additional_variable("Conveyance Left OB")
 
     @property
     def conveyance_right_ob(self) -> np.ndarray:
-        """Right overbank conveyance (m³/s).  Shape ``(n_profiles,)``."""
+        """Right overbank conveyance (m^3/s).  Shape ``(n_profiles,)``."""
         return self.additional_variable("Conveyance Right OB")
 
     @property
     def conveyance_total(self) -> np.ndarray:
-        """Total conveyance (m³/s).  Shape ``(n_profiles,)``."""
+        """Total conveyance (m^3/s).  Shape ``(n_profiles,)``."""
         return self.additional_variable("Conveyance Total")
 
     @property
@@ -2664,22 +2730,22 @@ class CrossSectionResultsInstantaneous(_CrossSectionResultsBase):
 
     @property
     def flow_channel(self) -> np.ndarray:
-        """Channel flow (m³/s).  Shape ``(n_profiles,)``."""
+        """Channel flow (m^3/s).  Shape ``(n_profiles,)``."""
         return self.additional_variable("Flow Channel")
 
     @property
     def flow_left_ob(self) -> np.ndarray:
-        """Left overbank flow (m³/s).  Shape ``(n_profiles,)``."""
+        """Left overbank flow (m^3/s).  Shape ``(n_profiles,)``."""
         return self.additional_variable("Flow Left OB")
 
     @property
     def flow_right_ob(self) -> np.ndarray:
-        """Right overbank flow (m³/s).  Shape ``(n_profiles,)``."""
+        """Right overbank flow (m^3/s).  Shape ``(n_profiles,)``."""
         return self.additional_variable("Flow Right OB")
 
     @property
     def flow_total(self) -> np.ndarray:
-        """Total flow (m³/s).  Shape ``(n_profiles,)``."""
+        """Total flow (m^3/s).  Shape ``(n_profiles,)``."""
         return self.additional_variable("Flow Total")
 
     @property
@@ -2749,7 +2815,7 @@ class CrossSectionResultsInstantaneous(_CrossSectionResultsBase):
 
     @property
     def shear(self) -> np.ndarray:
-        """Bed shear stress (N/m²).  Shape ``(n_profiles,)``."""
+        """Bed shear stress (N/m^2).  Shape ``(n_profiles,)``."""
         return self.additional_variable("Shear")
 
     @property
@@ -2857,13 +2923,13 @@ class CrossSectionResultsCollection(CrossSectionCollection):
         HDF path to the cross section result group:
         ``_TS_XS``, ``_DSS_XS``, or ``_POSTPROC_XS``.
     result_cls:
-        Concrete result class to instantiate per cross section —
+        Concrete result class to instantiate per cross section --
         :class:`CrossSectionResults`,
         :class:`CrossSectionResultsDSS`, or
         :class:`CrossSectionResultsInstantaneous`.
     attrs_path:
         HDF path to the ``Cross Section Attributes`` structured array used
-        to map ``(river, reach, station)`` → column index.  Defaults to
+        to map ``(river, reach, station)`` -> column index.  Defaults to
         ``f"{root}/Cross Section Attributes"``, which is correct for Base
         Output and DSS blocks.  Pass ``_POSTPROC_GEOM_ATTRS`` for the Post
         Process block, where attributes live outside the XS result group.
@@ -3268,7 +3334,7 @@ class ComputeSummary:
 
             ``"wse"``
                 Maximum water-surface elevation error across all cells
-                (model units — feet or metres).  ``None`` when the simulation
+                (model units -- feet or metres).  ``None`` when the simulation
                 went unstable before the run converged.
 
             ``"volume_error_pct"``
@@ -3532,7 +3598,7 @@ class UnsteadyPlan(_PlanHdf, Geometry):
         Raises
         ------
         KeyError
-            If ``Results/Unsteady/Summary`` is absent — e.g. the file is
+            If ``Results/Unsteady/Summary`` is absent -- e.g. the file is
             a steady-flow plan or the simulation has not been run yet.
 
         Examples
@@ -3809,7 +3875,7 @@ class UnsteadyPlan(_PlanHdf, Geometry):
     def n_mapping_timestamps(self) -> int | None:
         """Number of mapping output time steps, or ``None`` for steady-flow plans.
 
-        Reads only the dataset shape — no timestamp data is loaded.
+        Reads only the dataset shape -- no timestamp data is loaded.
         """
         ds = self._hdf.get(_TIME_STAMP_DS)
         return None if ds is None else len(ds)
@@ -3818,7 +3884,7 @@ class UnsteadyPlan(_PlanHdf, Geometry):
     def n_output_timestamps(self) -> int | None:
         """Number of DSS hydrograph output time steps, or ``None`` if absent.
 
-        Reads only the dataset shape — no timestamp data is loaded.
+        Reads only the dataset shape -- no timestamp data is loaded.
         """
         ds = self._hdf.get(_DSS_TIME_STAMP_DS)
         return None if ds is None else len(ds)
@@ -3827,7 +3893,7 @@ class UnsteadyPlan(_PlanHdf, Geometry):
     def n_instantaneous_timestamps(self) -> int | None:
         """Number of instantaneous profile time steps, or ``None`` if absent.
 
-        Reads only the dataset shape — no timestamp data is loaded.
+        Reads only the dataset shape -- no timestamp data is loaded.
         The ``"Max WS"`` entry at index 0 is excluded from the count.
         """
         ds = self._hdf.get(_POSTPROC_PROFILE_DATES)
@@ -3858,10 +3924,10 @@ class UnsteadyPlan(_PlanHdf, Geometry):
         Returns a :class:`StructureResultsCollection` where each item is
         upgraded to the matching results class when plan output is present:
 
-        * :class:`SA2DConnectionResults` — SA/2D connections
-        * :class:`InlineResults` — inline structures
-        * :class:`LateralResults` — lateral structures
-        * :class:`BridgeResults` — bridge structures
+        * :class:`SA2DConnectionResults` -- SA/2D connections
+        * :class:`InlineResults` -- inline structures
+        * :class:`LateralResults` -- lateral structures
+        * :class:`BridgeResults` -- bridge structures
 
         Use :attr:`~rivia.hdf.StructureCollection.connections`,
         :attr:`~rivia.hdf.StructureCollection.inlines`,

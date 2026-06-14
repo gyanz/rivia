@@ -1,4 +1,4 @@
-"""Geometry — read HEC-RAS geometry HDF5 files (.g*.hdf).
+"""Geometry -- read HEC-RAS geometry HDF5 files (.g*.hdf).
 
 Provides structured access to 2-D flow-area mesh data:
 cell centres, face connectivity, hydraulic property tables, etc.
@@ -14,7 +14,7 @@ import logging
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Generic, TypeVar, overload
+from typing import TYPE_CHECKING, Generic, Literal, TypeVar, overload
 
 import numpy as np
 import pandas as pd
@@ -70,8 +70,97 @@ def _point_in_polygon(px: float, py: float, polygon: np.ndarray) -> bool:
     return inside
 
 
+def _station_on_polyline(pt: np.ndarray, xy: np.ndarray) -> float:
+    """Along-polyline station of the closest point on *xy* to *pt*."""
+    best_station = 0.0
+    best_dist_sq = np.inf
+    cum = 0.0
+    for i in range(len(xy) - 1):
+        a, b = xy[i], xy[i + 1]
+        ab = b - a
+        ab_len_sq = float(np.dot(ab, ab))
+        if ab_len_sq < 1e-24:
+            continue
+        seg_len = float(np.sqrt(ab_len_sq))
+        t = max(0.0, min(1.0, float(np.dot(pt - a, ab)) / ab_len_sq))
+        d_sq = float(np.dot(pt - (a + t * ab), pt - (a + t * ab)))
+        if d_sq < best_dist_sq:
+            best_dist_sq = d_sq
+            best_station = cum + t * seg_len
+        cum += seg_len
+    return best_station
+
+
+def _perp_dist_to_polyline(pt: np.ndarray, xy: np.ndarray) -> float:
+    """Minimum perpendicular distance from *pt* to polyline *xy*."""
+    min_d = np.inf
+    for i in range(len(xy) - 1):
+        a, b = xy[i], xy[i + 1]
+        ab = b - a
+        ab_len_sq = float(np.dot(ab, ab))
+        if ab_len_sq < 1e-24:
+            closest = a
+        else:
+            t = max(0.0, min(1.0, float(np.dot(pt - a, ab)) / ab_len_sq))
+            closest = a + t * ab
+        d = float(np.linalg.norm(pt - closest))
+        if d < min_d:
+            min_d = d
+    return float(min_d) if not np.isinf(min_d) else 0.0
+
+
+def _dijkstra_path(
+    adj: dict[int, list[tuple[float, int]]],
+    src: int,
+    dst: int,
+) -> list[int] | None:
+    """Heap-based Dijkstra returning the node-index path from *src* to *dst*.
+
+    Parameters
+    ----------
+    adj:
+        Adjacency list: ``adj[u]`` is a list of ``(weight, v)`` pairs.
+    src, dst:
+        Source and destination node indices.
+
+    Returns
+    -------
+    list[int] or None
+        Ordered list of node indices ``[src, ..., dst]``, or ``None`` if
+        no path exists.
+    """
+    import heapq
+
+    dist: dict[int, float] = {src: 0.0}
+    prev: dict[int, int] = {}
+    heap: list[tuple[float, int]] = [(0.0, src)]
+    visited: set[int] = set()
+
+    while heap:
+        d, u = heapq.heappop(heap)
+        if u in visited:
+            continue
+        visited.add(u)
+        if u == dst:
+            path: list[int] = []
+            node = dst
+            while node != src:
+                path.append(node)
+                node = prev[node]
+            path.append(src)
+            path.reverse()
+            return path
+        for w, v in adj.get(u, []):
+            nd = d + w
+            if nd < dist.get(v, np.inf):
+                dist[v] = nd
+                prev[v] = u
+                heapq.heappush(heap, (nd, v))
+    return None
+
+
 # ---------------------------------------------------------------------------
-# FlowArea — geometry for a single 2-D flow area
+# FlowArea -- geometry for a single 2-D flow area
 # ---------------------------------------------------------------------------
 
 
@@ -163,7 +252,7 @@ class FlowArea:
 
         Shape ``(n_cells + n_ghost,)``.
 
-        Ghost rows contain ``NaN`` — the HDF5 dataset fill value (IEEE 754
+        Ghost rows contain ``NaN`` -- the HDF5 dataset fill value (IEEE 754
         float32 ``0x FFC00000``).  HEC-RAS leaves ghost rows unwritten so they
         take the dataset fill value.  Note that not all cell arrays behave this
         way: ``Cells Center Manning's n`` ghost rows hold real Manning's n
@@ -220,18 +309,18 @@ class FlowArea:
             (columns 0 and 1 of :attr:`face_facepoint_indexes`).  RasMapper
             guarantees the following **CCW traversal invariant**:
 
-            * Walking CCW around **cellA**, the face edge runs ``fpA → fpB``
+            * Walking CCW around **cellA**, the face edge runs ``fpA -> fpB``
               (fpA is the entry facepoint, fpB is the exit facepoint).
-            * Walking CCW around **cellB**, the edge runs ``fpB → fpA``
+            * Walking CCW around **cellB**, the edge runs ``fpB -> fpA``
               (fpB is the entry facepoint, fpA is the exit facepoint).
 
             The orientation flag encodes which role *this* cell plays:
 
-            * ``+1`` — this cell is ``cellA`` for that face.  The stored
+            * ``+1`` -- this cell is ``cellA`` for that face.  The stored
               face normal points **outward** (away from this cell toward
               ``cellB``).  The entry facepoint for CCW traversal is ``fpA``
               (column 0 of ``face_facepoint_indexes``).
-            * ``-1`` — this cell is ``cellB`` for that face.  The stored
+            * ``-1`` -- this cell is ``cellB`` for that face.  The stored
               face normal points **inward** (toward this cell from ``cellA``).
               The entry facepoint for CCW traversal is ``fpB`` (column 1 of
               ``face_facepoint_indexes``).
@@ -312,7 +401,7 @@ class FlowArea:
             from shapely.geometry import Polygon
             gdf = gpd.GeoDataFrame(
                 geometry=[Polygon(pts) for pts in fa.cell_polygons],
-                crs="EPSG:…",
+                crs="EPSG:...",
             )
         """
         cache_key = "_cell_polygons"
@@ -341,7 +430,7 @@ class FlowArea:
         else:
             curved_cells = set()
 
-        polygons: list[np.ndarray] = [np.empty((0, 2), dtype=np.float64) for x in range(n)]
+        polygons: list[np.ndarray] = [np.empty((0, 2), dtype=np.float64) for _ in range(n)]
 
         for c in range(n):
             if c not in curved_cells:
@@ -388,7 +477,7 @@ class FlowArea:
                     prev_fp = current
                     current = nxt
 
-                if current != fps_list[0]:  # cycle did not close — malformed
+                if current != fps_list[0]:  # cycle did not close -- malformed
                     continue
 
                 poly = np.array(all_pts)
@@ -396,7 +485,7 @@ class FlowArea:
             if len(poly) < 3:
                 continue
 
-            # Enforce CCW winding (shoelace signed area: positive → CCW).
+            # Enforce CCW winding (shoelace signed area: positive -> CCW).
             x, y = poly[:, 0], poly[:, 1]
             signed_area = float(
                 np.dot(x, np.roll(y, -1)) - np.dot(np.roll(x, -1), y)
@@ -469,7 +558,7 @@ class FlowArea:
         """Station of the invert centroid of each face.
 
         HEC-RAS stores the station distance (from one end of the face) to the
-        centroid of the bottom 5% of the face cross-sectional area — the invert
+        centroid of the bottom 5% of the face cross-sectional area -- the invert
         region used internally for flow calculations.
 
         Shape ``(n_faces,)``, dtype float32.
@@ -530,10 +619,10 @@ class FlowArea:
 
         Notes
         -----
-        Parametric 2D line–segment intersection: given the infinite line
+        Parametric 2D line--segment intersection: given the infinite line
         ``P = cell_L + t * (cell_R - cell_L)`` and face segment
         ``Q = A + s * (B - A)`` the system is solved for *s* (segment
-        parameter, must satisfy ``0 ≤ s ≤ 1``) and the hit point is
+        parameter, must satisfy ``0 <= s <= 1``) and the hit point is
         ``A + s * (B - A)``.  For curved faces all segments are tested and
         the first hit is used.
         """
@@ -544,7 +633,7 @@ class FlowArea:
         cc = self.cell_centers        # (n_cells, 2)
         fci = self.face_cell_indexes  # (n_faces, 2)
         polylines = self.face_polylines  # list[(n_pts, 2)]
-        centroids = self.face_centroids  # (n_faces, 2) — boundary fallback
+        centroids = self.face_centroids  # (n_faces, 2) -- boundary fallback
 
         n_cells = len(cc)
         result = centroids.copy()
@@ -554,7 +643,7 @@ class FlowArea:
             right = int(fci[fi, 1])
 
             if left < 0 or left >= n_cells or right < 0 or right >= n_cells:
-                continue  # boundary face — centroid already set
+                continue  # boundary face -- centroid already set
 
             d = cc[right] - cc[left]  # direction of cell-to-cell line
 
@@ -562,10 +651,10 @@ class FlowArea:
                 a = poly[k]
                 e = poly[k + 1] - a  # face-segment direction
 
-                # Solve P1 + t*d = A + s*e  →  det, s via Cramer's rule
+                # Solve P1 + t*d = A + s*e  ->  det, s via Cramer's rule
                 det = e[0] * d[1] - d[0] * e[1]
                 if abs(det) < 1e-12:
-                    continue  # parallel — try next segment
+                    continue  # parallel -- try next segment
                 r = a - cc[left]
                 s = (d[0] * r[1] - r[0] * d[1]) / det
                 if -1e-9 <= s <= 1.0 + 1e-9:
@@ -627,8 +716,8 @@ class FlowArea:
 
         For straight faces (no interior perimeter points) this equals the
         midpoint of the chord between the two endpoint facepoints.  For
-        curved faces this is the **arc midpoint** — the point on the face
-        polyline at exactly half the total arc length — which guarantees the
+        curved faces this is the **arc midpoint** -- the point on the face
+        polyline at exactly half the total arc length -- which guarantees the
         result lies on the face itself.  An arc-length-weighted average of
         segment midpoints is *not* used because it can float off the polyline
         for non-convex shapes (V-notches, loops).
@@ -652,7 +741,7 @@ class FlowArea:
         centroids = 0.5 * (fp0 + fp1)
 
         # Override for curved faces (interior perimeter points present).
-        # Use the arc midpoint — the point on the polyline at exactly half the
+        # Use the arc midpoint -- the point on the polyline at exactly half the
         # total arc length.  This guarantees the centroid lies ON the face
         # polyline, unlike an arc-length-weighted average which can float off
         # the curve for non-convex shapes (V-notches, loops, etc.).
@@ -792,7 +881,7 @@ class FlowArea:
         """CSR start/count index into :attr:`facepoint_face_orientation_values`.
 
         Shape ``(n_facepoints, 2)``, dtype ``int32``.  Each row is
-        ``[start, count]`` — a slice into :attr:`facepoint_face_orientation_values`
+        ``[start, count]`` -- a slice into :attr:`facepoint_face_orientation_values`
         for that facepoint. count = number of faces adjacent to that facepoint.
 
         HDF source: ``FacePoints Face and Orientation Info``.
@@ -800,7 +889,7 @@ class FlowArea:
         Examples
         --------
         Using the 5-facepoint mesh from :attr:`facepoint_face_orientation`
-        (fp0 at centre with 4 adjacent faces; fp1–fp4 each with 1)::
+        (fp0 at centre with 4 adjacent faces; fp1--fp4 each with 1)::
 
             facepoint_face_orientation_info = np.array([
                 [0, 4],   # fp0: 4 entries starting at slot 0
@@ -819,13 +908,13 @@ class FlowArea:
 
     @property
     def facepoint_face_orientation_values(self) -> np.ndarray:
-        """Face index and orientation flag for each facepoint→face entry.
+        """Face index and orientation flag for each facepoint->face entry.
 
         Shape ``(total_entries, 2)``, dtype ``int32``.  Each row is
         ``[face_idx, orientation]`` where ``orientation = -1`` means this
         facepoint is ``fpA`` (first endpoint) of that face and ``orientation = +1``
         means it is ``fpB`` (second endpoint).  Matches the values written by
-        RasMapper (``MeshFV2D.cs``: fpA → ``-1``, fpB → ``+1``).
+        RasMapper (``MeshFV2D.cs``: fpA -> ``-1``, fpB -> ``+1``).
 
         Use :attr:`facepoint_face_orientation_info` to slice per facepoint.
 
@@ -836,18 +925,18 @@ class FlowArea:
         Using the 5-facepoint mesh from :attr:`facepoint_face_orientation`::
 
             facepoint_face_orientation_values = np.array([
-                [1, -1],   # slot 0 — face 1, fp0 is fpA
-                [3, -1],   # slot 1 — face 3, fp0 is fpA
-                [0, -1],   # slot 2 — face 0, fp0 is fpA
-                [2, -1],   # slot 3 — face 2, fp0 is fpA
-                [3,  1],   # slot 4 — face 3, fp1 is fpB
-                [0,  1],   # slot 5 — face 0, fp2 is fpB
-                [2,  1],   # slot 6 — face 2, fp3 is fpB
-                [1,  1],   # slot 7 — face 1, fp4 is fpB
+                [1, -1],   # slot 0 -- face 1, fp0 is fpA
+                [3, -1],   # slot 1 -- face 3, fp0 is fpA
+                [0, -1],   # slot 2 -- face 0, fp0 is fpA
+                [2, -1],   # slot 3 -- face 2, fp0 is fpA
+                [3,  1],   # slot 4 -- face 3, fp1 is fpB
+                [0,  1],   # slot 5 -- face 0, fp2 is fpB
+                [2,  1],   # slot 6 -- face 2, fp3 is fpB
+                [1,  1],   # slot 7 -- face 1, fp4 is fpB
             ], dtype=np.int32)
 
-        Note that the face indices for fp0 (slots 0–3) are ``[1, 3, 0, 2]``,
-        not ``[0, 1, 2, 3]`` — they are in counter-clockwise angular order,
+        Note that the face indices for fp0 (slots 0--3) are ``[1, 3, 0, 2]``,
+        not ``[0, 1, 2, 3]`` -- they are in counter-clockwise angular order,
         not creation order.
         """
         return self._load("FacePoints Face and Orientation Values").astype(np.int32)
@@ -858,12 +947,12 @@ class FlowArea:
 
     @property
     def facepoint_face_orientation(self) -> tuple[np.ndarray, np.ndarray]:
-        """Angle-sorted facepoint→face mapping with orientation flags.
+        """Angle-sorted facepoint->face mapping with orientation flags.
 
         Returns ``(fp_face_info, fp_face_values)`` where:
 
         * ``fp_face_info``:  shape ``(n_facepoints, 2)``, dtype ``int32``.
-          Each row is ``[start, count]`` — a slice into ``fp_face_values``
+          Each row is ``[start, count]`` -- a slice into ``fp_face_values``
           for that facepoint.
         * ``fp_face_values``: shape ``(total_entries, 2)``, dtype ``int32``.
           Each row is ``[face_idx, orientation]`` where ``orientation = 0``
@@ -873,7 +962,7 @@ class FlowArea:
         Entries for each facepoint are sorted in **counter-clockwise** (ascending
         bearing) angular order around the facepoint coordinate.  Bearing is
         measured from the positive x-axis using ``atan2(dy, dx)``, mapped to
-        ``[0, 2π)`` in RasMapper (``SegmentM.Bearing()``) and ``[-π, π)`` in
+        ``[0, 2pi)`` in RasMapper (``SegmentM.Bearing()``) and ``[-pi, pi)`` in
         the Python re-implementation (``np.arctan2``); both produce the same
         relative ordering.  This ordering is required for correct arc traversal
         in the RASMapper vertex-velocity algorithm (Step 3, ``MeshFV2D.cs``).
@@ -890,9 +979,9 @@ class FlowArea:
         --------
         Terminology used in this example:
 
-        * **fp0 … fp4** — facepoint indices (mesh vertices, integer row numbers
+        * **fp0 ... fp4** -- facepoint indices (mesh vertices, integer row numbers
           in :attr:`facepoint_coordinates`).
-        * **fpA / fpB** — the two endpoint roles of a face.  Every face has
+        * **fpA / fpB** -- the two endpoint roles of a face.  Every face has
           exactly two endpoint facepoints stored as ``[fpA_index, fpB_index]``
           in :attr:`face_facepoint_indexes`.  fpA is the first column (index 0),
           fpB is the second column (index 1).
@@ -910,7 +999,7 @@ class FlowArea:
                       |
                      fp4 (0,-1)
 
-            # face_facepoint_indexes — each face stores [fpA_index, fpB_index]
+            # face_facepoint_indexes -- each face stores [fpA_index, fpB_index]
             face 0: fpA=fp0, fpB=fp2  (North)
             face 1: fpA=fp0, fpB=fp4  (South)
             face 2: fpA=fp0, fpB=fp3  (West)
@@ -918,12 +1007,12 @@ class FlowArea:
 
         Bearings from fp0 to the far endpoint of each adjacent face:
 
-            face 0 → atan2(1, 0)  = +π/2  (North)
-            face 1 → atan2(-1, 0) = -π/2  (South)
-            face 2 → atan2(0, -1) =  ±π   (West)
-            face 3 → atan2(0,  1) =   0   (East)
+            face 0 -> atan2(1, 0)  = +pi/2  (North)
+            face 1 -> atan2(-1, 0) = -pi/2  (South)
+            face 2 -> atan2(0, -1) =  +/-pi   (West)
+            face 3 -> atan2(0,  1) =   0   (East)
 
-        After sorting ascending (counter-clockwise: S → E → N → W):
+        After sorting ascending (counter-clockwise: S -> E -> N -> W):
 
         .. code-block:: text
 
@@ -935,16 +1024,16 @@ class FlowArea:
               fp4: [7, 1]
 
             fp_face_values          # [face_idx, orientation]  (-1=fpA, +1=fpB)
-              slot 0: [1, -1]  ← face 1 (South), fp0 is fpA
-              slot 1: [3, -1]  ← face 3 (East),  fp0 is fpA
-              slot 2: [0, -1]  ← face 0 (North), fp0 is fpA
-              slot 3: [2, -1]  ← face 2 (West),  fp0 is fpA
-              slot 4: [3,  1]  ← face 3, fp1 is fpB
-              slot 5: [0,  1]  ← face 0, fp2 is fpB
-              slot 6: [2,  1]  ← face 2, fp3 is fpB
-              slot 7: [1,  1]  ← face 1, fp4 is fpB
+              slot 0: [1, -1]  <- face 1 (South), fp0 is fpA
+              slot 1: [3, -1]  <- face 3 (East),  fp0 is fpA
+              slot 2: [0, -1]  <- face 0 (North), fp0 is fpA
+              slot 3: [2, -1]  <- face 2 (West),  fp0 is fpA
+              slot 4: [3,  1]  <- face 3, fp1 is fpB
+              slot 5: [0,  1]  <- face 0, fp2 is fpB
+              slot 6: [2,  1]  <- face 2, fp3 is fpB
+              slot 7: [1,  1]  <- face 1, fp4 is fpB
 
-        fp0's faces in angular order: ``fp_face_values[0:4, 0]`` → ``[1, 3, 0, 2]``,
+        fp0's faces in angular order: ``fp_face_values[0:4, 0]`` -> ``[1, 3, 0, 2]``,
         not ``[0, 1, 2, 3]``.
 
         Notes
@@ -1169,7 +1258,7 @@ class FlowArea:
 
         Returns a list of length ``n_faces``.  Each element is an
         ``ndarray`` of shape ``(n_pts, 2)`` in canonical HDF order
-        (facepoint 0 → interior points → facepoint 1).  Straight faces
+        (facepoint 0 -> interior points -> facepoint 1).  Straight faces
         yield 2-point arrays; curved faces have 3 or more points.
 
         Computed once and cached.
@@ -1307,7 +1396,7 @@ class FlowArea:
     def cell_compactness(self) -> np.ndarray:
         """Isoperimetric compactness of each cell.  Shape ``(n_cells,)``.
 
-        ``compactness = 4π × area / perimeter²``.  A circle scores ``1.0``;
+        ``compactness = 4pi * area / perimeter^2``.  A circle scores ``1.0``;
         elongated or irregular cells score lower.  Uses :attr:`cell_surface_area`
         for area and :attr:`face_lengths` for the perimeter.
 
@@ -1382,8 +1471,427 @@ class FlowArea:
 
         return int(result[0]) if scalar else result
 
+    # ------------------------------------------------------------------
+    # Line / profile spatial queries
+    # ------------------------------------------------------------------
+
+    def _clip_segment_to_polygon(
+        self,
+        ax: float,
+        ay: float,
+        bx: float,
+        by: float,
+        poly: np.ndarray,
+    ) -> tuple[float, float] | None:
+        """Cyrus-Beck clip of segment A->B against a CCW convex polygon.
+
+        **Algorithm overview (Cyrus-Beck, 1978)**
+
+        The segment is parameterised as ``P(t) = A + t*(B-A)``, ``t in [0, 1]``,
+        where ``t=0`` is point A and ``t=1`` is point B.
+
+        The polygon defines a convex region.  For each directed edge ``v0->v1``
+        (CCW winding), the outward normal ``n_hat`` points away from the interior.
+        The algorithm asks: *at what parameter t does the segment cross this
+        edge's boundary?*
+
+        Substituting ``P(t)`` into the half-plane equation gives::
+
+            dot(n_hat, P(t) - v0) = 0
+            dot(n_hat, A - v0) + t * dot(n_hat, B - A) = 0
+            alpha            + t * beta            = 0
+            t = -alpha / beta
+
+        where:
+
+        * ``alpha = dot(n_hat, A - v0)`` -- signed distance of A from the edge.
+          Positive means A is on the **outside** of this edge.
+        * ``beta = dot(n_hat, B - A)`` -- rate at which the segment moves
+          toward/away from the outside along this edge's normal.
+
+        Depending on the sign of beta, ``t`` is classified as:
+
+        * ``beta > 0``: segment moves **outward** -> ``t`` is a potential **exit**.
+          Tighten the exit bound: ``t_hi = min(t_hi, t)``.
+        * ``beta < 0``: segment moves **inward** -> ``t`` is a potential **entry**.
+          Tighten the entry bound: ``t_lo = max(t_lo, t)``.
+        * ``beta ~= 0``: segment is **parallel** to the edge.  If alpha > 0,
+          A is already outside and the whole segment is outside -> return None.
+
+        After processing all edges, ``[t_lo, t_hi]`` is the parameter interval
+        of the segment that lies inside every half-plane simultaneously (i.e.
+        inside the convex polygon).  If ``t_lo > t_hi``, the interval is empty
+        and the segment misses the polygon.
+
+        Special cases handled correctly:
+
+        * Segment entirely inside polygon -> ``(0.0, 1.0)``.
+        * Segment entirely outside -> ``None``.
+        * Segment grazes a vertex/edge (point intersection) -> ``None``
+          (filtered by the ``st_exit > st_enter + 1e-10`` guard in the caller).
+
+        Parameters
+        ----------
+        ax, ay:
+            Start point of the segment (A).
+        bx, by:
+            End point of the segment (B).
+        poly:
+            Polygon vertices in **counter-clockwise** order, shape ``(n, 2)``.
+            Guaranteed by :attr:`cell_polygons`.
+
+        Returns
+        -------
+        tuple[float, float] or None
+            ``(t_enter, t_exit)`` in ``[0, 1]`` -- the parameter range along
+            A->B that lies inside the polygon -- or ``None`` if the segment
+            does not intersect the polygon interior.
+        """
+        # [t_lo, t_hi] is the clipped interval; starts as the full segment [0, 1]
+        # and is tightened by each edge until it collapses (miss) or stabilises (hit)
+        t_lo, t_hi = 0.0, 1.0
+        dx, dy = bx - ax, by - ay  # segment direction vector (not normalised)
+        n = len(poly)
+        for j in range(n):
+            v0 = poly[j]
+            v1 = poly[(j + 1) % n]  # next vertex, wrapping around at the last edge
+
+            # Outward normal of CCW edge v0->v1.
+            # For CCW direction d = v1-v0, right-perp (nx, ny) = (d.y, -d.x)
+            # points away from the polygon interior.
+            nx = float(v1[1] - v0[1])
+            ny = -float(v1[0] - v0[0])
+
+            # alpha: signed distance of A from this edge's boundary.
+            #   > 0 -> A is outside (on the outward side)
+            #   < 0 -> A is inside (on the inward side)
+            #   = 0 -> A lies exactly on the edge
+            alpha = nx * (ax - float(v0[0])) + ny * (ay - float(v0[1]))
+
+            # beta: how fast the segment moves in the outward-normal direction.
+            #   > 0 -> moving outward (toward outside) -- this edge produces an exit t
+            #   < 0 -> moving inward (toward inside)  -- this edge produces an entry t
+            #   ~= 0 -> parallel to the edge
+            beta = nx * dx + ny * dy
+
+            if abs(beta) < 1e-12:
+                # Segment is parallel to this edge.
+                # If A is outside (alpha > 0), whole segment is outside -> miss.
+                if alpha > 1e-10:
+                    return None
+                # A is inside or on the edge; no t constraint from this edge.
+            elif beta > 0:
+                # Segment exits through this edge at t = -alpha/beta.
+                # Tighten the exit bound -- the segment can only be inside up to this t.
+                t = -alpha / beta
+                if t < t_hi:
+                    t_hi = t
+            else:
+                # Segment enters through this edge at t = -alpha/beta.
+                # Tighten the entry bound -- the segment is not yet inside until this t.
+                t = -alpha / beta
+                if t > t_lo:
+                    t_lo = t
+
+            # Early-exit: if the entry parameter has overtaken the exit parameter,
+            # the remaining inside interval is empty -- segment misses the polygon.
+            if t_lo > t_hi:
+                return None
+
+        # Clamp to [0, 1]: the segment only exists between A (t=0) and B (t=1);
+        # clip values outside that range are valid intersections with the infinite
+        # line but not with the finite segment.
+        t_lo = max(t_lo, 0.0)
+        t_hi = min(t_hi, 1.0)
+        return (t_lo, t_hi) if t_lo <= t_hi + 1e-10 else None
+
+    def cells_along_line(self, xy: np.ndarray) -> pd.DataFrame:
+        """Ordered list of cells the polyline passes through with along-line stations.
+
+        Parameters
+        ----------
+        xy : ndarray, shape ``(n_pts, 2)``
+            Polyline vertices as ``(x, y)`` coordinates.
+
+        Returns
+        -------
+        pd.DataFrame
+            Columns: ``cell`` (int), ``station_start`` (float),
+            ``station_end`` (float).  ``station_start`` / ``station_end``
+            are cumulative along-line distances (model coordinate units)
+            at which the polyline enters and exits each cell.  Rows are
+            sorted by ``station_start``; adjacent entries for the same
+            cell (possible when a line re-enters a concave polygon) are
+            merged.  Returns an empty DataFrame when the line does not
+            intersect any cell.
+
+        Notes
+        -----
+        Uses :attr:`cell_bbox` for a fast bounding-box pre-filter then
+        :meth:`_clip_segment_to_polygon` (Cyrus-Beck) for exact parametric
+        entry/exit computation.  Assumes cell polygons are convex -- the
+        standard HEC-RAS mesh-generation constraint.
+        """
+        xy = np.asarray(xy, dtype=np.float64)
+        if xy.ndim != 2 or xy.shape[1] != 2 or len(xy) < 2:
+            raise ValueError("xy must be shape (n_pts, 2) with n_pts >= 2.")
+
+        bbox = self.cell_bbox       # (n_cells, 4): [xmin, ymin, xmax, ymax]
+        polys = self.cell_polygons  # list[ndarray(n_verts, 2)], CCW
+
+        records: list[tuple[int, float, float]] = []
+        cumlen = 0.0  # running distance from polyline start to current segment's start
+
+        for i in range(len(xy) - 1):
+            ax, ay = float(xy[i, 0]), float(xy[i, 1])
+            bx, by = float(xy[i + 1, 0]), float(xy[i + 1, 1])
+            seg_len = float(np.hypot(bx - ax, by - ay))
+            if seg_len < 1e-12:
+                # degenerate segment (duplicate vertex); advance cumlen and skip
+                cumlen += seg_len
+                continue
+
+            # Axis-aligned bbox of this segment -- pre-filter so the exact polygon
+            # clip only runs against cells that could possibly intersect
+            seg_xlo, seg_xhi = min(ax, bx), max(ax, bx)
+            seg_ylo, seg_yhi = min(ay, by), max(ay, by)
+            # vectorised bbox overlap test across all cells at once: cell bbox must
+            # overlap the segment bbox on both axes (separating-axis theorem, 2-D)
+            cands = np.where(
+                (bbox[:, 0] <= seg_xhi) & (bbox[:, 2] >= seg_xlo) &
+                (bbox[:, 1] <= seg_yhi) & (bbox[:, 3] >= seg_ylo)
+            )[0]
+
+            for ci in cands:
+                # CCW-wound vertex array (n_verts, 2) for candidate cell ci
+                poly = polys[ci]
+                if len(poly) < 3:
+                    # degenerate polygon in mesh (should not happen; guard)
+                    continue
+                # Exact parametric clip: returns (t_enter, t_exit) in [0,1] along A->B,
+                # or None when the segment misses the polygon interior
+                result = self._clip_segment_to_polygon(ax, ay, bx, by, poly)
+                if result is not None:
+                    t_lo, t_hi = result
+                    # Convert parametric t to cumulative along-line station.
+                    # cumlen = distance from polyline start to A; adding t*seg_len
+                    # gives the absolute station at the entry/exit point.
+                    st_enter = cumlen + t_lo * seg_len
+                    st_exit  = cumlen + t_hi * seg_len
+                    # discard clips that are only a point (e.g. line grazes a corner)
+                    if st_exit > st_enter + 1e-10:
+                        records.append((int(ci), st_enter, st_exit))
+
+            cumlen += seg_len  # advance to next segment's start
+
+        if not records:
+            return pd.DataFrame(columns=["cell", "station_start", "station_end"])
+
+        # Sort by entry station so the output is ordered along the polyline direction
+        records.sort(key=lambda r: r[1])
+        # Merge adjacent records for the same cell -- a polyline can exit and re-enter
+        # the same cell across a shared edge (concave neighbourhood), producing two
+        # records that should logically be one continuous range
+        merged: list[list] = [list(records[0])]
+        for ci, st_lo, st_hi in records[1:]:
+            if ci == merged[-1][0] and st_lo <= merged[-1][2] + 1e-10:
+                # same cell, and the new range starts before or at the previous exit ->
+                # extend the exit station to cover both ranges
+                merged[-1][2] = max(merged[-1][2], st_hi)
+            else:
+                merged.append([ci, st_lo, st_hi])
+
+        return pd.DataFrame(merged, columns=["cell", "station_start", "station_end"])
+
+    def _face_chain_to_ranges(
+        self,
+        face_path: list[int],
+        fp_path: list[int],
+        xy: np.ndarray,
+    ) -> pd.DataFrame:
+        """Assemble the faces_along_line result DataFrame from a resolved chain.
+
+        Parameters
+        ----------
+        face_path : list[int]
+            Ordered face indices, length ``n_faces``.
+        fp_path : list[int]
+            Ordered facepoint indices, length ``n_faces + 1``.
+            ``fp_path[i]`` and ``fp_path[i+1]`` are the entry and exit
+            facepoints for ``face_path[i]``.
+        xy : ndarray, shape ``(n_pts, 2)``
+            Original input polyline -- used for station projection and
+            computing the overall direction for orientation flags.
+
+        Returns
+        -------
+        pd.DataFrame
+            Columns: ``face``, ``facepoint_start``, ``facepoint_end``,
+            ``station_start``, ``station_end``, ``orientation`` (bool).
+            ``orientation=True`` means the stored face normal opposes the
+            positive-flow direction ``rotate_ccw_90(xy[-1] - xy[0])``; negate
+            that face's flow before summing.
+        """
+        fp_coords = self.facepoint_coordinates  # (n_fp, 2)
+        normals = self.face_normals             # (n_faces_total, 3)
+
+        d = xy[-1] - xy[0]
+        pos_flow_dir = np.array([-d[1], d[0]], dtype=np.float64)  # rotate_ccw_90(d)
+
+        rows = []
+        for i, fi in enumerate(face_path):
+            fp_entry = fp_path[i]
+            fp_exit  = fp_path[i + 1]
+            st_start = _station_on_polyline(fp_coords[fp_entry], xy)
+            st_end   = _station_on_polyline(fp_coords[fp_exit], xy)
+            if st_start > st_end:
+                st_start, st_end = st_end, st_start
+            orientation = bool(float(np.dot(normals[fi, :2], pos_flow_dir)) < 0.0)
+            rows.append((fi, fp_entry, fp_exit, st_start, st_end, orientation))
+
+        return pd.DataFrame(
+            rows,
+            columns=["face", "facepoint_start", "facepoint_end",
+                     "station_start", "station_end", "orientation"],
+        )
+
+    def faces_along_line(
+        self,
+        xy: np.ndarray,
+        method: Literal["walk", "shortest_path"] = "shortest_path",
+    ) -> pd.DataFrame:
+        """Ordered chain of mesh faces forming the best fence along a polyline.
+
+        Finds a connected path through the facepoint graph -- from the
+        facepoint nearest the line start to the facepoint nearest the line
+        end -- that best approximates the input polyline.  The resulting face
+        chain is a "fence" suitable for summing oriented face flux to compute
+        total discharge (see
+        :meth:`~rivia.hdf.unsteady_plan.FlowAreaResults.discharge_along_line`).
+
+        Parameters
+        ----------
+        xy : ndarray, shape ``(n_pts, 2)``
+            Polyline vertices ``(x, y)``.  Assumed drawn from left bank
+            (start) to right bank (end).
+        method : {"shortest_path", "walk"}
+            ``"shortest_path"`` (default): Dijkstra on the facepoint graph
+            restricted to cells under the line (:meth:`cells_along_line`).
+            Edge weights are ``face_length * (1 + 5 * perp_distance_to_line)``
+            so the path is both short and close to the drawn line.  Guaranteed
+            to terminate and produce a connected chain.
+
+            ``"walk"`` is not yet implemented.
+
+        Returns
+        -------
+        pd.DataFrame
+            Columns:
+
+            ``face`` (int)
+                0-based face index.
+            ``facepoint_start``, ``facepoint_end`` (int)
+                Entry and exit facepoints for this face along the walk direction.
+            ``station_start``, ``station_end`` (float)
+                Cumulative along-line station (model units) of each facepoint,
+                projected onto the input polyline.
+            ``orientation`` (bool)
+                ``True`` when the stored face normal opposes the positive-flow
+                direction ``rotate_ccw_90(xy[-1] - xy[0])``; negate the face's
+                flow contribution before summing the total discharge.
+
+        Raises
+        ------
+        NotImplementedError
+            If ``method="walk"``.
+        ValueError
+            If the line does not intersect the mesh, or no connected facepoint
+            path can be found (e.g. the line crosses a mesh gap).
+        """
+        xy = np.asarray(xy, dtype=np.float64)
+        if xy.ndim != 2 or xy.shape[1] != 2 or len(xy) < 2:
+            raise ValueError("xy must be shape (n_pts, 2) with n_pts >= 2.")
+
+        if method == "walk":
+            raise NotImplementedError(
+                "faces_along_line method='walk' is not yet implemented."
+            )
+
+        # ---- Step 1: corridor cells ----------------------------------------
+        cells_df = self.cells_along_line(xy)
+        if cells_df.empty:
+            raise ValueError(
+                f"Polyline does not intersect any cells in flow area '{self.name}'. "
+                "Verify that coordinates are in the same CRS as the mesh."
+            )
+        corridor_cells = set(cells_df["cell"].tolist())
+
+        # ---- Step 2: collect faces in corridor ------------------------------
+        cfi, cfv = self.cell_face_info
+        face_fp  = self.face_facepoint_indexes   # (n_faces, 2)
+        face_len = self.face_lengths             # (n_faces,)
+        fp_coords = self.facepoint_coordinates   # (n_fp, 2)
+
+        corridor_faces: set[int] = set()
+        for ci in corridor_cells:
+            start = int(cfi[ci, 0])
+            count = int(cfi[ci, 1])
+            for fi in cfv[start : start + count, 0]:
+                corridor_faces.add(int(fi))
+
+        # ---- Step 3: build weighted facepoint adjacency graph ---------------
+        _K = 5.0   # corridor-tightness constant: higher -> path hugs the line
+        adj: dict[int, list[tuple[float, int]]] = {}
+        fp_pair_to_face: dict[tuple[int, int], int] = {}
+        corridor_fp_set: set[int] = set()
+
+        for fi in corridor_faces:
+            fp0, fp1 = int(face_fp[fi, 0]), int(face_fp[fi, 1])
+            corridor_fp_set.add(fp0)
+            corridor_fp_set.add(fp1)
+            mid = fp_coords[[fp0, fp1]].mean(axis=0)
+            w = float(face_len[fi]) * (1.0 + _K * _perp_dist_to_polyline(mid, xy))
+            adj.setdefault(fp0, []).append((w, fp1))
+            adj.setdefault(fp1, []).append((w, fp0))
+            fp_pair_to_face[(min(fp0, fp1), max(fp0, fp1))] = fi
+
+        # ---- Step 4: nearest facepoints to line endpoints ------------------
+        fp_list = sorted(corridor_fp_set)
+        fp_arr  = fp_coords[fp_list]   # (n_local, 2)
+
+        src_fp = fp_list[int(np.argmin(np.linalg.norm(fp_arr - xy[0],  axis=1)))]
+        dst_fp = fp_list[int(np.argmin(np.linalg.norm(fp_arr - xy[-1], axis=1)))]
+
+        if src_fp == dst_fp:
+            raise ValueError(
+                "Line start and end map to the same facepoint. "
+                "The line may be too short or lie entirely within one cell."
+            )
+
+        # ---- Step 5: shortest path -----------------------------------------
+        fp_path = _dijkstra_path(adj, src_fp, dst_fp)
+        if fp_path is None:
+            raise ValueError(
+                f"No connected facepoint path found in flow area '{self.name}'. "
+                "The line may cross a mesh gap or disconnected region."
+            )
+
+        # ---- Step 6: reconstruct ordered face list -------------------------
+        face_path: list[int] = []
+        for k in range(len(fp_path) - 1):
+            fp_a, fp_b = fp_path[k], fp_path[k + 1]
+            key = (min(fp_a, fp_b), max(fp_a, fp_b))
+            if key not in fp_pair_to_face:
+                raise ValueError(
+                    f"Consecutive facepoints {(fp_a, fp_b)} share no face "
+                    "in the corridor. Mesh topology is inconsistent."
+                )
+            face_path.append(fp_pair_to_face[key])
+
+        return self._face_chain_to_ranges(face_path, fp_path, xy)
+
 # ---------------------------------------------------------------------------
-# FlowAreaCollection — dict-like access to all flow areas in the HDF file
+# FlowAreaCollection -- dict-like access to all flow areas in the HDF file
 # ---------------------------------------------------------------------------
 
 
@@ -1589,7 +2097,7 @@ class StorageArea:
         x, y = pts[:, 0], pts[:, 1]
         # Shoelace cross products: A_i = x_i * y_{i+1} - x_{i+1} * y_i
         cross = x[:-1] * y[1:] - x[1:] * y[:-1]
-        # Close the polygon (last→first edge)
+        # Close the polygon (last->first edge)
         cross_close = x[-1] * y[0] - x[0] * y[-1]
         signed_area = (cross.sum() + cross_close) / 2.0
         if signed_area == 0.0:
@@ -1965,7 +2473,7 @@ class Structure:
         (storage area), ``'2D'`` (2-D flow area), or ``'--'`` (unspecified /
         treated as storage area by HEC-RAS).
     downstream_type:
-        HDF ``DS Type`` field — same vocabulary as *upstream_type*.
+        HDF ``DS Type`` field -- same vocabulary as *upstream_type*.
     centerline:
         x, y coordinates of the structure centreline.  Shape ``(n_pts, 2)``.
     """
@@ -2087,8 +2595,8 @@ class SA2DConnection(Structure):
     Notes
     -----
     Plan-result groups (see :class:`~rivia.hdf.SA2DConnectionResults`) may
-    use a different naming convention: for 2D↔2D connections HEC-RAS prefixes
-    the flow area name (e.g. geometry ``"Lower Levee"`` → plan result
+    use a different naming convention: for 2D<->2D connections HEC-RAS prefixes
+    the flow area name (e.g. geometry ``"Lower Levee"`` -> plan result
     ``"BaldEagleCr Lower Levee"``).
     """
 
@@ -2182,8 +2690,8 @@ class StructureCollection:
 
     The collection is keyed by a string identifier:
 
-    * :class:`SA2DConnection` — the HDF ``Connection`` field (user-given name).
-    * :class:`Bridge`, :class:`InlineStructure`, :class:`LateralStructure` — ``"River Reach RS"``
+    * :class:`SA2DConnection` -- the HDF ``Connection`` field (user-given name).
+    * :class:`Bridge`, :class:`InlineStructure`, :class:`LateralStructure` -- ``"River Reach RS"``
       built from the HDF ``River`` / ``Reach`` / ``RS`` fields.
 
     Use the typed filter properties (:attr:`connections`, :attr:`bridges`,
@@ -2220,7 +2728,7 @@ class StructureCollection:
         def _ggf(row, f: str) -> float:
             return float(row[f]) if f in gg_fn else float("nan")
 
-        # Build openings dict: (struct_id, gate_group_local_id) → [GateOpening]
+        # Build openings dict: (struct_id, gate_group_local_id) -> [GateOpening]
         openings_map: dict[tuple[int, int], list[GateOpening]] = {}
         op_path = f"{gg_root}/Openings/Attributes"
         if op_path in self._hdf:
@@ -2365,7 +2873,7 @@ class StructureCollection:
 
         self._items = items
 
-        # Secondary index: (river, reach, rs) → string key for non-connection structures.
+        # Secondary index: (river, reach, rs) -> string key for non-connection structures.
         self._tuple_index = {}
         for k, v in items.items():
             if isinstance(v, (Bridge, InlineStructure, LateralStructure)):
@@ -2479,7 +2987,7 @@ class StructureCollection:
 
 
 # ---------------------------------------------------------------------------
-# Geometry — public entry point
+# Geometry -- public entry point
 # ---------------------------------------------------------------------------
 
 
@@ -2561,7 +3069,7 @@ def _polyline_intersect(
     db = b1 - b0  # (nb, 2)
 
     # For each (i, j) pair: a0[i] + t*da[i] == b0[j] + u*db[j]
-    # Cross-product denominator: da[i] × db[j]
+    # Cross-product denominator: da[i] * db[j]
     # Broadcast: (na, 1, 2) and (1, nb, 2)
     da_ = da[:, np.newaxis, :]   # (na, 1, 2)
     db_ = db[np.newaxis, :, :]   # (1, nb, 2)
@@ -2654,7 +3162,7 @@ class CrossSection:
         Source: ``Geometry/Cross Sections/Polyline Points``.
     orthogonal_vector:
         Unit vector perpendicular to the cut line, shape ``(2,)``:
-        ``[cos θ, sin θ]`` where θ is measured CCW from the x-axis.
+        ``[cos theta, sin theta]`` where theta is measured CCW from the x-axis.
         Source: ``Geometry/Cross Sections/Orthogonal Vectors``.
     centerline_polyline:
         Plan-view river centreline polyline for this reach, shape ``(n, 2)``.
@@ -2726,7 +3234,7 @@ class CrossSection:
         # Map survey stations to cumulative distance along cut line
         sta_min, sta_max = stations.min(), stations.max()
         if sta_min == sta_max:
-            # Degenerate XS — all points collapse to cut-line midpoint
+            # Degenerate XS -- all points collapse to cut-line midpoint
             diffs = np.diff(self.cut_line, axis=0)
             total = np.sum(np.hypot(diffs[:, 0], diffs[:, 1]))
             t = np.full(len(stations), total / 2.0)
@@ -2808,7 +3316,7 @@ class CrossSection:
 class CrossSectionCollection:
     """Access all 1-D cross sections in ``Geometry/Cross Sections``.
 
-    Keyed by ``"River Reach RS"`` — the same convention used by
+    Keyed by ``"River Reach RS"`` -- the same convention used by
     :class:`StructureCollection` and the DSS Hydrograph Output group names.
 
     Parameters
@@ -2841,7 +3349,7 @@ class CrossSectionCollection:
         def _f(row, f: str) -> float:
             return float(row[f]) if f in fn else float("nan")
 
-        # Ragged-array helpers: Info shape (n_xs, 2) → [start, count]
+        # Ragged-array helpers: Info shape (n_xs, 2) -> [start, count]
         se_info = np.array(root["Station Elevation Info"])   # (n_xs, 2)
         se_vals = np.array(root["Station Elevation Values"]) # (total, 2)
         mn_info = np.array(root["Manning's n Info"])          # (n_xs, 2)
@@ -2849,13 +3357,13 @@ class CrossSectionCollection:
         # Polyline Info (n_xs, 4): col0=pt_start, col1=pt_count, col2=part_start, col3=part_count
         pl_info = np.array(root["Polyline Info"])
         pl_pts  = np.array(root["Polyline Points"])           # (total, 2)
-        # Ineffective flow areas: Info (n_xs, 2) → [start, count] into Blocks
+        # Ineffective flow areas: Info (n_xs, 2) -> [start, count] into Blocks
         # These datasets are absent when no XS has ineffective areas defined.
         _ineff_info_ds = root.get("Ineffective Info")
         _ineff_blks_ds = root.get("Ineffective Blocks")
         ineff_info = np.array(_ineff_info_ds) if _ineff_info_ds is not None else np.zeros((len(attrs), 2), dtype=int)
         ineff_blks = np.array(_ineff_blks_ds) if _ineff_blks_ds is not None else np.empty(0, dtype=[("Left Sta", float), ("Right Sta", float), ("Elevation", float)])
-        # Orthogonal vectors: one (cos θ, sin θ) unit vector per XS
+        # Orthogonal vectors: one (cos theta, sin theta) unit vector per XS
         orth_vecs   = np.array(root["Orthogonal Vectors"])    # (n_xs, 2)
 
         items: dict[str, CrossSection] = {}
@@ -3075,7 +3583,7 @@ class RiverCenterline:
 class RiverBankLine:
     """One HEC-RAS river bank line from ``Geometry/River Bank Lines``.
 
-    Bank lines are stored as an ordered pair — index 0 is the left bank,
+    Bank lines are stored as an ordered pair -- index 0 is the left bank,
     index 1 is the right bank (as drawn in RASMapper).
 
     Attributes
@@ -3342,7 +3850,7 @@ class GeometrySummary:
 
 
 # ---------------------------------------------------------------------------
-# Geometry — public entry point
+# Geometry -- public entry point
 # ---------------------------------------------------------------------------
 
 
@@ -3575,18 +4083,18 @@ class Geometry(_HdfFile):
         The *location* tuple is interpreted differently depending on which
         element type is identified:
 
-        * **Cross section** — ``(river, reach, rs)``
+        * **Cross section** -- ``(river, reach, rs)``
           Both *river* and *reach* must be non-empty.
           Returns the intersection of the XS cut line with the river
           centreline polyline (i.e. :attr:`CrossSection.centerline_coordinates
           <rivia.hdf.geometry.CrossSection.centerline_coordinates>`).
 
-        * **Storage area** — ``(name, "", "")`` or ``(name, None, None)``
+        * **Storage area** -- ``(name, "", "")`` or ``(name, None, None)``
           *reach* is empty or ``None``.
           Returns the area-weighted centroid of the boundary polygon
           (i.e. :attr:`StorageArea.centroid`).
 
-        * **2-D flow area cell** — ``(area_name, "", cell_index)`` or
+        * **2-D flow area cell** -- ``(area_name, "", cell_index)`` or
           ``(area_name, None, cell_index)``
           *reach* is empty or ``None``; *cell_index* is the integer cell
           number as a string.
