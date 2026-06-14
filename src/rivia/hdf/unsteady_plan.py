@@ -815,20 +815,22 @@ class _FlowAreaResultsDerived(FlowArea):
             cell_face_info, cell_face_values,
         )
         fp_face_info, fp_face_values = self.facepoint_face_orientation
-        fp_velocities, _ = _rasmap.compute_facepoint_velocities(
+        fp_vel_data, _ = _rasmap.compute_facepoint_velocities(
             face_vel_A, face_vel_B, face_connected,
             self.face_lengths,
             self.face_facepoint_indexes, self.face_cell_indexes,
             cell_wse, fp_face_info, fp_face_values,
             face_value_a, face_value_b,
         )
-        # Collapse one vector per adjacent-face context → single vector per facepoint.
-        n_fp = len(fp_velocities)
+        # fp_vel_data is a flat CSR array (total_fp_face_entries, 2).
+        # Use fp_face_info to slice per-facepoint entries and average them.
+        n_fp = len(fp_face_info)
         result = np.zeros((n_fp, 2), dtype=np.float64)
         for fp in range(n_fp):
-            vecs = fp_velocities[fp]
-            if len(vecs):
-                result[fp] = vecs.mean(axis=0)
+            start = int(fp_face_info[fp, 0])
+            count = int(fp_face_info[fp, 1])
+            if count > 0:
+                result[fp] = fp_vel_data[start : start + count].mean(axis=0)
         return result
 
     # ------------------------------------------------------------------
