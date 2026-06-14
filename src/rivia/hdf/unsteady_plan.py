@@ -1405,12 +1405,34 @@ class FlowAreaResults(_FlowAreaResultsDerived):
     Inherits all geometry properties from :class:`FlowArea` and all
     derived/computed methods from :class:`_FlowAreaResultsDerived`.
 
-    Time-series properties return raw ``h5py.Dataset`` objects so the caller
-    controls how much data is loaded::
+    **Method naming conventions**
 
-        area.water_surface[10]          # one timestep -> ndarray (n_cells,)
-        area.water_surface[10:20]       # slice -> ndarray (10, n_cells)
-        area.water_surface[:]           # all -> ndarray (n_t, n_cells)
+    *Raw dataset properties* — ``h5py.Dataset``; slice to control what is loaded::
+
+        area.water_surface[t]        # one timestep  → ndarray (n_cells + n_ghost,)
+        area.water_surface[a:b]      # slice          → ndarray (b-a, n_cells + n_ghost)
+        area.water_surface[:]        # all            → ndarray (n_t, n_cells + n_ghost)
+
+    *Snapshot methods* ``name(timestep)`` — one time, all locations → ndarray::
+
+        area.wse(t)                         # (n_cells,)        WSE at every cell
+        area.depth(t)                       # (n_cells,)        depth at every cell
+        area.cell_velocity_vectors(t)       # (n_cells, 2)      [Vx, Vy] at every cell
+        area.face_velocity_vectors(t)       # (n_faces, 2)
+        area.facepoint_velocity_vectors(t)  # (n_facepoints, 2)
+
+    *Location time-series* ``name_at(location)`` — one location, all times → pandas::
+
+        area.water_surface_at(cell)         # Series            WSE over time
+        area.face_velocity_at(face)         # Series            velocity over time
+        area.face_flow_at(face)             # Series            flow over time
+        area.facepoint_velocity_at(fp)      # DataFrame         [vx, vy, speed] over time
+
+    *Summary properties* — aggregate over the full time span, all locations::
+
+        area.max_water_surface              # DataFrame ['value', 'time']  per cell
+        area.max_face_velocity              # DataFrame ['value', 'time']  per face
+        area.max_depth()                    # DataFrame ['value', 'time']  per cell
 
     Parameters
     ----------
