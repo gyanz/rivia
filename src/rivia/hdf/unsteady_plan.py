@@ -571,7 +571,7 @@ class _FlowAreaResultsDerived(FlowArea):
             wetted face flow areas from the hydraulic property tables.
             ``"length_weighted"``: weights are face plan-view lengths.
             ``"flow_ratio"``: requires ``Face Flow`` output; back-calculates
-            flow area as \|Q\|/\|V_n\|.
+            flow area as ``|Q|/|V_n|``.
         wse_interp:
             How to estimate face WSE when ``method="area_weighted"``.
             ``"average"`` (default): simple mean of the two adjacent cell WSEs.
@@ -1458,6 +1458,112 @@ class _FlowAreaResultsDerived(FlowArea):
         discharge = (flow_df.values * signs[np.newaxis, :]).sum(axis=1)
 
         return pd.Series(discharge, index=flow_df.index, name="discharge")
+
+    def wse_along_line(
+        self,
+        xy: np.ndarray,
+        *,
+        timestep: int | Literal["max"] = "max",
+        interval: float = 1.0,
+    ) -> pd.DataFrame:
+        """Water-surface elevation sampled along a polyline.
+
+        Parameters
+        ----------
+        xy : ndarray, shape ``(n_pts, 2)``
+            Polyline vertices ``(x, y)`` in model coordinates.
+        timestep : int or "max", optional
+            0-based time index, or ``"max"`` (default) to use the
+            simulation-wide maximum WSE per cell from the summary HDF.
+        interval : float, optional
+            Along-line spacing (model units) between regular sample
+            stations.  Default ``1.0``.  Cell boundary crossings are
+            always included regardless of this value.
+
+        Returns
+        -------
+        pd.DataFrame
+            Columns:
+
+            * ``station`` -- cumulative along-line distance (model units)
+              from the polyline start.
+            * ``cell`` -- 0-based mesh cell index at that station.
+              ``-1`` for stations that fall outside the mesh.
+            * ``wse`` -- water-surface elevation (model units).
+              ``NaN`` for stations outside the mesh or in dry cells
+              (HEC-RAS stores ``-9999`` for dry cells; converted to
+              ``NaN`` on output).
+
+        Notes
+        -----
+        Sample stations come from two sources, merged and sorted:
+
+        1. Regular interval -- ``np.arange(0, line_length, interval)``
+           plus the line endpoint.
+        2. Cell boundary crossings -- the ``station_start`` /
+           ``station_end`` values from :meth:`cells_along_line`
+           (mandatory, so every cell transition is represented
+           regardless of *interval*).
+
+        Points within ``1e-6`` model units of each other are collapsed
+        to one station.
+
+        No ground-elevation column is included; terrain-pixel crossings
+        and 8-stencil intra-cell interpolation are deferred to
+        ``geo.profile`` (full RASMapper-equivalent profile).
+        """
+        xy = np.asarray(xy, dtype=np.float64)
+        if xy.ndim != 2 or xy.shape[1] != 2 or len(xy) < 2:
+            raise ValueError("xy must be shape (n_pts, 2) with n_pts >= 2.")
+
+        cells_df = self.cells_along_line(xy)
+        if cells_df.empty:
+            return pd.DataFrame(columns=["station", "cell", "wse"])
+
+        # Line length
+        diffs = np.diff(xy, axis=0)
+        line_length = float(np.sum(np.hypot(diffs[:, 0], diffs[:, 1])))
+
+        # Station points: regular interval + mandatory cell boundary crossings
+        interval_stations = np.append(
+            np.arange(0.0, line_length, float(interval)), line_length
+        )
+        boundary_stations = np.concatenate([
+            cells_df["station_start"].to_numpy(),
+            cells_df["station_end"].to_numpy(),
+        ])
+        all_sorted = np.sort(np.concatenate([interval_stations, boundary_stations]))
+        # Collapse near-duplicates within 1e-6 model units
+        if len(all_sorted) > 1:
+            keep = np.concatenate([[True], np.diff(all_sorted) > 1e-6])
+            stations = all_sorted[keep]
+        else:
+            stations = all_sorted
+
+        # WSE array (real cells only)
+        _NODATA = -9999.0
+        if timestep == "max":
+            cell_wse = self.max_water_surface["value"].to_numpy(dtype=np.float64)
+        else:
+            cell_wse = self.wse(int(timestep)).astype(np.float64)
+
+        # Vectorised binary search: for each station find its row in cells_df
+        station_starts = cells_df["station_start"].to_numpy()
+        station_ends = cells_df["station_end"].to_numpy()
+        cell_indices = cells_df["cell"].to_numpy(dtype=np.int64)
+
+        idxs = np.searchsorted(station_starts, stations, side="right") - 1
+        clamped = np.maximum(idxs, 0)
+        in_range = (idxs >= 0) & (stations <= station_ends[clamped] + 1e-10)
+
+        cells_out = np.where(in_range, cell_indices[clamped], np.int64(-1))
+
+        # WSE lookup; use index 0 as a safe dummy for out-of-range stations
+        safe_cells = np.where(in_range, cells_out, 0)
+        wse_raw = cell_wse[safe_cells]
+        wse_out = np.where(in_range & (wse_raw != _NODATA), wse_raw, np.nan)
+
+        return pd.DataFrame({"station": stations, "cell": cells_out, "wse": wse_out})
 
 
 # ---------------------------------------------------------------------------
