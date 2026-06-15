@@ -60,8 +60,10 @@ logger = logging.getLogger("rivia.model")
 try:
     from pydsstools.heclib.dss import HecDss as _HecDss
     if logging.getLogger("pydsstools").level >= logging.CRITICAL:
-        from pydsstools.heclib.utils import dss_logging as _dss_logging
-        _dss_logging.config(level="None")
+        #from pydsstools.heclib.utils import dss_logging as _dss_logging
+        #_dss_logging.config(level="None")
+        from pydsstools.heclib.logging import get_dss_logger
+        get_dss_logger().set_level("none")
     has_pydsstools = True
 except ImportError:
     has_pydsstools = False
