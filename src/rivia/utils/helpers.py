@@ -212,7 +212,7 @@ def normalize_sim_end_time(date: str, time: str) -> tuple[str, str]:
     ('01JAN2026', '2400')
     """
     check_sim_time(time)
-    if not time.strip().startswith("00"):
+    if time.strip() not in ("0000", "000000"):
         return date, time
     prev = dt.datetime.strptime(date.strip(), "%d%b%Y") - dt.timedelta(days=1)
     return prev.strftime("%d%b%Y").upper(), "2400"
