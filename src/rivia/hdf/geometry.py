@@ -1767,7 +1767,7 @@ class FlowArea:
         end -- that best approximates the input polyline.  The resulting face
         chain is a "fence" suitable for summing oriented face flux to compute
         total discharge (see
-        :meth:`~rivia.hdf.unsteady_plan.FlowAreaResults.discharge_along_line`).
+        :meth:`~rivia.hdf.unsteady_plan.FlowAreaResults.flow_across_line`).
 
         Parameters
         ----------

@@ -1393,7 +1393,7 @@ class _FlowAreaResultsDerived(FlowArea):
             ),
         }
 
-    def discharge_along_line(
+    def flow_across_line(
         self,
         xy: np.ndarray,
         *,
