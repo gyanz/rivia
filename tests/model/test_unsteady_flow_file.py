@@ -34,6 +34,7 @@ BALDEAGLE = FIXTURES / "baldeagle_1d.u02"
 DAMBRK = FIXTURES / "dambrk.u01"
 DAMBRK_DSS = FIXTURES / "dambrk_dss.u02"
 INLINE_3G = FIXTURES / "inline_3gates.u01"
+QMIN_QMULT = FIXTURES / "qmin_qmult.u01"
 
 
 @pytest.fixture()
@@ -789,3 +790,64 @@ class TestEditorSemanticRoundtrip:
         ed2 = UnsteadyFlow(out)
         rs_after = [float(li.river_station) for li in ed2.lateral_inflows]
         assert rs_before == rs_after
+
+
+# ---------------------------------------------------------------------------
+# Flow Hydrograph QMin / QMult parsing and roundtrip
+# ---------------------------------------------------------------------------
+
+
+class TestQMinQMult:
+    def test_q_min_parsed(self):
+        ed = UnsteadyFlow(QMIN_QMULT)
+        fh = ed.flow_hydrographs[0]
+        assert fh.q_min == pytest.approx(400.0)
+
+    def test_q_mult_parsed_on_flow_hydrograph(self):
+        ed = UnsteadyFlow(QMIN_QMULT)
+        fh = ed.flow_hydrographs[0]
+        assert fh.q_mult == pytest.approx(1.5)
+
+    def test_q_mult_zero_parsed_on_lateral_inflow(self):
+        ed = UnsteadyFlow(QMIN_QMULT)
+        li = ed.lateral_inflows[0]
+        assert li.q_mult == pytest.approx(0.0)
+
+    def test_q_min_absent_is_none(self):
+        ed = UnsteadyFlow(BAXTER)
+        for fh in ed.flow_hydrographs:
+            assert fh.q_min is None
+
+    def test_q_mult_absent_is_none(self):
+        ed = UnsteadyFlow(DAMBRK)
+        for li in ed.lateral_inflows:
+            assert li.q_mult is None
+
+    def test_q_min_roundtrip(self, tmp_path):
+        ed1 = UnsteadyFlow(QMIN_QMULT)
+        out = tmp_path / "qmin_qmult_rt.u01"
+        ed1.save(out)
+        ed2 = UnsteadyFlow(out)
+        assert ed2.flow_hydrographs[0].q_min == pytest.approx(400.0)
+
+    def test_q_mult_roundtrip(self, tmp_path):
+        ed1 = UnsteadyFlow(QMIN_QMULT)
+        out = tmp_path / "qmin_qmult_rt.u01"
+        ed1.save(out)
+        ed2 = UnsteadyFlow(out)
+        assert ed2.flow_hydrographs[0].q_mult == pytest.approx(1.5)
+        assert ed2.lateral_inflows[0].q_mult == pytest.approx(0.0)
+
+    def test_absent_q_min_not_written(self, tmp_path):
+        ed1 = UnsteadyFlow(BAXTER)
+        out = tmp_path / "baxter_rt.u01"
+        ed1.save(out)
+        text = out.read_text(encoding="utf-8")
+        assert "Flow Hydrograph QMin" not in text
+
+    def test_absent_q_mult_not_written(self, tmp_path):
+        ed1 = UnsteadyFlow(DAMBRK)
+        out = tmp_path / "dambrk_rt.u01"
+        ed1.save(out)
+        text = out.read_text(encoding="utf-8")
+        assert "Flow Hydrograph QMult" not in text

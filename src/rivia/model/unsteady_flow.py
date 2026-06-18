@@ -271,6 +271,8 @@ class FlowHydrograph(_Boundary):
     values: list[float] = field(default_factory=list)
     flow_hydrograph_slope: str | None = None
     stage_tw_check: int = 0
+    q_min: float | None = None
+    q_mult: float | None = None
     dss_file: str = ""
     dss_path: str = ""
     use_dss: bool = False
@@ -301,6 +303,8 @@ class LateralInflow(_Boundary):
     interval: str = "1HOUR"
     values: list[float] = field(default_factory=list)
     is_uniform: bool = False
+    q_min: float | None = None
+    q_mult: float | None = None
     dss_file: str = ""
     dss_path: str = ""
     use_dss: bool = False
@@ -490,6 +494,10 @@ def _parse_boundary_blocks(lines: list[str]) -> list[BoundaryType]:
                             bc.flow_hydrograph_slope = v.strip()
                         elif k == "Stage Hydrograph TW Check":
                             bc.stage_tw_check = int(v.strip())
+                        elif k == "Flow Hydrograph QMin":
+                            bc.q_min = float(v.strip())
+                        elif k == "Flow Hydrograph QMult":
+                            bc.q_mult = float(v.strip())
                         elif k == "DSS File":
                             bc.dss_file = v.strip()
                         elif k == "DSS Path":
@@ -534,7 +542,11 @@ def _parse_boundary_blocks(lines: list[str]) -> list[BoundaryType]:
                         k, v = _next_key(i)
                         if k in ("Boundary Location",) or _is_trailing_key(k):
                             break
-                        if k == "DSS File":
+                        if k == "Flow Hydrograph QMin":
+                            bc.q_min = float(v.strip())
+                        elif k == "Flow Hydrograph QMult":
+                            bc.q_mult = float(v.strip())
+                        elif k == "DSS File":
                             bc.dss_file = v.strip()
                         elif k == "DSS Path":
                             bc.dss_path = v.strip()
@@ -1336,6 +1348,10 @@ class UnsteadyFlow:
                 out.append(f"Stage Hydrograph TW Check={bc.stage_tw_check}\n")
                 if bc.flow_hydrograph_slope is not None:
                     out.append(f"Flow Hydrograph Slope= {bc.flow_hydrograph_slope}\n")
+            if bc.q_min is not None:
+                out.append(f"Flow Hydrograph QMin= {bc.q_min}\n")
+            if bc.q_mult is not None:
+                out.append(f"Flow Hydrograph QMult= {bc.q_mult}\n")
             if bc.dss_file:
                 out.append(f"DSS File={bc.dss_file}\n")
             out.append(f"DSS Path={bc.dss_path}\n")

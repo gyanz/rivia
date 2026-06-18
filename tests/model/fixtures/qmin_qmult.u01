@@ -1,0 +1,27 @@
+Flow Title=Test QMin QMult
+Program Version=6.50
+Use Restart= 0
+Boundary Location=River1           ,Reach1          ,1000    ,        ,                ,                ,                ,                                ,
+Interval=1HOUR
+Flow Hydrograph= 3
+      10      20      30
+Stage Hydrograph TW Check=0
+Flow Hydrograph QMin= 400
+Flow Hydrograph QMult= 1.5
+DSS Path=
+Use DSS=False
+Use Fixed Start Time=False
+Fixed Start Date/Time=,
+Is Critical Boundary=False
+Critical Boundary Flow=
+Boundary Location=River1           ,Reach1          ,500     ,        ,                ,                ,                ,                                ,
+Interval=1HOUR
+Lateral Inflow Hydrograph= 3
+      10      20      30
+Flow Hydrograph QMult= 0
+DSS Path=
+Use DSS=False
+Use Fixed Start Time=False
+Fixed Start Date/Time=,
+Is Critical Boundary=False
+Critical Boundary Flow=
