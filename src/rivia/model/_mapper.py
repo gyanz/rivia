@@ -39,9 +39,11 @@ from collections.abc import Generator
 from contextlib import AbstractContextManager, contextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
+    import numpy as np
+    import pandas as pd
     import rasterio.io
 
 from ..controller.ras import installed_ras_directory
@@ -474,7 +476,7 @@ class MapperExtension:
             terrain name is not in the ``.rasmap`` file, or the terrain HDF
             has no source TIFF entries.
         """
-        from ..hdf._terrain import export_terrain
+        from ..hdf.terrain import export_terrain
 
         terrain_layer = self.get_plan_terrain()
         return export_terrain(terrain_layer.filename, raster_path, copy=copy)
@@ -1830,3 +1832,170 @@ class MapperExtension:
             stream_output=stream_output,
             timeout=timeout,
         )
+
+    def wse_along_line(
+        self,
+        xy: "np.ndarray | Any",
+        *,
+        timestep: "int | Literal['max']" = "max",
+        interval: float = 1.0,
+    ) -> "pd.DataFrame":
+        """Water-surface elevation sampled along a polyline, masked by terrain.
+
+        The 2-D flow area is determined automatically: the method iterates
+        the plan's flow areas and uses the first one whose mesh contains the
+        line.  The line is assumed to lie entirely within one flow area.
+
+        Parameters
+        ----------
+        xy : ndarray, shape (n_pts, 2), or object with ``__geo_interface__``
+            Polyline vertices ``(x, y)`` in model coordinates.  Accepts either
+            an array-like of shape ``(n_pts, 2)`` or any object that exposes a
+            ``__geo_interface__`` mapping for a ``LineString`` geometry (e.g.
+            a :class:`shapely.geometry.LineString`).  Z coordinates are dropped.
+        timestep : int or "max", optional
+            0-based time index, or ``"max"`` (default) to use the
+            simulation-wide maximum WSE per cell.
+        interval : float, optional
+            Along-line spacing (model units) between regular sample stations.
+            Default ``1.0``.  Cell boundary crossings are always included.
+
+        Returns
+        -------
+        pd.DataFrame
+            Columns:
+
+            * ``station``          -- cumulative along-line distance (model units).
+            * ``cell``             -- 0-based mesh cell index; ``-1`` outside mesh.
+            * ``x``                -- model x-coordinate of the sample point.
+            * ``y``                -- model y-coordinate of the sample point.
+            * ``z``                -- terrain elevation at the sample point
+              (model units; ``NaN`` outside the terrain mosaic extent).
+            * ``wse``              -- water-surface elevation (model units).
+              ``NaN`` for stations outside the mesh, in dry cells (HEC-RAS
+              ``-9999`` sentinel), or where ``wse < z``.
+
+        Raises
+        ------
+        ValueError
+            If the line does not intersect any 2-D flow area in this plan.
+        KeyError
+            If no terrain is assigned to the plan.
+
+        Notes
+        -----
+        Flow area detection uses :meth:`~rivia.hdf.geometry.FlowArea.cells_along_line`;
+        the first flow area that returns a non-empty result is selected.
+
+        Terrain is read from a GDAL VRT produced by :meth:`export_plan_terrain`,
+        which applies levee and channel ground-line modifications.  The VRT is
+        cached at ``<plan_hdf_dir>/.rivia/<plan_hdf_stem>_terrain.vrt`` and
+        automatically re-exported when the terrain HDF is newer than the cached
+        VRT (e.g. after adding or editing modifications in RASMapper).  Delete
+        ``.rivia/`` to force a full refresh (e.g. after editing source TIFF
+        pixel data in place, which does not update the terrain HDF mtime).
+        """
+        import numpy as np
+
+        from ..geo.profile import _sample_raster_at_points, _stations_to_xy, _to_xy
+
+        # 0. Normalise input
+        xy = _to_xy(xy)
+
+        # 1. Auto-detect flow area: first one whose mesh contains the line
+        flow_area = None
+        for fa in self.results.flow_areas.values():
+            if not fa.cells_along_line(xy).empty:
+                flow_area = fa
+                break
+        if flow_area is None:
+            raise ValueError(
+                "The line does not intersect any 2-D flow area in this plan."
+            )
+
+        # 2. Resolve terrain VRT path and re-export if stale
+        terrain_hdf = self.get_plan_terrain().filename
+        vrt_path = (
+            self.plan_hdf_path.parent / ".rivia"
+            / (self.plan_hdf_path.stem + "_terrain.vrt")
+        )
+        vrt_path.parent.mkdir(exist_ok=True)
+        if (
+            not vrt_path.exists()
+            or vrt_path.stat().st_mtime < terrain_hdf.stat().st_mtime
+        ):
+            self.export_plan_terrain(vrt_path, copy=False)
+
+        # 3. Terrain-free WSE profile from the hdf layer
+        df = flow_area.wse_along_line(xy, timestep=timestep, interval=interval)
+
+        # 4. Reconstruct (x, y) for each sample station
+        station_xy = _stations_to_xy(df["station"].to_numpy(), xy)
+
+        # 5. Sample terrain elevation from the VRT; insert before wse
+        wse = df.pop("wse")
+        df["x"] = station_xy[:, 0]
+        df["y"] = station_xy[:, 1]
+        ground = _sample_raster_at_points(vrt_path, station_xy)
+        df["z"] = ground
+        df["wse"] = wse
+
+        # 6. Mask WSE values that fall below the terrain surface
+        below_terrain = df["wse"].notna() & (df["wse"] < df["z"])
+        df.loc[below_terrain, "wse"] = np.nan
+
+        return df
+
+    def flow_across_line(
+        self,
+        xy: "np.ndarray | Any",
+        *,
+        timestep: "int | Literal['max']" = "max",
+    ) -> "pd.Series":
+        """Total volumetric discharge across a polyline at every timestep.
+
+        The 2-D flow area is determined automatically: the method iterates
+        the plan's flow areas and uses the first one whose mesh contains the
+        line.  The line is assumed to lie entirely within one flow area.
+
+        Parameters
+        ----------
+        xy : ndarray, shape (n_pts, 2), or object with ``__geo_interface__``
+            Profile polyline vertices ``(x, y)`` drawn from left bank to
+            right bank.  Accepts either an array-like of shape ``(n_pts, 2)``
+            or any object that exposes a ``__geo_interface__`` mapping for a
+            ``LineString`` geometry (e.g. a :class:`shapely.geometry.LineString`).
+            Z coordinates are dropped.
+        timestep : int or "max", optional
+            Accepted for API symmetry with :meth:`wse_along_line` but not
+            used: the underlying method always returns the full time-series.
+
+        Returns
+        -------
+        pd.Series
+            Index: simulation timestamps (datetime).  Values: signed
+            volumetric discharge (model units^3/s) across the profile fence
+            at each timestep.  Name is ``"discharge"``.  Positive flow is
+            from left bank to right bank (when facing from *xy* start to
+            *xy* end).
+
+        Raises
+        ------
+        ValueError
+            If the line does not intersect any 2-D flow area in this plan.
+        """
+        from ..geo.profile import _to_xy
+
+        xy = _to_xy(xy)
+
+        flow_area = None
+        for fa in self.results.flow_areas.values():
+            if not fa.cells_along_line(xy).empty:
+                flow_area = fa
+                break
+        if flow_area is None:
+            raise ValueError(
+                "The line does not intersect any 2-D flow area in this plan."
+            )
+
+        return flow_area.flow_across_line(xy)
