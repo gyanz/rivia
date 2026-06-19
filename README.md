@@ -45,6 +45,7 @@ pip install rivia[geo]
 ## Quick Example
 
 ```python
+import numpy as np
 from rivia.model import Project
 
 # Open a HEC-RAS project
@@ -69,7 +70,6 @@ print(vrt.path)
 
 # WSE profile along a polyline (terrain-masked)
 # xy accepts an (n, 2) ndarray or any __geo_interface__ LineString (e.g. shapely)
-import numpy as np
 xy = np.array([[500, 200], [600, 250], [700, 300]])
 df = model.wse_along_line(xy, timestep="max", interval=1.0)
 # df columns: station, cell, x, y, z, wse
