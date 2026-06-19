@@ -66,6 +66,17 @@ wse_max = area.max_water_surface
 # Export a WSE raster
 vrt = model.export_wse(timestep=None, render_mode="sloping")
 print(vrt.path)
+
+# WSE profile along a polyline (terrain-masked)
+# xy accepts an (n, 2) ndarray or any __geo_interface__ LineString (e.g. shapely)
+import numpy as np
+xy = np.array([[500, 200], [600, 250], [700, 300]])
+df = model.wse_along_line(xy, timestep="max", interval=1.0)
+# df columns: station, cell, x, y, z, wse
+
+# Discharge time-series across a profile line
+series = model.flow_across_line(xy)
+print(series.max())   # peak discharge (m³/s or ft³/s)
 ```
 
 ## Package Structure
