@@ -780,9 +780,17 @@ class Project(MapperExtension):
             self._hdf = None
         # v503+: Project_Close + Project_Open reloads without restarting COM.
         # Older versions: restart the COM process entirely.
+        # COM thread exhaustion after many runs also triggers a full restart.
         try:
             self.controller.Project_Close()
         except NotImplementedError:
+            self.controller.close()
+            self._controller = controller.connect(self._ras_version)
+        except controller.ComError:
+            logger.warning(
+                "Project_Close() failed with COM error (likely thread exhaustion "
+                "after many runs); forcing full HEC-RAS process restart."
+            )
             self.controller.close()
             self._controller = controller.connect(self._ras_version)
         finally:
