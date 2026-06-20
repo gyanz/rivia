@@ -163,6 +163,7 @@ class Project(MapperExtension):
         weakref.WeakValueDictionary()
     )
     _registry_lock = threading.Lock()
+    _PROACTIVE_RESTART_EVERY: int = 100
 
     @staticmethod
     def _unregister(version_xxxx: int) -> None:
@@ -260,6 +261,7 @@ class Project(MapperExtension):
             self._run_history: collections.deque[dict] = collections.deque(maxlen=5)
             self._chaining = _ChainingState()
             self._plans_file_cache: list[PlanSummary] | None = None
+            self._reload_count: int = 0
         except Exception:
             self._finalizer()
             raise
@@ -778,29 +780,47 @@ class Project(MapperExtension):
         if self._hdf is not None:
             self._hdf.close()
             self._hdf = None
-        # v503+: Project_Close + Project_Open reloads without restarting COM.
-        # Older versions: restart the COM process entirely.
-        # COM thread exhaustion after many runs also triggers a full restart.
-        try:
-            self.controller.Project_Close()
-        except NotImplementedError:
+        self._reload_count += 1
+        # Proactive full restart every _PROACTIVE_RESTART_EVERY reloads.
+        # Each HEC-RAS run accumulates threads that Project_Close() does not
+        # fully reap: computation worker threads spawned per run, COM STA pump
+        # threads created by the out-of-process server, and .NET CLR thread-pool
+        # threads that grow to handle peak load but never shrink back down.
+        # Killing and relaunching HEC-RAS resets its thread count at the OS
+        # level before the system-wide thread limit is hit.
+        if self._reload_count >= self._PROACTIVE_RESTART_EVERY:
+            logger.info(
+                "Proactive HEC-RAS restart after %d reload cycles "
+                "(thread exhaustion prevention).",
+                self._reload_count,
+            )
+            self._reload_count = 0
             self.controller.close()
             self._controller = controller.connect(self._ras_version)
-        except controller.ComError as e:
-            logger.error("Project_Close() COM error: %s", e)
-            if e.args[0] == -2147024732:
-                logger.warning(
-                    "Thread exhaustion detected (no more threads can be created "
-                    "in the system); forcing full HEC-RAS process restart."
-                )
-            else:
-                logger.warning(
-                    "Unrecognised COM error; forcing full HEC-RAS process restart."
-                )
-            self.controller.close()
-            self._controller = controller.connect(self._ras_version)
-        finally:
-            self.controller.Project_Open(str(self._project_path))
+        else:
+            # v503+: Project_Close + Project_Open reloads without restarting COM.
+            # Older versions: restart the COM process entirely.
+            # Reactive fallback: also restart on COM error (thread exhaustion).
+            try:
+                self.controller.Project_Close()
+            except NotImplementedError:
+                self.controller.close()
+                self._controller = controller.connect(self._ras_version)
+            except controller.ComError as e:
+                logger.error("Project_Close() COM error: %s", e)
+                if e.args[0] == -2147024732:
+                    logger.warning(
+                        "Thread exhaustion detected (no more threads can be "
+                        "created in the system); forcing full HEC-RAS restart."
+                    )
+                else:
+                    logger.warning(
+                        "Unrecognised COM error; forcing full HEC-RAS restart."
+                    )
+                self._reload_count = 0
+                self.controller.close()
+                self._controller = controller.connect(self._ras_version)
+        self.controller.Project_Open(str(self._project_path))
 
     def show(self):
         self.controller.show()
