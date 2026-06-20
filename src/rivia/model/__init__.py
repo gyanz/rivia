@@ -786,11 +786,17 @@ class Project(MapperExtension):
         except NotImplementedError:
             self.controller.close()
             self._controller = controller.connect(self._ras_version)
-        except controller.ComError:
-            logger.warning(
-                "Project_Close() failed with COM error (likely thread exhaustion "
-                "after many runs); forcing full HEC-RAS process restart."
-            )
+        except controller.ComError as e:
+            logger.error("Project_Close() COM error: %s", e)
+            if e.args[0] == -2147024732:
+                logger.warning(
+                    "Thread exhaustion detected (no more threads can be created "
+                    "in the system); forcing full HEC-RAS process restart."
+                )
+            else:
+                logger.warning(
+                    "Unrecognised COM error; forcing full HEC-RAS process restart."
+                )
             self.controller.close()
             self._controller = controller.connect(self._ras_version)
         finally:
