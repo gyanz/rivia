@@ -1587,13 +1587,13 @@ class _FlowAreaResultsDerived(FlowArea):
         See Also
         --------
         faces_along_line : identifies which faces are on the fence
-        face_flow_at : per-face volumetric flux time-series
+        get_face_flow : per-face volumetric flux time-series
 
         Notes
         -----
         Each face contributes ``+face_flow`` when its stored normal agrees
         with the positive-flow direction and ``-face_flow`` when it opposes
-        it.  ``face_flow_at`` already incorporates the face area and the
+        it.  ``get_face_flow`` already incorporates the face area and the
         correct RAS sign, so no projection onto the profile line is needed:
         the face-normal velocity is the full flux component across the face.
         """
@@ -1793,6 +1793,28 @@ class FlowAreaResults(_FlowAreaResultsDerived):
         )
 
     # ------------------------------------------------------------------
+    # Internal HDF helper
+    # ------------------------------------------------------------------
+
+    def _load_summary(self, key: str, n: int | None = None) -> pd.DataFrame:
+        """Load a ``(2, n_*)`` summary dataset as a tidy DataFrame.
+
+        The HDF summary datasets have shape ``(2, n_elements)`` where
+        ``[0, :]`` = maximum/minimum values and ``[1, :]`` = elapsed-time
+        (in days) at which the extremum occurred.  HEC-RAS stores entries
+        for ghost cells as well; pass *n* to clip to the first *n* entries.
+
+        Returns a DataFrame with columns ``['value', 'time']`` and
+        integer index corresponding to cell or face index.
+        """
+        raw = np.array(self._sum[key])  # shape (2, n_elements)
+        if n is not None:
+            raw = raw[:, :n]
+        return pd.DataFrame(
+            {"value": raw[0], "time": raw[1]},
+        )
+
+    # ------------------------------------------------------------------
     # Lazy time-series (h5py.Dataset - slice to control memory)
     # ------------------------------------------------------------------
 
@@ -1830,12 +1852,12 @@ class FlowAreaResults(_FlowAreaResultsDerived):
 
         ``h5py.Dataset``, shape ``(n_timesteps, n_cells)``.
         This is the optional output enabled in the HDF Write Parameters;
-        see :meth:`cell_velocity_vectors` for the derived vector field.
+        see :meth:`get_cell_velocity` for the derived vector field.
         """
         return self._ts.get("Cell Velocity")
 
     # ------------------------------------------------------------------
-    # Single-feature time series (tidy pandas, `_at`-suffixed accessors)
+    # Timestamps
     # ------------------------------------------------------------------
 
     @property
@@ -1843,8 +1865,8 @@ class FlowAreaResults(_FlowAreaResultsDerived):
         """Result output time stamps as a ``pd.DatetimeIndex``.
 
         Parsed from the ``Time Date Stamp`` dataset (sibling of the
-        ``2D Flow Areas`` group under ``Unsteady Time Series``).  Used to
-        index every ``_at`` accessor below.
+        ``2D Flow Areas`` group under ``Unsteady Time Series``).  Used as
+        the index for all time-series results returned by ``get_*`` accessors.
         """
         ds = self._ts.parent.parent["Time Date Stamp"]
         raw = np.array(ds).astype(str)
@@ -1853,24 +1875,6 @@ class FlowAreaResults(_FlowAreaResultsDerived):
     # ------------------------------------------------------------------
     # Eager summary results (small arrays, loaded once per access)
     # ------------------------------------------------------------------
-
-    def _load_summary(self, key: str, n: int | None = None) -> pd.DataFrame:
-        """Load a ``(2, n_*)`` summary dataset as a tidy DataFrame.
-
-        The HDF summary datasets have shape ``(2, n_elements)`` where
-        ``[0, :]`` = maximum/minimum values and ``[1, :]`` = elapsed-time
-        (in days) at which the extremum occurred.  HEC-RAS stores entries
-        for ghost cells as well; pass *n* to clip to the first *n* entries.
-
-        Returns a DataFrame with columns ``['value', 'time']`` and
-        integer index corresponding to cell or face index.
-        """
-        raw = np.array(self._sum[key])  # shape (2, n_elements)
-        if n is not None:
-            raw = raw[:, :n]
-        return pd.DataFrame(
-            {"value": raw[0], "time": raw[1]},
-        )
 
     @property
     def max_water_surface(self) -> pd.DataFrame:
@@ -2038,6 +2042,17 @@ class StorageAreaResults(StorageArea):
             self._cache["_vars"] = np.array(self._sub["Storage Area Variables"])
         return self._cache["_vars"]
 
+    def _load_summary(self, key: str) -> pd.DataFrame:
+        """Load a ``(2, n_sa)`` summary dataset as a single-row DataFrame."""
+        if self._sum is None:
+            raise KeyError(
+                f"No summary results for storage area {self.name!r}. "
+                "Has the plan been computed?"
+            )
+        raw = np.array(self._sum[key])  # shape (2, n_sa)
+        return pd.DataFrame({"value": [float(raw[0, self._i])],
+                             "time":  [float(raw[1, self._i])]})
+
     # ------------------------------------------------------------------
     # Flat time-series (one value per timestep)
     # ------------------------------------------------------------------
@@ -2121,17 +2136,6 @@ class StorageAreaResults(StorageArea):
     # ------------------------------------------------------------------
     # Summary results
     # ------------------------------------------------------------------
-
-    def _load_summary(self, key: str) -> pd.DataFrame:
-        """Load a ``(2, n_sa)`` summary dataset as a single-row DataFrame."""
-        if self._sum is None:
-            raise KeyError(
-                f"No summary results for storage area {self.name!r}. "
-                "Has the plan been computed?"
-            )
-        raw = np.array(self._sum[key])  # shape (2, n_sa)
-        return pd.DataFrame({"value": [float(raw[0, self._i])],
-                             "time":  [float(raw[1, self._i])]})
 
     @property
     def max_wse(self) -> pd.DataFrame:
