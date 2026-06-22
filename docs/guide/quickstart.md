@@ -269,11 +269,11 @@ results = area.export_hydraulic_rasters(
 ```{rubric} Velocity plot
 ```
 
-`area.velocity_plot()` renders a quiver plot of interpolated velocity vectors
+`area.plot_velocity()` renders a quiver plot of interpolated velocity vectors
 around a target cell — useful for inspecting local flow patterns.
 
 ```python
-ax = area.velocity_plot(
+ax = area.plot_velocity(
     timestep=10,
     cell_index=42,          # target cell; neighbourhood expands from here
     buffer=2,               # rings of face-adjacent cells to include

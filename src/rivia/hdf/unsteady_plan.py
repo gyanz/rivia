@@ -162,140 +162,541 @@ class _FlowAreaResultsDerived(FlowArea):
         ...
 
     # ------------------------------------------------------------------
-    # Thin time-indexed slices (derived from abstract HDF reads)
+    # Unified get_* accessors
     # ------------------------------------------------------------------
 
-    def water_surface_at(self, cell: int) -> pd.Series:
-        """Water-surface elevation time series at a single cell.
+    @overload
+    def get_water_surface(
+        self,
+        *,
+        timestep: int,
+        cell: None = ...,
+        include_ghost: bool = ...,
+    ) -> np.ndarray: ...
 
-        Thin time-indexed slice of :attr:`water_surface` for one real cell -
-        the same series shown in RASMapper's cell context-menu plot.
+    @overload
+    def get_water_surface(
+        self,
+        *,
+        timestep: None = ...,
+        cell: int,
+        include_ghost: bool = ...,
+    ) -> pd.Series: ...
+
+    @overload
+    def get_water_surface(
+        self,
+        *,
+        timestep: int,
+        cell: int,
+        include_ghost: bool = ...,
+    ) -> float: ...
+
+    def get_water_surface(
+        self,
+        *,
+        timestep: int | None = None,
+        cell: int | None = None,
+        include_ghost: bool = False,
+    ) -> np.ndarray | pd.Series | float:
+        """Water-surface elevation snapshot, time series, or scalar.
 
         Parameters
         ----------
-        cell:
+        timestep : int, optional
+            0-based index into the time dimension.
+        cell : int, optional
+            0-based real-cell index.
+        include_ghost : bool, optional
+            When ``True`` and *cell* is ``None``, include ghost-cell columns
+            in the returned snapshot.  Raises ``ValueError`` when combined
+            with *cell*.
+
+        Returns
+        -------
+        ndarray, shape ``(n_cells,)``
+            Snapshot for all real cells when ``timestep=t, cell=None,
+            include_ghost=False``.
+        ndarray, shape ``(n_cells + n_ghost,)``
+            Snapshot including ghost cells when ``timestep=t, cell=None,
+            include_ghost=True``.
+        pd.Series
+            WSE over time indexed by :attr:`timestamps`, named
+            ``"Water Surface"``, when ``timestep=None, cell=c``.
+        float
+            Single scalar when both *timestep* and *cell* are given.
+
+        Raises
+        ------
+        ValueError
+            If both *timestep* and *cell* are ``None``.
+            If *include_ghost* is ``True`` and *cell* is not ``None``.
+        """
+        if timestep is None and cell is None:
+            raise ValueError("At least one of timestep or cell must be specified.")
+        if include_ghost and cell is not None:
+            raise ValueError("include_ghost=True is incompatible with cell selection.")
+
+        if timestep is not None and cell is None:
+            if include_ghost:
+                return np.array(self.water_surface[timestep, :])
+            return np.array(self.water_surface[timestep, : self.n_cells])
+
+        if timestep is None and cell is not None:
+            values = np.array(self.water_surface[:, cell])
+            return pd.Series(values, index=self.timestamps, name="Water Surface")
+
+        # Both specified -> scalar
+        return float(self.water_surface[timestep, cell])  # type: ignore[index]
+
+    @overload
+    def get_depth(self, *, timestep: int, cell: None = ...) -> np.ndarray: ...
+    @overload
+    def get_depth(self, *, timestep: None = ..., cell: int) -> pd.Series: ...
+    @overload
+    def get_depth(self, *, timestep: int, cell: int) -> float: ...
+
+    def get_depth(
+        self,
+        *,
+        timestep: int | None = None,
+        cell: int | None = None,
+    ) -> np.ndarray | pd.Series | float:
+        """Water depth snapshot, time series, or scalar.
+
+        Depth is ``max(0, WSE - cell_min_elevation)``.
+
+        Parameters
+        ----------
+        timestep : int, optional
+            0-based index into the time dimension.
+        cell : int, optional
             0-based real-cell index.
 
         Returns
         -------
+        ndarray, shape ``(n_cells,)``
+            Depth at every real cell when ``timestep=t, cell=None``.
         pd.Series
-            Water-surface elevation (model units), indexed by
-            :attr:`timestamps`, named ``"Water Surface"``.
+            Depth over time indexed by :attr:`timestamps`, named ``"Depth"``,
+            when ``timestep=None, cell=c``.
+        float
+            Single scalar when both are given.
+
+        Raises
+        ------
+        ValueError
+            If both *timestep* and *cell* are ``None``.
         """
-        values = np.array(self.water_surface[:, cell])
-        return pd.Series(values, index=self.timestamps, name="Water Surface")
+        if timestep is None and cell is None:
+            raise ValueError("At least one of timestep or cell must be specified.")
 
-    def face_velocity_at(self, face: int) -> pd.Series:
-        """Signed face-normal velocity time series at a single face.
+        if timestep is not None and cell is None:
+            wse = np.array(self.water_surface[timestep, : self.n_cells])
+            return np.maximum(0.0, wse - self.cell_min_elevation)
 
-        Thin time-indexed slice of :attr:`face_velocity` for one face - the
-        same series shown in RASMapper's face context-menu plot.
+        if timestep is None and cell is not None:
+            wse = np.array(self.water_surface[:, cell])
+            depth = np.maximum(0.0, wse - self.cell_min_elevation[cell])
+            return pd.Series(depth, index=self.timestamps, name="Depth")
+
+        ws = float(self.water_surface[timestep, cell])  # type: ignore[index]
+        bed = float(self.cell_min_elevation[cell])
+        return max(0.0, ws - bed)
+
+    def get_max_depth(self) -> pd.DataFrame:
+        """Maximum depth per cell using the time of maximum WSE.
+
+        ``value = max(0, max_WSE - bed_elevation)``.
+        ``time`` is the elapsed time (days) of maximum WSE; maximum depth
+        may not coincide exactly with maximum WSE.
+
+        Returns
+        -------
+        pd.DataFrame
+            Columns ``['value', 'time']``, index = cell index.
+        """
+        df = self.max_water_surface.copy()
+        df["value"] = np.maximum(0.0, df["value"].to_numpy() - self.cell_min_elevation)
+        return df
+
+    def get_wet_cells(self, timestep: int, depth_min: float = 0.0) -> np.ndarray:
+        """Boolean mask of wet cells for one timestep.
+
+        A cell is wet when ``WSE - cell_min_elevation > depth_min``.
 
         Parameters
         ----------
-        face:
+        timestep : int
+            0-based index into the time dimension.
+        depth_min : float, optional
+            Minimum depth threshold in model units.  Default ``0.0``.
+
+        Returns
+        -------
+        ndarray, shape ``(n_cells,)``, dtype bool
+        """
+        wse = np.array(self.water_surface[timestep, : self.n_cells])
+        return (wse - self.cell_min_elevation) > depth_min
+
+    def get_wet_faces(self, timestep: int, depth_min: float = 0.0) -> np.ndarray:
+        """Boolean mask of wet faces for one timestep.
+
+        A face is wet when at least one of its adjacent cells is wet
+        (see :meth:`get_wet_cells`).  Boundary faces are wet when their
+        single adjacent real cell is wet.
+
+        Parameters
+        ----------
+        timestep : int
+            0-based index into the time dimension.
+        depth_min : float, optional
+            Minimum cell depth threshold passed to :meth:`get_wet_cells`.
+
+        Returns
+        -------
+        ndarray, shape ``(n_faces,)``, dtype bool
+        """
+        wc = self.get_wet_cells(timestep, depth_min)
+        fci = self.face_cell_indexes  # (n_faces, 2)
+        n = self.n_cells
+        c0_wet = np.where(fci[:, 0] >= 0, wc[np.clip(fci[:, 0], 0, n - 1)], False)
+        c1_wet = np.where(fci[:, 1] >= 0, wc[np.clip(fci[:, 1], 0, n - 1)], False)
+        return c0_wet | c1_wet
+
+    def get_cell_velocity(
+        self,
+        timestep: int,
+        *,
+        component: Literal["vector", "speed", "angle"] = "vector",
+        method: Literal[
+            "area_weighted", "length_weighted", "flow_ratio"
+        ] = "area_weighted",
+        wse_interp: Literal["average", "sloped", "max"] = "average",
+        face_velocity_location: Literal[
+            "centroid", "normal_intercept"
+        ] = "normal_intercept",
+    ) -> np.ndarray:
+        """Reconstruct cell-centre velocity for one timestep.
+
+        Uses the WLS method prescribed by the HEC-RAS Technical Reference
+        Manual (Section: 2D Unsteady Flow - Cell Velocity).
+
+        Parameters
+        ----------
+        timestep : int
+            0-based index into the time dimension.
+        component : {"vector", "speed", "angle"}, optional
+            ``"vector"`` (default): returns ``[Vx, Vy]`` pairs, shape
+            ``(n_cells, 2)``.
+            ``"speed"``: returns velocity magnitude ``sqrt(Vx^2 + Vy^2)``,
+            shape ``(n_cells,)``.
+            ``"angle"``: returns flow direction in degrees clockwise from
+            north; ``nan`` where speed < 1e-10, shape ``(n_cells,)``.
+        method : {"area_weighted", "length_weighted", "flow_ratio"}, optional
+            ``"area_weighted"`` (default, matches HEC-RAS): weights are
+            wetted face flow areas from the hydraulic property tables.
+            ``"length_weighted"``: weights are face plan-view lengths.
+            ``"flow_ratio"``: requires ``Face Flow`` output; back-calculates
+            flow area as ``|Q|/|V_n|``.
+        wse_interp : {"average", "sloped", "max"}, optional
+            How to estimate face WSE when ``method="area_weighted"``.
+            ``"average"`` (default): simple mean of the two adjacent cell WSEs.
+            ``"sloped"``: distance-weighted interpolation at the face's actual
+            position - see *face_velocity_location*.
+            ``"max"``: maximum of the two adjacent cell WSEs.
+        face_velocity_location : {"centroid", "normal_intercept"}, optional
+            Position used as the face normal velocity measurement point when
+            ``wse_interp="sloped"``.
+            ``"normal_intercept"`` (default): the point where the
+            cell-centre connecting line crosses the face polyline, matching
+            how HEC-RAS locates its finite-difference gradient.
+            ``"centroid"``: the geometric centroid of the face polyline.
+            Has no effect when ``wse_interp`` is ``"average"`` or ``"max"``.
+
+        Returns
+        -------
+        ndarray, shape ``(n_cells, 2)``
+            ``[Vx, Vy]`` depth-averaged velocity components when
+            ``component="vector"``.
+        ndarray, shape ``(n_cells,)``
+            Velocity magnitude when ``component="speed"`` or flow direction
+            (degrees clockwise from north) when ``component="angle"``.
+
+        Raises
+        ------
+        KeyError
+            If ``method="flow_ratio"`` and ``Face Flow`` is absent.
+        """
+        from .velocity import compute_all_cell_velocities
+
+        if method == "flow_ratio" and self.face_flow is None:
+            raise KeyError(
+                "Face Flow is not present in this HDF file. "
+                "Enable 'Face Flow' in HEC-RAS HDF5 Write Parameters "
+                "before running the simulation, or use a different method."
+            )
+
+        face_normal_velocity = np.array(self.face_velocity[timestep, :])
+        # Read all rows (real + ghost) so boundary face WSE benefits from
+        # ghost-cell WSE (boundary condition stage).
+        cell_wse = np.array(self.water_surface[timestep, :])
+        face_flow = (
+            np.array(self.face_flow[timestep, :]) if method == "flow_ratio" else None
+        )
+
+        cell_face_info, cell_face_values = self.cell_face_info
+        face_ae_info, face_ae_values = self.face_area_elevation
+
+        if wse_interp == "sloped":
+            # Stack real + ghost cell coordinates so the sloped face-WSE
+            # estimator can distance-weight boundary faces correctly.
+            cell_centers = np.vstack([self.cell_centers, self.ghost_cell_centers])
+            face_velocity_coords = (
+                self.face_normal_intercept
+                if face_velocity_location == "normal_intercept"
+                else self.face_centroids
+            )
+        else:
+            cell_centers = None
+            face_velocity_coords = None
+
+        vecs = compute_all_cell_velocities(
+            n_cells=self.n_cells,
+            cell_face_info=cell_face_info,
+            cell_face_values=cell_face_values,
+            face_normals=self.face_normals,
+            face_cell_indexes=self.face_cell_indexes,
+            face_ae_info=face_ae_info,
+            face_ae_values=face_ae_values,
+            face_normal_velocity=face_normal_velocity,
+            cell_wse=cell_wse,
+            method=method,
+            face_flow=face_flow,
+            wse_interp=wse_interp,
+            cell_centers=cell_centers,
+            face_velocity_coords=face_velocity_coords,
+        )
+
+        if component == "vector":
+            return vecs
+
+        vx = vecs[:, 0]
+        vy = vecs[:, 1]
+        speed = np.sqrt(vx**2 + vy**2)
+
+        if component == "speed":
+            return speed
+
+        # component == "angle"
+        angle = (90.0 - np.degrees(np.arctan2(vy, vx))) % 360.0
+        angle[speed < 1e-10] = np.nan
+        return angle
+
+    @overload
+    def get_face_velocity(
+        self, *, timestep: None = ..., face: int, component: Literal["normal"] = ...
+    ) -> pd.Series: ...
+    @overload
+    def get_face_velocity(
+        self, *, timestep: int, face: None = ..., component: Literal["normal"] = ...
+    ) -> np.ndarray: ...
+    @overload
+    def get_face_velocity(
+        self, *, timestep: int, face: None = ..., component: Literal["vector"]
+    ) -> np.ndarray: ...
+
+    def get_face_velocity(
+        self,
+        *,
+        timestep: int | None = None,
+        face: int | None = None,
+        component: Literal["normal", "vector"] = "normal",
+    ) -> np.ndarray | pd.Series:
+        """Face-normal or reconstructed 2-D face velocity.
+
+        Parameters
+        ----------
+        timestep : int, optional
+            0-based index into the time dimension.
+        face : int, optional
             0-based face index.
+        component : {"normal", "vector"}, optional
+            ``"normal"`` (default): signed stored face-normal velocity.
+            ``"vector"``: reconstructed ``[Vx, Vy]`` via the RASMapper-exact
+            C-stencil least-squares pipeline (Steps A + 2).
 
         Returns
         -------
         pd.Series
-            Signed face-normal velocity (model units/s), indexed by
-            :attr:`timestamps`, named ``"Face Velocity"``.
+            Signed face-normal velocity over time indexed by
+            :attr:`timestamps`, named ``"Face Velocity"``, when
+            ``component="normal", face=f``.
+        ndarray, shape ``(n_faces,)``
+            Snapshot of stored face-normal velocities when
+            ``component="normal", timestep=t``.
+        ndarray, shape ``(n_faces, 2)``
+            Reconstructed ``[Vx, Vy]`` at every face when
+            ``component="vector", timestep=t``.
+
+        Raises
+        ------
+        ValueError
+            If both *timestep* and *face* are ``None``.
+            If ``component="vector"`` and *face* is given (reconstructed
+            vector history is not supported).
         """
-        values = np.array(self.face_velocity[:, face])
-        return pd.Series(values, index=self.timestamps, name="Face Velocity")
+        if timestep is None and face is None:
+            raise ValueError("At least one of timestep or face must be specified.")
+
+        if component == "vector":
+            if face is not None:
+                raise ValueError(
+                    "component='vector' does not support face= selection; "
+                    "reconstructed vector history is not available. "
+                    "Use timestep= for a whole-mesh snapshot."
+                )
+            if timestep is None:
+                raise ValueError("timestep is required when component='vector'.")
+
+            from rivia.geo import _rasmapper_pipeline as _rasmap
+
+            cell_wse = np.array(self.water_surface[timestep, :])
+            face_normal_vel = np.array(self.face_velocity[timestep, :])
+            cell_face_info, cell_face_values = self.cell_face_info
+            _cell_face_count = cell_face_info[:, 1].astype(np.int32)
+
+            _, _, face_hconn = _rasmap.compute_face_wss(
+                cell_wse, self._cell_min_elevation, self.face_min_elevation,
+                self.face_cell_indexes, _cell_face_count,
+            )
+            face_connected = (
+                (face_hconn >= _rasmap.HC_BACKFILL)
+                & (face_hconn <= _rasmap.HC_DOWNHILL_SHALLOW)
+            )
+            face_vel_A, _ = _rasmap.reconstruct_face_velocities(
+                face_normal_vel, self.face_normals[:, :2],
+                face_connected, self.face_cell_indexes,
+                cell_face_info, cell_face_values,
+            )
+            return face_vel_A
+
+        # component == "normal"
+        if face is not None and timestep is None:
+            values = np.array(self.face_velocity[:, face])
+            return pd.Series(values, index=self.timestamps, name="Face Velocity")
+
+        # timestep given (with or without face)
+        return np.array(self.face_velocity[timestep, :])
 
     @overload
-    def face_flow_at(
+    def get_face_flow(
         self,
-        face: int,
         *,
+        face: int,
+        timestep: None = ...,
         source: Literal["stored", "derived"] = ...,
     ) -> pd.Series: ...
 
     @overload
-    def face_flow_at(
+    def get_face_flow(
         self,
-        face: Iterable[int],
         *,
+        face: Iterable[int],
+        timestep: None = ...,
         source: Literal["stored", "derived"] = ...,
     ) -> pd.DataFrame: ...
 
-    def face_flow_at(
+    @overload
+    def get_face_flow(
         self,
-        face: int | Iterable[int],
         *,
+        timestep: int,
+        face: None = ...,
+        source: Literal["stored", "derived"] = ...,
+    ) -> np.ndarray: ...
+
+    def get_face_flow(
+        self,
+        *,
+        timestep: int | None = None,
+        face: int | Iterable[int] | None = None,
         source: Literal["stored", "derived"] = "derived",
-    ) -> pd.Series | pd.DataFrame:
-        """Volumetric flow time series through one or more faces.
+    ) -> pd.Series | pd.DataFrame | np.ndarray:
+        """Volumetric flow through one or more faces, or a whole-mesh snapshot.
 
         Parameters
         ----------
-        face:
-            0-based face index, or an iterable of 0-based face indices.
-            When an iterable is supplied the return type is
-            :class:`~pandas.DataFrame` (columns = face indices) rather
-            than :class:`~pandas.Series`.
-        source:
-            ``"derived"`` (default): computes ``flow = wetted_area(WS) * face_velocity``
-            at every output timestep, replicating
+        timestep : int, optional
+            0-based index into the time dimension.  When given with
+            *face* omitted, returns a snapshot array for all faces.
+        face : int or iterable of int, optional
+            0-based face index, or an iterable of face indices.  When an
+            iterable is supplied the return type is
+            :class:`~pandas.DataFrame` (columns = face indices).
+        source : {"derived", "stored"}, optional
+            ``"derived"`` (default): computes ``flow = wetted_area(WS) *
+            face_velocity`` at every output timestep, replicating
             ``GetFaceFlow_PostProcessed``/``GetFaceWSELTimeSeries`` from
             ``RasMapperLib/RASD2FlowArea.cs``.  Per-face water surface is
-            resolved with the hydraulic-connectivity algorithm RAS forces
-            for this computation (``FaceWSMethod.Ben``,
-            :func:`~rivia.geo._rasmapper_pipeline.compute_face_wss` - the
-            same "Ben" state machine, already ported as Step A of the
-            rasterization pipeline); whichever of the two per-face WS values
-            is valid is used (the larger, when both are valid).  Wetted area
-            is then looked up from
-            :meth:`~rivia.hdf.geometry.FlowArea.face_elevation_area` by
-            linear interpolation, linearly extrapolating above the table's
-            top elevation using the face's plan-view length
-            (:attr:`~rivia.hdf.geometry.FlowArea.face_lengths`) - mirroring
-            ``Point2DCollection.Query``'s ``exceededFinal`` branch.  Faces
-            with no active hydraulic connection (and that are not perimeter
-            faces) yield zero flow.
+            resolved with the hydraulic-connectivity algorithm RAS uses
+            (``FaceWSMethod.Ben``,
+            :func:`~rivia.geo._rasmapper_pipeline.compute_face_wss`).
+            When multiple faces are requested, :func:`compute_face_wss` is
+            called once per timestep (not once per timestep per face).
 
-            When multiple faces are requested with ``source="derived"``,
-            :func:`compute_face_wss` is called once per output timestep
-            (not once per timestep per face), making bulk queries
-            significantly cheaper than repeated single-face calls.
-
-            ``"stored"``: thin time-indexed slice of the stored ``Face Flow``
-            output dataset (see :attr:`face_flow`).  Raises if that optional
-            dataset was not written for this plan.  Prefer this when
-            ``Face Flow`` output is available -- it is significantly faster
-            than ``"derived"`` for long simulations.
+            ``"stored"``: thin slice of the stored ``Face Flow`` dataset.
+            Raises ``KeyError`` if that optional dataset is absent.
 
         Returns
         -------
         pd.Series
-            Volumetric flow (model units^3/s), indexed by :attr:`timestamps`,
-            named ``"Face Flow"``.  Returned when *face* is a single integer.
+            Volumetric flow indexed by :attr:`timestamps`, named
+            ``"Face Flow"``, when *face* is a single integer.
         pd.DataFrame
-            Volumetric flow (model units^3/s), indexed by :attr:`timestamps`,
-            columns = requested face indices.  Returned when *face* is an
-            iterable.
+            Volumetric flow indexed by :attr:`timestamps`, columns = face
+            indices, when *face* is an iterable.
+        ndarray, shape ``(n_faces,)``
+            Whole-mesh flow snapshot when ``timestep=t, face=None``.
 
         Raises
         ------
+        ValueError
+            If both *timestep* and *face* are ``None``.
         KeyError
             If ``source="stored"`` and the ``Face Flow`` dataset is absent.
 
         Notes
         -----
-        RAS forces ``MinWSPlotTolerance = 0`` for the duration of this
-        computation (then restores it), whereas :func:`compute_face_wss`
-        always uses ``0.001`` (model units).  This produces a negligible
-        sub-millimetre discrepancy versus RAS's own derived output right at
-        the dry/wet threshold.
-
+        RAS forces ``MinWSPlotTolerance = 0`` for this computation, whereas
+        :func:`compute_face_wss` always uses ``0.001`` (model units).  This
+        produces a negligible sub-millimetre discrepancy at the dry/wet
+        threshold.
         """
+        if timestep is None and face is None:
+            raise ValueError("At least one of timestep or face must be specified.")
+
+        # Whole-mesh snapshot
+        if timestep is not None and face is None:
+            if source == "stored":
+                if self.face_flow is None:
+                    raise KeyError(
+                        "Face Flow is not present in this HDF file. "
+                        "Enable 'Face Flow' in HEC-RAS HDF5 Write Parameters "
+                        "before running the simulation, or use source='derived'."
+                    )
+                return np.array(self.face_flow[timestep, :])
+            raise NotImplementedError(
+                "Whole-mesh snapshot with source='derived' is not yet supported. "
+                "Specify face= to request derived flow for particular faces."
+            )
+
+        # Time-series path (face= given)
         if isinstance(face, Iterable):
             face_idxs: list[int] = list(face)
             multi = True
         else:
-            face_idxs = [face]
+            face_idxs = [face]  # type: ignore[list-item]
             multi = False
 
         if source == "stored":
@@ -371,404 +772,150 @@ class _FlowAreaResultsDerived(FlowArea):
             return pd.DataFrame(flow, index=self.timestamps, columns=face_idxs)
         return pd.Series(flow[:, 0], index=self.timestamps, name="Face Flow")
 
-    def facepoint_velocity_at(self, facepoint: int) -> pd.DataFrame:
-        """Velocity time series at a single mesh facepoint (corner).
+    @overload
+    def get_facepoint_velocity(
+        self, *, timestep: None = ..., facepoint: int
+    ) -> pd.DataFrame: ...
+    @overload
+    def get_facepoint_velocity(
+        self, *, timestep: int, facepoint: None = ...
+    ) -> np.ndarray: ...
+    @overload
+    def get_facepoint_velocity(
+        self, *, timestep: int, facepoint: int
+    ) -> np.ndarray: ...
+
+    def get_facepoint_velocity(
+        self,
+        *,
+        timestep: int | None = None,
+        facepoint: int | None = None,
+    ) -> pd.DataFrame | np.ndarray:
+        """Local WLS velocity at one or all facepoints.
 
         Replicates RASMapper's lightweight ad-hoc query
         ``ComputeFacePointVelocity_FacePerpLeastSquares_Weighted_Local``
         (``RasMapperLib/MeshFV2D.cs``) - a local weighted-least-squares fit
         of the *raw stored* signed face-normal velocities (:attr:`face_velocity`,
-        not the reconstructed ``[Vx, Vy]`` field) at the faces meeting this
-        facepoint, weighted by each face's inverse plan-view length
-        (:attr:`~rivia.hdf.geometry.FlowArea.face_lengths`).  This is the
-        algorithm behind RASMapper's facepoint context-menu velocity plot -
-        distinct from, and cheaper/less accurate than, the RASMapper-exact
-        rasterization pipeline used by :meth:`facepoint_velocity_vectors`.
+        not the reconstructed ``[Vx, Vy]`` field) at the faces meeting a
+        facepoint, weighted by each face's inverse plan-view length.  This
+        is the algorithm behind RASMapper's facepoint context-menu velocity
+        plot - distinct from, and cheaper/less accurate than, the
+        RASMapper-exact pipeline used by :meth:`get_facepoint_velocity_field`.
 
         Parameters
         ----------
-        facepoint:
-            0-based facepoint (mesh corner) index.
+        timestep : int, optional
+            0-based index into the time dimension.  When given without
+            *facepoint*, runs the local WLS at every facepoint for that
+            single timestep (expensive for large meshes).
+        facepoint : int, optional
+            0-based facepoint (mesh corner) index.  When given without
+            *timestep*, returns the full time history for that facepoint.
 
         Returns
         -------
         pd.DataFrame
-            Columns ``['vx', 'vy', 'speed']``, indexed by :attr:`timestamps`.
+            Columns ``['vx', 'vy', 'speed']``, indexed by :attr:`timestamps`,
+            when ``facepoint=fp`` (and *timestep* is omitted).
+        ndarray, shape ``(n_facepoints, 3)``
+            Columns ``[vx, vy, speed]`` for every facepoint when
+            ``timestep=t`` (and *facepoint* is omitted).
+        ndarray, shape ``(3,)``
+            ``[vx, vy, speed]`` for a single facepoint at a single timestep
+            when both are given.
+
+        Raises
+        ------
+        ValueError
+            If both *timestep* and *facepoint* are ``None``.
 
         Notes
         -----
         The weighting matrix depends only on mesh geometry (face normals and
-        lengths), so it is built once and reused across all timesteps; only
-        the right-hand-side vector varies with the stored velocities.
+        lengths), so for the time-history path it is built once and reused
+        across all timesteps.
         """
+        if timestep is None and facepoint is None:
+            raise ValueError(
+                "At least one of timestep or facepoint must be specified."
+            )
+
         fp_face_info, fp_face_values = self.facepoint_face_orientation
-        start = int(fp_face_info[facepoint, 0])
-        count = int(fp_face_info[facepoint, 1])
-        faces = fp_face_values[start : start + count, 0].astype(np.int64)
 
-        normals = self.face_normals[faces, :2]              # (k, 2): [nx, ny]
-        # Guard against degenerate zero-length faces, matching the
-        # `face_inv_lengths` convention in `_rasmapper_pipeline`.
-        inv_lengths = 1.0 / np.maximum(self.face_lengths[faces], 1e-12)
+        def _local_wls_history(fp: int) -> pd.DataFrame:
+            """Full time-history WLS for a single facepoint."""
+            start = int(fp_face_info[fp, 0])
+            count = int(fp_face_info[fp, 1])
+            faces = fp_face_values[start : start + count, 0].astype(np.int64)
+            normals = self.face_normals[faces, :2]
+            # Guard against degenerate zero-length faces.
+            inv_lengths = 1.0 / np.maximum(self.face_lengths[faces], 1e-12)
 
-        # h5py fancy-indexing requires strictly increasing, duplicate-free
-        # indices; read each distinct face once in sorted order, then expand
-        # back to `faces`' original (possibly unsorted/repeated) order.
-        unique_faces, inverse = np.unique(faces, return_inverse=True)
-        raw_velocities = np.array(self.face_velocity[:, unique_faces])
-        velocities = raw_velocities[:, inverse]  # (n_t, k), original order
+            # h5py fancy-indexing requires strictly increasing, non-repeated indices.
+            unique_faces, inverse = np.unique(faces, return_inverse=True)
+            raw_velocities = np.array(self.face_velocity[:, unique_faces])
+            velocities = raw_velocities[:, inverse]  # (n_t, k)
 
-        # FaceVelocityCoef: weighted normal-equations matrix (geometry-only,
-        # identical for every timestep) plus its closed-form 2x2 inverse.
-        m11 = float(np.sum(normals[:, 0] ** 2 * inv_lengths))
-        m22 = float(np.sum(normals[:, 1] ** 2 * inv_lengths))
-        m12 = float(np.sum(normals[:, 0] * normals[:, 1] * inv_lengths))
-        det = m11 * m22 - m12 * m12
-        if det == 0.0:
-            inv_matrix = np.eye(2) / count
-        else:
-            inv_matrix = np.array([[m22, -m12], [-m12, m11]]) / det
-
-        weighted_normals = normals * inv_lengths[:, None]  # (k, 2)
-        terms = weighted_normals[None, :, :] * velocities[:, :, None]
-        rhs = terms.sum(axis=1)  # (n_t, 2)
-        # inv_matrix is symmetric: (M^-1 @ rhs[i]) == (rhs[i] @ M^-1)
-        result = rhs @ inv_matrix
-
-        speed = np.linalg.norm(result, axis=1)
-        return pd.DataFrame(
-            {"vx": result[:, 0], "vy": result[:, 1], "speed": speed},
-            index=self.timestamps,
-        )
-
-    # ------------------------------------------------------------------
-    # Computed results -- pure numpy, no geo dependency
-    # ------------------------------------------------------------------
-
-    def wse(self, timestep: int) -> np.ndarray:
-        """Water-surface elevation at each real cell for one timestep.
-
-        Parameters
-        ----------
-        timestep:
-            0-based index into the time dimension.
-
-        Returns
-        -------
-        ndarray, shape ``(n_cells,)``
-            Water-surface elevation in model units.  Real cells only.
-        """
-        return np.array(self.water_surface[timestep, : self.n_cells])
-
-    def _wse(self, timestep: int) -> np.ndarray:
-        """Water-surface elevation including ghost cell rows for one timestep.
-
-        Shape ``(n_cells + n_ghost,)``.  Required when indexing with raw
-        ``face_cell_indexes`` values which contain ghost cell indices.
-        """
-        return np.array(self.water_surface[timestep, :])
-
-    def depth(self, timestep: int) -> np.ndarray:
-        """Water depth at each cell centre for one timestep.
-
-        Depth = max(0, WSE - bed_elevation), where bed elevation is the
-        cell minimum elevation from the geometry.
-
-        Parameters
-        ----------
-        timestep:
-            0-based index into the time dimension.
-
-        Returns
-        -------
-        ndarray, shape ``(n_cells,)``
-            Real cells only (ghost rows excluded).
-        """
-        wse = np.array(self.water_surface[timestep, : self.n_cells])
-        return np.maximum(0.0, wse - self.cell_min_elevation)
-
-    def max_depth(self) -> pd.DataFrame:
-        """Maximum depth per cell using the time of maximum WSE.
-
-        ``value = max(0, max_WSE - bed_elevation)``.
-        ``time`` is the elapsed time of maximum WSE (days); this is an
-        approximation - maximum depth may not coincide with maximum WSE.
-
-        Returns
-        -------
-        DataFrame with columns ``['value', 'time']``, index = cell index.
-        """
-        df = self.max_water_surface
-        df["value"] = np.maximum(0.0, df["value"].to_numpy() - self.cell_min_elevation)
-        return df
-
-    def wet_cells(self, timestep: int, depth_min: float = 0.0) -> np.ndarray:
-        """Boolean mask of wet cells for one timestep.
-
-        A cell is wet when ``WSE - cell_min_elevation > depth_min``.
-
-        Parameters
-        ----------
-        timestep:
-            0-based index into the time dimension.
-        depth_min:
-            Minimum depth threshold in model units.  Default ``0.0``.
-
-        Returns
-        -------
-        ndarray, shape ``(n_cells,)``, dtype bool
-        """
-        wse = np.array(self.water_surface[timestep, : self.n_cells])
-        return (wse - self.cell_min_elevation) > depth_min
-
-    def wet_faces(self, timestep: int, depth_min: float = 0.0) -> np.ndarray:
-        """Boolean mask of wet faces for one timestep.
-
-        A face is wet when at least one of its adjacent cells is wet
-        (see :meth:`wet_cells`).  Boundary faces are wet when their single
-        adjacent real cell is wet.
-
-        Parameters
-        ----------
-        timestep:
-            0-based index into the time dimension.
-        depth_min:
-            Minimum cell depth threshold passed to :meth:`wet_cells`.
-
-        Returns
-        -------
-        ndarray, shape ``(n_faces,)``, dtype bool
-        """
-        wc = self.wet_cells(timestep, depth_min)
-        fci = self.face_cell_indexes  # (n_faces, 2)
-        n = self.n_cells
-        c0_wet = np.where(fci[:, 0] >= 0, wc[np.clip(fci[:, 0], 0, n - 1)], False)
-        c1_wet = np.where(fci[:, 1] >= 0, wc[np.clip(fci[:, 1], 0, n - 1)], False)
-        return c0_wet | c1_wet
-
-    def cell_velocity_vectors(
-        self,
-        timestep: int,
-        method: Literal[
-            "area_weighted", "length_weighted", "flow_ratio"
-        ] = "area_weighted",
-        wse_interp: Literal["average", "sloped", "max"] = "average",
-        face_velocity_location: Literal[
-            "centroid", "normal_intercept"
-        ] = "normal_intercept",
-    ) -> np.ndarray:
-        """Reconstruct cell-centre velocity vectors via weighted least-squares.
-
-        Uses the WLS method prescribed by the HEC-RAS Technical Reference
-        Manual (Section: 2D Unsteady Flow - Cell Velocity).
-
-        Parameters
-        ----------
-        timestep:
-            0-based index into the time dimension.
-        method:
-            ``"area_weighted"`` (default, matches HEC-RAS): weights are
-            wetted face flow areas from the hydraulic property tables.
-            ``"length_weighted"``: weights are face plan-view lengths.
-            ``"flow_ratio"``: requires ``Face Flow`` output; back-calculates
-            flow area as ``|Q|/|V_n|``.
-        wse_interp:
-            How to estimate face WSE when ``method="area_weighted"``.
-            ``"average"`` (default): simple mean of the two adjacent cell WSEs.
-            ``"sloped"``: distance-weighted interpolation at the face's actual
-            position - see *face_velocity_location*.
-            ``"max"``: maximum of the two adjacent cell WSEs.
-        face_velocity_location:
-            Position used as the face normal velocity measurement point when
-            ``wse_interp="sloped"``.
-            ``"normal_intercept"`` (default): the point where the
-            cell-centre connecting line crosses the face polyline, matching
-            how HEC-RAS locates its finite-difference gradient.
-            ``"centroid"``: the geometric centroid of the face polyline.
-            Has no effect when ``wse_interp`` is ``"average"`` or ``"max"``.
-
-        Returns
-        -------
-        ndarray, shape ``(n_cells, 2)``
-            ``[Vx, Vy]`` depth-averaged velocity components for real cells.
-        """
-        from .velocity import compute_all_cell_velocities
-
-        if method == "flow_ratio" and self.face_flow is None:
-            raise KeyError(
-                "Face Flow is not present in this HDF file. "
-                "Enable 'Face Flow' in HEC-RAS HDF5 Write Parameters "
-                "before running the simulation, or use a different method."
+            # FaceVelocityCoef: geometry-only normal-equations matrix + 2x2 inverse.
+            m11 = float(np.sum(normals[:, 0] ** 2 * inv_lengths))
+            m22 = float(np.sum(normals[:, 1] ** 2 * inv_lengths))
+            m12 = float(np.sum(normals[:, 0] * normals[:, 1] * inv_lengths))
+            det = m11 * m22 - m12 * m12
+            inv_matrix = (
+                np.eye(2) / count if det == 0.0
+                else np.array([[m22, -m12], [-m12, m11]]) / det
             )
 
-        face_normal_velocity = np.array(self.face_velocity[timestep, :])
-        # Read all rows (real + ghost) so boundary face WSE benefits from
-        # ghost-cell WSE (boundary condition stage).
-        cell_wse = np.array(self.water_surface[timestep, :])
-        face_flow = (
-            np.array(self.face_flow[timestep, :]) if method == "flow_ratio" else None
-        )
-
-        cell_face_info, cell_face_values = self.cell_face_info
-        face_ae_info, face_ae_values = self.face_area_elevation
-
-        if wse_interp == "sloped":
-            # Stack real + ghost cell coordinates so the sloped face-WSE
-            # estimator can distance-weight boundary faces correctly.
-            cell_centers = np.vstack([self.cell_centers, self.ghost_cell_centers])
-            face_velocity_coords = (
-                self.face_normal_intercept
-                if face_velocity_location == "normal_intercept"
-                else self.face_centroids
+            weighted_normals = normals * inv_lengths[:, None]  # (k, 2)
+            rhs = (weighted_normals[None, :, :] * velocities[:, :, None]).sum(axis=1)
+            result = rhs @ inv_matrix
+            speed = np.linalg.norm(result, axis=1)
+            return pd.DataFrame(
+                {"vx": result[:, 0], "vy": result[:, 1], "speed": speed},
+                index=self.timestamps,
             )
-        else:
-            cell_centers = None
-            face_velocity_coords = None
 
-        return compute_all_cell_velocities(
-            n_cells=self.n_cells,
-            cell_face_info=cell_face_info,
-            cell_face_values=cell_face_values,
-            face_normals=self.face_normals,
-            face_cell_indexes=self.face_cell_indexes,
-            face_ae_info=face_ae_info,
-            face_ae_values=face_ae_values,
-            face_normal_velocity=face_normal_velocity,
-            cell_wse=cell_wse,
-            method=method,
-            face_flow=face_flow,
-            wse_interp=wse_interp,
-            cell_centers=cell_centers,
-            face_velocity_coords=face_velocity_coords,
-        )
+        def _local_wls_snapshot(fp: int, t: int) -> np.ndarray:
+            """Single-timestep WLS for one facepoint; returns [vx, vy, speed]."""
+            start = int(fp_face_info[fp, 0])
+            count = int(fp_face_info[fp, 1])
+            faces = fp_face_values[start : start + count, 0].astype(np.int64)
+            normals = self.face_normals[faces, :2]
+            inv_lengths = 1.0 / np.maximum(self.face_lengths[faces], 1e-12)
 
-    def cell_speed(
-        self,
-        timestep: int,
-        method: Literal[
-            "area_weighted", "length_weighted", "flow_ratio"
-        ] = "area_weighted",
-        wse_interp: Literal["average", "sloped", "max"] = "average",
-        face_velocity_location: Literal[
-            "centroid", "normal_intercept"
-        ] = "normal_intercept",
-    ) -> np.ndarray:
-        """Velocity magnitude at each cell centre for one timestep.
+            unique_faces, inverse = np.unique(faces, return_inverse=True)
+            raw_vel = np.array(self.face_velocity[t, unique_faces])
+            velocities = raw_vel[inverse]  # (k,)
 
-        Parameters
-        ----------
-        timestep:
-            0-based index into the time dimension.
-        method:
-            Passed to :meth:`cell_velocity_vectors`.
-        wse_interp:
-            Passed to :meth:`cell_velocity_vectors`.
-        face_velocity_location:
-            Passed to :meth:`cell_velocity_vectors`.
+            m11 = float(np.sum(normals[:, 0] ** 2 * inv_lengths))
+            m22 = float(np.sum(normals[:, 1] ** 2 * inv_lengths))
+            m12 = float(np.sum(normals[:, 0] * normals[:, 1] * inv_lengths))
+            det = m11 * m22 - m12 * m12
+            inv_matrix = (
+                np.eye(2) / count if det == 0.0
+                else np.array([[m22, -m12], [-m12, m11]]) / det
+            )
 
-        Returns
-        -------
-        ndarray, shape ``(n_cells,)``
-        """
-        vecs = self.cell_velocity_vectors(
-            timestep, method=method, wse_interp=wse_interp,
-            face_velocity_location=face_velocity_location,
-        )
-        return np.sqrt(vecs[:, 0] ** 2 + vecs[:, 1] ** 2)
+            rhs = (normals * inv_lengths[:, None] * velocities[:, None]).sum(axis=0)
+            result = inv_matrix @ rhs
+            speed = float(np.linalg.norm(result))
+            return np.array([result[0], result[1], speed])
 
-    def cell_velocity_angle(
-        self,
-        timestep: int,
-        method: Literal[
-            "area_weighted", "length_weighted", "flow_ratio"
-        ] = "area_weighted",
-        wse_interp: Literal["average", "sloped", "max"] = "average",
-        face_velocity_location: Literal[
-            "centroid", "normal_intercept"
-        ] = "normal_intercept",
-    ) -> np.ndarray:
-        """Flow direction at each cell centre for one timestep.
+        if facepoint is not None and timestep is None:
+            return _local_wls_history(facepoint)
 
-        Angle is measured in degrees clockwise from north (the conventional
-        "flow-to" bearing used in hydraulics and GIS).
+        if timestep is not None and facepoint is None:
+            n_fp = len(fp_face_info)
+            out = np.zeros((n_fp, 3), dtype=np.float64)
+            for fp in range(n_fp):
+                out[fp] = _local_wls_snapshot(fp, timestep)
+            return out
 
-        Parameters
-        ----------
-        timestep:
-            0-based index into the time dimension.
-        method:
-            Passed to :meth:`cell_velocity_vectors`.
-        wse_interp:
-            Passed to :meth:`cell_velocity_vectors`.
-        face_velocity_location:
-            Passed to :meth:`cell_velocity_vectors`.
+        # Both given: single facepoint, single timestep
+        return _local_wls_snapshot(facepoint, timestep)  # type: ignore[arg-type]
 
-        Returns
-        -------
-        ndarray, shape ``(n_cells,)``
-            Direction the flow is heading in degrees clockwise from north
-            (0 = north, 90 = east, 180 = south, 270 = west).
-            Cells whose speed is below 1e-10 return ``nan``.
-        """
-        vecs = self.cell_velocity_vectors(
-            timestep, method=method, wse_interp=wse_interp,
-            face_velocity_location=face_velocity_location,
-        )
-        vx = vecs[:, 0]
-        vy = vecs[:, 1]
-        speed = np.sqrt(vx**2 + vy**2)
-        angle = (90.0 - np.degrees(np.arctan2(vy, vx))) % 360.0
-        angle[speed < 1e-10] = np.nan
-        return angle
-
-    def face_velocity_vectors(self, timestep: int) -> np.ndarray:
-        """Full 2D velocity ``[Vx, Vy]`` at each face midpoint.
-
-        Implements the RASMapper-exact C-stencil least-squares reconstruction
-        (Step A + Step 2 from ``geo/_rasmapper_pipeline.py``):
-
-        * **Step A** -- hydraulic connectivity: determines which faces are
-          actively conveying flow based on adjacent-cell WSE and bed elevation.
-        * **Step 2** -- for each face, a 3-face C-stencil (the face itself plus
-          its clockwise and counter-clockwise neighbors within each adjacent
-          cell) solves a 2*2 WLS system to recover the full ``(Vx, Vy)``
-          vector from the stored face-normal scalar.  The result from each
-          adjacent cell is averaged to give a single face vector.
-
-        Replicates ``ReconstructFaceVelocitiesLeastSquares`` from
-        ``RasMapperLib/MeshFV2D.cs``.
-
-        Parameters
-        ----------
-        timestep:
-            0-based index into the time dimension.
-
-        Returns
-        -------
-        ndarray, shape ``(n_faces, 2)``
-            ``[Vx, Vy]`` velocity at each face midpoint.
-            Disconnected (dry) faces receive ``[0, 0]``.
-        """
-        from rivia.geo import _rasmapper_pipeline as _rasmap
-
-        cell_wse = np.array(self.water_surface[timestep, :])
-        face_normal_vel = np.array(self.face_velocity[timestep, :])
-        cell_face_info, cell_face_values = self.cell_face_info
-        _cell_face_count = cell_face_info[:, 1].astype(np.int32)
-
-        _, _, face_hconn = _rasmap.compute_face_wss(
-            cell_wse, self._cell_min_elevation, self.face_min_elevation,
-            self.face_cell_indexes, _cell_face_count,
-        )
-        face_connected = (face_hconn >= _rasmap.HC_BACKFILL) & (face_hconn <= _rasmap.HC_DOWNHILL_SHALLOW)
-        face_vel_A, _ = _rasmap.reconstruct_face_velocities(
-            face_normal_vel, self.face_normals[:, :2],
-            face_connected, self.face_cell_indexes,
-            cell_face_info, cell_face_values,
-        )
-        return face_vel_A
-
-    def facepoint_velocity_vectors(self, timestep: int) -> np.ndarray:
+    def get_facepoint_velocity_field(self, timestep: int) -> np.ndarray:
         """Full 2D velocity ``[Vx, Vy]`` at each mesh facepoint (corner).
 
         Implements the RASMapper-exact pipeline (Steps A + 2 + 3):
@@ -788,7 +935,7 @@ class _FlowAreaResultsDerived(FlowArea):
 
         Parameters
         ----------
-        timestep:
+        timestep : int
             0-based index into the time dimension.
 
         Returns
@@ -808,7 +955,10 @@ class _FlowAreaResultsDerived(FlowArea):
             cell_wse, self._cell_min_elevation, self.face_min_elevation,
             self.face_cell_indexes, _cell_face_count,
         )
-        face_connected = (face_hconn >= _rasmap.HC_BACKFILL) & (face_hconn <= _rasmap.HC_DOWNHILL_SHALLOW)
+        face_connected = (
+            (face_hconn >= _rasmap.HC_BACKFILL)
+            & (face_hconn <= _rasmap.HC_DOWNHILL_SHALLOW)
+        )
         face_vel_A, face_vel_B = _rasmap.reconstruct_face_velocities(
             face_normal_vel, self.face_normals[:, :2],
             face_connected, self.face_cell_indexes,
@@ -837,7 +987,7 @@ class _FlowAreaResultsDerived(FlowArea):
     # Visualization
     # ------------------------------------------------------------------
 
-    def velocity_plot(
+    def plot_velocity(
         self,
         timestep: int,
         cell_index: int,
@@ -910,7 +1060,7 @@ class _FlowAreaResultsDerived(FlowArea):
             import matplotlib.pyplot as plt
         except ImportError as exc:
             raise ImportError(
-                "matplotlib is required for velocity_plot(). "
+                "matplotlib is required for plot_velocity(). "
                 "Install it with:  pip install matplotlib"
             ) from exc
 
@@ -1270,7 +1420,7 @@ class _FlowAreaResultsDerived(FlowArea):
         if timestep is None:
             cell_wse = self._max_water_surface["value"].to_numpy()
         else:
-            cell_wse = self._wse(timestep)
+            cell_wse = self.get_water_surface(timestep=timestep, include_ghost=True)
 
         face_normal_velocity: np.ndarray | None = None
         if variable in ("velocity", "velocity_vector"):
@@ -1453,7 +1603,9 @@ class _FlowAreaResultsDerived(FlowArea):
         face_ids = faces_df["face"].tolist()
         orientations = faces_df["orientation"].to_numpy(dtype=bool)  # True -> negate
 
-        flow_df: pd.DataFrame = self.face_flow_at(face_ids, source="derived")  # type: ignore[assignment]
+        flow_df: pd.DataFrame = self.get_face_flow(  # type: ignore[assignment]
+            face=face_ids, source="derived"
+        )
         signs = np.where(orientations, -1.0, 1.0)
         discharge = (flow_df.values * signs[np.newaxis, :]).sum(axis=1)
 
@@ -1545,7 +1697,9 @@ class _FlowAreaResultsDerived(FlowArea):
         if timestep == "max":
             cell_wse = self.max_water_surface["value"].to_numpy(dtype=np.float64)
         else:
-            cell_wse = self.wse(int(timestep)).astype(np.float64)
+            cell_wse = self.get_water_surface(
+                timestep=int(timestep)
+            ).astype(np.float64)
 
         # Vectorised binary search: for each station find its row in cells_df
         station_starts = cells_df["station_start"].to_numpy()
@@ -1585,26 +1739,26 @@ class FlowAreaResults(_FlowAreaResultsDerived):
         area.water_surface[a:b]      # slice          -> ndarray (b-a, n_cells + n_ghost)
         area.water_surface[:]        # all            -> ndarray (n_t, n_cells + n_ghost)
 
-    *Snapshot methods* ``name(timestep)`` -- one time, all locations -> ndarray::
+    *Snapshot accessors* -- one time, all locations -> ndarray::
 
-        area.wse(t)                         # (n_cells,)        WSE at every cell
-        area.depth(t)                       # (n_cells,)        depth at every cell
-        area.cell_velocity_vectors(t)       # (n_cells, 2)      [Vx, Vy] at every cell
-        area.face_velocity_vectors(t)       # (n_faces, 2)
-        area.facepoint_velocity_vectors(t)  # (n_facepoints, 2)
+        area.get_water_surface(timestep=t)                        # (n_cells,)
+        area.get_depth(timestep=t)                                # (n_cells,)
+        area.get_cell_velocity(t)                                 # (n_cells, 2)
+        area.get_face_velocity(timestep=t, component="vector")    # (n_faces, 2)
+        area.get_facepoint_velocity_field(t)                      # (n_facepoints, 2)
 
-    *Location time-series* ``name_at(location)`` -- one location, all times -> pandas::
+    *Location time-series* -- one location, all times -> pandas::
 
-        area.water_surface_at(cell)         # Series            WSE over time
-        area.face_velocity_at(face)         # Series            velocity over time
-        area.face_flow_at(face)             # Series            flow over time
-        area.facepoint_velocity_at(fp)      # DataFrame         [vx, vy, speed] over time
+        area.get_water_surface(cell=c)        # Series    WSE over time
+        area.get_face_velocity(face=f)        # Series    velocity over time
+        area.get_face_flow(face=f)            # Series    flow over time
+        area.get_facepoint_velocity(facepoint=fp)  # DataFrame  [vx, vy, speed]
 
     *Summary properties* -- aggregate over the full time span, all locations::
 
-        area.max_water_surface              # DataFrame ['value', 'time']  per cell
-        area.max_face_velocity              # DataFrame ['value', 'time']  per face
-        area.max_depth()                    # DataFrame ['value', 'time']  per cell
+        area.max_water_surface     # DataFrame ['value', 'time']  per cell
+        area.max_face_velocity     # DataFrame ['value', 'time']  per face
+        area.get_max_depth()       # DataFrame ['value', 'time']  per cell
 
     Parameters
     ----------
@@ -3634,9 +3788,9 @@ class UnsteadyPlan(_PlanHdf, Geometry):
             area = hdf.flow_areas["spillway"]
 
             wse   = area.water_surface[10]    # one timestep
-            depth = area.depth(10)
-            speed = area.cell_speed(10)
-            max_d = area.max_depth()
+            depth = area.get_depth(timestep=10)
+            speed = area.get_cell_velocity(10, component="speed")
+            max_d = area.get_max_depth()
 
             # requires rasterio + scipy:
             area.export_raster("depth", "depth.tif", timestep=None,

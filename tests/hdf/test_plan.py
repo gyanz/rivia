@@ -117,12 +117,12 @@ class TestSummaryResults:
 class TestDepth:
     def test_depth_shape(self, synthetic_plan_hdf):
         with UnsteadyPlan(synthetic_plan_hdf) as hdf:
-            d = hdf.flow_areas[AREA].depth(0)
+            d = hdf.flow_areas[AREA].get_depth(timestep=0)
         assert d.shape == (N_CELLS,)
 
     def test_depth_non_negative(self, synthetic_plan_hdf):
         with UnsteadyPlan(synthetic_plan_hdf) as hdf:
-            d = hdf.flow_areas[AREA].depth(0)
+            d = hdf.flow_areas[AREA].get_depth(timestep=0)
         assert (d >= 0).all()
 
     def test_depth_equals_wse_minus_bed(self, synthetic_plan_hdf):
@@ -130,19 +130,19 @@ class TestDepth:
             area = hdf.flow_areas[AREA]
             wse = np.array(area.water_surface[0, :N_CELLS])
             bed = area.cell_min_elevation
-            depth = area.depth(0)
+            depth = area.get_depth(timestep=0)
         expected = np.maximum(0.0, wse - bed)
         np.testing.assert_allclose(depth, expected, rtol=1e-5)
 
     def test_max_depth_shape(self, synthetic_plan_hdf):
         with UnsteadyPlan(synthetic_plan_hdf) as hdf:
-            df = hdf.flow_areas[AREA].max_depth()
+            df = hdf.flow_areas[AREA].get_max_depth()
         assert list(df.columns) == ["value", "time"]
         assert len(df) == N_CELLS
 
     def test_max_depth_non_negative(self, synthetic_plan_hdf):
         with UnsteadyPlan(synthetic_plan_hdf) as hdf:
-            df = hdf.flow_areas[AREA].max_depth()
+            df = hdf.flow_areas[AREA].get_max_depth()
         assert (df["value"] >= 0).all()
 
 
@@ -155,30 +155,30 @@ class TestCellVelocity:
     def test_cell_velocity_vectors_shape(self, synthetic_plan_hdf):
         with UnsteadyPlan(synthetic_plan_hdf) as hdf:
             area = hdf.flow_areas[AREA]
-            vecs = area.cell_velocity_vectors(0)
+            vecs = area.get_cell_velocity(0)
         assert vecs.shape == (N_CELLS, 2)
 
     def test_cell_speed_shape(self, synthetic_plan_hdf):
         with UnsteadyPlan(synthetic_plan_hdf) as hdf:
-            speed = hdf.flow_areas[AREA].cell_speed(0)
+            speed = hdf.flow_areas[AREA].get_cell_velocity(0, component="speed")
         assert speed.shape == (N_CELLS,)
 
     def test_cell_speed_non_negative(self, synthetic_plan_hdf):
         with UnsteadyPlan(synthetic_plan_hdf) as hdf:
-            speed = hdf.flow_areas[AREA].cell_speed(0)
+            speed = hdf.flow_areas[AREA].get_cell_velocity(0, component="speed")
         assert (speed >= 0).all()
 
     def test_speed_equals_norm_of_vectors(self, synthetic_plan_hdf):
         with UnsteadyPlan(synthetic_plan_hdf) as hdf:
             area = hdf.flow_areas[AREA]
-            vecs = area.cell_velocity_vectors(0)
-            speed = area.cell_speed(0)
+            vecs = area.get_cell_velocity(0)
+            speed = area.get_cell_velocity(0, component="speed")
         expected = np.sqrt(vecs[:, 0] ** 2 + vecs[:, 1] ** 2)
         np.testing.assert_allclose(speed, expected, rtol=1e-6)
 
     def test_length_weighted_method(self, synthetic_plan_hdf):
         with UnsteadyPlan(synthetic_plan_hdf) as hdf:
-            vecs = hdf.flow_areas[AREA].cell_velocity_vectors(
+            vecs = hdf.flow_areas[AREA].get_cell_velocity(
                 0, method="length_weighted"
             )
         assert vecs.shape == (N_CELLS, 2)
@@ -186,27 +186,29 @@ class TestCellVelocity:
     def test_invalid_method_raises(self, synthetic_plan_hdf):
         with UnsteadyPlan(synthetic_plan_hdf) as hdf:
             with pytest.raises(ValueError, match="method"):
-                hdf.flow_areas[AREA].cell_velocity_vectors(0, method="bad")
+                hdf.flow_areas[AREA].get_cell_velocity(0, method="bad")
 
     def test_flow_ratio_without_face_flow_raises(self, synthetic_plan_hdf):
         with UnsteadyPlan(synthetic_plan_hdf) as hdf:
             with pytest.raises(KeyError, match="Face Flow"):
-                hdf.flow_areas[AREA].cell_velocity_vectors(0, method="flow_ratio")
+                hdf.flow_areas[AREA].get_cell_velocity(0, method="flow_ratio")
 
     def test_sloped_wse_interp_vectors_shape(self, synthetic_plan_hdf):
         with UnsteadyPlan(synthetic_plan_hdf) as hdf:
-            vecs = hdf.flow_areas[AREA].cell_velocity_vectors(0, wse_interp="sloped")
+            vecs = hdf.flow_areas[AREA].get_cell_velocity(0, wse_interp="sloped")
         assert vecs.shape == (N_CELLS, 2)
 
     def test_sloped_wse_interp_speed_shape(self, synthetic_plan_hdf):
         with UnsteadyPlan(synthetic_plan_hdf) as hdf:
-            speed = hdf.flow_areas[AREA].cell_speed(0, wse_interp="sloped")
+            speed = hdf.flow_areas[AREA].get_cell_velocity(
+                0, component="speed", wse_interp="sloped"
+            )
         assert speed.shape == (N_CELLS,)
 
     def test_invalid_wse_interp_raises(self, synthetic_plan_hdf):
         with UnsteadyPlan(synthetic_plan_hdf) as hdf:
             with pytest.raises(ValueError, match="wse_interp"):
-                hdf.flow_areas[AREA].cell_velocity_vectors(0, wse_interp="bad")
+                hdf.flow_areas[AREA].get_cell_velocity(0, wse_interp="bad")
 
 
 # ---------------------------------------------------------------------------
@@ -217,24 +219,24 @@ class TestCellVelocity:
 class TestFaceVelocity:
     def test_face_velocity_vectors_shape(self, synthetic_plan_hdf):
         with UnsteadyPlan(synthetic_plan_hdf) as hdf:
-            vecs = hdf.flow_areas[AREA].face_velocity_vectors(0)
+            vecs = hdf.flow_areas[AREA].get_face_velocity(timestep=0, component="vector")
         assert vecs.shape == (N_FACES, 2)
 
     def test_face_velocity_vectors_finite(self, synthetic_plan_hdf):
         with UnsteadyPlan(synthetic_plan_hdf) as hdf:
-            vecs = hdf.flow_areas[AREA].face_velocity_vectors(0)
+            vecs = hdf.flow_areas[AREA].get_face_velocity(timestep=0, component="vector")
         assert np.isfinite(vecs).all()
 
     def test_facepoint_velocity_vectors_shape(self, synthetic_plan_hdf):
         with UnsteadyPlan(synthetic_plan_hdf) as hdf:
-            vecs = hdf.flow_areas[AREA].facepoint_velocity_vectors(0)
+            vecs = hdf.flow_areas[AREA].get_facepoint_velocity_field(0)
         # synthetic fixture maps all facepoints to index 0 → 1 unique facepoint
         assert vecs.ndim == 2
         assert vecs.shape[1] == 2
 
     def test_facepoint_velocity_vectors_finite(self, synthetic_plan_hdf):
         with UnsteadyPlan(synthetic_plan_hdf) as hdf:
-            vecs = hdf.flow_areas[AREA].facepoint_velocity_vectors(0)
+            vecs = hdf.flow_areas[AREA].get_facepoint_velocity_field(0)
         assert np.isfinite(vecs).all()
 
 
@@ -347,13 +349,13 @@ class TestUnsteadyPlanIntegration:
     def test_depth_non_negative(self):
         with UnsteadyPlan(EXAMPLE_PLAN_HDF) as hdf:
             area = hdf.flow_areas[hdf.flow_areas.names[0]]
-            d = area.depth(0)
+            d = area.get_depth(timestep=0)
         assert (d >= 0).all()
 
     def test_cell_velocity_vectors_shape(self):
         with UnsteadyPlan(EXAMPLE_PLAN_HDF) as hdf:
             area = hdf.flow_areas[hdf.flow_areas.names[0]]
-            vecs = area.cell_velocity_vectors(0)
+            vecs = area.get_cell_velocity(0)
             n_cells = area.n_cells
         assert vecs.shape == (n_cells, 2)
 

@@ -134,12 +134,14 @@ both geometry and results.
 UnsteadyPlan
 ├── .flow_areas          → FlowAreaResultsCollection
 │     └── ["name"]       → FlowAreaResults
-│           ├── .water_surface         h5py.Dataset  shape (n_t, n_cells)
-│           ├── .face_velocity         h5py.Dataset  shape (n_t, n_faces)
-│           ├── .max_water_surface     pd.DataFrame  columns [value, time]
-│           ├── .max_face_velocity     pd.DataFrame  columns [value, time]
-│           ├── .wse(timestep)         np.ndarray    shape (n_cells,)
-│           └── .depth(timestep)       np.ndarray    shape (n_cells,)
+│           ├── .water_surface                          h5py.Dataset  shape (n_t, n_cells)
+│           ├── .face_velocity                          h5py.Dataset  shape (n_t, n_faces)
+│           ├── .max_water_surface                      pd.DataFrame  columns [value, time]
+│           ├── .max_face_velocity                      pd.DataFrame  columns [value, time]
+│           ├── .get_water_surface(timestep=t)          np.ndarray    shape (n_cells,)
+│           ├── .get_water_surface(cell=c)              pd.Series     WSE over time
+│           ├── .get_depth(timestep=t)                  np.ndarray    shape (n_cells,)
+│           └── .get_max_depth()                        pd.DataFrame  columns [value, time]
 │
 ├── .storage_areas       → StorageAreaResultsCollection
 │     └── ["name"]       → StorageAreaResults
@@ -170,17 +172,29 @@ UnsteadyPlan
 hdf = model.results
 area = hdf.flow_areas["Perimeter 1"]   # FlowAreaResults
 
-# Time-series datasets (lazy — slice to load into memory)
-wse_t5 = area.water_surface[5]         # WSE at timestep 5, shape (n_cells,)
-vel_t5 = area.face_velocity[5]         # face velocity at timestep 5
+# Raw time-series datasets (lazy h5py.Dataset — slice to control memory)
+wse_t5 = area.water_surface[5]         # WSE at timestep 5, shape (n_cells + n_ghost,)
+vel_t5 = area.face_velocity[5]         # face-normal velocity at timestep 5
 
-# Convenience wrappers
-wse = area.wse(timestep=5)             # same as above, np.ndarray
-depth = area.depth(timestep=5)         # WSE minus terrain
+# Derived snapshot (one timestep, all locations)
+wse   = area.get_water_surface(timestep=5)   # np.ndarray (n_cells,)
+depth = area.get_depth(timestep=5)           # np.ndarray (n_cells,), max(0, WSE - bed)
 
-# Summary results
+# Derived time-history (one location, all timesteps)
+wse_series = area.get_water_surface(cell=0)  # pd.Series indexed by timestamps
+
+# Scalar (one timestep, one location)
+wse_val = area.get_water_surface(timestep=5, cell=0)  # float
+
+# Velocity (snapshot)
+vecs  = area.get_cell_velocity(5)                          # (n_cells, 2) [Vx, Vy]
+speed = area.get_cell_velocity(5, component="speed")       # (n_cells,)
+fvec  = area.get_face_velocity(timestep=5, component="vector")  # (n_faces, 2)
+
+# Summary results (raw HDF reads)
 area.max_water_surface                 # pd.DataFrame, max WSE per cell
 area.max_face_velocity                 # pd.DataFrame, max velocity per face
+area.get_max_depth()                   # pd.DataFrame, max depth per cell (computed)
 ```
 
 ### Cross-section results (1D)
