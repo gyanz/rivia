@@ -17,9 +17,9 @@ import dataclasses
 import datetime as dt
 import logging
 import math
-from collections.abc import Iterable, Iterator
-from pathlib import Path
 from abc import abstractmethod
+from collections.abc import Callable, Iterable, Iterator
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, overload
 
 import numpy as np
@@ -2705,14 +2705,13 @@ class StructureResultsCollection(StructureCollection):
 class _CrossSectionResultsBase(CrossSection):
     """Private base for all three cross-section result variants.
 
-    Holds the HDF handle, column index, and result-group root; provides the
-    shared ``_load`` helper, ``water_surface``, and ``flow`` properties that
-    are present in every output block.
+    Holds the HDF handle, column index, result-group root, and the
+    timestamps resolved by the parent collection.  Provides the shared
+    ``_load`` and ``_series`` helpers.
 
-    Concrete subclasses add the properties that are specific to their output
-    block (:class:`CrossSectionResults`,
-    :class:`CrossSectionResultsDSS`,
-    :class:`CrossSectionResultsInstantaneous`).
+    Concrete subclasses add the properties specific to their output block
+    (:class:`CrossSectionMappingResults`, :class:`CrossSectionOutputResults`,
+    :class:`CrossSectionInstantaneousResults`).
     """
 
     def __init__(
@@ -2721,6 +2720,7 @@ class _CrossSectionResultsBase(CrossSection):
         hdf: "h5py.File",
         index: int,
         root: str,
+        timestamps: pd.DatetimeIndex,
     ) -> None:
         CrossSection.__init__(
             self,
@@ -2744,6 +2744,7 @@ class _CrossSectionResultsBase(CrossSection):
         self._index = index
         self._root = root
         self._cache: dict[str, np.ndarray] = {}
+        self.timestamps = timestamps
 
     def _load(self, dataset: str) -> np.ndarray:
         """Load column ``self._index`` from ``{root}/{dataset}``, cached."""
@@ -2756,22 +2757,17 @@ class _CrossSectionResultsBase(CrossSection):
             self._cache[dataset] = np.array(ds[:, self._index])
         return self._cache[dataset]
 
-    @property
-    def wse(self) -> np.ndarray:
-        """Water surface elevation time series.  Shape ``(n_t,)``."""
-        return self._load("Water Surface")
-
-    @property
-    def flow(self) -> np.ndarray:
-        """Flow time series.  Shape ``(n_t,)``."""
-        return self._load("Flow")
+    def _series(self, dataset: str, name: str) -> pd.Series:
+        """Return a time-indexed ``pd.Series`` for one dataset column."""
+        return pd.Series(self._load(dataset), index=self.timestamps, name=name)
 
 
-class CrossSectionResults(_CrossSectionResultsBase):
+class CrossSectionMappingResults(_CrossSectionResultsBase):
     """Geometry *and* results for one XS from the **Base Output** block.
 
-    Corresponds to :attr:`UnsteadyPlan.cross_sections` (mapping output interval).
-    All variables written by HEC-RAS at the mapping interval are exposed.
+    Returned by ``plan.cross_sections("mapping")[key]``.  All variables
+    written by HEC-RAS at the mapping interval are exposed as time-indexed
+    ``pd.Series``.
 
     Parameters
     ----------
@@ -2783,34 +2779,45 @@ class CrossSectionResults(_CrossSectionResultsBase):
         Column index of this XS in the ``(n_t, n_xs)`` result datasets.
     root:
         HDF path prefix -- ``_TS_XS``.
+    timestamps:
+        Mapping output timestamps from the parent collection.
     """
 
     @property
-    def flow_cumulative(self) -> np.ndarray:
-        """Cumulative flow volume time series.  Shape ``(n_t,)``."""
-        return self._load("Flow Volume Cumulative")
+    def wse(self) -> pd.Series:
+        """Water surface elevation time series, indexed by :attr:`timestamps`."""
+        return self._series("Water Surface", "Water Surface")
 
     @property
-    def flow_lateral(self) -> np.ndarray:
-        """Lateral flow time series.  Shape ``(n_t,)``."""
-        return self._load("Flow Lateral")
+    def flow(self) -> pd.Series:
+        """Flow time series, indexed by :attr:`timestamps`."""
+        return self._series("Flow", "Flow")
 
     @property
-    def velocity_channel(self) -> np.ndarray:
-        """Channel velocity time series.  Shape ``(n_t,)``."""
-        return self._load("Velocity Channel")
+    def flow_cumulative(self) -> pd.Series:
+        """Cumulative flow volume time series, indexed by :attr:`timestamps`."""
+        return self._series("Flow Volume Cumulative", "Flow Volume Cumulative")
 
     @property
-    def velocity_total(self) -> np.ndarray:
-        """Total velocity time series.  Shape ``(n_t,)``."""
-        return self._load("Velocity Total")
+    def flow_lateral(self) -> pd.Series:
+        """Lateral flow time series, indexed by :attr:`timestamps`."""
+        return self._series("Flow Lateral", "Flow Lateral")
+
+    @property
+    def velocity_channel(self) -> pd.Series:
+        """Channel velocity time series, indexed by :attr:`timestamps`."""
+        return self._series("Velocity Channel", "Velocity Channel")
+
+    @property
+    def velocity_total(self) -> pd.Series:
+        """Total velocity time series, indexed by :attr:`timestamps`."""
+        return self._series("Velocity Total", "Velocity Total")
 
 
-class CrossSectionResultsDSS(_CrossSectionResultsBase):
+class CrossSectionOutputResults(_CrossSectionResultsBase):
     """Geometry *and* results for one XS from the **DSS Hydrograph Output** block.
 
-    Corresponds to :attr:`UnsteadyPlan.cross_sections_output`
-    (hydrograph output interval).
+    Returned by ``plan.cross_sections("output")[key]``.
     Available datasets: ``wse``, ``flow``, ``flow_cumulative``.
 
     Parameters
@@ -2823,30 +2830,88 @@ class CrossSectionResultsDSS(_CrossSectionResultsBase):
         Column index of this XS in the ``(n_t, n_xs)`` result datasets.
     root:
         HDF path prefix -- ``_DSS_XS``.
+    timestamps:
+        DSS hydrograph output timestamps from the parent collection.
     """
 
     @property
-    def flow_cumulative(self) -> np.ndarray:
-        """Cumulative flow volume time series.  Shape ``(n_t,)``."""
-        return self._load("Flow Volume Cumulative")
+    def wse(self) -> pd.Series:
+        """Water surface elevation time series, indexed by :attr:`timestamps`."""
+        return self._series("Water Surface", "Water Surface")
+
+    @property
+    def flow(self) -> pd.Series:
+        """Flow time series, indexed by :attr:`timestamps`."""
+        return self._series("Flow", "Flow")
+
+    @property
+    def flow_cumulative(self) -> pd.Series:
+        """Cumulative flow volume time series, indexed by :attr:`timestamps`."""
+        return self._series("Flow Volume Cumulative", "Flow Volume Cumulative")
 
 
-class CrossSectionResultsInstantaneous(_CrossSectionResultsBase):
+def _resolve_inst_dataset(hdf: h5py.File, root: str, variable: str) -> str:
+    """Resolve *variable* to an HDF path relative to *root*.
+
+    Tries ``{root}/{variable}`` first (top-level: ``Water Surface``, ``Flow``,
+    ``Energy Grade``), then ``{root}/Additional Variables/{variable}``.
+
+    Parameters
+    ----------
+    hdf:
+        Open ``h5py.File``.
+    root:
+        HDF path prefix for the Post Process Profiles XS group.
+    variable:
+        Dataset name without subgroup prefix, e.g. ``"Water Surface"``,
+        ``"Velocity Channel"``.
+
+    Returns
+    -------
+    str
+        Path component to append to *root* (e.g. ``"Water Surface"`` or
+        ``"Additional Variables/Velocity Channel"``).
+
+    Raises
+    ------
+    KeyError
+        If *variable* is not found in either location.
+    """
+    if hdf.get(f"{root}/{variable}") is not None:
+        return variable
+    av = f"Additional Variables/{variable}"
+    if hdf.get(f"{root}/{av}") is not None:
+        return av
+    raise KeyError(
+        f"Variable {variable!r} not found at '{root}/{variable}' "
+        f"or '{root}/{av}'."
+    )
+
+
+class CrossSectionInstantaneousResults(_CrossSectionResultsBase):
     """Geometry *and* results for one XS from the **Post Process Profiles** block.
 
-    Corresponds to :attr:`UnsteadyPlan.cross_sections_instantaneous`.
+    Returned by ``plan.cross_sections("instantaneous")[key]``.
 
-    All result arrays have shape ``(n_profiles,)`` where index ``0`` is the
-    **Max WS** profile and indices ``1:`` are the instantaneous profiles
-    written at the instantaneous interval.  Use
-    :attr:`UnsteadyPlan.instantaneous_timestamps` for the datetime index of
-    indices ``1:``.
+    Named properties expose every variable as a time-indexed ``pd.Series``
+    (timeseries only — the Max WS envelope row is excluded).  The shape and
+    index type are identical to :class:`CrossSectionMappingResults` and
+    :class:`CrossSectionOutputResults`::
 
-    Available top-level datasets: ``water_surface``, ``flow``,
-    ``energy_grade``.  All ``Additional Variables`` sub-group datasets are
-    exposed as named properties (e.g. :attr:`flow_total`,
-    :attr:`velocity_channel`) and are also reachable via
-    :meth:`additional_variable` for programmatic access.
+        xs = plan.cross_sections("instantaneous")["Butte Cr Upper 7"]
+        xs = plan.cross_sections("instantaneous")[0]
+        xs.wse               # pd.Series, index=pd.DatetimeIndex
+        xs.flow              # pd.Series, index=pd.DatetimeIndex
+        xs.velocity_channel  # pd.Series, index=pd.DatetimeIndex
+
+    To access the Max WS envelope value for a specific variable, use the
+    parent collection::
+
+        coll = plan.cross_sections("instantaneous")
+        coll.wse()["max_wse"].loc[(river, reach, rs)]
+
+    For multi-XS access prefer the collection's :meth:`profile_table` or named
+    methods (one bulk HDF read vs. one read per property call here).
 
     Parameters
     ----------
@@ -2858,318 +2923,341 @@ class CrossSectionResultsInstantaneous(_CrossSectionResultsBase):
         Column index of this XS in the ``(n_profiles, n_xs)`` result datasets.
     root:
         HDF path prefix -- ``_POSTPROC_XS``.
+    timestamps:
+        Instantaneous profile timestamps from the parent collection
+        (Max WS excluded, length ``n``).
     """
 
     # ------------------------------------------------------------------
-    # Top-level datasets
+    # Private helper
     # ------------------------------------------------------------------
 
-    @property
-    def energy_grade(self) -> np.ndarray:
-        """Energy grade line elevation (m).  Shape ``(n_profiles,)``.
+    def _series_inst(self, variable: str, name: str) -> pd.Series:
+        """Read one variable for this XS; return a time-indexed pd.Series.
 
-        Index 0 = Max WS profile; indices 1: = instantaneous profiles.
+        Skips HDF row 0 (Max WS envelope).  One direct column slice per call.
         """
-        return self._load("Energy Grade")
+        dataset = _resolve_inst_dataset(self._hdf, self._root, variable)
+        col = np.array(self._hdf[f"{self._root}/{dataset}"][1:, self._index])
+        return pd.Series(col, index=self.timestamps, name=name)
 
     # ------------------------------------------------------------------
-    # Additional Variables -- generic accessor
-    # ------------------------------------------------------------------
-
-    def additional_variable(self, name: str) -> np.ndarray:
-        """Load one column from the ``Additional Variables`` sub-group.
-
-        Parameters
-        ----------
-        name:
-            Dataset name inside ``Additional Variables/``, e.g.
-            ``"Flow Total"``, ``"Velocity Channel"``, ``"Conveyance Total"``.
-
-        Returns
-        -------
-        ndarray, shape ``(n_profiles,)``
-            Index 0 = Max WS profile; indices 1: = instantaneous profiles.
-
-        Raises
-        ------
-        KeyError
-            If *name* is not present in ``Additional Variables/``.
-        """
-        return self._load(f"Additional Variables/{name}")
-
-    # ------------------------------------------------------------------
-    # Additional Variables -- explicit properties
-    # Each delegates to additional_variable() so caching is shared.
+    # Named properties — top-level datasets
     # ------------------------------------------------------------------
 
     @property
-    def alpha(self) -> np.ndarray:
-        """Velocity-head correction factor alpha.  Shape ``(n_profiles,)``."""
-        return self.additional_variable("Alpha")
+    def wse(self) -> pd.Series:
+        """Water-surface elevation time series, indexed by :attr:`timestamps`."""
+        return self._series_inst("Water Surface", "Water Surface")
 
     @property
-    def beta(self) -> np.ndarray:
-        """Momentum correction factor beta.  Shape ``(n_profiles,)``."""
-        return self.additional_variable("Beta")
+    def flow(self) -> pd.Series:
+        """Flow time series, indexed by :attr:`timestamps`."""
+        return self._series_inst("Flow", "Flow")
 
     @property
-    def flow_area_channel(self) -> np.ndarray:
-        """Channel flow area (m^2).  Shape ``(n_profiles,)``."""
-        return self.additional_variable("Area Flow Channel")
+    def energy_grade(self) -> pd.Series:
+        """Energy grade line elevation time series, indexed by :attr:`timestamps`."""
+        return self._series_inst("Energy Grade", "Energy Grade")
+
+    # ------------------------------------------------------------------
+    # Named properties — Additional Variables
+    # ------------------------------------------------------------------
 
     @property
-    def flow_area_left_ob(self) -> np.ndarray:
-        """Left overbank flow area (m^2).  Shape ``(n_profiles,)``."""
-        return self.additional_variable("Area Flow Left OB")
+    def alpha(self) -> pd.Series:
+        """Velocity-head correction factor alpha, indexed by :attr:`timestamps`."""
+        return self._series_inst("Alpha", "Alpha")
 
     @property
-    def flow_area_right_ob(self) -> np.ndarray:
-        """Right overbank flow area (m^2).  Shape ``(n_profiles,)``."""
-        return self.additional_variable("Area Flow Right OB")
+    def beta(self) -> pd.Series:
+        """Momentum correction factor beta, indexed by :attr:`timestamps`."""
+        return self._series_inst("Beta", "Beta")
 
     @property
-    def flow_area_total(self) -> np.ndarray:
-        """Total flow area (m^2).  Shape ``(n_profiles,)``."""
-        return self.additional_variable("Area Flow Total")
+    def flow_area_channel(self) -> pd.Series:
+        """Channel flow area time series (m²), indexed by :attr:`timestamps`."""
+        return self._series_inst("Area Flow Channel", "Area Flow Channel")
 
     @property
-    def ineffective_area_channel(self) -> np.ndarray:
-        """Channel area including ineffective zones (m^2).  Shape ``(n_profiles,)``."""
-        return self.additional_variable("Area including Ineffective Channel")
+    def flow_area_left_ob(self) -> pd.Series:
+        """Left overbank flow area time series (m²), indexed by :attr:`timestamps`."""
+        return self._series_inst("Area Flow Left OB", "Area Flow Left OB")
 
     @property
-    def ineffective_area_left_ob(self) -> np.ndarray:
-        """Left overbank area including ineffective zones (m^2).  Shape ``(n_profiles,)``."""
-        return self.additional_variable("Area including Ineffective Left OB")
+    def flow_area_right_ob(self) -> pd.Series:
+        """Right overbank flow area time series (m²), indexed by :attr:`timestamps`."""
+        return self._series_inst("Area Flow Right OB", "Area Flow Right OB")
 
     @property
-    def ineffective_area_right_ob(self) -> np.ndarray:
-        """Right overbank area including ineffective zones (m^2).  Shape ``(n_profiles,)``."""
-        return self.additional_variable("Area including Ineffective Right OB")
+    def flow_area_total(self) -> pd.Series:
+        """Total flow area time series (m²), indexed by :attr:`timestamps`."""
+        return self._series_inst("Area Flow Total", "Area Flow Total")
 
     @property
-    def ineffective_area_total(self) -> np.ndarray:
-        """Total area including ineffective zones (m^2).  Shape ``(n_profiles,)``."""
-        return self.additional_variable("Area including Ineffective Total")
+    def ineffective_area_channel(self) -> pd.Series:
+        """Channel area including ineffective zones (m²), indexed by timestamps."""
+        return self._series_inst(
+            "Area including Ineffective Channel", "Area including Ineffective Channel"
+        )
 
     @property
-    def conveyance_channel(self) -> np.ndarray:
-        """Channel conveyance (m^3/s).  Shape ``(n_profiles,)``."""
-        return self.additional_variable("Conveyance Channel")
+    def ineffective_area_left_ob(self) -> pd.Series:
+        """Left overbank area incl. ineffective zones (m²), indexed by timestamps."""
+        return self._series_inst(
+            "Area including Ineffective Left OB", "Area including Ineffective Left OB"
+        )
 
     @property
-    def conveyance_left_ob(self) -> np.ndarray:
-        """Left overbank conveyance (m^3/s).  Shape ``(n_profiles,)``."""
-        return self.additional_variable("Conveyance Left OB")
+    def ineffective_area_right_ob(self) -> pd.Series:
+        """Right overbank area incl. ineffective zones (m²), indexed by timestamps."""
+        return self._series_inst(
+            "Area including Ineffective Right OB", "Area including Ineffective Right OB"
+        )
 
     @property
-    def conveyance_right_ob(self) -> np.ndarray:
-        """Right overbank conveyance (m^3/s).  Shape ``(n_profiles,)``."""
-        return self.additional_variable("Conveyance Right OB")
+    def ineffective_area_total(self) -> pd.Series:
+        """Total area incl. ineffective zones (m²), indexed by timestamps."""
+        return self._series_inst(
+            "Area including Ineffective Total", "Area including Ineffective Total"
+        )
 
     @property
-    def conveyance_total(self) -> np.ndarray:
-        """Total conveyance (m^3/s).  Shape ``(n_profiles,)``."""
-        return self.additional_variable("Conveyance Total")
+    def conveyance_channel(self) -> pd.Series:
+        """Channel conveyance (m³/s), indexed by :attr:`timestamps`."""
+        return self._series_inst("Conveyance Channel", "Conveyance Channel")
 
     @property
-    def critical_energy_grade(self) -> np.ndarray:
-        """Critical energy grade line elevation (m).  Shape ``(n_profiles,)``."""
-        return self.additional_variable("Critical Energy Grade")
+    def conveyance_left_ob(self) -> pd.Series:
+        """Left overbank conveyance (m³/s), indexed by :attr:`timestamps`."""
+        return self._series_inst("Conveyance Left OB", "Conveyance Left OB")
 
     @property
-    def critical_water_surface(self) -> np.ndarray:
-        """Critical water surface elevation (m).  Shape ``(n_profiles,)``."""
-        return self.additional_variable("Critical Water Surface")
+    def conveyance_right_ob(self) -> pd.Series:
+        """Right overbank conveyance (m³/s), indexed by :attr:`timestamps`."""
+        return self._series_inst("Conveyance Right OB", "Conveyance Right OB")
 
     @property
-    def energy_grade_slope(self) -> np.ndarray:
-        """Energy grade slope (m/m).  Shape ``(n_profiles,)``."""
-        return self.additional_variable("EG Slope")
+    def conveyance_total(self) -> pd.Series:
+        """Total conveyance (m³/s), indexed by :attr:`timestamps`."""
+        return self._series_inst("Conveyance Total", "Conveyance Total")
 
     @property
-    def friction_slope(self) -> np.ndarray:
-        """Friction slope (m/m).  Shape ``(n_profiles,)``."""
-        return self.additional_variable("Friction Slope")
+    def critical_energy_grade(self) -> pd.Series:
+        """Critical energy grade line elevation (m), indexed by :attr:`timestamps`."""
+        return self._series_inst("Critical Energy Grade", "Critical Energy Grade")
 
     @property
-    def flow_channel(self) -> np.ndarray:
-        """Channel flow (m^3/s).  Shape ``(n_profiles,)``."""
-        return self.additional_variable("Flow Channel")
+    def critical_water_surface(self) -> pd.Series:
+        """Critical water surface elevation (m), indexed by :attr:`timestamps`."""
+        return self._series_inst("Critical Water Surface", "Critical Water Surface")
 
     @property
-    def flow_left_ob(self) -> np.ndarray:
-        """Left overbank flow (m^3/s).  Shape ``(n_profiles,)``."""
-        return self.additional_variable("Flow Left OB")
+    def energy_grade_slope(self) -> pd.Series:
+        """Energy grade slope (m/m), indexed by :attr:`timestamps`."""
+        return self._series_inst("EG Slope", "EG Slope")
 
     @property
-    def flow_right_ob(self) -> np.ndarray:
-        """Right overbank flow (m^3/s).  Shape ``(n_profiles,)``."""
-        return self.additional_variable("Flow Right OB")
+    def friction_slope(self) -> pd.Series:
+        """Friction slope (m/m), indexed by :attr:`timestamps`."""
+        return self._series_inst("Friction Slope", "Friction Slope")
 
     @property
-    def flow_total(self) -> np.ndarray:
-        """Total flow (m^3/s).  Shape ``(n_profiles,)``."""
-        return self.additional_variable("Flow Total")
+    def flow_channel(self) -> pd.Series:
+        """Channel flow (m³/s), indexed by :attr:`timestamps`."""
+        return self._series_inst("Flow Channel", "Flow Channel")
 
     @property
-    def hydraulic_depth_channel(self) -> np.ndarray:
-        """Channel hydraulic depth (m).  Shape ``(n_profiles,)``."""
-        return self.additional_variable("Hydraulic Depth Channel")
+    def flow_left_ob(self) -> pd.Series:
+        """Left overbank flow (m³/s), indexed by :attr:`timestamps`."""
+        return self._series_inst("Flow Left OB", "Flow Left OB")
 
     @property
-    def hydraulic_depth_left_ob(self) -> np.ndarray:
-        """Left overbank hydraulic depth (m).  Shape ``(n_profiles,)``."""
-        return self.additional_variable("Hydraulic Depth Left OB")
+    def flow_right_ob(self) -> pd.Series:
+        """Right overbank flow (m³/s), indexed by :attr:`timestamps`."""
+        return self._series_inst("Flow Right OB", "Flow Right OB")
 
     @property
-    def hydraulic_depth_right_ob(self) -> np.ndarray:
-        """Right overbank hydraulic depth (m).  Shape ``(n_profiles,)``."""
-        return self.additional_variable("Hydraulic Depth Right OB")
+    def flow_total(self) -> pd.Series:
+        """Total flow (m³/s), indexed by :attr:`timestamps`."""
+        return self._series_inst("Flow Total", "Flow Total")
 
     @property
-    def hydraulic_depth_total(self) -> np.ndarray:
-        """Total hydraulic depth (m).  Shape ``(n_profiles,)``."""
-        return self.additional_variable("Hydraulic Depth Total")
+    def hydraulic_depth_channel(self) -> pd.Series:
+        """Channel hydraulic depth (m), indexed by :attr:`timestamps`."""
+        return self._series_inst("Hydraulic Depth Channel", "Hydraulic Depth Channel")
 
     @property
-    def hydraulic_radius_channel(self) -> np.ndarray:
-        """Channel hydraulic radius (m).  Shape ``(n_profiles,)``."""
-        return self.additional_variable("Hydraulic Radius Channel")
+    def hydraulic_depth_left_ob(self) -> pd.Series:
+        """Left overbank hydraulic depth (m), indexed by :attr:`timestamps`."""
+        return self._series_inst("Hydraulic Depth Left OB", "Hydraulic Depth Left OB")
 
     @property
-    def hydraulic_radius_left_ob(self) -> np.ndarray:
-        """Left overbank hydraulic radius (m).  Shape ``(n_profiles,)``."""
-        return self.additional_variable("Hydraulic Radius Left OB")
+    def hydraulic_depth_right_ob(self) -> pd.Series:
+        """Right overbank hydraulic depth (m), indexed by :attr:`timestamps`."""
+        return self._series_inst(
+            "Hydraulic Depth Right OB", "Hydraulic Depth Right OB"
+        )
 
     @property
-    def hydraulic_radius_right_ob(self) -> np.ndarray:
-        """Right overbank hydraulic radius (m).  Shape ``(n_profiles,)``."""
-        return self.additional_variable("Hydraulic Radius Right OB")
+    def hydraulic_depth_total(self) -> pd.Series:
+        """Total hydraulic depth (m), indexed by :attr:`timestamps`."""
+        return self._series_inst("Hydraulic Depth Total", "Hydraulic Depth Total")
 
     @property
-    def hydraulic_radius_total(self) -> np.ndarray:
-        """Total hydraulic radius (m).  Shape ``(n_profiles,)``."""
-        return self.additional_variable("Hydraulic Radius Total")
+    def hydraulic_radius_channel(self) -> pd.Series:
+        """Channel hydraulic radius (m), indexed by :attr:`timestamps`."""
+        return self._series_inst("Hydraulic Radius Channel", "Hydraulic Radius Channel")
 
     @property
-    def mannings_n_channel(self) -> np.ndarray:
-        """Weighted/composite channel Manning's n.  Shape ``(n_profiles,)``."""
-        return self.additional_variable("Manning n Channel")
+    def hydraulic_radius_left_ob(self) -> pd.Series:
+        """Left overbank hydraulic radius (m), indexed by :attr:`timestamps`."""
+        return self._series_inst(
+            "Hydraulic Radius Left OB", "Hydraulic Radius Left OB"
+        )
 
     @property
-    def mannings_n_left_ob(self) -> np.ndarray:
-        """Left overbank Manning's n.  Shape ``(n_profiles,)``."""
-        return self.additional_variable("Manning n Left OB")
+    def hydraulic_radius_right_ob(self) -> pd.Series:
+        """Right overbank hydraulic radius (m), indexed by :attr:`timestamps`."""
+        return self._series_inst(
+            "Hydraulic Radius Right OB", "Hydraulic Radius Right OB"
+        )
 
     @property
-    def mannings_n_right_ob(self) -> np.ndarray:
-        """Right overbank Manning's n.  Shape ``(n_profiles,)``."""
-        return self.additional_variable("Manning n Right OB")
+    def hydraulic_radius_total(self) -> pd.Series:
+        """Total hydraulic radius (m), indexed by :attr:`timestamps`."""
+        return self._series_inst("Hydraulic Radius Total", "Hydraulic Radius Total")
 
     @property
-    def mannings_n_total(self) -> np.ndarray:
-        """Total weighted Manning's n.  Shape ``(n_profiles,)``."""
-        return self.additional_variable("Manning n Total")
+    def mannings_n_channel(self) -> pd.Series:
+        """Weighted channel Manning's n, indexed by :attr:`timestamps`."""
+        return self._series_inst("Manning n Channel", "Manning n Channel")
 
     @property
-    def max_depth_total(self) -> np.ndarray:
-        """Total maximum water depth (m).  Shape ``(n_profiles,)``."""
-        return self.additional_variable("Maximum Depth Total")
+    def mannings_n_left_ob(self) -> pd.Series:
+        """Left overbank Manning's n, indexed by :attr:`timestamps`."""
+        return self._series_inst("Manning n Left OB", "Manning n Left OB")
 
     @property
-    def shear(self) -> np.ndarray:
-        """Bed shear stress (N/m^2).  Shape ``(n_profiles,)``."""
-        return self.additional_variable("Shear")
+    def mannings_n_right_ob(self) -> pd.Series:
+        """Right overbank Manning's n, indexed by :attr:`timestamps`."""
+        return self._series_inst("Manning n Right OB", "Manning n Right OB")
 
     @property
-    def top_width_channel(self) -> np.ndarray:
-        """Channel top width (m).  Shape ``(n_profiles,)``."""
-        return self.additional_variable("Top Width Channel")
+    def mannings_n_total(self) -> pd.Series:
+        """Total weighted Manning's n, indexed by :attr:`timestamps`."""
+        return self._series_inst("Manning n Total", "Manning n Total")
 
     @property
-    def top_width_channel_with_ineffective(self) -> np.ndarray:
-        """Channel top width including ineffective areas (m).  Shape ``(n_profiles,)``."""
-        return self.additional_variable("Top Width Channel including Ineffective")
+    def max_depth_total(self) -> pd.Series:
+        """Total maximum water depth (m), indexed by :attr:`timestamps`."""
+        return self._series_inst("Maximum Depth Total", "Maximum Depth Total")
 
     @property
-    def top_width_left_ob(self) -> np.ndarray:
-        """Left overbank top width (m).  Shape ``(n_profiles,)``."""
-        return self.additional_variable("Top Width Left OB")
+    def shear(self) -> pd.Series:
+        """Bed shear stress (N/m²), indexed by :attr:`timestamps`."""
+        return self._series_inst("Shear", "Shear")
 
     @property
-    def top_width_left_ob_with_ineffective(self) -> np.ndarray:
-        """Left overbank top width including ineffective areas (m).  Shape ``(n_profiles,)``."""
-        return self.additional_variable("Top Width Left OB including Ineffective")
+    def top_width_channel(self) -> pd.Series:
+        """Channel top width (m), indexed by :attr:`timestamps`."""
+        return self._series_inst("Top Width Channel", "Top Width Channel")
 
     @property
-    def top_width_right_ob(self) -> np.ndarray:
-        """Right overbank top width (m).  Shape ``(n_profiles,)``."""
-        return self.additional_variable("Top Width Right OB")
+    def top_width_channel_with_ineffective(self) -> pd.Series:
+        """Channel top width incl. ineffective areas (m), indexed by timestamps."""
+        return self._series_inst(
+            "Top Width Channel including Ineffective",
+            "Top Width Channel including Ineffective",
+        )
 
     @property
-    def top_width_right_ob_with_ineffective(self) -> np.ndarray:
-        """Right overbank top width including ineffective areas (m).  Shape ``(n_profiles,)``."""
-        return self.additional_variable("Top Width Right OB including Ineffective")
+    def top_width_left_ob(self) -> pd.Series:
+        """Left overbank top width (m), indexed by :attr:`timestamps`."""
+        return self._series_inst("Top Width Left OB", "Top Width Left OB")
 
     @property
-    def top_width_total(self) -> np.ndarray:
-        """Total top width (m).  Shape ``(n_profiles,)``."""
-        return self.additional_variable("Top Width Total")
+    def top_width_left_ob_with_ineffective(self) -> pd.Series:
+        """Left OB top width incl. ineffective areas (m), indexed by timestamps."""
+        return self._series_inst(
+            "Top Width Left OB including Ineffective",
+            "Top Width Left OB including Ineffective",
+        )
 
     @property
-    def top_width_total_with_ineffective(self) -> np.ndarray:
-        """Total top width including ineffective areas (m).  Shape ``(n_profiles,)``."""
-        return self.additional_variable("Top Width Total including Ineffective")
+    def top_width_right_ob(self) -> pd.Series:
+        """Right overbank top width (m), indexed by :attr:`timestamps`."""
+        return self._series_inst("Top Width Right OB", "Top Width Right OB")
 
     @property
-    def velocity_channel(self) -> np.ndarray:
-        """Channel velocity (m/s).  Shape ``(n_profiles,)``."""
-        return self.additional_variable("Velocity Channel")
+    def top_width_right_ob_with_ineffective(self) -> pd.Series:
+        """Right OB top width incl. ineffective areas (m), indexed by timestamps."""
+        return self._series_inst(
+            "Top Width Right OB including Ineffective",
+            "Top Width Right OB including Ineffective",
+        )
 
     @property
-    def velocity_left_ob(self) -> np.ndarray:
-        """Left overbank velocity (m/s).  Shape ``(n_profiles,)``."""
-        return self.additional_variable("Velocity Left OB")
+    def top_width_total(self) -> pd.Series:
+        """Total top width (m), indexed by :attr:`timestamps`."""
+        return self._series_inst("Top Width Total", "Top Width Total")
 
     @property
-    def velocity_right_ob(self) -> np.ndarray:
-        """Right overbank velocity (m/s).  Shape ``(n_profiles,)``."""
-        return self.additional_variable("Velocity Right OB")
+    def top_width_total_with_ineffective(self) -> pd.Series:
+        """Total top width incl. ineffective areas (m), indexed by timestamps."""
+        return self._series_inst(
+            "Top Width Total including Ineffective",
+            "Top Width Total including Ineffective",
+        )
 
     @property
-    def velocity_total(self) -> np.ndarray:
-        """Total velocity (m/s).  Shape ``(n_profiles,)``."""
-        return self.additional_variable("Velocity Total")
+    def velocity_channel(self) -> pd.Series:
+        """Channel velocity (m/s), indexed by :attr:`timestamps`."""
+        return self._series_inst("Velocity Channel", "Velocity Channel")
 
     @property
-    def wse_total(self) -> np.ndarray:
-        """Total stage / water surface elevation (m).  Shape ``(n_profiles,)``.
-
-        Sourced from ``Additional Variables/Water Surface Total``.  Equivalent
-        to :attr:`wse` for most configurations.
-        """
-        return self.additional_variable("Water Surface Total")
+    def velocity_left_ob(self) -> pd.Series:
+        """Left overbank velocity (m/s), indexed by :attr:`timestamps`."""
+        return self._series_inst("Velocity Left OB", "Velocity Left OB")
 
     @property
-    def wetted_perimeter_channel(self) -> np.ndarray:
-        """Channel wetted perimeter (m).  Shape ``(n_profiles,)``."""
-        return self.additional_variable("Wetted Perimeter Channel")
+    def velocity_right_ob(self) -> pd.Series:
+        """Right overbank velocity (m/s), indexed by :attr:`timestamps`."""
+        return self._series_inst("Velocity Right OB", "Velocity Right OB")
 
     @property
-    def wetted_perimeter_left_ob(self) -> np.ndarray:
-        """Left overbank wetted perimeter (m).  Shape ``(n_profiles,)``."""
-        return self.additional_variable("Wetted Perimeter Left OB")
+    def velocity_total(self) -> pd.Series:
+        """Total velocity (m/s), indexed by :attr:`timestamps`."""
+        return self._series_inst("Velocity Total", "Velocity Total")
 
     @property
-    def wetted_perimeter_right_ob(self) -> np.ndarray:
-        """Right overbank wetted perimeter (m).  Shape ``(n_profiles,)``."""
-        return self.additional_variable("Wetted Perimeter Right OB")
+    def wse_total(self) -> pd.Series:
+        """Total WSE from Additional Variables (m), indexed by :attr:`timestamps`."""
+        return self._series_inst("Water Surface Total", "Water Surface Total")
 
     @property
-    def wetted_perimeter_total(self) -> np.ndarray:
-        """Total wetted perimeter (m).  Shape ``(n_profiles,)``."""
-        return self.additional_variable("Wetted Perimeter Total")
+    def wetted_perimeter_channel(self) -> pd.Series:
+        """Channel wetted perimeter (m), indexed by :attr:`timestamps`."""
+        return self._series_inst("Wetted Perimeter Channel", "Wetted Perimeter Channel")
+
+    @property
+    def wetted_perimeter_left_ob(self) -> pd.Series:
+        """Left overbank wetted perimeter (m), indexed by :attr:`timestamps`."""
+        return self._series_inst(
+            "Wetted Perimeter Left OB", "Wetted Perimeter Left OB"
+        )
+
+    @property
+    def wetted_perimeter_right_ob(self) -> pd.Series:
+        """Right overbank wetted perimeter (m), indexed by :attr:`timestamps`."""
+        return self._series_inst(
+            "Wetted Perimeter Right OB", "Wetted Perimeter Right OB"
+        )
+
+    @property
+    def wetted_perimeter_total(self) -> pd.Series:
+        """Total wetted perimeter (m), indexed by :attr:`timestamps`."""
+        return self._series_inst("Wetted Perimeter Total", "Wetted Perimeter Total")
 
 
 class CrossSectionResultsCollection(CrossSectionCollection):
@@ -3188,29 +3276,55 @@ class CrossSectionResultsCollection(CrossSectionCollection):
         ``_TS_XS``, ``_DSS_XS``, or ``_POSTPROC_XS``.
     result_cls:
         Concrete result class to instantiate per cross section --
-        :class:`CrossSectionResults`,
-        :class:`CrossSectionResultsDSS`, or
-        :class:`CrossSectionResultsInstantaneous`.
+        :class:`CrossSectionMappingResults`,
+        :class:`CrossSectionOutputResults`, or
+        :class:`CrossSectionInstantaneousResults`.
     attrs_path:
         HDF path to the ``Cross Section Attributes`` structured array used
         to map ``(river, reach, station)`` -> column index.  Defaults to
         ``f"{root}/Cross Section Attributes"``, which is correct for Base
         Output and DSS blocks.  Pass ``_POSTPROC_GEOM_ATTRS`` for the Post
         Process block, where attributes live outside the XS result group.
+    timestamps_fn:
+        Zero-argument callable that returns the ``pd.DatetimeIndex`` for
+        this block.  Resolved lazily on first access; the result is cached
+        on :attr:`timestamps`.
     """
 
     def __init__(
         self,
         hdf: "h5py.File",
         root: str,
-        result_cls: type[_CrossSectionResultsBase] = CrossSectionResults,
+        result_cls: type[_CrossSectionResultsBase] = CrossSectionMappingResults,
         attrs_path: str | None = None,
+        timestamps_fn: Callable[[], pd.DatetimeIndex] | None = None,
     ) -> None:
         super().__init__(hdf)
         self._root = root
         self._result_cls = result_cls
         self._attrs_path = attrs_path or f"{root}/Cross Section Attributes"
         self._result_items: dict[str, _CrossSectionResultsBase] | None = None
+        self._timestamps_fn = timestamps_fn
+        self._timestamps: pd.DatetimeIndex | None = None
+
+    @property
+    def timestamps(self) -> pd.DatetimeIndex:
+        """Timestamps for this result block as a ``pd.DatetimeIndex``.
+
+        Resolved lazily from the callable passed at construction time.
+
+        Raises
+        ------
+        AttributeError
+            If no ``timestamps_fn`` was supplied.
+        """
+        if self._timestamps is None:
+            if self._timestamps_fn is None:
+                raise AttributeError(
+                    "No timestamps_fn was supplied for this collection."
+                )
+            self._timestamps = self._timestamps_fn()
+        return self._timestamps
 
     def _load_results(self) -> dict[str, _CrossSectionResultsBase]:
         if self._result_items is not None:
@@ -3233,11 +3347,14 @@ class CrossSectionResultsCollection(CrossSectionCollection):
             st = _decode(row["Station"]) if "Station" in fn else ""
             result_index[(r, rc, st)] = i
 
+        ts = self.timestamps
         items: dict[str, _CrossSectionResultsBase] = {}
         for key, geom in geom_items.items():
             idx = result_index.get((geom.river, geom.reach, geom.rs))
             if idx is not None:
-                items[key] = self._result_cls(geom, self._hdf, idx, self._root)
+                items[key] = self._result_cls(
+                    geom, self._hdf, idx, self._root, ts
+                )
 
         self._result_items = items
         return self._result_items
@@ -3292,6 +3409,377 @@ class CrossSectionResultsCollection(CrossSectionCollection):
             Keys of the form ``"<river> <reach> <station>"``.
         """
         return list(self._load_results().keys())
+
+
+class InstantaneousResultsCollection(CrossSectionResultsCollection):
+    """Cross-section results for the **Post Process Profiles** block.
+
+    Returned by ``plan.cross_sections("instantaneous")``.
+
+    All result data is read through this collection rather than through
+    per-XS objects.  The generic engine is :meth:`profile_table`; named
+    convenience methods (``wse``, ``flow``, ``velocity_channel``, …)
+    delegate to it.
+
+    The profile axis of every returned ``pd.DataFrame`` is labeled
+    ``["max_wse", 0, 1, …, n-1]`` where ``"max_wse"`` is the Max WS
+    envelope (HDF index 0) and integers ``0 … n-1`` are the instantaneous
+    profiles aligned with :attr:`~CrossSectionResultsCollection.timestamps`.
+
+    Parameters
+    ----------
+    hdf:
+        Open ``h5py.File`` handle.
+    root:
+        HDF path prefix -- ``_POSTPROC_XS``.
+    result_cls:
+        :class:`CrossSectionInstantaneousResults` (geometry carrier).
+    attrs_path:
+        ``_POSTPROC_GEOM_ATTRS`` (attributes live outside the XS group).
+    timestamps_fn:
+        Callable returning ``instantaneous_timestamps``.
+    """
+
+    # ------------------------------------------------------------------
+    # Engine
+    # ------------------------------------------------------------------
+
+    def _resolve_dataset(self, variable: str) -> str:
+        """Resolve *variable* to an HDF path relative to ``self._root``.
+
+        Delegates to :func:`_resolve_inst_dataset`.
+
+        Parameters
+        ----------
+        variable:
+            Dataset name, e.g. ``"Water Surface"``, ``"Velocity Channel"``.
+
+        Returns
+        -------
+        str
+            Path component to append to ``self._root``.
+
+        Raises
+        ------
+        KeyError
+            If *variable* is not found in either location.
+        """
+        return _resolve_inst_dataset(self._hdf, self._root, variable)
+
+    def profile_table(self, variable: str) -> pd.DataFrame:
+        """Return a location × profiles ``pd.DataFrame`` for one variable.
+
+        Reads the full ``(n_profiles, n_xs)`` HDF dataset in a single call
+        and selects only the columns belonging to cross sections present in
+        this collection.
+
+        Parameters
+        ----------
+        variable:
+            Dataset name, e.g. ``"Water Surface"``, ``"Velocity Channel"``,
+            ``"Flow Total"``.  Resolved with friendly fallback: the literal
+            name is tried first, then ``Additional Variables/<variable>``.
+
+        Returns
+        -------
+        pd.DataFrame
+            * **Index** — ``pd.MultiIndex`` with levels ``(River, Reach, RS)``,
+              one row per cross section in collection order.
+            * **Columns** — ``["max_wse", 0, 1, …, n-1]``.  ``"max_wse"``
+              is the Max WS envelope (HDF row 0); integers map 1-to-1 into
+              :attr:`~CrossSectionResultsCollection.timestamps`.
+            * **Values** — ``float``.
+
+        Raises
+        ------
+        KeyError
+            If *variable* is not found in the HDF.
+        ValueError
+            If the profile count in the HDF does not match
+            ``len(timestamps) + 1``.
+        """
+        items = self._load_results()
+        if not items:
+            return pd.DataFrame()
+
+        dataset = self._resolve_dataset(variable)
+        if not hasattr(self, "_array_cache"):
+            self._array_cache: dict[str, np.ndarray] = {}
+        if dataset not in self._array_cache:
+            self._array_cache[dataset] = np.asarray(
+                self._hdf[f"{self._root}/{dataset}"]
+            )
+        data = self._array_cache[dataset]  # (n_profiles, n_xs)
+
+        results = list(items.values())
+        values = data[:, [r._index for r in results]].T  # (n_xs, n_profiles)
+
+        index = pd.MultiIndex.from_tuples(
+            [(r.river, r.reach, r.rs) for r in results],
+            names=["River", "Reach", "RS"],
+        )
+
+        n_ts = len(self.timestamps)
+        if data.shape[0] == n_ts + 1:
+            columns: list | pd.Index = ["max_wse", *range(n_ts)]
+        elif data.shape[0] == n_ts:
+            columns = self.timestamps
+        else:
+            raise ValueError(
+                f"{dataset!r} has {data.shape[0]} profiles; expected "
+                f"{n_ts + 1} (instantaneous + Max WS) from timestamps."
+            )
+        return pd.DataFrame(values, index=index, columns=columns)
+
+    # ------------------------------------------------------------------
+    # Named accessors -- top-level datasets
+    # ------------------------------------------------------------------
+
+    def wse(self) -> pd.DataFrame:
+        """Water-surface elevation, location × profiles (m).
+
+        Returns
+        -------
+        pd.DataFrame
+            Columns ``["max_wse", 0, 1, …]``.
+        """
+        return self.profile_table("Water Surface")
+
+    def flow(self) -> pd.DataFrame:
+        """Flow, location × profiles (m³/s).
+
+        Returns
+        -------
+        pd.DataFrame
+            Columns ``["max_wse", 0, 1, …]``.
+        """
+        return self.profile_table("Flow")
+
+    def energy_grade(self) -> pd.DataFrame:
+        """Energy grade line elevation, location × profiles (m).
+
+        Returns
+        -------
+        pd.DataFrame
+            Columns ``["max_wse", 0, 1, …]``.
+        """
+        return self.profile_table("Energy Grade")
+
+    # ------------------------------------------------------------------
+    # Named accessors -- Additional Variables
+    # ------------------------------------------------------------------
+
+    def alpha(self) -> pd.DataFrame:
+        """Velocity-head correction factor alpha, location × profiles."""
+        return self.profile_table("Alpha")
+
+    def beta(self) -> pd.DataFrame:
+        """Momentum correction factor beta, location × profiles."""
+        return self.profile_table("Beta")
+
+    def flow_area_channel(self) -> pd.DataFrame:
+        """Channel flow area, location × profiles (m²)."""
+        return self.profile_table("Area Flow Channel")
+
+    def flow_area_left_ob(self) -> pd.DataFrame:
+        """Left overbank flow area, location × profiles (m²)."""
+        return self.profile_table("Area Flow Left OB")
+
+    def flow_area_right_ob(self) -> pd.DataFrame:
+        """Right overbank flow area, location × profiles (m²)."""
+        return self.profile_table("Area Flow Right OB")
+
+    def flow_area_total(self) -> pd.DataFrame:
+        """Total flow area, location × profiles (m²)."""
+        return self.profile_table("Area Flow Total")
+
+    def ineffective_area_channel(self) -> pd.DataFrame:
+        """Channel area including ineffective zones, location × profiles (m²)."""
+        return self.profile_table("Area including Ineffective Channel")
+
+    def ineffective_area_left_ob(self) -> pd.DataFrame:
+        """Left overbank area including ineffective zones, location × profiles (m²)."""
+        return self.profile_table("Area including Ineffective Left OB")
+
+    def ineffective_area_right_ob(self) -> pd.DataFrame:
+        """Right overbank area including ineffective zones, location × profiles (m²)."""
+        return self.profile_table("Area including Ineffective Right OB")
+
+    def ineffective_area_total(self) -> pd.DataFrame:
+        """Total area including ineffective zones, location × profiles (m²)."""
+        return self.profile_table("Area including Ineffective Total")
+
+    def conveyance_channel(self) -> pd.DataFrame:
+        """Channel conveyance, location × profiles (m³/s)."""
+        return self.profile_table("Conveyance Channel")
+
+    def conveyance_left_ob(self) -> pd.DataFrame:
+        """Left overbank conveyance, location × profiles (m³/s)."""
+        return self.profile_table("Conveyance Left OB")
+
+    def conveyance_right_ob(self) -> pd.DataFrame:
+        """Right overbank conveyance, location × profiles (m³/s)."""
+        return self.profile_table("Conveyance Right OB")
+
+    def conveyance_total(self) -> pd.DataFrame:
+        """Total conveyance, location × profiles (m³/s)."""
+        return self.profile_table("Conveyance Total")
+
+    def critical_energy_grade(self) -> pd.DataFrame:
+        """Critical energy grade line elevation, location × profiles (m)."""
+        return self.profile_table("Critical Energy Grade")
+
+    def critical_water_surface(self) -> pd.DataFrame:
+        """Critical water surface elevation, location × profiles (m)."""
+        return self.profile_table("Critical Water Surface")
+
+    def energy_grade_slope(self) -> pd.DataFrame:
+        """Energy grade slope, location × profiles (m/m)."""
+        return self.profile_table("EG Slope")
+
+    def friction_slope(self) -> pd.DataFrame:
+        """Friction slope, location × profiles (m/m)."""
+        return self.profile_table("Friction Slope")
+
+    def flow_channel(self) -> pd.DataFrame:
+        """Channel flow, location × profiles (m³/s)."""
+        return self.profile_table("Flow Channel")
+
+    def flow_left_ob(self) -> pd.DataFrame:
+        """Left overbank flow, location × profiles (m³/s)."""
+        return self.profile_table("Flow Left OB")
+
+    def flow_right_ob(self) -> pd.DataFrame:
+        """Right overbank flow, location × profiles (m³/s)."""
+        return self.profile_table("Flow Right OB")
+
+    def flow_total(self) -> pd.DataFrame:
+        """Total flow, location × profiles (m³/s)."""
+        return self.profile_table("Flow Total")
+
+    def hydraulic_depth_channel(self) -> pd.DataFrame:
+        """Channel hydraulic depth, location × profiles (m)."""
+        return self.profile_table("Hydraulic Depth Channel")
+
+    def hydraulic_depth_left_ob(self) -> pd.DataFrame:
+        """Left overbank hydraulic depth, location × profiles (m)."""
+        return self.profile_table("Hydraulic Depth Left OB")
+
+    def hydraulic_depth_right_ob(self) -> pd.DataFrame:
+        """Right overbank hydraulic depth, location × profiles (m)."""
+        return self.profile_table("Hydraulic Depth Right OB")
+
+    def hydraulic_depth_total(self) -> pd.DataFrame:
+        """Total hydraulic depth, location × profiles (m)."""
+        return self.profile_table("Hydraulic Depth Total")
+
+    def hydraulic_radius_channel(self) -> pd.DataFrame:
+        """Channel hydraulic radius, location × profiles (m)."""
+        return self.profile_table("Hydraulic Radius Channel")
+
+    def hydraulic_radius_left_ob(self) -> pd.DataFrame:
+        """Left overbank hydraulic radius, location × profiles (m)."""
+        return self.profile_table("Hydraulic Radius Left OB")
+
+    def hydraulic_radius_right_ob(self) -> pd.DataFrame:
+        """Right overbank hydraulic radius, location × profiles (m)."""
+        return self.profile_table("Hydraulic Radius Right OB")
+
+    def hydraulic_radius_total(self) -> pd.DataFrame:
+        """Total hydraulic radius, location × profiles (m)."""
+        return self.profile_table("Hydraulic Radius Total")
+
+    def mannings_n_channel(self) -> pd.DataFrame:
+        """Weighted channel Manning's n, location × profiles."""
+        return self.profile_table("Manning n Channel")
+
+    def mannings_n_left_ob(self) -> pd.DataFrame:
+        """Left overbank Manning's n, location × profiles."""
+        return self.profile_table("Manning n Left OB")
+
+    def mannings_n_right_ob(self) -> pd.DataFrame:
+        """Right overbank Manning's n, location × profiles."""
+        return self.profile_table("Manning n Right OB")
+
+    def mannings_n_total(self) -> pd.DataFrame:
+        """Total weighted Manning's n, location × profiles."""
+        return self.profile_table("Manning n Total")
+
+    def max_depth_total(self) -> pd.DataFrame:
+        """Total maximum water depth, location × profiles (m)."""
+        return self.profile_table("Maximum Depth Total")
+
+    def shear(self) -> pd.DataFrame:
+        """Bed shear stress, location × profiles (N/m²)."""
+        return self.profile_table("Shear")
+
+    def top_width_channel(self) -> pd.DataFrame:
+        """Channel top width, location × profiles (m)."""
+        return self.profile_table("Top Width Channel")
+
+    def top_width_channel_with_ineffective(self) -> pd.DataFrame:
+        """Channel top width including ineffective areas, location × profiles (m)."""
+        return self.profile_table("Top Width Channel including Ineffective")
+
+    def top_width_left_ob(self) -> pd.DataFrame:
+        """Left overbank top width, location × profiles (m)."""
+        return self.profile_table("Top Width Left OB")
+
+    def top_width_left_ob_with_ineffective(self) -> pd.DataFrame:
+        """Left overbank top width incl. ineffective areas, location × profiles (m)."""
+        return self.profile_table("Top Width Left OB including Ineffective")
+
+    def top_width_right_ob(self) -> pd.DataFrame:
+        """Right overbank top width, location × profiles (m)."""
+        return self.profile_table("Top Width Right OB")
+
+    def top_width_right_ob_with_ineffective(self) -> pd.DataFrame:
+        """Right overbank top width incl. ineffective areas, location × profiles (m)."""
+        return self.profile_table("Top Width Right OB including Ineffective")
+
+    def top_width_total(self) -> pd.DataFrame:
+        """Total top width, location × profiles (m)."""
+        return self.profile_table("Top Width Total")
+
+    def top_width_total_with_ineffective(self) -> pd.DataFrame:
+        """Total top width including ineffective areas, location × profiles (m)."""
+        return self.profile_table("Top Width Total including Ineffective")
+
+    def velocity_channel(self) -> pd.DataFrame:
+        """Channel velocity, location × profiles (m/s)."""
+        return self.profile_table("Velocity Channel")
+
+    def velocity_left_ob(self) -> pd.DataFrame:
+        """Left overbank velocity, location × profiles (m/s)."""
+        return self.profile_table("Velocity Left OB")
+
+    def velocity_right_ob(self) -> pd.DataFrame:
+        """Right overbank velocity, location × profiles (m/s)."""
+        return self.profile_table("Velocity Right OB")
+
+    def velocity_total(self) -> pd.DataFrame:
+        """Total velocity, location × profiles (m/s)."""
+        return self.profile_table("Velocity Total")
+
+    def wse_total(self) -> pd.DataFrame:
+        """Total WSE from Additional Variables, location × profiles (m)."""
+        return self.profile_table("Water Surface Total")
+
+    def wetted_perimeter_channel(self) -> pd.DataFrame:
+        """Channel wetted perimeter, location × profiles (m)."""
+        return self.profile_table("Wetted Perimeter Channel")
+
+    def wetted_perimeter_left_ob(self) -> pd.DataFrame:
+        """Left overbank wetted perimeter, location × profiles (m)."""
+        return self.profile_table("Wetted Perimeter Left OB")
+
+    def wetted_perimeter_right_ob(self) -> pd.DataFrame:
+        """Right overbank wetted perimeter, location × profiles (m)."""
+        return self.profile_table("Wetted Perimeter Right OB")
+
+    def wetted_perimeter_total(self) -> pd.DataFrame:
+        """Total wetted perimeter, location × profiles (m)."""
+        return self.profile_table("Wetted Perimeter Total")
 
 
 # ---------------------------------------------------------------------------
@@ -3812,11 +4300,7 @@ class UnsteadyPlan(_PlanHdf, Geometry):
         self._plan_flow_areas: FlowAreaResultsCollection | None = None
         self._plan_storage_areas: StorageAreaResultsCollection | None = None
         self._plan_structures: StructureResultsCollection | None = None
-        self._plan_cross_sections: CrossSectionResultsCollection | None = None
-        self._plan_cross_sections_output: CrossSectionResultsCollection | None = None
-        self._plan_cross_sections_instantaneous: (
-            CrossSectionResultsCollection | None
-        ) = None
+        self._plan_cross_sections_cache: dict[str, CrossSectionResultsCollection] = {}
 
     # ------------------------------------------------------------------
     # Runtime log
@@ -4202,61 +4686,75 @@ class UnsteadyPlan(_PlanHdf, Geometry):
             self._plan_structures = StructureResultsCollection(self._hdf)
         return self._plan_structures
 
-    @property
-    def cross_sections(self) -> CrossSectionResultsCollection:
-        """1-D cross sections with geometry and Base Output results.
+    def cross_sections(
+        self,
+        output: Literal["mapping", "output", "instantaneous"] = "mapping",
+    ) -> CrossSectionResultsCollection:
+        """1-D cross sections with geometry and time-series results.
 
-        Results are at the mapping output interval
-        (:attr:`mapping_timestamps`).  All variables are available:
-        ``water_surface``, ``flow``, ``flow_lateral``,
-        ``velocity_channel``, ``velocity_total``,
-        ``flow_volume_cumulative``.
+        Parameters
+        ----------
+        output : {"mapping", "output", "instantaneous"}, optional
+            Which output block to read.
 
-        See also :attr:`cross_sections_output` for the DSS hydrograph interval
-        (fewer variables but finer timestep when DSS output was enabled).
+            ``"mapping"`` (default) — Base Output at the mapping interval.
+            Returns :class:`CrossSectionResultsCollection` whose items are
+            :class:`CrossSectionMappingResults`.  Per-XS ``pd.Series``
+            properties: ``wse``, ``flow``, ``flow_lateral``,
+            ``velocity_channel``, ``velocity_total``, ``flow_cumulative``.
+
+            ``"output"`` — DSS Hydrograph Output at the hydrograph interval.
+            Returns :class:`CrossSectionResultsCollection` whose items are
+            :class:`CrossSectionOutputResults`.  Per-XS ``pd.Series``
+            properties: ``wse``, ``flow``, ``flow_cumulative``.
+
+            ``"instantaneous"`` — Post Process Profiles.  Returns an
+            :class:`InstantaneousResultsCollection` with collection-level
+            ``profile_table(variable)`` and named methods (``wse()``,
+            ``flow()``, ``velocity_channel()``, …).  ``[key]`` returns a
+            :class:`CrossSectionInstantaneousResults` whose named properties
+            (``wse``, ``flow``, ``velocity_channel``, …) each return a
+            ``pd.Series`` indexed by ``pd.DatetimeIndex`` (timeseries only,
+            Max WS envelope excluded).
+
+        Returns
+        -------
+        CrossSectionResultsCollection
+            Collection supporting ``[key]``, integer index, and ``names``.
+            Timestamps are available as ``coll.timestamps``.
+
+        Raises
+        ------
+        ValueError
+            If *output* is not one of the three recognised values.
         """
-        if self._plan_cross_sections is None:
-            self._plan_cross_sections = CrossSectionResultsCollection(
-                self._hdf, _TS_XS, result_cls=CrossSectionResults,
-            )
-        return self._plan_cross_sections
-
-    @property
-    def cross_sections_output(self) -> CrossSectionResultsCollection:
-        """1-D cross sections with geometry and DSS Hydrograph Output results.
-
-        Items are :class:`CrossSectionResultsDSS` instances.
-        Results are at the hydrograph output interval (:attr:`output_timestamps`).
-        Available variables: ``water_surface``, ``flow``,
-        ``flow_volume_cumulative``.
-        """
-        if self._plan_cross_sections_output is None:
-            self._plan_cross_sections_output = CrossSectionResultsCollection(
-                self._hdf, _DSS_XS, result_cls=CrossSectionResultsDSS,
-            )
-        return self._plan_cross_sections_output
-
-    @property
-    def cross_sections_instantaneous(self) -> CrossSectionResultsCollection:
-        """1-D cross sections with geometry and Post Process Profiles results.
-
-        Items are :class:`CrossSectionResultsInstantaneous` instances.
-        Results are at the instantaneous profile interval
-        (:attr:`instantaneous_timestamps`).
-
-        Each result array has shape ``(n_profiles,)`` where index ``0`` is
-        the **Max WS** profile and indices ``1:`` are the instantaneous
-        profiles.  Available variables: ``water_surface``, ``flow``,
-        ``energy_grade``, plus any ``Additional Variables`` dataset via
-        :meth:`~CrossSectionResultsInstantaneous.additional_variable`.
-        """
-        if self._plan_cross_sections_instantaneous is None:
-            self._plan_cross_sections_instantaneous = CrossSectionResultsCollection(
-                self._hdf, _POSTPROC_XS,
-                result_cls=CrossSectionResultsInstantaneous,
-                attrs_path=_POSTPROC_GEOM_ATTRS,
-            )
-        return self._plan_cross_sections_instantaneous
+        if output not in self._plan_cross_sections_cache:
+            if output == "mapping":
+                coll: CrossSectionResultsCollection = CrossSectionResultsCollection(
+                    self._hdf, _TS_XS,
+                    result_cls=CrossSectionMappingResults,
+                    timestamps_fn=lambda: self.mapping_timestamps,
+                )
+            elif output == "output":
+                coll = CrossSectionResultsCollection(
+                    self._hdf, _DSS_XS,
+                    result_cls=CrossSectionOutputResults,
+                    timestamps_fn=lambda: self.output_timestamps,
+                )
+            elif output == "instantaneous":
+                coll = InstantaneousResultsCollection(
+                    self._hdf, _POSTPROC_XS,
+                    result_cls=CrossSectionInstantaneousResults,
+                    attrs_path=_POSTPROC_GEOM_ATTRS,
+                    timestamps_fn=lambda: self.instantaneous_timestamps,
+                )
+            else:
+                raise ValueError(
+                    f"output={output!r} is not valid; "
+                    "choose 'mapping', 'output', or 'instantaneous'."
+                )
+            self._plan_cross_sections_cache[output] = coll
+        return self._plan_cross_sections_cache[output]
 
     @property
     def sa2d_connections(self) -> dict[str, SA2DConnection]:

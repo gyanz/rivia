@@ -156,14 +156,26 @@ UnsteadyPlan
 │     └── .laterals      → StructureIndex[LateralResults]         keyed by "River Reach RS"
 │           each StructureIndex supports  [name | index]
 │
-├── .cross_sections      → CrossSectionResultsCollection  (mapping output interval)
-│     └── ["River Reach RS" | index | (river, reach, rs)]  → CrossSectionResults
+├── .cross_sections()              → CrossSectionResultsCollection  (mapping interval, default)
+│     └── ["River Reach RS" | index | (river, reach, rs)]  → CrossSectionMappingResults
+│           ├── .timestamps    pd.DatetimeIndex
+│           ├── .wse           pd.Series
+│           ├── .flow          pd.Series
+│           ├── .flow_lateral  pd.Series
+│           ├── .velocity_channel / .velocity_total / .flow_cumulative  pd.Series
 │
-├── .cross_sections_output         → CrossSectionResultsCollection  (DSS output interval)
-│     └── ["River Reach RS" | index | (river, reach, rs)]  → CrossSectionResultsDSS
+├── .cross_sections("output")      → CrossSectionResultsCollection  (DSS hydrograph interval)
+│     └── ["River Reach RS" | index | (river, reach, rs)]  → CrossSectionOutputResults
+│           ├── .timestamps  pd.DatetimeIndex
+│           ├── .wse / .flow / .flow_cumulative  pd.Series
 │
-└── .cross_sections_instantaneous  → CrossSectionResultsCollection  (instantaneous output interval)
-      └── ["River Reach RS" | index | (river, reach, rs)]  → CrossSectionResultsInstantaneous
+└── .cross_sections("instantaneous") → InstantaneousResultsCollection  (Post Process Profiles)
+      ├── .timestamps     pd.DatetimeIndex  (length n; maps integer profile columns 0…n-1)
+      ├── .profile_table("Water Surface")   pd.DataFrame  location × ["max_wse", 0, 1, …]
+      ├── .wse() / .flow() / .energy_grade()  (named delegates to profile_table)
+      ├── .velocity_channel() / .velocity_total() / .shear() / …  (Additional Variables)
+      └── ["River Reach RS" | index | (river, reach, rs)]  → CrossSectionInstantaneousResults
+            (geometry carrier only — no data accessors; use collection methods above)
 ```
 
 ### 2D flow areas
@@ -199,34 +211,79 @@ area.get_max_depth()                   # pd.DataFrame, max depth per cell (compu
 
 ### Cross-section results (1D)
 
-`model.results` (`UnsteadyPlan`) exposes three collections depending on which output interval you need:
+`plan.cross_sections(output)` is a single method that selects which output
+block to read via its `output` argument:
 
-| Property | Class | Interval |
+| `output=` | Collection type | Per-XS data |
 |---|---|---|
-| `.cross_sections` | `CrossSectionResults` | Mapping output interval |
-| `.cross_sections_output` | `CrossSectionResultsDSS` | DSS output interval |
-| `.cross_sections_instantaneous` | `CrossSectionResultsInstantaneous` | Instantaneous output interval |
+| `"mapping"` (default) | `CrossSectionResultsCollection` | `pd.Series` per variable |
+| `"output"` | `CrossSectionResultsCollection` | `pd.Series` per variable |
+| `"instantaneous"` | `InstantaneousResultsCollection` | collection methods only |
 
-All three collections (`cross_sections`, `cross_sections_output`, `cross_sections_instantaneous`)
-accept any of three key types:
+#### Mapping and output blocks
 
 ```python
-xs = hdf.cross_sections[0]                               # integer index (insertion order)
-xs = hdf.cross_sections["Butte Cr Upper 7"]              # "River Reach RS" joined by spaces
-xs = hdf.cross_sections[("Butte Cr", "Upper", "7")]      # (river, reach, rs) tuple
+hdf = model.results
 
-xs.water_surface_total    # np.ndarray shape (n_t,)
-xs.flow_total             # np.ndarray shape (n_t,)
-xs.velocity_total         # np.ndarray shape (n_t,)
+# mapping block (default)
+coll = hdf.cross_sections()
+xs = coll[0]                               # integer index
+xs = coll["Butte Cr Upper 7"]             # "River Reach RS" joined by spaces
+xs = coll[("Butte Cr", "Upper", "7")]     # (river, reach, rs) tuple
+
+xs.timestamps       # pd.DatetimeIndex — mapping interval
+xs.wse              # pd.Series indexed by timestamps
+xs.flow             # pd.Series
+xs.flow_lateral     # pd.Series
+xs.velocity_channel # pd.Series
+xs.velocity_total   # pd.Series
+xs.flow_cumulative  # pd.Series
+
+# DSS hydrograph block
+coll_out = hdf.cross_sections("output")
+xs_out = coll_out["Butte Cr Upper 7"]
+xs_out.timestamps   # pd.DatetimeIndex — output interval
+xs_out.wse          # pd.Series
+xs_out.flow         # pd.Series
+xs_out.flow_cumulative  # pd.Series
 ```
 
-The string key is the river, reach, and RS joined by spaces — the same
-convention used by `StructureCollection` and the DSS Hydrograph Output group
-names in the HDF.  The tuple form is more readable and avoids ambiguity when
-any component contains spaces.
+#### Instantaneous block (Post Process Profiles)
 
-RS values are stored exactly as they appear in the HDF — no stripping or
-normalisation is applied.
+The instantaneous block exposes all data through the *collection*, not per-XS
+objects. The profile axis is labeled `["max_wse", 0, 1, …, n-1]` where
+`"max_wse"` is the Max WS envelope and integers map into `coll.timestamps`.
+
+```python
+coll = hdf.cross_sections("instantaneous")
+
+# Timestamps for profiles 0…n-1 (excludes Max WS envelope)
+coll.timestamps     # pd.DatetimeIndex length n
+
+# Generic engine — returns location × profiles DataFrame
+wse = coll.profile_table("Water Surface")
+#                            max_wse     0      1      2
+# (Butte Cr, Upper, 7)        102.5   98.1   99.3  100.7
+# (Butte Cr, Upper, 6)        101.2   97.0   98.1   99.4
+
+wse["max_wse"]                        # max-WS longitudinal profile (pd.Series)
+wse[0]                                # WSE along reach at first instantaneous profile
+wse.loc[("Butte Cr", "Upper", "7")]   # all profiles for one XS (pd.Series)
+
+coll.timestamps[0]                    # datetime of profile column 0
+
+# Named convenience methods (delegate to profile_table)
+coll.wse()              # == coll.profile_table("Water Surface")
+coll.flow()             # == coll.profile_table("Flow")
+coll.energy_grade()     # == coll.profile_table("Energy Grade")
+coll.velocity_channel() # == coll.profile_table("Velocity Channel")
+coll.shear()            # == coll.profile_table("Shear")
+# … one method per variable; see InstantaneousResultsCollection for the full list
+```
+
+The string key is the river, reach, and RS joined by spaces.  The tuple form
+avoids ambiguity when any component contains spaces.  RS values are stored
+exactly as they appear in the HDF.
 
 ### Structures
 

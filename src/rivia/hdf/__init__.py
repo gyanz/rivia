@@ -59,13 +59,14 @@ from .steady_plan import (  # noqa: F401
 )
 from .unsteady_plan import (  # noqa: F401
     BridgeResults,
-    CrossSectionResults as UnsteadyCrossSectionResults,
+    CrossSectionInstantaneousResults,
+    CrossSectionMappingResults as UnsteadyCrossSectionResults,
+    CrossSectionOutputResults,
     CrossSectionResultsCollection as UnsteadyCrossSectionResultsCollection,
-    CrossSectionResultsDSS,
-    CrossSectionResultsInstantaneous,
     FlowAreaResults,
     FlowAreaResultsCollection,
     InlineResults,
+    InstantaneousResultsCollection,
     LateralResults,
     SA2DConnectionResults,
     StorageAreaResults,

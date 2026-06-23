@@ -12,7 +12,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 from collections.abc import Iterator, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields as dc_fields
 from pathlib import Path
 from typing import TYPE_CHECKING, Generic, Literal, TypeVar, overload
 
@@ -3198,6 +3198,32 @@ class CrossSection:
         repr=False,
         compare=False,
     )
+
+    def __repr__(self) -> str:
+        def _row(r: np.ndarray, max_vals: int = 6) -> str:
+            vals = [f"{x:.4g}" for x in r[:max_vals]]
+            if len(r) > max_vals:
+                vals.append("...")
+            return "[" + ", ".join(vals) + "]"
+
+        def _fmt(v: object) -> str:
+            if not isinstance(v, np.ndarray):
+                return repr(v)
+            if v.ndim == 1:
+                return _row(v)
+            n = len(v)
+            if n == 0:
+                return f"ndarray({v.shape}, [])"
+            if n <= 3:
+                return f"ndarray({v.shape}, [{', '.join(_row(v[i]) for i in range(n))}])"
+            return f"ndarray({v.shape}, [{_row(v[0])}, ..., {_row(v[-1])}])"
+
+        parts = ", ".join(
+            f"{f.name}={_fmt(getattr(self, f.name))}"
+            for f in dc_fields(self)
+            if f.repr
+        )
+        return f"{type(self).__name__}({parts})"
 
     @property
     def location(self) -> tuple[str, str, str]:
