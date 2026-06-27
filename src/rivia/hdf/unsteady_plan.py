@@ -2000,8 +2000,7 @@ class StorageAreaResults(StorageArea):
     Inherits all geometry properties from :class:`~rivia.hdf.StorageArea`
     (:attr:`boundary`, :attr:`volume_elevation`, :meth:`volume_at_elevation`, etc.).
 
-    Time-series properties return ``numpy`` arrays (storage areas are scalar
-    entities so their result datasets are small and eager loading is appropriate).
+    Time-series properties return ``pd.Series`` indexed by :attr:`timestamps`.
 
     Parameters
     ----------
@@ -2015,6 +2014,9 @@ class StorageAreaResults(StorageArea):
         when the plan has no SA results.
     sum_sa_group:
         ``h5py.Group`` at ``-/Summary Output/Storage Areas``, or ``None``.
+    timestamps:
+        Output timestamps for the block this SA was loaded from; used as the
+        index for all ``pd.Series`` time-series properties.
     """
 
     def __init__(
@@ -2210,6 +2212,10 @@ class StorageAreaResultsCollection(StorageAreaCollection):
 
     Overrides :class:`~rivia.hdf.StorageAreaCollection` to return
     ``StorageAreaResults`` with both geometry *and* plan results.
+
+    The :attr:`timestamps` property exposes the output block's time axis as a
+    ``pd.DatetimeIndex``; it is also passed into each :class:`StorageAreaResults`
+    item so per-SA ``pd.Series`` properties share the same index.
 
     Parameters
     ----------
@@ -2535,6 +2541,8 @@ class SA2DConnectionResults(_StructureResultsMixin, SA2DConnection):
         Geometry object from :class:`~rivia.hdf.StructureCollection`.
     group:
         ``h5py.Group`` at ``-/SA 2D Area Conn/<plan_name>``.
+    timestamps:
+        Output timestamps for this block; index for all ``pd.Series`` properties.
     """
 
     def __init__(
@@ -2632,6 +2640,8 @@ class InlineResults(_StructureResultsMixin, InlineStructure):
         Geometry object from :class:`~rivia.hdf.StructureCollection`.
     group:
         ``h5py.Group`` at the inline structure result path.
+    timestamps:
+        Output timestamps for this block; index for all ``pd.Series`` properties.
     """
 
     def __init__(
@@ -2677,6 +2687,8 @@ class LateralResults(_StructureResultsMixin, LateralStructure):
         Geometry object from :class:`~rivia.hdf.StructureCollection`.
     group:
         ``h5py.Group`` at the lateral structure result path.
+    timestamps:
+        Output timestamps for this block; index for all ``pd.Series`` properties.
     """
 
     def __init__(
@@ -2752,6 +2764,8 @@ class BridgeResults(_StructureResultsMixin, Bridge):
         Geometry object from :class:`~rivia.hdf.StructureCollection`.
     group:
         ``h5py.Group`` at the bridge result path.
+    timestamps:
+        Output timestamps for this block; index for all ``pd.Series`` properties.
     """
 
     def __init__(
@@ -5093,6 +5107,8 @@ class UnsteadyPlan(_PlanHdf, Geometry):
         Returns
         -------
         StorageAreaResultsCollection
+            Exposes a ``timestamps`` property with the block's ``pd.DatetimeIndex``,
+            shared as the index of every per-SA ``pd.Series`` property.
         """
         if output not in self._plan_storage_areas_cache:
             self._plan_storage_areas_cache[output] = StorageAreaResultsCollection(
@@ -5127,6 +5143,8 @@ class UnsteadyPlan(_PlanHdf, Geometry):
         Returns
         -------
         StructureResultsCollection
+            Exposes a ``timestamps`` property with the block's ``pd.DatetimeIndex``,
+            shared as the index of every per-structure ``pd.Series`` property.
             Use :attr:`~rivia.hdf.StructureCollection.connections`,
             :attr:`~rivia.hdf.StructureCollection.inlines`,
             :attr:`~rivia.hdf.StructureCollection.laterals`, and
@@ -5167,8 +5185,9 @@ class UnsteadyPlan(_PlanHdf, Geometry):
 
             ``"post_process"`` — Post Process Profiles.  Returns a
             :class:`CrossSectionPostProcessResultsCollection` with collection-level
-            ``profile_table(variable)`` and named methods (``wse()``,
-            ``flow()``, ``velocity_channel()``, …).  ``[key]`` returns a
+            ``profile_table(variable)`` method and named properties (``wse``,
+            ``flow``, ``velocity_channel``, …) each returning a
+            location × profiles ``pd.DataFrame``.  ``[key]`` returns a
             :class:`CrossSectionPostProcessResults` whose named properties
             (``wse``, ``flow``, ``velocity_channel``, …) each return a
             ``pd.Series`` indexed by ``pd.DatetimeIndex`` (timeseries only,
@@ -5183,7 +5202,7 @@ class UnsteadyPlan(_PlanHdf, Geometry):
         Raises
         ------
         ValueError
-            If *output* is not one of the three recognised values.
+            If *output* is not one of the four recognised values.
         """
         if output not in self._plan_cross_sections_cache:
             if output == "mapping":
