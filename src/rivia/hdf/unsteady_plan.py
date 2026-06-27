@@ -27,7 +27,7 @@ import pandas as pd
 
 from rivia.utils import log_call, parse_hec_datetime, parse_interval, timed
 
-from ._base import _PlanHdf, _POSTPROC_TS_FMT, _RAS_TS_FMT, _parse_hec_ts_array
+from ._base import _PlanHdf, _RAS_TS_FMT, _parse_hec_ts_array
 from .geometry import (
     _SA_ROOT,
     Bridge,
@@ -67,6 +67,12 @@ _SUM_SA = f"{_SUM_ROOT}/Storage Areas"
 _TIME_DS = f"{_TS_ROOT}/Time"
 _TIME_STAMP_DS = f"{_TS_ROOT}/Time Date Stamp"
 
+# Base Output structure group paths (for output="mapping")
+_TS_INLINE  = f"{_TS_ROOT}/Inline Structures"
+_TS_LATERAL = f"{_TS_ROOT}/Lateral Structures"
+_TS_BRIDGE  = f"{_TS_ROOT}/Bridges"
+_TS_SA_CONN = f"{_TS_ROOT}/SA 2D Area Conn"
+
 _DSS_ROOT = (
     "Results/Unsteady/Output/Output Blocks"
     "/DSS Hydrograph Output/Unsteady Time Series"
@@ -74,29 +80,44 @@ _DSS_ROOT = (
 _DSS_SA_CONN = f"{_DSS_ROOT}/SA 2D Area Conn"
 _DSS_INLINE = f"{_DSS_ROOT}/Inline Structures"
 _DSS_LATERAL = f"{_DSS_ROOT}/Lateral Structures"
-_DSS_BRIDGE = f"{_DSS_ROOT}/Bridge"
+_DSS_BRIDGE = f"{_DSS_ROOT}/Bridges"
 _DSS_TIME_STAMP_DS = f"{_DSS_ROOT}/Time Date Stamp"
 
 _TS_XS = f"{_TS_ROOT}/Cross Sections"
 _DSS_XS = f"{_DSS_ROOT}/Cross Sections"
+
+# DSS Profile Output (for output="profile")
+_DSS_PROF_ROOT = (
+    "Results/Unsteady/Output/Output Blocks"
+    "/DSS Profile Output/Unsteady Time Series"
+)
+_DSS_PROF_XS            = f"{_DSS_PROF_ROOT}/Cross Sections"
+_DSS_PROF_INLINE        = f"{_DSS_PROF_ROOT}/Inline Structures"
+_DSS_PROF_LATERAL       = f"{_DSS_PROF_ROOT}/Lateral Structures"
+_DSS_PROF_BRIDGE        = f"{_DSS_PROF_ROOT}/Bridges"
+_DSS_PROF_SA_CONN       = f"{_DSS_PROF_ROOT}/SA 2D Area Conn"
+_DSS_PROF_SA            = f"{_DSS_PROF_ROOT}/Storage Areas"
+_DSS_PROF_TIME_STAMP_DS = f"{_DSS_PROF_ROOT}/Time Date Stamp"
 
 _RUN_SUM = "Results/Unsteady/Summary"
 _VOL_ACC = f"{_RUN_SUM}/Volume Accounting"
 _VOL_1D = f"{_VOL_ACC}/Volume Accounting 1D"
 _VOL_2D = f"{_VOL_ACC}/Volume Accounting 2D"
 
-_POSTPROC_PROFILE_DATES = (
+# Post Process Profiles paths (for output="post_process")
+_POSTPROC_ROOT = (
     "Results/Post Process/Steady/Output/Output Blocks"
-    "/Base Output/Post Process/Post Process Profiles/Profile Dates"
+    "/Base Output/Post Process/Post Process Profiles"
 )
-_POSTPROC_XS = (
-    "Results/Post Process/Steady/Output/Output Blocks"
-    "/Base Output/Post Process/Post Process Profiles/Cross Sections"
-)
+_POSTPROC_PROFILE_DATES = f"{_POSTPROC_ROOT}/Profile Dates"
+_POSTPROC_XS            = f"{_POSTPROC_ROOT}/Cross Sections"
 _POSTPROC_GEOM_ATTRS = (
     "Results/Post Process/Steady/Output/Geometry Info"
     "/Cross Section Attributes"
 )
+_POSTPROC_LATERAL = f"{_POSTPROC_ROOT}/Lateral Structures"
+_POSTPROC_SA_CONN = f"{_POSTPROC_ROOT}/SA 2D Area Conn"
+_POSTPROC_SA      = f"{_POSTPROC_ROOT}/Storage Areas"
 
 
 # ---------------------------------------------------------------------------
@@ -2002,6 +2023,7 @@ class StorageAreaResults(StorageArea):
         sa_index: int,
         ts_sa_group: "h5py.Group | None",
         sum_sa_group: "h5py.Group | None",
+        skip_row0: bool = False,
     ) -> None:
         super().__init__(
             name=sa.name,
@@ -2012,6 +2034,7 @@ class StorageAreaResults(StorageArea):
         self._i = sa_index
         self._ts = ts_sa_group
         self._sum = sum_sa_group
+        self._skip_row0 = skip_row0
         # per-SA subgroup: -/Storage Areas/<name>/
         self._sub = ts_sa_group.get(sa.name) if ts_sa_group else None
         self._cache: dict[str, np.ndarray] = {}
@@ -2028,7 +2051,9 @@ class StorageAreaResults(StorageArea):
                     f"No time-series results for storage area {self.name!r}. "
                     "Has the plan been computed?"
                 )
-            self._cache[key] = np.array(self._ts[key])[:, self._i]
+            data = np.array(self._ts[key])
+            col = data[1:, self._i] if self._skip_row0 else data[:, self._i]
+            self._cache[key] = col
         return self._cache[key]
 
     def _load_vars(self) -> np.ndarray:
@@ -2039,7 +2064,8 @@ class StorageAreaResults(StorageArea):
                     f"'Storage Area Variables' not found for storage area "
                     f"{self.name!r}."
                 )
-            self._cache["_vars"] = np.array(self._sub["Storage Area Variables"])
+            raw = np.array(self._sub["Storage Area Variables"])
+            self._cache["_vars"] = raw[1:] if self._skip_row0 else raw
         return self._cache["_vars"]
 
     def _load_summary(self, key: str) -> pd.DataFrame:
@@ -2113,7 +2139,8 @@ class StorageAreaResults(StorageArea):
             ds = self._sub.get("Connections to Storage Area")
             if ds is None:
                 return None
-            self._cache["_conns"] = np.array(ds)
+            raw = np.array(ds)
+            self._cache["_conns"] = raw[1:] if self._skip_row0 else raw
         return self._cache["_conns"]
 
     @property
@@ -2163,7 +2190,39 @@ class StorageAreaResultsCollection(StorageAreaCollection):
 
     Overrides :class:`~rivia.hdf.StorageAreaCollection` to return
     ``StorageAreaResults`` with both geometry *and* plan results.
+
+    Parameters
+    ----------
+    hdf:
+        Open ``h5py.File`` handle.
+    output : {"mapping", "output", "profile", "post_process"}, optional
+        Which output block to read.  Defaults to ``"mapping"`` (Base Output).
     """
+
+    def __init__(
+        self,
+        hdf: h5py.File,
+        output: Literal["mapping", "output", "profile", "post_process"] = "mapping",
+    ) -> None:
+        super().__init__(hdf)
+        self._output = output
+
+    def _resolve_paths(
+        self,
+    ) -> tuple[h5py.Group | None, h5py.Group | None, bool]:
+        """Return ``(ts_sa_group, sum_sa_group, skip_row0)`` for ``self._output``."""
+        if self._output == "mapping":
+            return self._hdf.get(_TS_SA), self._hdf.get(_SUM_SA), False
+        if self._output == "output":
+            return self._hdf.get(f"{_DSS_ROOT}/Storage Areas"), None, False
+        if self._output == "profile":
+            return self._hdf.get(_DSS_PROF_SA), None, False
+        if self._output == "post_process":
+            return self._hdf.get(_POSTPROC_SA), None, True
+        raise ValueError(
+            f"output={self._output!r} is not valid; "
+            "choose 'mapping', 'output', 'profile', or 'post_process'."
+        )
 
     def _load(self) -> dict[str, StorageAreaResults]:  # type: ignore[override]
         if self._items is not None:
@@ -2173,6 +2232,8 @@ class StorageAreaResultsCollection(StorageAreaCollection):
             self._items = {}
             return self._items  # type: ignore[return-value]
 
+        ts_sa_group, sum_sa_group, skip_row0 = self._resolve_paths()
+
         # Re-read geometry flat arrays (same logic as StorageAreaCollection._load)
         root = self._hdf[_SA_ROOT]
         attrs = np.array(root["Attributes"])
@@ -2180,9 +2241,6 @@ class StorageAreaResultsCollection(StorageAreaCollection):
         poly_pts = np.array(root["Polygon Points"])
         ve_info = np.array(root["Volume Elevation Info"])
         ve_vals = np.array(root["Volume Elevation Values"])
-
-        ts_sa_group = self._hdf.get(_TS_SA)
-        sum_sa_group = self._hdf.get(_SUM_SA)
 
         items: dict[str, StorageAreaResults] = {}
         for i, row in enumerate(attrs):
@@ -2209,6 +2267,7 @@ class StorageAreaResultsCollection(StorageAreaCollection):
                 sa_index=i,
                 ts_sa_group=ts_sa_group,
                 sum_sa_group=sum_sa_group,
+                skip_row0=skip_row0,
             )
 
         self._items = items  # type: ignore[assignment]
@@ -2249,7 +2308,8 @@ class _StructureResultsMixin:
 
     def _load(self, key: str) -> np.ndarray:
         if key not in self._cache:
-            self._cache[key] = np.array(self._g[key])
+            raw = np.array(self._g[key])
+            self._cache[key] = raw[1:] if getattr(self, "_skip_row0", False) else raw
         return self._cache[key]
 
     def _col_index(self, *candidates: str) -> int:
@@ -2392,7 +2452,9 @@ class SA2DConnectionResults(_StructureResultsMixin, SA2DConnection):
         ``h5py.Group`` at ``-/SA 2D Area Conn/<plan_name>``.
     """
 
-    def __init__(self, geom: SA2DConnection, group: h5py.Group) -> None:
+    def __init__(
+        self, geom: SA2DConnection, group: h5py.Group, skip_row0: bool = False
+    ) -> None:
         SA2DConnection.__init__(
             self,
             mode=geom.mode,
@@ -2408,6 +2470,7 @@ class SA2DConnectionResults(_StructureResultsMixin, SA2DConnection):
         #  "BaldEagleCr Lower Levee").
         self._plan_name: str = group.name.split("/")[-1]
         self._g = group
+        self._skip_row0 = skip_row0
         self._cache: dict[str, np.ndarray] = {}
 
     # ------------------------------------------------------------------
@@ -2523,7 +2586,9 @@ class LateralResults(_StructureResultsMixin, LateralStructure):
         ``h5py.Group`` at the lateral structure result path.
     """
 
-    def __init__(self, geom: LateralStructure, group: h5py.Group) -> None:
+    def __init__(
+        self, geom: LateralStructure, group: h5py.Group, skip_row0: bool = False
+    ) -> None:
         LateralStructure.__init__(
             self,
             mode=geom.mode,
@@ -2537,6 +2602,7 @@ class LateralResults(_StructureResultsMixin, LateralStructure):
             gate_groups=geom.gate_groups,
         )
         self._g = group
+        self._skip_row0 = skip_row0
         self._cache: dict[str, np.ndarray] = {}
 
     # ------------------------------------------------------------------
@@ -2610,6 +2676,45 @@ class BridgeResults(_StructureResultsMixin, Bridge):
         self._g = group
         self._cache: dict[str, np.ndarray] = {}
 
+    # ------------------------------------------------------------------
+    # Override mixin to use "Bridge Variables" (not "Structure Variables")
+    # ------------------------------------------------------------------
+
+    @property
+    def variable_names(self) -> list[str]:
+        """Column names from the ``Bridge Variables`` ``Variable_Unit`` attribute."""
+        ds = self._g["Bridge Variables"]
+        attr = ds.attrs.get("Variable_Unit")
+        if attr is None:
+            attr = ds.attrs.get("Variables")
+        if attr is not None:
+            return [_decode(v[0]) for v in attr]
+        return [f"col_{i}" for i in range(ds.shape[1])]
+
+    @property
+    def structure_variables(self) -> "h5py.Dataset":
+        """All bridge variables as a lazy ``h5py.Dataset``, shape ``(n_t, 3)``."""
+        return self._g["Bridge Variables"]
+
+    @property
+    def flow_total(self) -> np.ndarray:
+        """Total flow through the bridge.  Shape ``(n_t,)``."""
+        return self._load("Bridge Variables")[:, self._col_index("flow")]
+
+    @property
+    def stage_hw(self) -> np.ndarray:
+        """Headwater stage (upstream side).  Shape ``(n_t,)``."""
+        return self._load("Bridge Variables")[
+            :, self._col_index("stage hw", "hw", "headwater")
+        ]
+
+    @property
+    def stage_tw(self) -> np.ndarray:
+        """Tailwater stage (downstream side).  Shape ``(n_t,)``."""
+        return self._load("Bridge Variables")[
+            :, self._col_index("stage tw", "tw", "tailwater")
+        ]
+
 
 # ---------------------------------------------------------------------------
 # StructureResultsCollection - plan-enriched StructureCollection
@@ -2620,20 +2725,59 @@ class StructureResultsCollection(StructureCollection):
     """Plan-enriched structure collection: all structure types with results.
 
     Overrides :class:`~rivia.hdf.StructureCollection` so each item carries
-    both geometry attributes *and* time-series result access:
+    both geometry attributes *and* time-series result access.
 
-    * :class:`SA2DConnection` -> :class:`SA2DConnectionResults`
-      (Base Output ``SA 2D Area Conn``)
-    * :class:`InlineStructure` -> :class:`InlineResults`
-      (DSS Hydrograph Output ``Inline Structures``)
-    * :class:`LateralStructure` -> :class:`LateralResults`
-      (DSS Hydrograph Output ``Lateral Structures``)
-    * :class:`Bridge` -> :class:`BridgeResults`
-      (DSS Hydrograph Output ``Bridge``)
+    Parameters
+    ----------
+    hdf:
+        Open ``h5py.File`` handle.
+    output : {"mapping", "output", "profile", "post_process"}, optional
+        Which output block to read.  Defaults to ``"output"`` (DSS Hydrograph).
 
-    When no plan result group is found for a structure (e.g. DSS output was
-    not requested for that type), the plain geometry object is kept unchanged.
+        ``"mapping"`` — Base Output (all four structure types).
+
+        ``"output"`` — DSS Hydrograph Output (all four structure types).
+
+        ``"profile"`` — DSS Profile Output (all four structure types).
+
+        ``"post_process"`` — Post Process Profiles. Lateral and SA/2D
+        connections only; Inline and Bridge items fall back to plain geometry.
+
+    When no plan result group is found for a structure, the plain geometry
+    object is kept unchanged.
     """
+
+    def __init__(
+        self,
+        hdf: h5py.File,
+        output: Literal["mapping", "output", "profile", "post_process"] = "output",
+    ) -> None:
+        super().__init__(hdf)
+        self._output = output
+
+    def _block_paths(
+        self,
+    ) -> tuple[str, str | None, str, str | None]:
+        """Return ``(sa_conn_path, inline_path, lateral_path, bridge_path)``.
+
+        ``None`` means the structure type is absent from this output block
+        (e.g. Inline and Bridge are absent from ``"post_process"``).
+        """
+        if self._output == "mapping":
+            return _TS_SA_CONN, _TS_INLINE, _TS_LATERAL, _TS_BRIDGE
+        if self._output == "output":
+            return _DSS_SA_CONN, _DSS_INLINE, _DSS_LATERAL, _DSS_BRIDGE
+        if self._output == "profile":
+            return (
+                _DSS_PROF_SA_CONN, _DSS_PROF_INLINE,
+                _DSS_PROF_LATERAL, _DSS_PROF_BRIDGE,
+            )
+        if self._output == "post_process":
+            return _POSTPROC_SA_CONN, None, _POSTPROC_LATERAL, None
+        raise ValueError(
+            f"output={self._output!r} is not valid; "
+            "choose 'mapping', 'output', 'profile', or 'post_process'."
+        )
 
     def _load(self) -> dict[str, Structure]:  # type: ignore[override]
         if self._items is not None:
@@ -2644,17 +2788,22 @@ class StructureResultsCollection(StructureCollection):
         # Build geometry items first (parent caches in self._items).
         geom_items = StructureCollection._load(self)
 
+        sa_conn_path, inline_path, lateral_path, bridge_path = self._block_paths()
+        skip_row0 = self._output == "post_process"
+
         # Helper: collect sub-groups from an HDF path (returns {} when absent).
-        def _groups(path: str) -> dict[str, h5py.Group]:
+        def _groups(path: str | None) -> dict[str, h5py.Group]:
+            if path is None:
+                return {}
             root = self._hdf.get(path)
             if root is None:
                 return {}
             return {k: v for k, v in root.items() if isinstance(v, _h5.Group)}
 
-        conn_groups = _groups(_DSS_SA_CONN)
-        inline_groups = _groups(_DSS_INLINE)
-        lateral_groups = _groups(_DSS_LATERAL)
-        bridge_groups = _groups(_DSS_BRIDGE)
+        conn_groups = _groups(sa_conn_path)
+        inline_groups = _groups(inline_path)
+        lateral_groups = _groups(lateral_path)
+        bridge_groups = _groups(bridge_path)
 
         items: dict[str, Structure] = {}
         for key, geom in geom_items.items():
@@ -2672,7 +2821,8 @@ class StructureResultsCollection(StructureCollection):
                     plan_key = geom.name
                 grp = conn_groups.get(plan_key)
                 items[key] = (
-                    SA2DConnectionResults(geom, grp) if grp is not None else geom
+                    SA2DConnectionResults(geom, grp, skip_row0=skip_row0)
+                    if grp is not None else geom
                 )
 
             elif isinstance(geom, InlineStructure):
@@ -2683,7 +2833,10 @@ class StructureResultsCollection(StructureCollection):
             elif isinstance(geom, LateralStructure):
                 plan_key = " ".join(geom.location)
                 grp = lateral_groups.get(plan_key)
-                items[key] = LateralResults(geom, grp) if grp is not None else geom
+                items[key] = (
+                    LateralResults(geom, grp, skip_row0=skip_row0)
+                    if grp is not None else geom
+                )
 
             elif isinstance(geom, Bridge):
                 plan_key = " ".join(geom.location)
@@ -2711,7 +2864,7 @@ class _CrossSectionResultsBase(CrossSection):
 
     Concrete subclasses add the properties specific to their output block
     (:class:`CrossSectionMappingResults`, :class:`CrossSectionOutputResults`,
-    :class:`CrossSectionInstantaneousResults`).
+    :class:`CrossSectionPostProcessResults`).
     """
 
     def __init__(
@@ -2850,6 +3003,52 @@ class CrossSectionOutputResults(_CrossSectionResultsBase):
         return self._series("Flow Volume Cumulative", "Flow Volume Cumulative")
 
 
+class CrossSectionProfileResults(_CrossSectionResultsBase):
+    """Geometry *and* results for one XS from the **DSS Profile Output** block.
+
+    Returned by ``plan.cross_sections("profile")[key]``.
+
+    DSS Profile Output contains raw unsteady-engine output at the Detailed
+    Output Interval.  Available datasets: ``wse``, ``flow``.  Also exposes
+    the ``Cross Section Attributes`` structured array unique to this block.
+
+    Parameters
+    ----------
+    geom:
+        Geometry object from :class:`CrossSectionCollection`.
+    hdf:
+        Open ``h5py.File`` -- kept alive by the parent ``UnsteadyPlan`` context.
+    index:
+        Column index of this XS in the ``(n_t, n_xs)`` result datasets.
+    root:
+        HDF path prefix -- ``_DSS_PROF_XS``.
+    timestamps:
+        Detailed output timestamps from the parent collection.
+    """
+
+    @property
+    def wse(self) -> pd.Series:
+        """Water surface elevation time series, indexed by :attr:`timestamps`."""
+        return self._series("Water Surface", "Water Surface")
+
+    @property
+    def flow(self) -> pd.Series:
+        """Flow time series, indexed by :attr:`timestamps`."""
+        return self._series("Flow", "Flow")
+
+    @property
+    def cross_section_attributes(self) -> np.void | None:
+        """Structured-array row for this XS from ``Cross Section Attributes``.
+
+        Contains River, Reach, Station, and Name fields.  Returns ``None``
+        when the dataset is absent from this HDF file.
+        """
+        ds = self._hdf.get(f"{self._root}/Cross Section Attributes")
+        if ds is None:
+            return None
+        return ds[self._index]
+
+
 def _resolve_inst_dataset(hdf: h5py.File, root: str, variable: str) -> str:
     """Resolve *variable* to an HDF path relative to *root*.
 
@@ -2888,18 +3087,18 @@ def _resolve_inst_dataset(hdf: h5py.File, root: str, variable: str) -> str:
     )
 
 
-class CrossSectionInstantaneousResults(_CrossSectionResultsBase):
+class CrossSectionPostProcessResults(_CrossSectionResultsBase):
     """Geometry *and* results for one XS from the **Post Process Profiles** block.
 
-    Returned by ``plan.cross_sections("instantaneous")[key]``.
+    Returned by ``plan.cross_sections("post_process")[key]``.
 
     Named properties expose every variable as a time-indexed ``pd.Series``
     (timeseries only — the Max WS envelope row is excluded).  The shape and
     index type are identical to :class:`CrossSectionMappingResults` and
     :class:`CrossSectionOutputResults`::
 
-        xs = plan.cross_sections("instantaneous")["Butte Cr Upper 7"]
-        xs = plan.cross_sections("instantaneous")[0]
+        xs = plan.cross_sections("post_process")["Butte Cr Upper 7"]
+        xs = plan.cross_sections("post_process")[0]
         xs.wse               # pd.Series, index=pd.DatetimeIndex
         xs.flow              # pd.Series, index=pd.DatetimeIndex
         xs.velocity_channel  # pd.Series, index=pd.DatetimeIndex
@@ -2907,7 +3106,7 @@ class CrossSectionInstantaneousResults(_CrossSectionResultsBase):
     To access the Max WS envelope value for a specific variable, use the
     parent collection::
 
-        coll = plan.cross_sections("instantaneous")
+        coll = plan.cross_sections("post_process")
         coll.wse()["max_wse"].loc[(river, reach, rs)]
 
     For multi-XS access prefer the collection's :meth:`profile_table` or named
@@ -3278,7 +3477,7 @@ class CrossSectionResultsCollection(CrossSectionCollection):
         Concrete result class to instantiate per cross section --
         :class:`CrossSectionMappingResults`,
         :class:`CrossSectionOutputResults`, or
-        :class:`CrossSectionInstantaneousResults`.
+        :class:`CrossSectionPostProcessResults`.
     attrs_path:
         HDF path to the ``Cross Section Attributes`` structured array used
         to map ``(river, reach, station)`` -> column index.  Defaults to
@@ -3411,10 +3610,10 @@ class CrossSectionResultsCollection(CrossSectionCollection):
         return list(self._load_results().keys())
 
 
-class InstantaneousResultsCollection(CrossSectionResultsCollection):
+class CrossSectionPostProcessResultsCollection(CrossSectionResultsCollection):
     """Cross-section results for the **Post Process Profiles** block.
 
-    Returned by ``plan.cross_sections("instantaneous")``.
+    Returned by ``plan.cross_sections("post_process")``.
 
     All result data is read through this collection rather than through
     per-XS objects.  The generic engine is :meth:`profile_table`; named
@@ -3433,7 +3632,7 @@ class InstantaneousResultsCollection(CrossSectionResultsCollection):
     root:
         HDF path prefix -- ``_POSTPROC_XS``.
     result_cls:
-        :class:`CrossSectionInstantaneousResults` (geometry carrier).
+        :class:`CrossSectionPostProcessResults` (geometry carrier).
     attrs_path:
         ``_POSTPROC_GEOM_ATTRS`` (attributes live outside the XS group).
     timestamps_fn:
@@ -4298,8 +4497,8 @@ class UnsteadyPlan(_PlanHdf, Geometry):
         self._program_directory = Path(program_directory) if program_directory else None
         self._geom_view: Geometry | None = None
         self._plan_flow_areas: FlowAreaResultsCollection | None = None
-        self._plan_storage_areas: StorageAreaResultsCollection | None = None
-        self._plan_structures: StructureResultsCollection | None = None
+        self._plan_storage_areas_cache: dict[str, StorageAreaResultsCollection] = {}
+        self._plan_structures_cache: dict[str, StructureResultsCollection] = {}
         self._plan_cross_sections_cache: dict[str, CrossSectionResultsCollection] = {}
 
     # ------------------------------------------------------------------
@@ -4579,45 +4778,43 @@ class UnsteadyPlan(_PlanHdf, Geometry):
         return ts[1] - ts[0]
 
     @property
-    def instantaneous_interval(self) -> dt.timedelta | None:
-        """Instantaneous profile output interval, or ``None`` if absent.
+    def detailed_interval(self) -> dt.timedelta | None:
+        """Detailed output interval, or ``None`` if absent.
 
-        Derived from the difference between the first two actual profile
-        timestamps in ``Profile Dates`` (i.e. entries at indices 1 and 2,
-        skipping the ``"Max WS"`` entry at index 0).
+        Derived from the difference between the first two timestamps in the
+        DSS Profile Output ``Time Date Stamp`` dataset.  Used by both
+        ``"profile"`` and ``"post_process"`` output blocks (same HEC-RAS
+        Detailed Output Interval setting).
         """
-        ds = self._hdf.get(_POSTPROC_PROFILE_DATES)
-        if ds is None or len(ds) < 3:
+        ds = self._hdf.get(_DSS_PROF_TIME_STAMP_DS)
+        if ds is None or len(ds) < 2:
             return None
-        t1 = parse_hec_datetime(ds[1].decode(), fmt=_POSTPROC_TS_FMT)
-        t2 = parse_hec_datetime(ds[2].decode(), fmt=_POSTPROC_TS_FMT)
-        return t2 - t1
+        raw = np.array(ds[:2]).astype(str)
+        ts = _parse_hec_ts_array(raw, _RAS_TS_FMT)
+        return ts[1] - ts[0]
 
     @property
-    def instantaneous_timestamps(self) -> pd.DatetimeIndex:
-        """Instantaneous profile output timestamps as a ``pd.DatetimeIndex``.
+    def detailed_timestamps(self) -> pd.DatetimeIndex:
+        """Detailed output interval timestamps as a ``pd.DatetimeIndex``.
 
-        Parsed from ``Profile Dates`` in the Post Process Profiles group,
-        skipping the first entry (``"Max WS"``).  Format: ``"DDMONYYYY HHMM"``
-        (e.g. ``"01JAN2026 0002"``).
-
-        Use ``cross_sections_instantaneous[xs].wse[1:]`` (or ``[1:n+1]``)
-        to align result arrays with this index; index ``0`` of the result
-        arrays holds the Max WS profile value.
+        Reads from the DSS Profile Output ``Time Date Stamp`` dataset.
+        Both ``cross_sections("profile")`` / ``storage_areas("profile")``
+        and ``cross_sections("post_process")`` / ``storage_areas("post_process")``
+        share this interval (same HEC-RAS Detailed Output Interval setting).
 
         Raises
         ------
         KeyError
-            If the Post Process Profiles group is absent from this HDF file.
+            If DSS Profile Output was not written for this plan.
         """
-        ds = self._hdf.get(_POSTPROC_PROFILE_DATES)
+        ds = self._hdf.get(_DSS_PROF_TIME_STAMP_DS)
         if ds is None:
             raise KeyError(
-                f"Profile Dates not found at '{_POSTPROC_PROFILE_DATES}'. "
-                "Ensure this plan has Post Process steady results."
+                f"Time Date Stamp not found at '{_DSS_PROF_TIME_STAMP_DS}'. "
+                "Ensure DSS Profile Output was written for this plan."
             )
-        raw = np.array(ds[1:]).astype(str)
-        return _parse_hec_ts_array(raw, _POSTPROC_TS_FMT)
+        raw = np.array(ds).astype(str)
+        return _parse_hec_ts_array(raw, _RAS_TS_FMT)
 
     @property
     def n_mapping_timestamps(self) -> int | None:
@@ -4638,14 +4835,13 @@ class UnsteadyPlan(_PlanHdf, Geometry):
         return None if ds is None else len(ds)
 
     @property
-    def n_instantaneous_timestamps(self) -> int | None:
-        """Number of instantaneous profile time steps, or ``None`` if absent.
+    def n_detailed_timestamps(self) -> int | None:
+        """Number of detailed output time steps, or ``None`` if absent.
 
-        Reads only the dataset shape -- no timestamp data is loaded.
-        The ``"Max WS"`` entry at index 0 is excluded from the count.
+        Reads only the shape of the DSS Profile ``Time Date Stamp`` dataset.
         """
-        ds = self._hdf.get(_POSTPROC_PROFILE_DATES)
-        return None if ds is None else max(0, len(ds) - 1)
+        ds = self._hdf.get(_DSS_PROF_TIME_STAMP_DS)
+        return None if ds is None else len(ds)
 
     # ------------------------------------------------------------------
     # Collections (override Geometry equivalents with results-aware types)
@@ -4658,43 +4854,85 @@ class UnsteadyPlan(_PlanHdf, Geometry):
             self._plan_flow_areas = FlowAreaResultsCollection(self._hdf)
         return self._plan_flow_areas
 
-    @property
-    def storage_areas(self) -> StorageAreaResultsCollection:
-        """Access storage areas with both geometry and plan results data."""
-        if self._plan_storage_areas is None:
-            self._plan_storage_areas = StorageAreaResultsCollection(self._hdf)
-        return self._plan_storage_areas
+    def storage_areas(
+        self,
+        output: Literal["mapping", "output", "profile", "post_process"] = "mapping",
+    ) -> StorageAreaResultsCollection:
+        """Access storage areas with geometry and plan results.
 
-    @property
-    def structures(self) -> StructureResultsCollection:
+        Parameters
+        ----------
+        output : {"mapping", "output", "profile", "post_process"}, optional
+            Which output block to read.  Defaults to ``"mapping"``.
+
+            ``"mapping"`` — Base Output (includes summary max/min WSE).
+
+            ``"output"`` — DSS Hydrograph Output.
+
+            ``"profile"`` — DSS Profile Output; timestamps = ``detailed_timestamps``.
+
+            ``"post_process"`` — Post Process Profiles; timestamps =
+            ``detailed_timestamps``; row 0 (Max WS envelope) is excluded from
+            all time-series arrays.  Summary ``max_wse`` / ``min_wse`` raise
+            ``KeyError`` (summary group absent from this block).
+
+        Returns
+        -------
+        StorageAreaResultsCollection
+        """
+        if output not in self._plan_storage_areas_cache:
+            self._plan_storage_areas_cache[output] = StorageAreaResultsCollection(
+                self._hdf, output=output
+            )
+        return self._plan_storage_areas_cache[output]
+
+    def structures(
+        self,
+        output: Literal["mapping", "output", "profile", "post_process"] = "output",
+    ) -> StructureResultsCollection:
         """Access all structures with geometry *and* plan results.
 
         Returns a :class:`StructureResultsCollection` where each item is
-        upgraded to the matching results class when plan output is present:
+        upgraded to the matching results class when plan output is present.
 
-        * :class:`SA2DConnectionResults` -- SA/2D connections
-        * :class:`InlineResults` -- inline structures
-        * :class:`LateralResults` -- lateral structures
-        * :class:`BridgeResults` -- bridge structures
+        Parameters
+        ----------
+        output : {"mapping", "output", "profile", "post_process"}, optional
+            Which output block to read.  Defaults to ``"output"``.
 
-        Use :attr:`~rivia.hdf.StructureCollection.connections`,
-        :attr:`~rivia.hdf.StructureCollection.inlines`,
-        :attr:`~rivia.hdf.StructureCollection.laterals`, and
-        :attr:`~rivia.hdf.StructureCollection.bridges` for filtered access.
+            ``"mapping"`` — Base Output (all four structure types).
+
+            ``"output"`` — DSS Hydrograph Output (all four structure types).
+
+            ``"profile"`` — DSS Profile Output (all four structure types).
+
+            ``"post_process"`` — Post Process Profiles; Lateral and SA/2D
+            connections only.  Inline and Bridge items fall back to plain
+            geometry objects.
+
+        Returns
+        -------
+        StructureResultsCollection
+            Use :attr:`~rivia.hdf.StructureCollection.connections`,
+            :attr:`~rivia.hdf.StructureCollection.inlines`,
+            :attr:`~rivia.hdf.StructureCollection.laterals`, and
+            :attr:`~rivia.hdf.StructureCollection.bridges` for filtered access.
         """
-        if self._plan_structures is None:
-            self._plan_structures = StructureResultsCollection(self._hdf)
-        return self._plan_structures
+        if output not in self._plan_structures_cache:
+            self._plan_structures_cache[output] = StructureResultsCollection(
+                self._hdf, output=output
+            )
+        return self._plan_structures_cache[output]
 
     def cross_sections(
         self,
-        output: Literal["mapping", "output", "instantaneous"] = "mapping",
+        output: Literal["mapping", "output", "profile", "post_process"] = "mapping",
     ) -> CrossSectionResultsCollection:
         """1-D cross sections with geometry and time-series results.
 
         Parameters
         ----------
-        output : {"mapping", "output", "instantaneous"}, optional
+        output : {"mapping", "output", "profile", "post_process"}, optional
             Which output block to read.
 
             ``"mapping"`` (default) — Base Output at the mapping interval.
@@ -4708,11 +4946,16 @@ class UnsteadyPlan(_PlanHdf, Geometry):
             :class:`CrossSectionOutputResults`.  Per-XS ``pd.Series``
             properties: ``wse``, ``flow``, ``flow_cumulative``.
 
-            ``"instantaneous"`` — Post Process Profiles.  Returns an
-            :class:`InstantaneousResultsCollection` with collection-level
+            ``"profile"`` — DSS Profile Output at the detailed interval.
+            Returns :class:`CrossSectionResultsCollection` whose items are
+            :class:`CrossSectionProfileResults`.  Per-XS ``pd.Series``
+            properties: ``wse``, ``flow``, ``cross_section_attributes``.
+
+            ``"post_process"`` — Post Process Profiles.  Returns a
+            :class:`CrossSectionPostProcessResultsCollection` with collection-level
             ``profile_table(variable)`` and named methods (``wse()``,
             ``flow()``, ``velocity_channel()``, …).  ``[key]`` returns a
-            :class:`CrossSectionInstantaneousResults` whose named properties
+            :class:`CrossSectionPostProcessResults` whose named properties
             (``wse``, ``flow``, ``velocity_channel``, …) each return a
             ``pd.Series`` indexed by ``pd.DatetimeIndex`` (timeseries only,
             Max WS envelope excluded).
@@ -4741,27 +4984,44 @@ class UnsteadyPlan(_PlanHdf, Geometry):
                     result_cls=CrossSectionOutputResults,
                     timestamps_fn=lambda: self.output_timestamps,
                 )
-            elif output == "instantaneous":
-                coll = InstantaneousResultsCollection(
+            elif output == "profile":
+                coll = CrossSectionResultsCollection(
+                    self._hdf, _DSS_PROF_XS,
+                    result_cls=CrossSectionProfileResults,
+                    timestamps_fn=lambda: self.detailed_timestamps,
+                )
+            elif output == "post_process":
+                coll = CrossSectionPostProcessResultsCollection(
                     self._hdf, _POSTPROC_XS,
-                    result_cls=CrossSectionInstantaneousResults,
+                    result_cls=CrossSectionPostProcessResults,
                     attrs_path=_POSTPROC_GEOM_ATTRS,
-                    timestamps_fn=lambda: self.instantaneous_timestamps,
+                    timestamps_fn=lambda: self.detailed_timestamps,
                 )
             else:
                 raise ValueError(
                     f"output={output!r} is not valid; "
-                    "choose 'mapping', 'output', or 'instantaneous'."
+                    "choose 'mapping', 'output', 'profile', or 'post_process'."
                 )
             self._plan_cross_sections_cache[output] = coll
         return self._plan_cross_sections_cache[output]
 
-    @property
-    def sa2d_connections(self) -> dict[str, SA2DConnection]:
+    def sa2d_connections(
+        self,
+        output: Literal["mapping", "output", "profile", "post_process"] = "output",
+    ) -> dict[str, SA2DConnection]:
         """SA/2D hydraulic connections keyed by geometry name.
 
-        Convenience alias for ``hdf.structures.connections``.
-        Items are :class:`SA2DConnectionResults` when plan output is present,
-        plain :class:`SA2DConnection` otherwise.
+        Convenience delegate to ``structures(output).connections``.
+
+        Parameters
+        ----------
+        output : {"mapping", "output", "profile", "post_process"}, optional
+            Passed through to :meth:`structures`.  Defaults to ``"output"``.
+
+        Returns
+        -------
+        dict[str, SA2DConnection]
+            Items are :class:`SA2DConnectionResults` when plan output is
+            present, plain :class:`SA2DConnection` otherwise.
         """
-        return self.structures.connections
+        return self.structures(output).connections
