@@ -72,6 +72,16 @@ xs.wse              # pd.Series  — WSE indexed by pd.DatetimeIndex
 xs.flow             # pd.Series
 xs.velocity_channel # pd.Series
 
+# 1D cross sections — Post Process Profiles (rich hydraulic output)
+coll = hdf.cross_sections("post_process")
+coll.wse            # pd.DataFrame  — location × ["max_wse", 0, 1, …] profiles
+coll.velocity_channel
+coll.profile_table("EG Slope")   # any variable by name
+
+xs_pp = coll["Butte Cr Upper 7"]
+xs_pp.wse           # pd.Series  — timeseries only, Max WS excluded
+xs_pp.energy_grade  # pd.Series
+
 # Storage areas — DSS hydrograph interval
 sa = hdf.storage_areas("output")["Reservoir 1"]
 sa.wse              # pd.Series  — WSE indexed by pd.DatetimeIndex
