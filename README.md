@@ -61,50 +61,31 @@ vrt = model.export_wse(timestep=None, render_mode="sloping")
 
 hdf = model.results          # UnsteadyPlan
 
-# ── 2D flow areas ────────────────────────────────────────────────────────────
+# 2D flow areas
 area = hdf.flow_areas["Perimeter 1"]
-area.max_water_surface       # pd.DataFrame — max WSE per cell, columns [value, time]
-area.get_depth(timestep=0)   # np.ndarray  — water depth at timestep 0
+area.max_water_surface       # pd.DataFrame  — max WSE per cell, columns [value, time]
+area.get_depth(timestep=0)   # np.ndarray   — water depth snapshot
 
-# ── 1D cross sections — mapping interval (Base Output) ───────────────────────
+# 1D cross sections — mapping interval
 xs = hdf.cross_sections("mapping")["Butte Cr Upper 7"]
-print(xs.wse)
-# 2000-01-01 00:00:00    102.41
-# 2000-01-01 00:30:00    103.87
-# 2000-01-01 01:00:00    105.12
-# ...
-# Name: Water Surface, dtype: float32
+xs.wse              # pd.Series  — WSE indexed by pd.DatetimeIndex
+xs.flow             # pd.Series
+xs.velocity_channel # pd.Series
 
-# ── Storage areas — DSS hydrograph interval ───────────────────────────────────
+# Storage areas — DSS hydrograph interval
 sa = hdf.storage_areas("output")["Reservoir 1"]
-print(sa.wse)
-# 2000-01-01 00:00:00    95.30
-# 2000-01-01 00:15:00    95.41
-# 2000-01-01 00:30:00    95.63
-# ...
-# Name: Water Surface, dtype: float32
+sa.wse              # pd.Series  — WSE indexed by pd.DatetimeIndex
+sa.max_wse          # pd.DataFrame  — columns [value, time]
 
-print(sa.max_wse)
-#    value   time
-# 0  98.14   2.25    ← peak WSE (m), elapsed time when it occurred (days)
-
-# ── Structures — DSS Profile interval (detailed output) ───────────────────────
+# Structures — DSS Profile interval
 structs = hdf.structures("profile")
 inl = structs.inlines["Butte Cr Upper 100"]
-print(inl.stage_hw)
-# 2000-01-01 00:00:00    101.20
-# 2000-01-01 01:00:00    102.84
-# 2000-01-01 02:00:00    104.51
-# ...
-# Name: Stage HW, dtype: float32
+inl.stage_hw        # pd.Series  — headwater stage
+inl.flow_total      # pd.Series  — total flow
 
 conn = structs.connections["Dam"]
-print(conn.flow_total)
-# 2000-01-01 00:00:00      0.00
-# 2000-01-01 01:00:00    124.30
-# 2000-01-01 02:00:00    389.70
-# ...
-# Name: Total Flow, dtype: float32
+conn.stage_hw       # pd.Series
+conn.stage_tw       # pd.Series
 ```
 
 ## Package Structure
