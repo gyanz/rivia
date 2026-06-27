@@ -101,6 +101,7 @@ conn.stage_hw       # pd.Series
 conn.stage_tw       # pd.Series
 
 # WSE and flow profiles along / across a line
+# xy can be an (n, 2) ndarray or any object with a __geo_interface__ (e.g. shapely LineString)
 xy = np.array([[500, 200], [600, 250], [700, 300]])
 df     = model.wse_along_line(xy, timestep="max", interval=1.0)  # pd.DataFrame — station, wse, …
 series = model.flow_across_line(xy)                               # pd.Series — discharge time series
