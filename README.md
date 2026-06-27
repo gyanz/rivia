@@ -78,7 +78,7 @@ coll.wse            # pd.DataFrame  — location × ["max_wse", 0, 1, …] profi
 coll.velocity_channel
 coll.profile_table("EG Slope")   # any variable by name
 
-xs_pp = coll["Butte Cr Upper 7"]
+xs_pp = coll[0]     # integer index, name "Butte Cr Upper 7", or (river, reach, rs) tuple — all equivalent
 xs_pp.wse           # pd.Series  — timeseries only, Max WS excluded
 xs_pp.energy_grade  # pd.Series
 
