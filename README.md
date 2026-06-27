@@ -52,31 +52,59 @@ from rivia.model import Project
 model = Project("path/to/project.prj")
 print(model.version)       # e.g. "6.30"
 
-# Switch plans
-model.set_plan(title="Base Condition")
+# Switch plans and run
 model.set_plan(short_id="BC")
-model.set_plan(index=0)
-
-# Run model
 model.run(hide_window=False)
 
-# Read HDF results
-area = model.results.flow_areas["Perimeter 1"]
-wse_max = area.max_water_surface
+hdf = model.results          # UnsteadyPlan
 
-# Export a WSE raster
+# ── 2D flow areas ────────────────────────────────────────────────────────────
+area = hdf.flow_areas["Perimeter 1"]
+area.max_water_surface       # pd.DataFrame — max WSE per cell, columns [value, time]
+area.get_depth(timestep=0)   # np.ndarray  — water depth at timestep 0
+
+# Export a WSE raster (pixel-perfect RASMapper equivalent)
 vrt = model.export_wse(timestep=None, render_mode="sloping")
-print(vrt.path)
 
-# WSE profile along a polyline (terrain-masked)
-# xy accepts an (n, 2) ndarray or any __geo_interface__ LineString (e.g. shapely)
-xy = np.array([[500, 200], [600, 250], [700, 300]])
-df = model.wse_along_line(xy, timestep="max", interval=1.0)
-# df columns: station, cell, x, y, z, wse
+# ── 1D cross sections — mapping interval (Base Output) ───────────────────────
+xs = hdf.cross_sections("mapping")["Butte Cr Upper 7"]
+print(xs.wse)
+# 2000-01-01 00:00:00    102.41
+# 2000-01-01 00:30:00    103.87
+# 2000-01-01 01:00:00    105.12
+# ...
+# Name: Water Surface, dtype: float32
 
-# Discharge time-series across a profile line
-series = model.flow_across_line(xy)
-print(series.max())   # peak discharge (m³/s or ft³/s)
+# ── Storage areas — DSS hydrograph interval ───────────────────────────────────
+sa = hdf.storage_areas("output")["Reservoir 1"]
+print(sa.wse)
+# 2000-01-01 00:00:00    95.30
+# 2000-01-01 00:15:00    95.41
+# 2000-01-01 00:30:00    95.63
+# ...
+# Name: Water Surface, dtype: float32
+
+print(sa.max_wse)
+#    value   time
+# 0  98.14   2.25    ← peak WSE (m), elapsed time when it occurred (days)
+
+# ── Structures — DSS Profile interval (detailed output) ───────────────────────
+structs = hdf.structures("profile")
+inl = structs.inlines["Butte Cr Upper 100"]
+print(inl.stage_hw)
+# 2000-01-01 00:00:00    101.20
+# 2000-01-01 01:00:00    102.84
+# 2000-01-01 02:00:00    104.51
+# ...
+# Name: Stage HW, dtype: float32
+
+conn = structs.connections["Dam"]
+print(conn.flow_total)
+# 2000-01-01 00:00:00      0.00
+# 2000-01-01 01:00:00    124.30
+# 2000-01-01 02:00:00    389.70
+# ...
+# Name: Total Flow, dtype: float32
 ```
 
 ## Package Structure
