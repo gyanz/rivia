@@ -533,6 +533,23 @@ class CrossSectionResultsCollection(CrossSectionCollection):
     def __getitem__(
         self, key: int | str | tuple[str, str, str]
     ) -> CrossSectionResults:
+        """Return one cross section by integer index, string key, or location tuple.
+
+        Parameters
+        ----------
+        key:
+            ``int`` — 0-based position in collection order.
+            ``str`` — ``"<river> <reach> <rs>"`` key.
+            ``tuple`` — ``(river, reach, rs)`` location.
+
+        Raises
+        ------
+        IndexError
+            If an integer *key* is out of range.
+        KeyError
+            If the cross section is not found in geometry, or is present in
+            geometry but has no results in this plan.
+        """
         items = self._load_results()
         if isinstance(key, int):
             keys = list(items)
@@ -745,6 +762,21 @@ class StorageAreaResultsCollection(StorageAreaCollection):
         return self._items  # type: ignore[return-value]
 
     def __getitem__(self, key: int | str) -> StorageAreaResults:
+        """Return one storage area by integer index or name.
+
+        Parameters
+        ----------
+        key:
+            ``int`` — 0-based position in collection order.
+            ``str`` — storage area name.
+
+        Raises
+        ------
+        IndexError
+            If an integer *key* is out of range.
+        KeyError
+            If the storage area name is not found.
+        """
         items = self._load()
         if isinstance(key, int):
             keys = list(items)
@@ -869,7 +901,9 @@ class LateralResults(LateralStructure):
     def structure_variables(self) -> np.ndarray:
         """All structure variables.  Shape ``(n_profiles, n_vars)``.
 
-        Column names are in :attr:`variable_names`.
+        Returns a materialized ``numpy`` array (unlike the unsteady equivalent
+        which returns a lazy ``h5py.Dataset``).  Column names are in
+        :attr:`variable_names`.
         """
         return self._load("Structure Variables")
 
@@ -1010,6 +1044,14 @@ class StructureResultsCollection(_GeomStructureCollection):
     """
 
     def _load(self) -> dict[str, Structure]:  # type: ignore[override]
+        """Build and cache the structure dict, upgrading laterals to result objects.
+
+        Matches each :class:`~rivia.hdf.LateralStructure` geometry item against
+        HDF groups under ``_STEADY_LATERAL`` and wraps matched items in
+        :class:`LateralResults`.  All other structure types (Bridge, Culvert,
+        Inline) have no separate steady result datasets and are kept as plain
+        geometry objects.
+        """
         if self._items is not None:
             return self._items
 
@@ -1296,7 +1338,7 @@ class SteadyPlan(_PlanHdf, Geometry):
         ``'HEC-RAS 6.6 September 2024'``.
         """
         raw = self._hdf.attrs["File Version"]
-        return raw.decode() if isinstance(raw, (bytes, bytes)) else str(raw)
+        return raw.decode() if isinstance(raw, (bytes, np.bytes_)) else str(raw)
 
     # ------------------------------------------------------------------
     # Collections (override Geometry equivalents with results-aware types)
@@ -1304,7 +1346,14 @@ class SteadyPlan(_PlanHdf, Geometry):
 
     @property
     def cross_sections(self) -> CrossSectionResultsCollection:
-        """1-D cross sections with geometry and steady-profile results."""
+        """1-D cross sections with geometry and steady-profile results.
+
+        Returns a :class:`CrossSectionResultsCollection` whose items are
+        :class:`CrossSectionResults`.  All per-XS result arrays have shape
+        ``(n_profiles,)``; use :attr:`profile_names` to map indices to
+        profile names.  Supports ``[key]`` by string, integer, or
+        ``(river, reach, rs)`` tuple.
+        """
         if self._steady_cross_sections is None:
             self._steady_cross_sections = CrossSectionResultsCollection(
                 self._hdf
@@ -1313,7 +1362,13 @@ class SteadyPlan(_PlanHdf, Geometry):
 
     @property
     def storage_areas(self) -> StorageAreaResultsCollection:
-        """Storage areas with geometry and steady-profile results."""
+        """Storage areas with geometry and steady-profile results.
+
+        Returns a :class:`StorageAreaResultsCollection` whose items are
+        :class:`StorageAreaResults`.  All per-SA result arrays have shape
+        ``(n_profiles,)``; use :attr:`profile_names` to map indices to
+        profile names.  Supports ``[key]`` by name or integer.
+        """
         if self._steady_storage_areas is None:
             self._steady_storage_areas = StorageAreaResultsCollection(
                 self._hdf
