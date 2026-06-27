@@ -2960,7 +2960,17 @@ class StructureResultsCollection(StructureCollection):
         lateral_groups = _groups(lateral_path)
         bridge_groups = _groups(bridge_path)
 
-        ts = self.timestamps
+        # Resolve timestamps lazily — only read from HDF when at least one
+        # result group is found, so calling structures() on a plan that has
+        # no matching output block (e.g. no DSS Hydrograph data) does not
+        # raise when all structures fall back to plain geometry objects.
+        _ts: pd.DatetimeIndex | None = None
+
+        def _resolved_ts() -> pd.DatetimeIndex:
+            nonlocal _ts
+            if _ts is None:
+                _ts = self.timestamps
+            return _ts
 
         items: dict[str, Structure] = {}
         for key, geom in geom_items.items():
@@ -2978,7 +2988,7 @@ class StructureResultsCollection(StructureCollection):
                     plan_key = geom.name
                 grp = conn_groups.get(plan_key)
                 items[key] = (
-                    SA2DConnectionResults(geom, grp, ts, skip_row0=skip_row0)
+                    SA2DConnectionResults(geom, grp, _resolved_ts(), skip_row0=skip_row0)
                     if grp is not None else geom
                 )
 
@@ -2986,14 +2996,14 @@ class StructureResultsCollection(StructureCollection):
                 plan_key = " ".join(geom.location)
                 grp = inline_groups.get(plan_key)
                 items[key] = (
-                    InlineResults(geom, grp, ts) if grp is not None else geom
+                    InlineResults(geom, grp, _resolved_ts()) if grp is not None else geom
                 )
 
             elif isinstance(geom, LateralStructure):
                 plan_key = " ".join(geom.location)
                 grp = lateral_groups.get(plan_key)
                 items[key] = (
-                    LateralResults(geom, grp, ts, skip_row0=skip_row0)
+                    LateralResults(geom, grp, _resolved_ts(), skip_row0=skip_row0)
                     if grp is not None else geom
                 )
 
@@ -3001,7 +3011,7 @@ class StructureResultsCollection(StructureCollection):
                 plan_key = " ".join(geom.location)
                 grp = bridge_groups.get(plan_key)
                 items[key] = (
-                    BridgeResults(geom, grp, ts) if grp is not None else geom
+                    BridgeResults(geom, grp, _resolved_ts()) if grp is not None else geom
                 )
 
             else:

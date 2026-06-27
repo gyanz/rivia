@@ -136,6 +136,58 @@ def _write_geometry_groups(
     g.create_dataset("Perimeter", data=rng.uniform(0, 100, (8, 2)).astype("f8"))
 
 
+def _add_storage_area_results(
+    f: h5py.File,
+    n_timesteps: int,
+    sa_name: str = "Pond",
+) -> None:
+    """Add minimal storage area geometry + Base Output results to *f*.
+
+    Writes one SA named *sa_name* with ``Water Surface`` and ``Flow`` flat
+    datasets under ``Base Output/Unsteady Time Series/Storage Areas``, plus
+    a per-SA ``Storage Area Variables`` subgroup.
+    """
+    # Geometry
+    sa_dtype = np.dtype([("Name", "S16"), ("Mode", "S8")])
+    sa_attrs = np.array([(sa_name.encode(), b"Storage")], dtype=sa_dtype)
+    sa_geom = f.create_group("Geometry/Storage Areas")
+    sa_geom.create_dataset("Attributes", data=sa_attrs)
+    sa_geom.create_dataset("Polygon Info", data=np.array([[0, 4]], dtype="i4"))
+    sa_geom.create_dataset("Polygon Points", data=np.zeros((4, 2), dtype="f8"))
+    sa_geom.create_dataset("Volume Elevation Info", data=np.zeros((1, 2), dtype="i4"))
+    sa_geom.create_dataset("Volume Elevation Values", data=np.zeros((0, 2), dtype="f4"))
+
+    # Flat time-series (n_timesteps, 1) — one SA column
+    ts_sa = f.create_group(
+        "Results/Unsteady/Output/Output Blocks"
+        "/Base Output/Unsteady Time Series/Storage Areas"
+    )
+    wse_vals = np.linspace(5.0, 6.0, n_timesteps, dtype="f4").reshape(-1, 1)
+    flow_vals = np.linspace(10.0, 20.0, n_timesteps, dtype="f4").reshape(-1, 1)
+    ts_sa.create_dataset("Water Surface", data=wse_vals)
+    ts_sa.create_dataset("Flow", data=flow_vals)
+
+    # Per-SA subgroup: Storage Area Variables (n_timesteps, 6)
+    vars_data = np.ones((n_timesteps, 6), dtype="f4")
+    sa_sub = ts_sa.create_group(sa_name)
+    sa_sub.create_dataset("Storage Area Variables", data=vars_data)
+
+    # Summary group (for max_wse / min_wse)
+    sum_sa = f.create_group(
+        "Results/Unsteady/Output/Output Blocks"
+        "/Base Output/Summary Output/Storage Areas"
+    )
+    # shape (2, n_sa): row 0 = value, row 1 = time
+    sum_sa.create_dataset(
+        "Maximum Water Surface",
+        data=np.array([[6.0], [4.0]], dtype="f4"),
+    )
+    sum_sa.create_dataset(
+        "Minimum Water Surface",
+        data=np.array([[5.0], [0.0]], dtype="f4"),
+    )
+
+
 def _make_synthetic_hdf(
     path: Path,
     n_cells: int = 10,
@@ -143,6 +195,7 @@ def _make_synthetic_hdf(
     n_timesteps: int = 5,
     area_name: str = "TestArea",
     geom_filename: str | None = None,
+    with_storage_areas: bool = False,
 ) -> None:
     """Write a minimal but structurally correct HEC-RAS plan HDF to *path*.
 
@@ -153,6 +206,9 @@ def _make_synthetic_hdf(
         ``geometry Filename`` attribute is set to this value (e.g.
         ``"MyModel.g01"``).  Omit to skip writing that group (for fixtures
         that test the missing-group error path).
+    with_storage_areas :
+        When ``True``, also write one storage area (``"Pond"``) with
+        geometry and Base Output time-series results.
     """
     rng = np.random.default_rng(0)
 
@@ -206,6 +262,9 @@ def _make_synthetic_hdf(
             data=np.vstack([max_fv, np.ones(n_faces)]).astype("f4"),
         )
 
+        if with_storage_areas:
+            _add_storage_area_results(f, n_timesteps)
+
 
 def _make_synthetic_geometry_hdf(
     path: Path,
@@ -241,3 +300,11 @@ def plan_with_geometry_hdfs(tmp_path_factory) -> tuple[Path, Path]:
     _make_synthetic_hdf(plan_path, geom_filename="MyModel.g01")
     _make_synthetic_geometry_hdf(geom_path)
     return plan_path, geom_path
+
+
+@pytest.fixture(scope="session")
+def plan_with_storage_areas_hdf(tmp_path_factory) -> Path:
+    """Session-scoped plan HDF with one storage area (``'Pond'``) and Base Output results."""
+    path = tmp_path_factory.mktemp("hdf_sa") / "with_sa.p01.hdf"
+    _make_synthetic_hdf(path, with_storage_areas=True)
+    return path
