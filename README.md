@@ -56,15 +56,15 @@ print(model.version)       # e.g. "6.30"
 model.set_plan(short_id="BC")
 model.run(hide_window=False)
 
+# Export a WSE raster (pixel-perfect RASMapper equivalent)
+vrt = model.export_wse(timestep=None, render_mode="sloping")
+
 hdf = model.results          # UnsteadyPlan
 
 # ── 2D flow areas ────────────────────────────────────────────────────────────
 area = hdf.flow_areas["Perimeter 1"]
 area.max_water_surface       # pd.DataFrame — max WSE per cell, columns [value, time]
 area.get_depth(timestep=0)   # np.ndarray  — water depth at timestep 0
-
-# Export a WSE raster (pixel-perfect RASMapper equivalent)
-vrt = model.export_wse(timestep=None, render_mode="sloping")
 
 # ── 1D cross sections — mapping interval (Base Output) ───────────────────────
 xs = hdf.cross_sections("mapping")["Butte Cr Upper 7"]
