@@ -286,27 +286,27 @@ ax.set_title("Velocity — timestep 10, cell 42")
 
 ### Storage areas
 
-`hdf.storage_areas` is a `StorageAreaResultsCollection` — a dict-like
+`hdf.storage_areas()` is a `StorageAreaResultsCollection` — a dict-like
 container of `StorageAreaResults` objects.
 
 ```python
-print(hdf.storage_areas.names)
-sa = hdf.storage_areas["Reservoir 1"]  # StorageAreaResults
+print(hdf.storage_areas().names)
+sa = hdf.storage_areas()["Reservoir 1"]  # StorageAreaResults
 
-sa.water_surface                       # WSE time series, shape (n_t,)
-sa.max_water_surface                   # pd.DataFrame with columns [value, time]
+sa.wse                                   # WSE time series, pd.Series indexed by timestamps
+sa.max_water_surface                     # pd.DataFrame with columns [value, time]
 ```
 
 ### SA/2D connections
 
-`hdf.sa2d_connections` is a dict-like container of `SA2DConnectionResults`
+`hdf.sa2d_connections()` is a dict-like container of `SA2DConnectionResults`
 objects for structures connecting storage areas and 2D flow areas (dams,
-levees, gates, weirs).  It is a convenience alias for `hdf.structures.connections`.
+levees, gates, weirs).  It is a convenience alias for `hdf.structures().connections`.
 
 ```python
-conn = hdf.sa2d_connections["Dam"]  # SA2DConnectionResults
+conn = hdf.sa2d_connections()["Dam"]  # SA2DConnectionResults
 
-conn.total_flow                     # total flow time series, shape (n_t,)
-conn.stage_hw                       # headwater stage time series
-conn.stage_tw                       # tailwater stage time series
+conn.flow_total                       # total flow time series, pd.Series indexed by timestamps
+conn.stage_hw                         # headwater stage, pd.Series
+conn.stage_tw                         # tailwater stage, pd.Series
 ```

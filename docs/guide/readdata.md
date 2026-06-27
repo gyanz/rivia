@@ -143,12 +143,12 @@ UnsteadyPlan
 │           ├── .get_depth(timestep=t)                  np.ndarray    shape (n_cells,)
 │           └── .get_max_depth()                        pd.DataFrame  columns [value, time]
 │
-├── .storage_areas       → StorageAreaResultsCollection
+├── .storage_areas()     → StorageAreaResultsCollection
 │     └── ["name"]       → StorageAreaResults
-│           ├── .water_surface         np.ndarray    shape (n_t,)
-│           └── .max_water_surface     pd.DataFrame  columns [value, time]
+│           ├── .wse               pd.Series     indexed by timestamps
+│           └── .max_water_surface pd.DataFrame  columns [value, time]
 │
-├── .structures          → StructureResultsCollection
+├── .structures()        → StructureResultsCollection
 │     │   full mixed collection  → [name | "River Reach RS" | index | (river, reach, rs)]
 │     ├── .connections   → StructureIndex[SA2DConnectionResults]  keyed by connection name
 │     ├── .bridges       → StructureIndex[BridgeResults]          keyed by "River Reach RS"
@@ -169,13 +169,19 @@ UnsteadyPlan
 │           ├── .timestamps  pd.DatetimeIndex
 │           ├── .wse / .flow / .flow_cumulative  pd.Series
 │
-└── .cross_sections("instantaneous") → InstantaneousResultsCollection  (Post Process Profiles)
+├── .cross_sections("profile")     → CrossSectionResultsCollection  (DSS Profile / detailed interval)
+│     └── ["River Reach RS" | index | (river, reach, rs)]  → CrossSectionProfileResults
+│           ├── .timestamps  pd.DatetimeIndex
+│           ├── .wse / .flow  pd.Series
+│
+└── .cross_sections("post_process") → CrossSectionPostProcessResultsCollection  (Post Process Profiles)
       ├── .timestamps     pd.DatetimeIndex  (length n; maps integer profile columns 0…n-1)
       ├── .profile_table("Water Surface")   pd.DataFrame  location × ["max_wse", 0, 1, …]
-      ├── .wse() / .flow() / .energy_grade()  (named delegates to profile_table)
-      ├── .velocity_channel() / .velocity_total() / .shear() / …  (Additional Variables)
-      └── ["River Reach RS" | index | (river, reach, rs)]  → CrossSectionInstantaneousResults
-            (geometry carrier only — no data accessors; use collection methods above)
+      ├── .wse / .flow / .energy_grade  (named properties delegating to profile_table)
+      ├── .velocity_channel / .velocity_total / .shear / …  (Additional Variables)
+      └── ["River Reach RS" | index | (river, reach, rs)]  → CrossSectionPostProcessResults
+            ├── .timestamps  pd.DatetimeIndex
+            ├── .wse / .flow / .energy_grade / .velocity_channel / …  pd.Series (Max WS excluded)
 ```
 
 ### 2D flow areas
@@ -218,7 +224,8 @@ block to read via its `output` argument:
 |---|---|---|
 | `"mapping"` (default) | `CrossSectionResultsCollection` | `pd.Series` per variable |
 | `"output"` | `CrossSectionResultsCollection` | `pd.Series` per variable |
-| `"instantaneous"` | `InstantaneousResultsCollection` | collection methods only |
+| `"profile"` | `CrossSectionResultsCollection` | `pd.Series` (`wse`, `flow`) |
+| `"post_process"` | `CrossSectionPostProcessResultsCollection` | `pd.Series` per variable (Max WS excluded) |
 
 #### Mapping and output blocks
 
@@ -248,14 +255,15 @@ xs_out.flow         # pd.Series
 xs_out.flow_cumulative  # pd.Series
 ```
 
-#### Instantaneous block (Post Process Profiles)
+#### Post Process block (Post Process Profiles)
 
-The instantaneous block exposes all data through the *collection*, not per-XS
-objects. The profile axis is labeled `["max_wse", 0, 1, …, n-1]` where
-`"max_wse"` is the Max WS envelope and integers map into `coll.timestamps`.
+The post_process block exposes all data through both the *collection* and
+per-XS objects.  The collection's profile axis is labeled
+`["max_wse", 0, 1, …, n-1]` where `"max_wse"` is the Max WS envelope and
+integers map into `coll.timestamps`.
 
 ```python
-coll = hdf.cross_sections("instantaneous")
+coll = hdf.cross_sections("post_process")
 
 # Timestamps for profiles 0…n-1 (excludes Max WS envelope)
 coll.timestamps     # pd.DatetimeIndex length n
@@ -272,13 +280,21 @@ wse.loc[("Butte Cr", "Upper", "7")]   # all profiles for one XS (pd.Series)
 
 coll.timestamps[0]                    # datetime of profile column 0
 
-# Named convenience methods (delegate to profile_table)
-coll.wse()              # == coll.profile_table("Water Surface")
-coll.flow()             # == coll.profile_table("Flow")
-coll.energy_grade()     # == coll.profile_table("Energy Grade")
-coll.velocity_channel() # == coll.profile_table("Velocity Channel")
-coll.shear()            # == coll.profile_table("Shear")
-# … one method per variable; see InstantaneousResultsCollection for the full list
+# Named convenience properties (delegate to profile_table)
+coll.wse              # == coll.profile_table("Water Surface")
+coll.flow             # == coll.profile_table("Flow")
+coll.energy_grade     # == coll.profile_table("Energy Grade")
+coll.velocity_channel # == coll.profile_table("Velocity Channel")
+coll.shear            # == coll.profile_table("Shear")
+# … one property per variable; see CrossSectionPostProcessResultsCollection for the full list
+
+# Per-XS access — named properties return pd.Series (Max WS excluded)
+xs = coll["Butte Cr Upper 7"]
+xs.timestamps       # pd.DatetimeIndex
+xs.wse              # pd.Series indexed by timestamps
+xs.flow             # pd.Series
+xs.energy_grade     # pd.Series
+xs.velocity_channel # pd.Series
 ```
 
 The string key is the river, reach, and RS joined by spaces.  The tuple form
@@ -288,7 +304,7 @@ exactly as they appear in the HDF.
 ### Structures
 
 ```python
-structs = hdf.structures                          # PlanStructureCollection
+structs = hdf.structures()                        # StructureResultsCollection
 
 # Typed sub-collections — each is a StructureIndex supporting [name | index]
 structs.connections                               # StructureIndex[SA2DConnectionResults]
@@ -311,9 +327,9 @@ inl = structs[("Butte Cr", "Upper", "100")]
 inl = structs[2]
 
 inl.variable_names                                # list of available output variables
-inl.stage_hw                                      # headwater stage, np.ndarray shape (n_t,)
-inl.stage_tw                                      # tailwater stage
-inl.total_flow                                    # total flow
+inl.stage_hw                                      # headwater stage, pd.Series indexed by timestamps
+inl.stage_tw                                      # tailwater stage, pd.Series
+inl.flow_total                                    # total flow, pd.Series
 ```
 
 
