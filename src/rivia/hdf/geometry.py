@@ -192,6 +192,12 @@ class FlowArea:
     # ------------------------------------------------------------------
 
     def _load(self, key: str) -> np.ndarray:
+        """Read and cache ``self._g[key]`` as a NumPy array.
+
+        ``self._g`` is the HDF group for this flow area
+        (e.g. ``Geometry/2D Flow Areas/<name>``).  Repeated calls with the
+        same key return the cached array without re-reading the file.
+        """
         if key not in self._cache:
             self._cache[key] = np.array(self._g[key])
         return self._cache[key]
@@ -2145,6 +2151,14 @@ class StorageAreaCollection(Mapping[str, "StorageArea"]):
         self._items: dict[str, StorageArea] | None = None
 
     def _load(self) -> dict[str, StorageArea]:
+        """Build and cache the storage area dict from flattened HDF arrays.
+
+        HEC-RAS stores all SA boundary polygons end-to-end in a single
+        ``Polygon Points`` array; ``Polygon Info`` holds the ``(start, count)``
+        slice for each SA.  The same flat layout is used for volume-elevation
+        curves (``Volume Elevation Values`` / ``Volume Elevation Info``).  This
+        method reassembles per-SA objects by slicing those flat arrays.
+        """
         if self._items is not None:
             return self._items
 

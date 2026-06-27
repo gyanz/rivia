@@ -2023,6 +2023,7 @@ class StorageAreaResults(StorageArea):
         sa_index: int,
         ts_sa_group: "h5py.Group | None",
         sum_sa_group: "h5py.Group | None",
+        timestamps: pd.DatetimeIndex,
         skip_row0: bool = False,
     ) -> None:
         super().__init__(
@@ -2034,6 +2035,7 @@ class StorageAreaResults(StorageArea):
         self._i = sa_index
         self._ts = ts_sa_group
         self._sum = sum_sa_group
+        self.timestamps = timestamps
         self._skip_row0 = skip_row0
         # per-SA subgroup: -/Storage Areas/<name>/
         self._sub = ts_sa_group.get(sa.name) if ts_sa_group else None
@@ -2043,8 +2045,19 @@ class StorageAreaResults(StorageArea):
     # Helpers
     # ------------------------------------------------------------------
 
+    def _series(self, col: np.ndarray, name: str) -> pd.Series:
+        """Wrap a 1-D time-series array as a timestamp-indexed ``pd.Series``."""
+        return pd.Series(col, index=self.timestamps, name=name)
+
     def _load_flat(self, key: str) -> np.ndarray:
-        """Load column *i* from a flat ``(n_t, n_sa)`` dataset."""
+        """Read a plan-level dataset and return this SA's column.
+
+        HEC-RAS stores some SA time series as flat ``(n_t, n_sa)`` arrays
+        directly under the Storage Areas group (e.g. ``"Water Surface"``,
+        ``"Flow"``).  ``key`` is the HDF dataset name; ``self._i`` is this
+        SA's column index within that array.  Use :meth:`_load_vars` for
+        datasets in the per-SA subgroup instead.
+        """
         if key not in self._cache:
             if self._ts is None:
                 raise KeyError(
@@ -2069,7 +2082,14 @@ class StorageAreaResults(StorageArea):
         return self._cache["_vars"]
 
     def _load_summary(self, key: str) -> pd.DataFrame:
-        """Load a ``(2, n_sa)`` summary dataset as a single-row DataFrame."""
+        """Read a summary dataset for this SA and return a one-row DataFrame.
+
+        Summary datasets have shape ``(2, n_sa)``: row 0 is the extreme value
+        and row 1 is the simulation time (elapsed days) when it occurred.  This
+        method slices column ``self._i`` from both rows and packages them as
+        ``{"value": ..., "time": ...}``.  Only available for ``output="mapping"``
+        (Base Output summary group).
+        """
         if self._sum is None:
             raise KeyError(
                 f"No summary results for storage area {self.name!r}. "
@@ -2084,43 +2104,43 @@ class StorageAreaResults(StorageArea):
     # ------------------------------------------------------------------
 
     @property
-    def wse(self) -> np.ndarray:
-        """Water-surface elevation time series.  Shape ``(n_t,)``."""
-        return self._load_flat("Water Surface")
+    def wse(self) -> pd.Series:
+        """Water-surface elevation time series, indexed by :attr:`timestamps`."""
+        return self._series(self._load_flat("Water Surface"), "Water Surface")
 
     @property
-    def flow(self) -> np.ndarray:
-        """Net inflow rate (positive = into SA).  Shape ``(n_t,)``."""
-        return self._load_flat("Flow")
+    def flow(self) -> pd.Series:
+        """Net inflow rate (positive = into SA), indexed by :attr:`timestamps`."""
+        return self._series(self._load_flat("Flow"), "Flow")
 
     # ------------------------------------------------------------------
     # Storage Area Variables columns (WSE, flows, area, volume)
     # ------------------------------------------------------------------
 
     @property
-    def inflow_net(self) -> np.ndarray:
-        """Net inflow rate.  Shape ``(n_t,)``."""
-        return self._load_vars()[:, 1]
+    def inflow_net(self) -> pd.Series:
+        """Net inflow rate, indexed by :attr:`timestamps`."""
+        return self._series(self._load_vars()[:, 1], "Inflow Net")
 
     @property
-    def inflow(self) -> np.ndarray:
-        """Total inflow rate (sum of all inflow sources).  Shape ``(n_t,)``."""
-        return self._load_vars()[:, 2]
+    def inflow(self) -> pd.Series:
+        """Total inflow rate (sum of all inflow sources), indexed by :attr:`timestamps`."""
+        return self._series(self._load_vars()[:, 2], "Inflow")
 
     @property
-    def outflow(self) -> np.ndarray:
-        """Total outflow rate (sum of all outflow sinks).  Shape ``(n_t,)``."""
-        return self._load_vars()[:, 3]
+    def outflow(self) -> pd.Series:
+        """Total outflow rate (sum of all outflow sinks), indexed by :attr:`timestamps`."""
+        return self._series(self._load_vars()[:, 3], "Outflow")
 
     @property
-    def surface_area(self) -> np.ndarray:
-        """Water-surface area time series (model area units).  Shape ``(n_t,)``."""
-        return self._load_vars()[:, 4]
+    def surface_area(self) -> pd.Series:
+        """Water-surface area time series (model area units), indexed by :attr:`timestamps`."""
+        return self._series(self._load_vars()[:, 4], "Surface Area")
 
     @property
-    def volume(self) -> np.ndarray:
-        """Stored volume time series (model volume units).  Shape ``(n_t,)``."""
-        return self._load_vars()[:, 5]
+    def volume(self) -> pd.Series:
+        """Stored volume time series (model volume units), indexed by :attr:`timestamps`."""
+        return self._series(self._load_vars()[:, 5], "Volume")
 
     # ------------------------------------------------------------------
     # Connection inflows
@@ -2206,6 +2226,42 @@ class StorageAreaResultsCollection(StorageAreaCollection):
     ) -> None:
         super().__init__(hdf)
         self._output = output
+        self._timestamps: pd.DatetimeIndex | None = None
+
+    @property
+    def timestamps(self) -> pd.DatetimeIndex:
+        """Output timestamps for this block as a ``pd.DatetimeIndex``.
+
+        Resolved lazily from the HDF file on first access.
+
+        Raises
+        ------
+        KeyError
+            If the expected timestamp dataset is absent from the HDF file.
+        """
+        if self._timestamps is None:
+            if self._output == "mapping":
+                ds = self._hdf.get(_TIME_STAMP_DS)
+                if ds is None:
+                    raise KeyError(
+                        f"Time Date Stamp not found at '{_TIME_STAMP_DS}'."
+                    )
+            elif self._output == "output":
+                ds = self._hdf.get(_DSS_TIME_STAMP_DS)
+                if ds is None:
+                    raise KeyError(
+                        f"Time Date Stamp not found at '{_DSS_TIME_STAMP_DS}'."
+                    )
+            else:  # "profile" and "post_process"
+                ds = self._hdf.get(_DSS_PROF_TIME_STAMP_DS)
+                if ds is None:
+                    raise KeyError(
+                        f"Time Date Stamp not found at '{_DSS_PROF_TIME_STAMP_DS}'."
+                    )
+            self._timestamps = _parse_hec_ts_array(
+                np.array(ds).astype(str), _RAS_TS_FMT
+            )
+        return self._timestamps
 
     def _resolve_paths(
         self,
@@ -2233,6 +2289,7 @@ class StorageAreaResultsCollection(StorageAreaCollection):
             return self._items  # type: ignore[return-value]
 
         ts_sa_group, sum_sa_group, skip_row0 = self._resolve_paths()
+        timestamps = self.timestamps
 
         # Re-read geometry flat arrays (same logic as StorageAreaCollection._load)
         root = self._hdf[_SA_ROOT]
@@ -2267,6 +2324,7 @@ class StorageAreaResultsCollection(StorageAreaCollection):
                 sa_index=i,
                 ts_sa_group=ts_sa_group,
                 sum_sa_group=sum_sa_group,
+                timestamps=timestamps,
                 skip_row0=skip_row0,
             )
 
@@ -2294,23 +2352,38 @@ class _StructureResultsMixin:
     ``flow_total``, ``stage_hw``, ``stage_tw``, ``weir_variables``, and
     ``flow_gate`` are implemented once and shared.
 
-    Concrete subclasses must set ``self._g`` (the result ``h5py.Group``) and
-    ``self._cache`` (empty ``dict``) in their ``__init__``.
+    Concrete subclasses must set ``self._g`` (the result ``h5py.Group``),
+    ``self._cache`` (empty ``dict``), and ``self.timestamps``
+    (``pd.DatetimeIndex``) in their ``__init__``.
     """
 
     if TYPE_CHECKING:
         _g: h5py.Group
         _cache: dict[str, np.ndarray]
+        timestamps: pd.DatetimeIndex
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
     def _load(self, key: str) -> np.ndarray:
+        """Read and cache ``self._g[key]`` as a NumPy array.
+
+        When ``_skip_row0`` is ``True`` (post_process output), row 0 of each
+        dataset is the Max WS envelope and is stripped so the remaining rows
+        align with ``detailed_timestamps``.
+
+        Example: ``self._load("Structure Variables")`` returns shape
+        ``(n_t, n_vars)``; ``self._load("Bridge Variables")`` for bridges.
+        """
         if key not in self._cache:
             raw = np.array(self._g[key])
             self._cache[key] = raw[1:] if getattr(self, "_skip_row0", False) else raw
         return self._cache[key]
+
+    def _series(self, col: np.ndarray, name: str) -> pd.Series:
+        """Wrap a 1-D time-series array as a timestamp-indexed ``pd.Series``."""
+        return pd.Series(col, index=self.timestamps, name=name)
 
     def _col_index(self, *candidates: str) -> int:
         """Index of first column whose name contains any candidate (case-insensitive).
@@ -2318,6 +2391,11 @@ class _StructureResultsMixin:
         Candidates are tried in order; the first column whose lowercased name
         contains a lowercased candidate wins.  Raises ``KeyError`` if nothing
         matches.
+
+        Example: ``self._col_index("stage hw", "hw", "headwater")`` tries the
+        most specific substring first and falls back to broader ones, so it
+        matches ``"Stage HW"``, ``"Stage HW US"``, or any label containing
+        ``"headwater"`` — whichever appears earliest in the candidate list.
         """
         names_lower = [n.lower() for n in self.variable_names]
         for cand in candidates:
@@ -2356,29 +2434,32 @@ class _StructureResultsMixin:
         return self._g["Structure Variables"]
 
     @property
-    def flow_total(self) -> np.ndarray:
-        """Total flow through the structure.  Shape ``(n_t,)``."""
-        return self._load("Structure Variables")[
+    def flow_total(self) -> pd.Series:
+        """Total flow through the structure, indexed by :attr:`timestamps`."""
+        col = self._load("Structure Variables")[
             :, self._col_index("total flow", "flow")
         ]
+        return self._series(col, "Total Flow")
 
     @property
-    def stage_hw(self) -> np.ndarray:
-        """Headwater stage (upstream side).  Shape ``(n_t,)``."""
-        return self._load("Structure Variables")[
+    def stage_hw(self) -> pd.Series:
+        """Headwater stage (upstream side), indexed by :attr:`timestamps`."""
+        col = self._load("Structure Variables")[
             :, self._col_index("stage hw", "hw", "headwater")
         ]
+        return self._series(col, "Stage HW")
 
     @property
-    def stage_tw(self) -> np.ndarray:
-        """Tailwater stage (downstream side).  Shape ``(n_t,)``."""
-        return self._load("Structure Variables")[
+    def stage_tw(self) -> pd.Series:
+        """Tailwater stage (downstream side), indexed by :attr:`timestamps`."""
+        col = self._load("Structure Variables")[
             :, self._col_index("stage tw", "tw", "tailwater")
         ]
+        return self._series(col, "Stage TW")
 
     @property
-    def flow_gate_total(self) -> np.ndarray | None:
-        """Sum of flow through all gate groups.  Shape ``(n_t,)``.
+    def flow_gate_total(self) -> pd.Series | None:
+        """Sum of flow through all gate groups, indexed by :attr:`timestamps`.
 
         Returns ``None`` when no ``Total Gate Flow`` column is present in
         ``Structure Variables`` (i.e. the structure has no gate groups).
@@ -2387,11 +2468,13 @@ class _StructureResultsMixin:
             col = self._col_index("total gate flow", "gate flow")
         except KeyError:
             return None
-        return self._load("Structure Variables")[:, col]
+        return self._series(
+            self._load("Structure Variables")[:, col], "Total Gate Flow"
+        )
 
     @property
-    def flow_weir(self) -> np.ndarray | None:
-        """Weir overflow component.  Shape ``(n_t,)``.
+    def flow_weir(self) -> pd.Series | None:
+        """Weir overflow component, indexed by :attr:`timestamps`.
 
         Returns ``None`` when no ``Weir Flow`` column is present in
         ``Structure Variables`` (i.e. the structure has no weir).
@@ -2400,7 +2483,9 @@ class _StructureResultsMixin:
             col = self._col_index("weir flow")
         except KeyError:
             return None
-        return self._load("Structure Variables")[:, col]
+        return self._series(
+            self._load("Structure Variables")[:, col], "Weir Flow"
+        )
 
     # ------------------------------------------------------------------
     # Optional datasets (shared by Inline, Lateral, Bridge, SA2DConnection)
@@ -2453,7 +2538,11 @@ class SA2DConnectionResults(_StructureResultsMixin, SA2DConnection):
     """
 
     def __init__(
-        self, geom: SA2DConnection, group: h5py.Group, skip_row0: bool = False
+        self,
+        geom: SA2DConnection,
+        group: h5py.Group,
+        timestamps: pd.DatetimeIndex,
+        skip_row0: bool = False,
     ) -> None:
         SA2DConnection.__init__(
             self,
@@ -2470,6 +2559,7 @@ class SA2DConnectionResults(_StructureResultsMixin, SA2DConnection):
         #  "BaldEagleCr Lower Levee").
         self._plan_name: str = group.name.split("/")[-1]
         self._g = group
+        self.timestamps = timestamps
         self._skip_row0 = skip_row0
         self._cache: dict[str, np.ndarray] = {}
 
@@ -2544,7 +2634,9 @@ class InlineResults(_StructureResultsMixin, InlineStructure):
         ``h5py.Group`` at the inline structure result path.
     """
 
-    def __init__(self, geom: InlineStructure, group: h5py.Group) -> None:
+    def __init__(
+        self, geom: InlineStructure, group: h5py.Group, timestamps: pd.DatetimeIndex
+    ) -> None:
         InlineStructure.__init__(
             self,
             mode=geom.mode,
@@ -2558,6 +2650,7 @@ class InlineResults(_StructureResultsMixin, InlineStructure):
             gate_groups=geom.gate_groups,
         )
         self._g = group
+        self.timestamps = timestamps
         self._cache: dict[str, np.ndarray] = {}
 
 
@@ -2587,7 +2680,11 @@ class LateralResults(_StructureResultsMixin, LateralStructure):
     """
 
     def __init__(
-        self, geom: LateralStructure, group: h5py.Group, skip_row0: bool = False
+        self,
+        geom: LateralStructure,
+        group: h5py.Group,
+        timestamps: pd.DatetimeIndex,
+        skip_row0: bool = False,
     ) -> None:
         LateralStructure.__init__(
             self,
@@ -2602,6 +2699,7 @@ class LateralResults(_StructureResultsMixin, LateralStructure):
             gate_groups=geom.gate_groups,
         )
         self._g = group
+        self.timestamps = timestamps
         self._skip_row0 = skip_row0
         self._cache: dict[str, np.ndarray] = {}
 
@@ -2610,32 +2708,28 @@ class LateralResults(_StructureResultsMixin, LateralStructure):
     # ------------------------------------------------------------------
 
     @property
-    def flow_hw_us(self) -> np.ndarray:
-        """Flow at the upstream bounding cross section.  Shape ``(n_t,)``."""
-        return self._load("Structure Variables")[
-            :, self._col_index("flow hw us")
-        ]
+    def flow_hw_us(self) -> pd.Series:
+        """Flow at the upstream bounding cross section, indexed by :attr:`timestamps`."""
+        col = self._load("Structure Variables")[:, self._col_index("flow hw us")]
+        return self._series(col, "Flow HW US")
 
     @property
-    def flow_hw_ds(self) -> np.ndarray:
-        """Flow at the downstream bounding cross section.  Shape ``(n_t,)``."""
-        return self._load("Structure Variables")[
-            :, self._col_index("flow hw ds")
-        ]
+    def flow_hw_ds(self) -> pd.Series:
+        """Flow at the downstream bounding cross section, indexed by :attr:`timestamps`."""
+        col = self._load("Structure Variables")[:, self._col_index("flow hw ds")]
+        return self._series(col, "Flow HW DS")
 
     @property
-    def stage_hw_us(self) -> np.ndarray:
-        """Stage at the upstream bounding cross section.  Shape ``(n_t,)``."""
-        return self._load("Structure Variables")[
-            :, self._col_index("stage hw us")
-        ]
+    def stage_hw_us(self) -> pd.Series:
+        """Stage at the upstream bounding cross section, indexed by :attr:`timestamps`."""
+        col = self._load("Structure Variables")[:, self._col_index("stage hw us")]
+        return self._series(col, "Stage HW US")
 
     @property
-    def stage_hw_ds(self) -> np.ndarray:
-        """Stage at the downstream bounding cross section.  Shape ``(n_t,)``."""
-        return self._load("Structure Variables")[
-            :, self._col_index("stage hw ds")
-        ]
+    def stage_hw_ds(self) -> pd.Series:
+        """Stage at the downstream bounding cross section, indexed by :attr:`timestamps`."""
+        col = self._load("Structure Variables")[:, self._col_index("stage hw ds")]
+        return self._series(col, "Stage HW DS")
 
 
 # ---------------------------------------------------------------------------
@@ -2660,7 +2754,9 @@ class BridgeResults(_StructureResultsMixin, Bridge):
         ``h5py.Group`` at the bridge result path.
     """
 
-    def __init__(self, geom: Bridge, group: h5py.Group) -> None:
+    def __init__(
+        self, geom: Bridge, group: h5py.Group, timestamps: pd.DatetimeIndex
+    ) -> None:
         Bridge.__init__(
             self,
             mode=geom.mode,
@@ -2674,6 +2770,7 @@ class BridgeResults(_StructureResultsMixin, Bridge):
             gate_groups=geom.gate_groups,
         )
         self._g = group
+        self.timestamps = timestamps
         self._cache: dict[str, np.ndarray] = {}
 
     # ------------------------------------------------------------------
@@ -2697,23 +2794,31 @@ class BridgeResults(_StructureResultsMixin, Bridge):
         return self._g["Bridge Variables"]
 
     @property
-    def flow_total(self) -> np.ndarray:
-        """Total flow through the bridge.  Shape ``(n_t,)``."""
-        return self._load("Bridge Variables")[:, self._col_index("flow")]
+    def flow_total(self) -> pd.Series:
+        """Total flow through the bridge, indexed by :attr:`timestamps`."""
+        return self._series(
+            self._load("Bridge Variables")[:, self._col_index("flow")], "Flow"
+        )
 
     @property
-    def stage_hw(self) -> np.ndarray:
-        """Headwater stage (upstream side).  Shape ``(n_t,)``."""
-        return self._load("Bridge Variables")[
-            :, self._col_index("stage hw", "hw", "headwater")
-        ]
+    def stage_hw(self) -> pd.Series:
+        """Headwater stage (upstream side), indexed by :attr:`timestamps`."""
+        return self._series(
+            self._load("Bridge Variables")[
+                :, self._col_index("stage hw", "hw", "headwater")
+            ],
+            "Stage HW",
+        )
 
     @property
-    def stage_tw(self) -> np.ndarray:
-        """Tailwater stage (downstream side).  Shape ``(n_t,)``."""
-        return self._load("Bridge Variables")[
-            :, self._col_index("stage tw", "tw", "tailwater")
-        ]
+    def stage_tw(self) -> pd.Series:
+        """Tailwater stage (downstream side), indexed by :attr:`timestamps`."""
+        return self._series(
+            self._load("Bridge Variables")[
+                :, self._col_index("stage tw", "tw", "tailwater")
+            ],
+            "Stage TW",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -2754,6 +2859,42 @@ class StructureResultsCollection(StructureCollection):
     ) -> None:
         super().__init__(hdf)
         self._output = output
+        self._timestamps: pd.DatetimeIndex | None = None
+
+    @property
+    def timestamps(self) -> pd.DatetimeIndex:
+        """Output timestamps for this block as a ``pd.DatetimeIndex``.
+
+        Resolved lazily from the HDF file on first access.
+
+        Raises
+        ------
+        KeyError
+            If the expected timestamp dataset is absent from the HDF file.
+        """
+        if self._timestamps is None:
+            if self._output == "mapping":
+                ds = self._hdf.get(_TIME_STAMP_DS)
+                if ds is None:
+                    raise KeyError(
+                        f"Time Date Stamp not found at '{_TIME_STAMP_DS}'."
+                    )
+            elif self._output == "output":
+                ds = self._hdf.get(_DSS_TIME_STAMP_DS)
+                if ds is None:
+                    raise KeyError(
+                        f"Time Date Stamp not found at '{_DSS_TIME_STAMP_DS}'."
+                    )
+            else:  # "profile" and "post_process"
+                ds = self._hdf.get(_DSS_PROF_TIME_STAMP_DS)
+                if ds is None:
+                    raise KeyError(
+                        f"Time Date Stamp not found at '{_DSS_PROF_TIME_STAMP_DS}'."
+                    )
+            self._timestamps = _parse_hec_ts_array(
+                np.array(ds).astype(str), _RAS_TS_FMT
+            )
+        return self._timestamps
 
     def _block_paths(
         self,
@@ -2805,6 +2946,8 @@ class StructureResultsCollection(StructureCollection):
         lateral_groups = _groups(lateral_path)
         bridge_groups = _groups(bridge_path)
 
+        ts = self.timestamps
+
         items: dict[str, Structure] = {}
         for key, geom in geom_items.items():
 
@@ -2821,27 +2964,31 @@ class StructureResultsCollection(StructureCollection):
                     plan_key = geom.name
                 grp = conn_groups.get(plan_key)
                 items[key] = (
-                    SA2DConnectionResults(geom, grp, skip_row0=skip_row0)
+                    SA2DConnectionResults(geom, grp, ts, skip_row0=skip_row0)
                     if grp is not None else geom
                 )
 
             elif isinstance(geom, InlineStructure):
                 plan_key = " ".join(geom.location)
                 grp = inline_groups.get(plan_key)
-                items[key] = InlineResults(geom, grp) if grp is not None else geom
+                items[key] = (
+                    InlineResults(geom, grp, ts) if grp is not None else geom
+                )
 
             elif isinstance(geom, LateralStructure):
                 plan_key = " ".join(geom.location)
                 grp = lateral_groups.get(plan_key)
                 items[key] = (
-                    LateralResults(geom, grp, skip_row0=skip_row0)
+                    LateralResults(geom, grp, ts, skip_row0=skip_row0)
                     if grp is not None else geom
                 )
 
             elif isinstance(geom, Bridge):
                 plan_key = " ".join(geom.location)
                 grp = bridge_groups.get(plan_key)
-                items[key] = BridgeResults(geom, grp) if grp is not None else geom
+                items[key] = (
+                    BridgeResults(geom, grp, ts) if grp is not None else geom
+                )
 
             else:
                 items[key] = geom
@@ -3526,6 +3673,17 @@ class CrossSectionResultsCollection(CrossSectionCollection):
         return self._timestamps
 
     def _load_results(self) -> dict[str, _CrossSectionResultsBase]:
+        """Join geometry XS objects to their column index in the result datasets.
+
+        HEC-RAS result blocks store XS data as ``(n_t, n_xs)`` arrays where
+        the column order is given by a ``Cross Section Attributes`` structured
+        array (River/Reach/Station fields).  This method builds a
+        ``(river, reach, station) → column_index`` lookup from that array, then
+        matches it against the geometry items from
+        :meth:`~CrossSectionCollection._load`.  XS present in geometry but
+        absent from the result block (e.g. structures written as XS in the
+        geometry file) are silently excluded from the returned dict.
+        """
         if self._result_items is not None:
             return self._result_items
 
@@ -3734,6 +3892,7 @@ class CrossSectionPostProcessResultsCollection(CrossSectionResultsCollection):
     # Named accessors -- top-level datasets
     # ------------------------------------------------------------------
 
+    @property
     def wse(self) -> pd.DataFrame:
         """Water-surface elevation, location × profiles (m).
 
@@ -3744,6 +3903,7 @@ class CrossSectionPostProcessResultsCollection(CrossSectionResultsCollection):
         """
         return self.profile_table("Water Surface")
 
+    @property
     def flow(self) -> pd.DataFrame:
         """Flow, location × profiles (m³/s).
 
@@ -3754,6 +3914,7 @@ class CrossSectionPostProcessResultsCollection(CrossSectionResultsCollection):
         """
         return self.profile_table("Flow")
 
+    @property
     def energy_grade(self) -> pd.DataFrame:
         """Energy grade line elevation, location × profiles (m).
 
@@ -3768,214 +3929,267 @@ class CrossSectionPostProcessResultsCollection(CrossSectionResultsCollection):
     # Named accessors -- Additional Variables
     # ------------------------------------------------------------------
 
+    @property
     def alpha(self) -> pd.DataFrame:
         """Velocity-head correction factor alpha, location × profiles."""
         return self.profile_table("Alpha")
 
+    @property
     def beta(self) -> pd.DataFrame:
         """Momentum correction factor beta, location × profiles."""
         return self.profile_table("Beta")
 
+    @property
     def flow_area_channel(self) -> pd.DataFrame:
         """Channel flow area, location × profiles (m²)."""
         return self.profile_table("Area Flow Channel")
 
+    @property
     def flow_area_left_ob(self) -> pd.DataFrame:
         """Left overbank flow area, location × profiles (m²)."""
         return self.profile_table("Area Flow Left OB")
 
+    @property
     def flow_area_right_ob(self) -> pd.DataFrame:
         """Right overbank flow area, location × profiles (m²)."""
         return self.profile_table("Area Flow Right OB")
 
+    @property
     def flow_area_total(self) -> pd.DataFrame:
         """Total flow area, location × profiles (m²)."""
         return self.profile_table("Area Flow Total")
 
+    @property
     def ineffective_area_channel(self) -> pd.DataFrame:
         """Channel area including ineffective zones, location × profiles (m²)."""
         return self.profile_table("Area including Ineffective Channel")
 
+    @property
     def ineffective_area_left_ob(self) -> pd.DataFrame:
         """Left overbank area including ineffective zones, location × profiles (m²)."""
         return self.profile_table("Area including Ineffective Left OB")
 
+    @property
     def ineffective_area_right_ob(self) -> pd.DataFrame:
         """Right overbank area including ineffective zones, location × profiles (m²)."""
         return self.profile_table("Area including Ineffective Right OB")
 
+    @property
     def ineffective_area_total(self) -> pd.DataFrame:
         """Total area including ineffective zones, location × profiles (m²)."""
         return self.profile_table("Area including Ineffective Total")
 
+    @property
     def conveyance_channel(self) -> pd.DataFrame:
         """Channel conveyance, location × profiles (m³/s)."""
         return self.profile_table("Conveyance Channel")
 
+    @property
     def conveyance_left_ob(self) -> pd.DataFrame:
         """Left overbank conveyance, location × profiles (m³/s)."""
         return self.profile_table("Conveyance Left OB")
 
+    @property
     def conveyance_right_ob(self) -> pd.DataFrame:
         """Right overbank conveyance, location × profiles (m³/s)."""
         return self.profile_table("Conveyance Right OB")
 
+    @property
     def conveyance_total(self) -> pd.DataFrame:
         """Total conveyance, location × profiles (m³/s)."""
         return self.profile_table("Conveyance Total")
 
+    @property
     def critical_energy_grade(self) -> pd.DataFrame:
         """Critical energy grade line elevation, location × profiles (m)."""
         return self.profile_table("Critical Energy Grade")
 
+    @property
     def critical_water_surface(self) -> pd.DataFrame:
         """Critical water surface elevation, location × profiles (m)."""
         return self.profile_table("Critical Water Surface")
 
+    @property
     def energy_grade_slope(self) -> pd.DataFrame:
         """Energy grade slope, location × profiles (m/m)."""
         return self.profile_table("EG Slope")
 
+    @property
     def friction_slope(self) -> pd.DataFrame:
         """Friction slope, location × profiles (m/m)."""
         return self.profile_table("Friction Slope")
 
+    @property
     def flow_channel(self) -> pd.DataFrame:
         """Channel flow, location × profiles (m³/s)."""
         return self.profile_table("Flow Channel")
 
+    @property
     def flow_left_ob(self) -> pd.DataFrame:
         """Left overbank flow, location × profiles (m³/s)."""
         return self.profile_table("Flow Left OB")
 
+    @property
     def flow_right_ob(self) -> pd.DataFrame:
         """Right overbank flow, location × profiles (m³/s)."""
         return self.profile_table("Flow Right OB")
 
+    @property
     def flow_total(self) -> pd.DataFrame:
         """Total flow, location × profiles (m³/s)."""
         return self.profile_table("Flow Total")
 
+    @property
     def hydraulic_depth_channel(self) -> pd.DataFrame:
         """Channel hydraulic depth, location × profiles (m)."""
         return self.profile_table("Hydraulic Depth Channel")
 
+    @property
     def hydraulic_depth_left_ob(self) -> pd.DataFrame:
         """Left overbank hydraulic depth, location × profiles (m)."""
         return self.profile_table("Hydraulic Depth Left OB")
 
+    @property
     def hydraulic_depth_right_ob(self) -> pd.DataFrame:
         """Right overbank hydraulic depth, location × profiles (m)."""
         return self.profile_table("Hydraulic Depth Right OB")
 
+    @property
     def hydraulic_depth_total(self) -> pd.DataFrame:
         """Total hydraulic depth, location × profiles (m)."""
         return self.profile_table("Hydraulic Depth Total")
 
+    @property
     def hydraulic_radius_channel(self) -> pd.DataFrame:
         """Channel hydraulic radius, location × profiles (m)."""
         return self.profile_table("Hydraulic Radius Channel")
 
+    @property
     def hydraulic_radius_left_ob(self) -> pd.DataFrame:
         """Left overbank hydraulic radius, location × profiles (m)."""
         return self.profile_table("Hydraulic Radius Left OB")
 
+    @property
     def hydraulic_radius_right_ob(self) -> pd.DataFrame:
         """Right overbank hydraulic radius, location × profiles (m)."""
         return self.profile_table("Hydraulic Radius Right OB")
 
+    @property
     def hydraulic_radius_total(self) -> pd.DataFrame:
         """Total hydraulic radius, location × profiles (m)."""
         return self.profile_table("Hydraulic Radius Total")
 
+    @property
     def mannings_n_channel(self) -> pd.DataFrame:
         """Weighted channel Manning's n, location × profiles."""
         return self.profile_table("Manning n Channel")
 
+    @property
     def mannings_n_left_ob(self) -> pd.DataFrame:
         """Left overbank Manning's n, location × profiles."""
         return self.profile_table("Manning n Left OB")
 
+    @property
     def mannings_n_right_ob(self) -> pd.DataFrame:
         """Right overbank Manning's n, location × profiles."""
         return self.profile_table("Manning n Right OB")
 
+    @property
     def mannings_n_total(self) -> pd.DataFrame:
         """Total weighted Manning's n, location × profiles."""
         return self.profile_table("Manning n Total")
 
+    @property
     def max_depth_total(self) -> pd.DataFrame:
         """Total maximum water depth, location × profiles (m)."""
         return self.profile_table("Maximum Depth Total")
 
+    @property
     def shear(self) -> pd.DataFrame:
         """Bed shear stress, location × profiles (N/m²)."""
         return self.profile_table("Shear")
 
+    @property
     def top_width_channel(self) -> pd.DataFrame:
         """Channel top width, location × profiles (m)."""
         return self.profile_table("Top Width Channel")
 
+    @property
     def top_width_channel_with_ineffective(self) -> pd.DataFrame:
         """Channel top width including ineffective areas, location × profiles (m)."""
         return self.profile_table("Top Width Channel including Ineffective")
 
+    @property
     def top_width_left_ob(self) -> pd.DataFrame:
         """Left overbank top width, location × profiles (m)."""
         return self.profile_table("Top Width Left OB")
 
+    @property
     def top_width_left_ob_with_ineffective(self) -> pd.DataFrame:
         """Left overbank top width incl. ineffective areas, location × profiles (m)."""
         return self.profile_table("Top Width Left OB including Ineffective")
 
+    @property
     def top_width_right_ob(self) -> pd.DataFrame:
         """Right overbank top width, location × profiles (m)."""
         return self.profile_table("Top Width Right OB")
 
+    @property
     def top_width_right_ob_with_ineffective(self) -> pd.DataFrame:
         """Right overbank top width incl. ineffective areas, location × profiles (m)."""
         return self.profile_table("Top Width Right OB including Ineffective")
 
+    @property
     def top_width_total(self) -> pd.DataFrame:
         """Total top width, location × profiles (m)."""
         return self.profile_table("Top Width Total")
 
+    @property
     def top_width_total_with_ineffective(self) -> pd.DataFrame:
         """Total top width including ineffective areas, location × profiles (m)."""
         return self.profile_table("Top Width Total including Ineffective")
 
+    @property
     def velocity_channel(self) -> pd.DataFrame:
         """Channel velocity, location × profiles (m/s)."""
         return self.profile_table("Velocity Channel")
 
+    @property
     def velocity_left_ob(self) -> pd.DataFrame:
         """Left overbank velocity, location × profiles (m/s)."""
         return self.profile_table("Velocity Left OB")
 
+    @property
     def velocity_right_ob(self) -> pd.DataFrame:
         """Right overbank velocity, location × profiles (m/s)."""
         return self.profile_table("Velocity Right OB")
 
+    @property
     def velocity_total(self) -> pd.DataFrame:
         """Total velocity, location × profiles (m/s)."""
         return self.profile_table("Velocity Total")
 
+    @property
     def wse_total(self) -> pd.DataFrame:
         """Total WSE from Additional Variables, location × profiles (m)."""
         return self.profile_table("Water Surface Total")
 
+    @property
     def wetted_perimeter_channel(self) -> pd.DataFrame:
         """Channel wetted perimeter, location × profiles (m)."""
         return self.profile_table("Wetted Perimeter Channel")
 
+    @property
     def wetted_perimeter_left_ob(self) -> pd.DataFrame:
         """Left overbank wetted perimeter, location × profiles (m)."""
         return self.profile_table("Wetted Perimeter Left OB")
 
+    @property
     def wetted_perimeter_right_ob(self) -> pd.DataFrame:
         """Right overbank wetted perimeter, location × profiles (m)."""
         return self.profile_table("Wetted Perimeter Right OB")
 
+    @property
     def wetted_perimeter_total(self) -> pd.DataFrame:
         """Total wetted perimeter, location × profiles (m)."""
         return self.profile_table("Wetted Perimeter Total")
