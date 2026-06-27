@@ -85,7 +85,10 @@ xs_pp.energy_grade  # pd.Series
 # Storage areas — DSS hydrograph interval
 sa = hdf.storage_areas("output")["Reservoir 1"]
 sa.wse              # pd.Series  — WSE indexed by pd.DatetimeIndex
-sa.max_wse          # pd.DataFrame  — columns [value, time]
+
+# max_wse / min_wse are only available for output="mapping" (Base Output summary)
+sa_map = hdf.storage_areas("mapping")["Reservoir 1"]
+sa_map.max_wse      # pd.DataFrame  — columns [value, time]
 
 # Structures — DSS Profile interval
 structs = hdf.structures("profile")
