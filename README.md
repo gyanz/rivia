@@ -99,6 +99,11 @@ inl.flow_total      # pd.Series  — total flow
 conn = structs.connections["Dam"]
 conn.stage_hw       # pd.Series
 conn.stage_tw       # pd.Series
+
+# WSE and flow profiles along / across a line
+xy = np.array([[500, 200], [600, 250], [700, 300]])
+df     = model.wse_along_line(xy, timestep="max", interval=1.0)  # pd.DataFrame — station, wse, …
+series = model.flow_across_line(xy)                               # pd.Series — discharge time series
 ```
 
 ## Package Structure
