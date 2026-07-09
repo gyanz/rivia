@@ -19,6 +19,7 @@ import datetime as dt
 import shutil
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 from rivia.model.unsteady_flow import (
@@ -1137,3 +1138,119 @@ class TestTimeSeries:
         start = dt.datetime(2020, 1, 1)
         s = li.time_series(start, raw_values=False)
         assert list(s.values) == pytest.approx([25.0, 25.0])
+
+
+# ---------------------------------------------------------------------------
+# _TimeSeriesBoundary.set_time_series()
+# ---------------------------------------------------------------------------
+
+
+class TestSetTimeSeries:
+    def _fh(self, **overrides):
+        defaults = dict(
+            river="R",
+            reach="Rc",
+            river_station="1",
+            interval="1HOUR",
+            values=[1.0, 2.0, 3.0],
+        )
+        defaults.update(overrides)
+        return FlowHydrograph(**defaults)
+
+    def test_series_sets_values_interval_and_fixed_start(self):
+        fh = self._fh()
+        idx = pd.date_range("2021-06-01", periods=4, freq="30min")
+        s = pd.Series([10.0, 20.0, 30.0, 40.0], index=idx)
+        fh.set_time_series(s)
+        assert fh.values == pytest.approx([10.0, 20.0, 30.0, 40.0])
+        assert fh.interval == "30MIN"
+        assert fh.use_fixed_start is True
+        assert fh.fixed_start == "01JUN2021,0000"
+
+    def test_series_interval_override(self):
+        fh = self._fh()
+        idx = pd.date_range("2021-06-01", periods=3, freq="1h")
+        s = pd.Series([1.0, 2.0, 3.0], index=idx)
+        fh.set_time_series(s, interval="2HOUR")
+        assert fh.interval == "2HOUR"
+
+    def test_series_non_uniform_index_raises(self):
+        fh = self._fh()
+        idx = pd.DatetimeIndex(["2021-01-01", "2021-01-02", "2021-01-04"])
+        s = pd.Series([1.0, 2.0, 3.0], index=idx)
+        with pytest.raises(ValueError):
+            fh.set_time_series(s)
+
+    def test_series_with_start_datetime_raises(self):
+        fh = self._fh()
+        idx = pd.date_range("2021-06-01", periods=3, freq="1h")
+        s = pd.Series([1.0, 2.0, 3.0], index=idx)
+        with pytest.raises(ValueError):
+            fh.set_time_series(s, start_datetime=dt.datetime(2020, 1, 1))
+
+    def test_series_without_datetime_index_raises_type_error(self):
+        fh = self._fh()
+        s = pd.Series([1.0, 2.0, 3.0])
+        with pytest.raises(TypeError):
+            fh.set_time_series(s)
+
+    def test_plain_sequence_only_updates_values(self):
+        fh = self._fh(interval="1HOUR", use_fixed_start=False)
+        fh.set_time_series([5.0, 6.0])
+        assert fh.values == pytest.approx([5.0, 6.0])
+        assert fh.interval == "1HOUR"
+        assert fh.use_fixed_start is False
+
+    def test_plain_sequence_with_interval(self):
+        fh = self._fh()
+        fh.set_time_series([5.0, 6.0], interval="15MIN")
+        assert fh.values == pytest.approx([5.0, 6.0])
+        assert fh.interval == "15MIN"
+
+    def test_plain_sequence_with_start_datetime(self):
+        fh = self._fh()
+        fh.set_time_series([5.0, 6.0], start_datetime=dt.datetime(2022, 3, 4, 5, 6))
+        assert fh.use_fixed_start is True
+        assert fh.fixed_start == "04MAR2022,0506"
+
+    def test_scalar_broadcasts_to_existing_length(self):
+        fh = self._fh(values=[1.0, 2.0, 3.0])
+        fh.set_time_series(9.0)
+        assert fh.values == pytest.approx([9.0, 9.0, 9.0])
+
+    def test_use_fixed_start_false_overrides_resolved_start(self):
+        fh = self._fh()
+        idx = pd.date_range("2021-06-01", periods=3, freq="1h")
+        s = pd.Series([1.0, 2.0, 3.0], index=idx)
+        fh.set_time_series(s, use_fixed_start=False)
+        assert fh.use_fixed_start is False
+        # fixed_start is still recorded even though the flag is off
+        assert fh.fixed_start == "01JUN2021,0000"
+
+    def test_clears_use_dss(self):
+        fh = self._fh(use_dss=True, dss_path="//A/B/C//D/E/")
+        fh.set_time_series([1.0, 2.0])
+        assert fh.use_dss is False
+
+    def test_round_trip_through_time_series(self):
+        fh = self._fh()
+        idx = pd.date_range("2021-06-01", periods=5, freq="1h")
+        s = pd.Series([1.0, 2.0, 3.0, 4.0, 5.0], index=idx)
+        fh.set_time_series(s)
+        result = fh.time_series()
+        assert list(result.index) == list(idx)
+        assert list(result.values) == pytest.approx([1.0, 2.0, 3.0, 4.0, 5.0])
+
+    def test_lateral_inflow_supports_set_time_series(self):
+        li = LateralInflow(river="R", reach="Rc", river_station="1", values=[1.0])
+        idx = pd.date_range("2021-06-01", periods=2, freq="1D")
+        s = pd.Series([1.0, 2.0], index=idx)
+        li.set_time_series(s)
+        assert li.interval == "1DAY"
+
+    def test_stage_hydrograph_supports_set_time_series(self):
+        sh = StageHydrograph(river="R", reach="Rc", river_station="1", values=[1.0])
+        idx = pd.date_range("2021-06-01", periods=2, freq="6h")
+        s = pd.Series([1.0, 2.0], index=idx)
+        sh.set_time_series(s)
+        assert sh.interval == "6HOUR"

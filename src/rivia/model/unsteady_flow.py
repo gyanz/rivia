@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from math import ceil
 from pathlib import Path
@@ -72,6 +73,59 @@ def _coerce_values(values: _Values, count: int) -> list[float]:
     if isinstance(values, (int, float)):
         return [float(values)] * count
     return [float(v) for v in values]
+
+
+def _format_interval(td: dt.timedelta) -> str:
+    """Return *td* as a HEC-RAS interval string (e.g. ``"1HOUR"``, ``"5MIN"``).
+
+    Inverse of :func:`rivia.utils.parse_interval`, restricted to whole-unit
+    DAY/HOUR/MIN/SEC (no WEEK/MONTH/YEAR, since those are approximate and
+    ambiguous to reverse-map).
+
+    Raises
+    ------
+    ValueError
+        *td* is not positive, or not a whole number of any supported unit.
+    """
+    total_seconds = td.total_seconds()
+    if total_seconds <= 0:
+        raise ValueError(f"Interval must be positive, got {td}.")
+    for unit, seconds in (("DAY", 86400), ("HOUR", 3600), ("MIN", 60), ("SEC", 1)):
+        if total_seconds % seconds == 0:
+            return f"{int(total_seconds // seconds)}{unit}"
+    raise ValueError(f"Cannot represent {td} as a whole-unit HEC-RAS interval.")
+
+
+def _format_fixed_start(d: dt.datetime) -> str:
+    """Return *d* formatted as a HEC-RAS ``fixed_start`` string (``"DDMONYYYY,HHMM"``).
+
+    Distinct from :func:`rivia.utils.format_hec_datetime`, which uses a
+    space/colon format for a different HEC-RAS context (HDF attributes,
+    runtime log timestamps).
+    """
+    return f"{d.strftime('%d%b%Y').upper()},{d.strftime('%H%M')}"
+
+
+def _infer_interval(index: pd.DatetimeIndex) -> str:
+    """Return the HEC-RAS interval string for an evenly spaced *index*.
+
+    Raises
+    ------
+    ValueError
+        *index* has fewer than 2 points, or is not evenly spaced.
+    """
+    if len(index) < 2:
+        raise ValueError(
+            "Cannot infer interval from a series with fewer than 2 points; "
+            "pass interval= explicitly."
+        )
+    diffs = index.to_series().diff().dropna().unique()
+    if len(diffs) != 1:
+        raise ValueError(
+            "data.index is not evenly spaced; cannot infer a single interval. "
+            "Resample first or pass interval= explicitly."
+        )
+    return _format_interval(pd.Timedelta(diffs[0]).to_pytimedelta())
 
 
 # ---------------------------------------------------------------------------
@@ -365,6 +419,103 @@ class _TimeSeriesBoundary(_Boundary):
             start=start, periods=len(values), freq=parse_interval(self.interval)
         )
         return pd.Series(values, index=index)
+
+    def set_time_series(
+        self,
+        data: pd.Series | Sequence[float | int] | float | int,
+        *,
+        interval: str | None = None,
+        start_datetime: dt.datetime | None = None,
+        use_fixed_start: bool | None = None,
+    ) -> None:
+        """Replace this boundary's time series, in place.
+
+        More flexible than ``UnsteadyFlow.set_flow_hydrograph``/
+        ``set_lateral_inflow`` (and their ``_at`` variants), which only ever
+        replace :attr:`values`.  This method can also change :attr:`interval`,
+        switch between a fixed start date and the plan's simulation start,
+        and accept a :class:`pandas.Series` directly.
+
+        Parameters
+        ----------
+        data:
+            New time series. One of:
+
+            * :class:`pandas.Series` with a :class:`pandas.DatetimeIndex` —
+              :attr:`values`, :attr:`interval`, and the fixed start are all
+              inferred from the series (unless overridden below). The index
+              must be evenly spaced.
+            * a sequence of numbers — used as-is; pass *interval* and/or
+              *start_datetime* explicitly to change those fields, otherwise
+              the existing values are kept.
+            * a scalar — broadcast to the current length of :attr:`values`
+              (same convention as the ``UnsteadyFlow.set_*`` methods).
+        interval:
+            New HEC-RAS interval string (e.g. ``"15MIN"``). When *data* is a
+            :class:`pandas.Series` this overrides the inferred interval
+            instead of validating against it.
+        start_datetime:
+            New fixed start. Implies ``use_fixed_start=True`` unless
+            *use_fixed_start* is also passed. Mutually exclusive with
+            passing a :class:`pandas.Series` for *data* — pass a plain
+            sequence instead if you want to combine external values with an
+            explicit start.
+        use_fixed_start:
+            Explicitly set :attr:`use_fixed_start`. Defaults to ``True``
+            automatically whenever a start is resolved (from *data* or
+            *start_datetime*); pass ``False`` to keep the new values/interval
+            but fall back to the plan's simulation start instead.
+
+        Notes
+        -----
+        Always clears :attr:`use_dss` to ``False``: a DSS-linked boundary
+        ignores inline values entirely, so supplying new inline data means
+        the caller wants them used.
+
+        Raises
+        ------
+        ValueError
+            *data* is a :class:`pandas.Series` with a non-uniform index, or
+            both *data* (as a Series) and *start_datetime* are given.
+        TypeError
+            *data* is a :class:`pandas.Series` without a
+            :class:`pandas.DatetimeIndex`.
+        """
+        resolved_start: dt.datetime | None = None
+
+        if isinstance(data, pd.Series):
+            if start_datetime is not None:
+                raise ValueError(
+                    "start_datetime cannot be combined with a pandas.Series "
+                    "for data; the series' own DatetimeIndex is "
+                    "authoritative. Pass a plain sequence for data if you "
+                    "want to combine external values with an explicit "
+                    "start_datetime."
+                )
+            if not isinstance(data.index, pd.DatetimeIndex):
+                raise TypeError("data.index must be a pandas.DatetimeIndex.")
+            values = [float(v) for v in data.to_numpy()]
+            if interval is None:
+                interval = _infer_interval(data.index)
+            resolved_start = data.index[0].to_pydatetime()
+        elif isinstance(data, (int, float)):
+            values = _coerce_values(data, len(self.values))
+        else:
+            values = [float(v) for v in data]
+
+        if start_datetime is not None:
+            resolved_start = start_datetime
+
+        self.values = values
+        self.use_dss = False
+        if interval is not None:
+            self.interval = interval
+        if resolved_start is not None:
+            self.fixed_start = _format_fixed_start(resolved_start)
+            if use_fixed_start is None:
+                use_fixed_start = True
+        if use_fixed_start is not None:
+            self.use_fixed_start = use_fixed_start
 
 
 @dataclass
