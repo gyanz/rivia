@@ -851,3 +851,53 @@ class TestQMinQMult:
         ed1.save(out)
         text = out.read_text(encoding="utf-8")
         assert "Flow Hydrograph QMult" not in text
+
+    def test_set_flow_hydrograph_defaults_q_min_q_mult(self):
+        ed = UnsteadyFlow(QMIN_QMULT)
+        assert ed.flow_hydrographs[0].q_min == pytest.approx(400.0)
+        ed.set_flow_hydrograph(0, 500.0)
+        assert ed.flow_hydrographs[0].q_min == pytest.approx(0.0)
+        assert ed.flow_hydrographs[0].q_mult == pytest.approx(1.0)
+
+    def test_set_flow_hydrograph_explicit_q_min_q_mult(self):
+        ed = UnsteadyFlow(BAXTER)
+        ed.set_flow_hydrograph(0, 500.0, q_min=250.0, q_mult=2.0)
+        assert ed.flow_hydrographs[0].q_min == pytest.approx(250.0)
+        assert ed.flow_hydrographs[0].q_mult == pytest.approx(2.0)
+
+    def test_set_flow_hydrograph_at_defaults_q_min_q_mult(self):
+        ed = UnsteadyFlow(QMIN_QMULT)
+        fh = ed.flow_hydrographs[0]
+        ed.set_flow_hydrograph_at(fh.river, fh.reach, fh.river_station, 500.0)
+        assert fh.q_min == pytest.approx(0.0)
+        assert fh.q_mult == pytest.approx(1.0)
+
+    def test_set_flow_hydrograph_writes_q_min_q_mult(self, tmp_path):
+        ed1 = UnsteadyFlow(BAXTER)
+        ed1.set_flow_hydrograph(0, 500.0)
+        out = tmp_path / "baxter_qmin_qmult.u01"
+        ed1.save(out)
+        ed2 = UnsteadyFlow(out)
+        assert ed2.flow_hydrographs[0].q_min == pytest.approx(0.0)
+        assert ed2.flow_hydrographs[0].q_mult == pytest.approx(1.0)
+
+    def test_set_lateral_inflow_defaults_q_min_q_mult(self):
+        ed = UnsteadyFlow(QMIN_QMULT)
+        li = ed.lateral_inflows[0]
+        assert li.q_mult == pytest.approx(0.0)
+        ed.set_lateral_inflow(0, 500.0)
+        assert li.q_min == pytest.approx(0.0)
+        assert li.q_mult == pytest.approx(1.0)
+
+    def test_set_lateral_inflow_explicit_q_min_q_mult(self):
+        ed = UnsteadyFlow(DAMBRK)
+        ed.set_lateral_inflow(0, 500.0, q_min=10.0, q_mult=0.5)
+        assert ed.lateral_inflows[0].q_min == pytest.approx(10.0)
+        assert ed.lateral_inflows[0].q_mult == pytest.approx(0.5)
+
+    def test_set_lateral_inflow_at_defaults_q_min_q_mult(self):
+        ed = UnsteadyFlow(QMIN_QMULT)
+        li = ed.lateral_inflows[0]
+        ed.set_lateral_inflow_at(li.river, li.reach, li.river_station, 500.0)
+        assert li.q_min == pytest.approx(0.0)
+        assert li.q_mult == pytest.approx(1.0)

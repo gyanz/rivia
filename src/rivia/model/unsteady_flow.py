@@ -1053,7 +1053,9 @@ class UnsteadyFlow:
     # Set by index (works naturally after sorting)
     # ------------------------------------------------------------------
 
-    def set_flow_hydrograph(self, index: int, values: _Values) -> None:
+    def set_flow_hydrograph(
+        self, index: int, values: _Values, q_min: float = 0.0, q_mult: float = 1.0
+    ) -> None:
         """Set flow hydrograph values by position in :attr:`flow_hydrographs`.
 
         Parameters
@@ -1063,12 +1065,22 @@ class UnsteadyFlow:
         values:
             New flow values.  A scalar is broadcast to the length of
             the existing time series.
+        q_min:
+            New ``Flow Hydrograph QMin`` value.  Always applied, overwriting
+            any previously set value.
+        q_mult:
+            New ``Flow Hydrograph QMult`` value.  Always applied, overwriting
+            any previously set value.
         """
         bc = self.flow_hydrographs[index]
         bc.values = _coerce_values(values, len(bc.values))
+        bc.q_min = float(q_min)
+        bc.q_mult = float(q_mult)
         self._modified = True
 
-    def set_lateral_inflow(self, index: int, values: _Values) -> None:
+    def set_lateral_inflow(
+        self, index: int, values: _Values, q_min: float = 0.0, q_mult: float = 1.0
+    ) -> None:
         """Set lateral inflow values by position in :attr:`lateral_inflows`.
 
         Parameters
@@ -1076,9 +1088,17 @@ class UnsteadyFlow:
         values:
             New flow values.  A scalar is broadcast to the length of
             the existing time series.
+        q_min:
+            New ``QMin`` value.  Always applied, overwriting any previously
+            set value.
+        q_mult:
+            New ``QMult`` value.  Always applied, overwriting any previously
+            set value.
         """
         bc = self.lateral_inflows[index]
         bc.values = _coerce_values(values, len(bc.values))
+        bc.q_min = float(q_min)
+        bc.q_mult = float(q_mult)
         self._modified = True
 
     def set_all_lateral_inflows(self, values: list[float | list[float]]) -> None:
@@ -1152,7 +1172,13 @@ class UnsteadyFlow:
         return None
 
     def set_flow_hydrograph_at(
-        self, river: str, reach: str, rs: str, values: _Values
+        self,
+        river: str,
+        reach: str,
+        rs: str,
+        values: _Values,
+        q_min: float = 0.0,
+        q_mult: float = 1.0,
     ) -> None:
         """Set flow hydrograph values by location.
 
@@ -1160,15 +1186,29 @@ class UnsteadyFlow:
         ----------
         values:
             A scalar is broadcast to the existing time-series length.
+        q_min:
+            New ``Flow Hydrograph QMin`` value.  Always applied, overwriting
+            any previously set value.
+        q_mult:
+            New ``Flow Hydrograph QMult`` value.  Always applied, overwriting
+            any previously set value.
         """
         b = self._find_boundary(river, reach, rs)
         if not isinstance(b, FlowHydrograph):
             raise KeyError(f"No FlowHydrograph at {river!r}, {reach!r}, {rs!r}")
         b.values = _coerce_values(values, len(b.values))
+        b.q_min = float(q_min)
+        b.q_mult = float(q_mult)
         self._modified = True
 
     def set_lateral_inflow_at(
-        self, river: str, reach: str, rs: str, values: _Values
+        self,
+        river: str,
+        reach: str,
+        rs: str,
+        values: _Values,
+        q_min: float = 0.0,
+        q_mult: float = 1.0,
     ) -> None:
         """Set lateral inflow values by location.
 
@@ -1176,11 +1216,19 @@ class UnsteadyFlow:
         ----------
         values:
             A scalar is broadcast to the existing time-series length.
+        q_min:
+            New ``QMin`` value.  Always applied, overwriting any previously
+            set value.
+        q_mult:
+            New ``QMult`` value.  Always applied, overwriting any previously
+            set value.
         """
         b = self._find_boundary(river, reach, rs)
         if not isinstance(b, LateralInflow):
             raise KeyError(f"No LateralInflow at {river!r}, {reach!r}, {rs!r}")
         b.values = _coerce_values(values, len(b.values))
+        b.q_min = float(q_min)
+        b.q_mult = float(q_mult)
         self._modified = True
 
     def set_gate_opening_at(
