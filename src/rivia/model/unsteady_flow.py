@@ -23,7 +23,12 @@ from typing import Literal
 
 import pandas as pd
 
-from rivia.utils import parse_hec_datetime, parse_interval
+from rivia.utils import (
+    format_interval_strict,
+    parse_hec_datetime,
+    parse_interval,
+    parse_interval_strict,
+)
 
 logger = logging.getLogger("rivia.model")
 
@@ -75,25 +80,23 @@ def _coerce_values(values: _Values, count: int) -> list[float]:
     return [float(v) for v in values]
 
 
-def _format_interval(td: dt.timedelta) -> str:
-    """Return *td* as a HEC-RAS interval string (e.g. ``"1HOUR"``, ``"5MIN"``).
+def _resolve_interval(value: str | float | int | dt.timedelta) -> str:
+    """Return *value* as a canonical, HEC-RAS-dropdown-valid interval string.
 
-    Inverse of :func:`rivia.utils.parse_interval`, restricted to whole-unit
-    DAY/HOUR/MIN/SEC (no WEEK/MONTH/YEAR, since those are approximate and
-    ambiguous to reverse-map).
+    Accepts a HEC-RAS interval string (validated and re-canonicalized via
+    :func:`rivia.utils.parse_interval_strict`), a :class:`datetime.timedelta`,
+    or a bare ``int``/``float`` (seconds) — all resolved via
+    :func:`rivia.utils.format_interval_strict`.
 
     Raises
     ------
     ValueError
-        *td* is not positive, or not a whole number of any supported unit.
+        *value* is a string that does not match a HEC-RAS dropdown interval,
+        or a duration that cannot be expressed as one in any unit.
     """
-    total_seconds = td.total_seconds()
-    if total_seconds <= 0:
-        raise ValueError(f"Interval must be positive, got {td}.")
-    for unit, seconds in (("DAY", 86400), ("HOUR", 3600), ("MIN", 60), ("SEC", 1)):
-        if total_seconds % seconds == 0:
-            return f"{int(total_seconds // seconds)}{unit}"
-    raise ValueError(f"Cannot represent {td} as a whole-unit HEC-RAS interval.")
+    if isinstance(value, str):
+        value = parse_interval_strict(value)
+    return format_interval_strict(value)
 
 
 def _format_fixed_start(d: dt.datetime) -> str:
@@ -112,7 +115,9 @@ def _infer_interval(index: pd.DatetimeIndex) -> str:
     Raises
     ------
     ValueError
-        *index* has fewer than 2 points, or is not evenly spaced.
+        *index* has fewer than 2 points, is not evenly spaced, or the
+        spacing does not correspond to a HEC-RAS dropdown interval (see
+        :func:`rivia.utils.format_interval_strict`).
     """
     if len(index) < 2:
         raise ValueError(
@@ -125,7 +130,7 @@ def _infer_interval(index: pd.DatetimeIndex) -> str:
             "data.index is not evenly spaced; cannot infer a single interval. "
             "Resample first or pass interval= explicitly."
         )
-    return _format_interval(pd.Timedelta(diffs[0]).to_pytimedelta())
+    return format_interval_strict(pd.Timedelta(diffs[0]).to_pytimedelta())
 
 
 # ---------------------------------------------------------------------------
@@ -424,7 +429,7 @@ class _TimeSeriesBoundary(_Boundary):
         self,
         data: pd.Series | Sequence[float | int] | float | int,
         *,
-        interval: str | None = None,
+        interval: str | float | int | dt.timedelta | None = None,
         start_datetime: dt.datetime | None = None,
         use_fixed_start: bool | None = None,
     ) -> None:
@@ -451,9 +456,18 @@ class _TimeSeriesBoundary(_Boundary):
             * a scalar — broadcast to the current length of :attr:`values`
               (same convention as the ``UnsteadyFlow.set_*`` methods).
         interval:
-            New HEC-RAS interval string (e.g. ``"15MIN"``). When *data* is a
-            :class:`pandas.Series` this overrides the inferred interval
-            instead of validating against it.
+            New interval. One of a HEC-RAS interval string (e.g.
+            ``"15MIN"``), a :class:`datetime.timedelta`, or a bare
+            ``int``/``float`` interpreted as seconds. In every case the
+            resolved duration is strictly validated and re-canonicalized via
+            :func:`rivia.utils.parse_interval_strict` /
+            :func:`rivia.utils.format_interval_strict` — only values
+            HEC-RAS's own interval dropdown offers are accepted (e.g.
+            ``"7HOUR"`` or ``dt.timedelta(hours=5)`` raise ``ValueError``).
+            Mutually exclusive with passing a :class:`pandas.Series` for
+            *data* — the series' own index spacing is always used in that
+            case; pass a plain sequence instead if you want to combine
+            external values with an explicit interval.
         start_datetime:
             New fixed start. Implies ``use_fixed_start=True`` unless
             *use_fixed_start* is also passed. Mutually exclusive with
@@ -475,13 +489,18 @@ class _TimeSeriesBoundary(_Boundary):
         Raises
         ------
         ValueError
-            *data* is a :class:`pandas.Series` with a non-uniform index, or
-            both *data* (as a Series) and *start_datetime* are given.
+            *data* is a :class:`pandas.Series` with a non-uniform index,
+            *data* is a Series and *start_datetime* and/or *interval* are
+            also given, or *interval* does not resolve to a HEC-RAS
+            dropdown interval.
         TypeError
             *data* is a :class:`pandas.Series` without a
             :class:`pandas.DatetimeIndex`.
         """
         resolved_start: dt.datetime | None = None
+        resolved_interval: str | None = (
+            _resolve_interval(interval) if interval is not None else None
+        )
 
         if isinstance(data, pd.Series):
             if start_datetime is not None:
@@ -492,11 +511,17 @@ class _TimeSeriesBoundary(_Boundary):
                     "want to combine external values with an explicit "
                     "start_datetime."
                 )
+            if resolved_interval is not None:
+                raise ValueError(
+                    "interval cannot be combined with a pandas.Series for "
+                    "data; the series' own index spacing is always used. "
+                    "Pass a plain sequence for data if you want to combine "
+                    "external values with an explicit interval."
+                )
             if not isinstance(data.index, pd.DatetimeIndex):
                 raise TypeError("data.index must be a pandas.DatetimeIndex.")
             values = [float(v) for v in data.to_numpy()]
-            if interval is None:
-                interval = _infer_interval(data.index)
+            resolved_interval = _infer_interval(data.index)
             resolved_start = data.index[0].to_pydatetime()
         elif isinstance(data, (int, float)):
             values = _coerce_values(data, len(self.values))
@@ -508,8 +533,8 @@ class _TimeSeriesBoundary(_Boundary):
 
         self.values = values
         self.use_dss = False
-        if interval is not None:
-            self.interval = interval
+        if resolved_interval is not None:
+            self.interval = resolved_interval
         if resolved_start is not None:
             self.fixed_start = _format_fixed_start(resolved_start)
             if use_fixed_start is None:

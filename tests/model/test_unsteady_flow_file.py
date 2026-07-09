@@ -1167,12 +1167,12 @@ class TestSetTimeSeries:
         assert fh.use_fixed_start is True
         assert fh.fixed_start == "01JUN2021,0000"
 
-    def test_series_interval_override(self):
+    def test_series_with_interval_raises(self):
         fh = self._fh()
         idx = pd.date_range("2021-06-01", periods=3, freq="1h")
         s = pd.Series([1.0, 2.0, 3.0], index=idx)
-        fh.set_time_series(s, interval="2HOUR")
-        assert fh.interval == "2HOUR"
+        with pytest.raises(ValueError):
+            fh.set_time_series(s, interval="2HOUR")
 
     def test_series_non_uniform_index_raises(self):
         fh = self._fh()
@@ -1254,3 +1254,47 @@ class TestSetTimeSeries:
         s = pd.Series([1.0, 2.0], index=idx)
         sh.set_time_series(s)
         assert sh.interval == "6HOUR"
+
+    def test_interval_as_timedelta(self):
+        fh = self._fh()
+        fh.set_time_series([1.0, 2.0], interval=dt.timedelta(minutes=15))
+        assert fh.interval == "15MIN"
+
+    def test_interval_as_seconds_int(self):
+        fh = self._fh()
+        fh.set_time_series([1.0, 2.0], interval=3600)
+        assert fh.interval == "1HOUR"
+
+    def test_interval_as_seconds_float(self):
+        fh = self._fh()
+        fh.set_time_series([1.0, 2.0], interval=900.0)
+        assert fh.interval == "15MIN"
+
+    def test_interval_as_string_is_canonicalized(self):
+        fh = self._fh()
+        fh.set_time_series([1.0, 2.0], interval="1HR")
+        assert fh.interval == "1HOUR"
+
+    def test_interval_string_rejects_non_dropdown_value(self):
+        fh = self._fh()
+        with pytest.raises(ValueError):
+            fh.set_time_series([1.0, 2.0], interval="7HOUR")
+
+    def test_interval_timedelta_rejects_non_dropdown_value(self):
+        fh = self._fh()
+        with pytest.raises(ValueError):
+            fh.set_time_series([1.0, 2.0], interval=dt.timedelta(hours=5))
+
+    def test_series_inferred_interval_rejects_non_dropdown_spacing(self):
+        fh = self._fh()
+        idx = pd.date_range("2021-06-01", periods=3, freq="7h")
+        s = pd.Series([1.0, 2.0, 3.0], index=idx)
+        with pytest.raises(ValueError):
+            fh.set_time_series(s)
+
+    def test_series_with_interval_as_timedelta_raises(self):
+        fh = self._fh()
+        idx = pd.date_range("2021-06-01", periods=3, freq="1h")
+        s = pd.Series([1.0, 2.0, 3.0], index=idx)
+        with pytest.raises(ValueError):
+            fh.set_time_series(s, interval=dt.timedelta(hours=2))

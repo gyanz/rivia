@@ -12,48 +12,23 @@ _MONTHS = {"JAN", "FEB", "MAR", "APR", "MAY", "JUN",
 _DATE_RE = re.compile(r"^(\d{2})([A-Za-z]{3})(\d{4})$")
 _INTERVAL_RE = re.compile(r"^(\d+(?:\.\d*)?)\s*([A-Za-z]+)$")
 _INTERVAL_UNITS: dict[str, dt.timedelta] = {
-    "SEC":   dt.timedelta(seconds=1),
-    "MIN":   dt.timedelta(minutes=1),
-    "HR":    dt.timedelta(hours=1),
-    "HOUR":  dt.timedelta(hours=1),
-    "DAY":   dt.timedelta(days=1),
-    "WEEK":  dt.timedelta(weeks=1),
-    "MONTH": dt.timedelta(days=30),
-    "YEAR":  dt.timedelta(days=365),
+    "SEC":     dt.timedelta(seconds=1),
+    "SECOND":  dt.timedelta(seconds=1),
+    "MIN":     dt.timedelta(minutes=1),
+    "MINUTE":  dt.timedelta(minutes=1),
+    "HR":      dt.timedelta(hours=1),
+    "HOUR":    dt.timedelta(hours=1),
+    "DAY":     dt.timedelta(days=1),
+    "WEEK":    dt.timedelta(weeks=1),
+    "MONTH":   dt.timedelta(days=30),
+    "YEAR":    dt.timedelta(days=365),
 }
 
 
-def parse_interval(text: str | bytes) -> dt.timedelta:
-    """Parse a HEC-RAS interval string and return a :class:`datetime.timedelta`.
+def _parse_interval_parts(text: str | bytes) -> tuple[float, str]:
+    """Return ``(value, unit)`` for a HEC-RAS interval string.
 
-    HEC-RAS writes interval strings as a number immediately followed by a unit
-    abbreviation, with optional whitespace between them, e.g. ``'20SEC'``,
-    ``'5MIN'``, ``'1HR'``, ``'1HOUR'``, ``'1DAY'``, ``'2WEEK'``.
-
-    Supported units (case-insensitive):
-
-    ======  =====================================
-    Unit    Timedelta
-    ======  =====================================
-    SEC     ``timedelta(seconds=n)``
-    MIN     ``timedelta(minutes=n)``
-    HR      ``timedelta(hours=n)``
-    HOUR    ``timedelta(hours=n)``
-    DAY     ``timedelta(days=n)``
-    WEEK    ``timedelta(weeks=n)``
-    MONTH   ``timedelta(days=n*30)`` (approximate)
-    YEAR    ``timedelta(days=n*365)`` (approximate)
-    ======  =====================================
-
-    Parameters
-    ----------
-    text:
-        Raw interval string from a HEC-RAS HDF attribute or plan file.
-        Bytes are decoded as UTF-8 before parsing.
-
-    Returns
-    -------
-    datetime.timedelta
+    Shared by :func:`parse_interval` and :func:`parse_interval_strict`.
 
     Raises
     ------
@@ -72,13 +47,196 @@ def parse_interval(text: str | bytes) -> dt.timedelta:
         )
     value = float(m.group(1))
     unit = m.group(2).upper()
-    unit_td = next((td for key, td in _INTERVAL_UNITS.items() if unit == key), None)
-    if unit_td is None:
+    if unit not in _INTERVAL_UNITS:
         raise ValueError(
             f"Unrecognised interval unit {m.group(2)!r} in {text!r}. "
             f"Supported units: {', '.join(_INTERVAL_UNITS)}."
         )
-    return value * unit_td
+    return value, unit
+
+
+def parse_interval(text: str | bytes) -> dt.timedelta:
+    """Parse a HEC-RAS interval string and return a :class:`datetime.timedelta`.
+
+    HEC-RAS writes interval strings as a number immediately followed by a unit
+    abbreviation, with optional whitespace between them, e.g. ``'20SEC'``,
+    ``'5MIN'``, ``'1HR'``, ``'1HOUR'``, ``'1DAY'``, ``'2WEEK'``.
+
+    Supported units (case-insensitive):
+
+    ========  =====================================
+    Unit      Timedelta
+    ========  =====================================
+    SEC       ``timedelta(seconds=n)``
+    SECOND    ``timedelta(seconds=n)``
+    MIN       ``timedelta(minutes=n)``
+    MINUTE    ``timedelta(minutes=n)``
+    HR        ``timedelta(hours=n)``
+    HOUR      ``timedelta(hours=n)``
+    DAY       ``timedelta(days=n)``
+    WEEK      ``timedelta(weeks=n)``
+    MONTH     ``timedelta(days=n*30)`` (approximate)
+    YEAR      ``timedelta(days=n*365)`` (approximate)
+    ========  =====================================
+
+    Any positive number is accepted for any unit (e.g. ``'7HOUR'`` or
+    ``'1.5MIN'`` parse without error). Use :func:`parse_interval_strict` to
+    additionally reject values HEC-RAS's own interval dropdown does not
+    offer.
+
+    Parameters
+    ----------
+    text:
+        Raw interval string from a HEC-RAS HDF attribute or plan file.
+        Bytes are decoded as UTF-8 before parsing.
+
+    Returns
+    -------
+    datetime.timedelta
+
+    Raises
+    ------
+    ValueError
+        If *text* does not match the expected ``<number><unit>`` format or
+        the unit is not recognised.
+    """
+    value, unit = _parse_interval_parts(text)
+    return value * _INTERVAL_UNITS[unit]
+
+
+# Interval values HEC-RAS's own dropdown offers, keyed by unit. Any unit not
+# listed here (there are none beyond these eight) would have no allowed
+# values and always fail parse_interval_strict.
+_STRICT_INTERVAL_VALUES: dict[str, frozenset[int]] = {
+    "SEC": frozenset({1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30}),
+    "SECOND": frozenset({1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30}),
+    "MIN": frozenset({1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30}),
+    "MINUTE": frozenset({1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30}),
+    "HR": frozenset({1, 2, 3, 4, 6, 8, 12}),
+    "HOUR": frozenset({1, 2, 3, 4, 6, 8, 12}),
+    "DAY": frozenset({1}),
+    "WEEK": frozenset({1}),
+    "MONTH": frozenset({1}),
+    "YEAR": frozenset({1}),
+}
+
+
+def parse_interval_strict(text: str | bytes) -> dt.timedelta:
+    """Parse a HEC-RAS interval string, restricted to dropdown-allowed values.
+
+    Like :func:`parse_interval`, but additionally rejects any
+    ``<number><unit>`` combination that HEC-RAS's own interval dropdown does
+    not offer. Use this to validate an interval string before writing it to
+    an unsteady flow / plan file; :func:`parse_interval` alone will happily
+    parse combinations (e.g. ``'7HOUR'``, ``'1.5MIN'``) that HEC-RAS itself
+    would never produce or accept.
+
+    Allowed values (case-insensitive unit):
+
+    ================  ================================================
+    Unit              Allowed values
+    ================  ================================================
+    SEC / SECOND      1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30
+    MIN / MINUTE      1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30
+    HR / HOUR         1, 2, 3, 4, 6, 8, 12
+    DAY               1
+    WEEK              1
+    MONTH             1
+    YEAR              1
+    ================  ================================================
+
+    Parameters
+    ----------
+    text:
+        Raw interval string, e.g. ``'15MIN'`` or ``'1 HOUR'``.
+
+    Returns
+    -------
+    datetime.timedelta
+
+    Raises
+    ------
+    ValueError
+        *text* does not match the expected ``<number><unit>`` format, the
+        unit is not recognised, the value is not a whole number, or the
+        value is not one of the unit's allowed values.
+    """
+    value, unit = _parse_interval_parts(text)
+    if value != int(value):
+        raise ValueError(
+            f"Interval value must be a whole number, got {value!r} in {text!r}."
+        )
+    allowed = _STRICT_INTERVAL_VALUES[unit]
+    if int(value) not in allowed:
+        raise ValueError(
+            f"{int(value)}{unit} is not a valid HEC-RAS interval. "
+            f"Allowed {unit} values: {sorted(allowed)}."
+        )
+    return value * _INTERVAL_UNITS[unit]
+
+
+# Seconds-per-unit for every unit in _STRICT_INTERVAL_VALUES, checked by
+# format_interval_strict in this order (largest practical unit first;
+# WEEK/MONTH/YEAR last since they're only exact for their single allowed
+# value of 1 and are otherwise indistinguishable from a DAY-based duration).
+_STRICT_UNIT_ORDER: tuple[str, ...] = (
+    "DAY", "HOUR", "MIN", "SEC", "WEEK", "MONTH", "YEAR",
+)
+
+
+def format_interval_strict(value: dt.timedelta | int | float) -> str:
+    """Format a duration as a HEC-RAS interval string, restricted to
+    dropdown-allowed values.
+
+    Inverse of :func:`parse_interval_strict`. Tries each unit in
+    :data:`_STRICT_UNIT_ORDER` and returns the first ``<n><unit>``
+    combination that both divides *value* evenly and is itself one of
+    HEC-RAS's dropdown-allowed values for that unit (see
+    :func:`parse_interval_strict`).
+
+    Parameters
+    ----------
+    value:
+        Duration to format. A :class:`datetime.timedelta`, or a bare
+        ``int``/``float`` interpreted as a number of seconds.
+
+    Returns
+    -------
+    str
+        e.g. ``"15MIN"``, ``"2HOUR"``, ``"1DAY"``.
+
+    Raises
+    ------
+    ValueError
+        *value* is not positive, or does not correspond to any interval
+        HEC-RAS's own dropdown offers in any unit.
+
+    Examples
+    --------
+    >>> import datetime as dt
+    >>> format_interval_strict(dt.timedelta(minutes=15))
+    '15MIN'
+    >>> format_interval_strict(dt.timedelta(hours=5))
+    Traceback (most recent call last):
+        ...
+    ValueError: ...
+    """
+    total_seconds = (
+        value.total_seconds() if isinstance(value, dt.timedelta) else float(value)
+    )
+    if total_seconds <= 0:
+        raise ValueError(f"Interval must be positive, got {value!r}.")
+
+    for unit in _STRICT_UNIT_ORDER:
+        unit_seconds = _INTERVAL_UNITS[unit].total_seconds()
+        if total_seconds % unit_seconds != 0:
+            continue
+        n = int(total_seconds // unit_seconds)
+        if n in _STRICT_INTERVAL_VALUES[unit]:
+            return f"{n}{unit}"
+    raise ValueError(
+        f"{value!r} does not correspond to any HEC-RAS dropdown interval."
+    )
 
 
 def check_sim_date(date: str) -> None:
