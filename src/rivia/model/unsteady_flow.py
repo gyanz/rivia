@@ -20,6 +20,8 @@ from math import ceil
 from pathlib import Path
 from typing import Literal
 
+import pandas as pd
+
 from rivia.utils import parse_hec_datetime, parse_interval
 
 logger = logging.getLogger("rivia.model")
@@ -264,22 +266,20 @@ class _Boundary:
 
 
 @dataclass
-class FlowHydrograph(_Boundary):
-    """Upstream / internal flow hydrograph boundary."""
+class _TimeSeriesBoundary(_Boundary):
+    """Base for boundary types carrying an inline value time series.
+
+    Shared by :class:`FlowHydrograph`, :class:`LateralInflow`, and
+    :class:`StageHydrograph`.  :class:`RatingCurve` is *not* a subclass of
+    this: it stores a static stage/flow lookup table (``pairs``), not a
+    time-indexed signal.
+    """
 
     interval: str = "1HOUR"
     values: list[float] = field(default_factory=list)
-    flow_hydrograph_slope: str | None = None
-    stage_tw_check: int = 0
-    q_min: float | None = None
-    q_mult: float | None = None
-    dss_file: str = ""
-    dss_path: str = ""
     use_dss: bool = False
     use_fixed_start: bool = False
     fixed_start: str = ","
-    is_critical: bool = False
-    critical_boundary_flow: str = ""
     # Extra lines between the standard fields and next Boundary Location
     # that we don't model explicitly (e.g. CWMS InputPosition).
     _extra_lines: list[str] = field(default_factory=list, repr=False)
@@ -295,59 +295,110 @@ class FlowHydrograph(_Boundary):
             self.use_fixed_start, self.fixed_start, self.interval, len(self.values)
         )
 
+    def time_series(
+        self, start_datetime: dt.datetime | None = None, raw_values: bool = True
+    ) -> pd.Series:
+        """Return :attr:`values` as a :class:`pandas.Series` indexed by datetime.
+
+        Parameters
+        ----------
+        start_datetime:
+            Start of the time series.  Required when :attr:`use_fixed_start`
+            is ``False``.  Ignored (with a warning) when
+            :attr:`use_fixed_start` is ``True``, since :attr:`fixed_start`
+            is authoritative in that case.
+        raw_values:
+            If ``True`` (default), return :attr:`values` exactly as stored.
+            If ``False``, apply ``QMin``/``QMult`` to each value as
+            ``max(value * q_mult, q_min)`` (a missing/``None`` ``q_mult`` is
+            treated as ``1.0``; a missing/``None`` ``q_min`` skips the floor).
+            Has no effect on boundary types without ``q_min``/``q_mult``
+            fields (e.g. :class:`StageHydrograph`), which have nothing to
+            apply and always return raw values.
+
+        Returns
+        -------
+        pd.Series
+            Values indexed by a :class:`pandas.DatetimeIndex` built from the
+            resolved start datetime and :attr:`interval`.  Empty if
+            :attr:`values` is empty.
+
+        Raises
+        ------
+        ValueError
+            *start_datetime* was not provided and :attr:`use_fixed_start`
+            is ``False``.
+        NotImplementedError
+            :attr:`use_dss` is ``True`` — values live in an external DSS
+            file and are not available inline.
+        """
+        if self.use_dss:
+            raise NotImplementedError(
+                "values are stored in an external DSS file (use_dss=True); "
+                "time_series() only supports inline values."
+            )
+        if self.use_fixed_start:
+            if start_datetime is not None:
+                logger.warning(
+                    "start_datetime is ignored because use_fixed_start is "
+                    "True; using fixed_start=%r instead.",
+                    self.fixed_start,
+                )
+            start = parse_hec_datetime(self.fixed_start)
+        else:
+            if start_datetime is None:
+                raise ValueError(
+                    "start_datetime is required when use_fixed_start is False."
+                )
+            start = start_datetime
+        values = self.values
+        if not raw_values:
+            q_mult = getattr(self, "q_mult", None)
+            q_min = getattr(self, "q_min", None)
+            mult = q_mult if q_mult is not None else 1.0
+            values = [v * mult for v in values]
+            if q_min is not None:
+                values = [max(v, q_min) for v in values]
+        if not values:
+            return pd.Series([], index=pd.DatetimeIndex([]), dtype=float)
+        index = pd.date_range(
+            start=start, periods=len(values), freq=parse_interval(self.interval)
+        )
+        return pd.Series(values, index=index)
+
 
 @dataclass
-class LateralInflow(_Boundary):
+class FlowHydrograph(_TimeSeriesBoundary):
+    """Upstream / internal flow hydrograph boundary."""
+
+    flow_hydrograph_slope: str | None = None
+    stage_tw_check: int = 0
+    q_min: float | None = None
+    q_mult: float | None = None
+    dss_file: str = ""
+    dss_path: str = ""
+    is_critical: bool = False
+    critical_boundary_flow: str = ""
+
+
+@dataclass
+class LateralInflow(_TimeSeriesBoundary):
     """Lateral or uniform lateral inflow hydrograph."""
 
-    interval: str = "1HOUR"
-    values: list[float] = field(default_factory=list)
     is_uniform: bool = False
     q_min: float | None = None
     q_mult: float | None = None
     dss_file: str = ""
     dss_path: str = ""
-    use_dss: bool = False
-    use_fixed_start: bool = False
-    fixed_start: str = ","
     is_critical: bool = False
     critical_boundary_flow: str = ""
-    _extra_lines: list[str] = field(default_factory=list, repr=False)
-
-    @property
-    def window(self) -> tuple[dt.datetime, dt.datetime] | None:
-        """Return ``(start, end)`` as Python datetimes, or ``None``.
-
-        ``None`` is returned when ``use_fixed_start`` is ``False``.
-        The end date is ``start + len(values) * parse_interval(interval)``.
-        """
-        return _parse_window(
-            self.use_fixed_start, self.fixed_start, self.interval, len(self.values)
-        )
 
 
 @dataclass
-class StageHydrograph(_Boundary):
+class StageHydrograph(_TimeSeriesBoundary):
     """Stage (water-surface) hydrograph boundary."""
 
-    interval: str = "1HOUR"
-    values: list[float] = field(default_factory=list)
     dss_path: str = ""
-    use_dss: bool = False
-    use_fixed_start: bool = False
-    fixed_start: str = ","
-    _extra_lines: list[str] = field(default_factory=list, repr=False)
-
-    @property
-    def window(self) -> tuple[dt.datetime, dt.datetime] | None:
-        """Return ``(start, end)`` as Python datetimes, or ``None``.
-
-        ``None`` is returned when ``use_fixed_start`` is ``False``.
-        The end date is ``start + len(values) * parse_interval(interval)``.
-        """
-        return _parse_window(
-            self.use_fixed_start, self.fixed_start, self.interval, len(self.values)
-        )
 
 
 @dataclass
@@ -1158,18 +1209,52 @@ class UnsteadyFlow:
     # Set by location (river / reach / rs)
     # ------------------------------------------------------------------
 
-    def _find_boundary(self, river: str, reach: str, rs: str) -> BoundaryType | None:
+    def boundaries_at(self, river: str, reach: str, rs: str) -> list[BoundaryType]:
+        """Return every boundary condition at the given location, in file order.
+
+        More than one boundary can share the same river/reach/station (e.g.
+        two lateral inflows entered at the same cross section).  Use the
+        position of an entry in the returned list as the ``occurrence``
+        argument to the location-based setters and getters to disambiguate.
+
+        Parameters
+        ----------
+        river:
+            River name (case-insensitive match).
+        reach:
+            Reach name (case-insensitive match).
+        rs:
+            River station string.
+
+        Returns
+        -------
+        list[BoundaryType]
+            All matching boundaries, in file order.  Empty if none match.
+        """
         r = river.strip().lower()
         rc = reach.strip().lower()
         s = str(rs).strip().lower()
-        for b in self.boundaries:
-            if (
-                b.river.lower() == r
-                and b.reach.lower() == rc
-                and b.river_station.lower() == s
-            ):
-                return b
-        return None
+        return [
+            b
+            for b in self.boundaries
+            if b.river.lower() == r
+            and b.reach.lower() == rc
+            and b.river_station.lower() == s
+        ]
+
+    def _find_boundary(
+        self, river: str, reach: str, rs: str, occurrence: int = 0
+    ) -> BoundaryType | None:
+        matches = self.boundaries_at(river, reach, rs)
+        if not matches:
+            return None
+        try:
+            return matches[occurrence]
+        except IndexError as exc:
+            raise IndexError(
+                f"occurrence {occurrence} out of range; {len(matches)} "
+                f"boundary(ies) found at {river!r}, {reach!r}, {rs!r}"
+            ) from exc
 
     def set_flow_hydrograph_at(
         self,
@@ -1179,6 +1264,7 @@ class UnsteadyFlow:
         values: _Values,
         q_min: float = 0.0,
         q_mult: float = 1.0,
+        occurrence: int = 0,
     ) -> None:
         """Set flow hydrograph values by location.
 
@@ -1192,8 +1278,17 @@ class UnsteadyFlow:
         q_mult:
             New ``Flow Hydrograph QMult`` value.  Always applied, overwriting
             any previously set value.
+        occurrence:
+            Zero-based position among boundaries sharing this river/reach/
+            station, in file order.  Use :meth:`boundaries_at` to see all
+            matches when more than one boundary shares a location.
+
+        Raises
+        ------
+        IndexError
+            *occurrence* is out of range for the number of matches found.
         """
-        b = self._find_boundary(river, reach, rs)
+        b = self._find_boundary(river, reach, rs, occurrence)
         if not isinstance(b, FlowHydrograph):
             raise KeyError(f"No FlowHydrograph at {river!r}, {reach!r}, {rs!r}")
         b.values = _coerce_values(values, len(b.values))
@@ -1209,6 +1304,7 @@ class UnsteadyFlow:
         values: _Values,
         q_min: float = 0.0,
         q_mult: float = 1.0,
+        occurrence: int = 0,
     ) -> None:
         """Set lateral inflow values by location.
 
@@ -1222,8 +1318,17 @@ class UnsteadyFlow:
         q_mult:
             New ``QMult`` value.  Always applied, overwriting any previously
             set value.
+        occurrence:
+            Zero-based position among boundaries sharing this river/reach/
+            station, in file order.  Use :meth:`boundaries_at` to see all
+            matches when more than one lateral inflow shares a location.
+
+        Raises
+        ------
+        IndexError
+            *occurrence* is out of range for the number of matches found.
         """
-        b = self._find_boundary(river, reach, rs)
+        b = self._find_boundary(river, reach, rs, occurrence)
         if not isinstance(b, LateralInflow):
             raise KeyError(f"No LateralInflow at {river!r}, {reach!r}, {rs!r}")
         b.values = _coerce_values(values, len(b.values))
@@ -1232,7 +1337,13 @@ class UnsteadyFlow:
         self._modified = True
 
     def set_gate_opening_at(
-        self, river: str, reach: str, rs: str, gate: str | int, values: _Values
+        self,
+        river: str,
+        reach: str,
+        rs: str,
+        gate: str | int,
+        values: _Values,
+        occurrence: int = 0,
     ) -> None:
         """Set gate opening values by location and gate name or index.
 
@@ -1243,8 +1354,17 @@ class UnsteadyFlow:
             the boundary's gate list.
         values:
             A scalar is broadcast to the existing time-series length.
+        occurrence:
+            Zero-based position among boundaries sharing this river/reach/
+            station, in file order.  Use :meth:`boundaries_at` to see all
+            matches when more than one boundary shares a location.
+
+        Raises
+        ------
+        IndexError
+            *occurrence* is out of range for the number of matches found.
         """
-        b = self._find_boundary(river, reach, rs)
+        b = self._find_boundary(river, reach, rs, occurrence)
         if not isinstance(b, GateBoundary):
             raise KeyError(f"No GateBoundary at {river!r}, {reach!r}, {rs!r}")
         if isinstance(gate, int):
@@ -1326,28 +1446,67 @@ class UnsteadyFlow:
     # ------------------------------------------------------------------
 
     def get_flow_hydrograph(
-        self, river: str, reach: str, rs: str
+        self, river: str, reach: str, rs: str, occurrence: int = 0
     ) -> list[float] | None:
-        """Return flow hydrograph values for the given location, or ``None``."""
-        b = self._find_boundary(river, reach, rs)
+        """Return flow hydrograph values for the given location, or ``None``.
+
+        Parameters
+        ----------
+        occurrence:
+            Zero-based position among boundaries sharing this river/reach/
+            station, in file order.  Use :meth:`boundaries_at` to see all
+            matches when more than one boundary shares a location.
+
+        Raises
+        ------
+        IndexError
+            *occurrence* is out of range for the number of matches found.
+        """
+        b = self._find_boundary(river, reach, rs, occurrence)
         if not isinstance(b, FlowHydrograph):
             return None
         return list(b.values)
 
     def get_lateral_inflow(
-        self, river: str, reach: str, rs: str
+        self, river: str, reach: str, rs: str, occurrence: int = 0
     ) -> list[float] | None:
-        """Return lateral inflow values for the given location, or ``None``."""
-        b = self._find_boundary(river, reach, rs)
+        """Return lateral inflow values for the given location, or ``None``.
+
+        Parameters
+        ----------
+        occurrence:
+            Zero-based position among boundaries sharing this river/reach/
+            station, in file order.  Use :meth:`boundaries_at` to see all
+            matches when more than one lateral inflow shares a location.
+
+        Raises
+        ------
+        IndexError
+            *occurrence* is out of range for the number of matches found.
+        """
+        b = self._find_boundary(river, reach, rs, occurrence)
         if not isinstance(b, LateralInflow):
             return None
         return list(b.values)
 
     def get_gate_openings(
-        self, river: str, reach: str, rs: str, gate_name: str
+        self, river: str, reach: str, rs: str, gate_name: str, occurrence: int = 0
     ) -> list[float] | None:
-        """Return gate opening values for the given location and gate name, or ``None``."""
-        b = self._find_boundary(river, reach, rs)
+        """Return gate opening values for the given location and gate name, or ``None``.
+
+        Parameters
+        ----------
+        occurrence:
+            Zero-based position among boundaries sharing this river/reach/
+            station, in file order.  Use :meth:`boundaries_at` to see all
+            matches when more than one boundary shares a location.
+
+        Raises
+        ------
+        IndexError
+            *occurrence* is out of range for the number of matches found.
+        """
+        b = self._find_boundary(river, reach, rs, occurrence)
         if not isinstance(b, GateBoundary):
             return None
         gn = gate_name.strip().lower()

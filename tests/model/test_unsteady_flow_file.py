@@ -14,6 +14,8 @@ Fixtures (real unsteady flow files from HEC-RAS 6.6 example projects):
                         (from 1D Unsteady / Inline Structure with Gated Spillways)
 """
 
+import dataclasses
+import datetime as dt
 import shutil
 from pathlib import Path
 
@@ -25,6 +27,7 @@ from rivia.model.unsteady_flow import (
     LateralInflow,
     FlowHydrograph,
     RatingCurve,
+    StageHydrograph,
     UnsteadyFlow,
 )
 
@@ -732,6 +735,83 @@ class TestEditorSetAtLocation:
 
 
 # ---------------------------------------------------------------------------
+# UnsteadyFlow — multiple boundaries at the same location
+# ---------------------------------------------------------------------------
+
+
+class TestDuplicateLocations:
+    """Two boundaries can share the same river/reach/station.
+
+    None of the checked-in fixtures have a naturally occurring duplicate, so
+    these tests synthesize one by appending a copy of an existing
+    LateralInflow (with distinct values) to ``boundaries``.
+    """
+
+    def _dambrk_with_duplicate(self):
+        ed = UnsteadyFlow(DAMBRK)
+        original = next(
+            b for b in ed.lateral_inflows if b.river_station.strip() == "28519"
+        )
+        duplicate = dataclasses.replace(
+            original, values=[999.0] * len(original.values)
+        )
+        ed.boundaries.append(duplicate)
+        return ed, original, duplicate
+
+    def test_boundaries_at_no_match(self):
+        ed = UnsteadyFlow(DAMBRK)
+        assert ed.boundaries_at("No River", "No Reach", "0") == []
+
+    def test_boundaries_at_single_match(self):
+        ed = UnsteadyFlow(DAMBRK)
+        matches = ed.boundaries_at("Bald Eagle Cr.", "Lock Haven", "28519")
+        assert len(matches) == 1
+
+    def test_boundaries_at_multiple_matches_in_file_order(self):
+        ed, original, duplicate = self._dambrk_with_duplicate()
+        matches = ed.boundaries_at("Bald Eagle Cr.", "Lock Haven", "28519")
+        assert matches == [original, duplicate]
+
+    def test_get_lateral_inflow_default_occurrence_is_first(self):
+        ed, original, _duplicate = self._dambrk_with_duplicate()
+        result = ed.get_lateral_inflow("Bald Eagle Cr.", "Lock Haven", "28519")
+        assert result == pytest.approx(original.values)
+
+    def test_get_lateral_inflow_second_occurrence(self):
+        ed, _original, duplicate = self._dambrk_with_duplicate()
+        result = ed.get_lateral_inflow(
+            "Bald Eagle Cr.", "Lock Haven", "28519", occurrence=1
+        )
+        assert result == pytest.approx(duplicate.values)
+
+    def test_set_lateral_inflow_at_second_occurrence_leaves_first_untouched(self):
+        ed, original, duplicate = self._dambrk_with_duplicate()
+        original_values = list(original.values)
+        ed.set_lateral_inflow_at(
+            "Bald Eagle Cr.", "Lock Haven", "28519", 111.0, occurrence=1
+        )
+        assert all(v == pytest.approx(111.0) for v in duplicate.values)
+        assert original.values == pytest.approx(original_values)
+
+    def test_occurrence_out_of_range_raises_index_error(self):
+        ed, _original, _duplicate = self._dambrk_with_duplicate()
+        with pytest.raises(IndexError):
+            ed.get_lateral_inflow(
+                "Bald Eagle Cr.", "Lock Haven", "28519", occurrence=2
+            )
+
+    def test_duplicate_locations_survive_save_and_reparse(self, tmp_path):
+        ed1, _original, _duplicate = self._dambrk_with_duplicate()
+        out = tmp_path / "dambrk_duplicate.u01"
+        ed1.save(out)
+
+        ed2 = UnsteadyFlow(out)
+        matches = ed2.boundaries_at("Bald Eagle Cr.", "Lock Haven", "28519")
+        assert len(matches) == 2
+        assert all(v == pytest.approx(999.0) for v in matches[1].values)
+
+
+# ---------------------------------------------------------------------------
 # UnsteadyFlow — semantic roundtrip (parse → save → re-parse)
 # ---------------------------------------------------------------------------
 
@@ -901,3 +981,159 @@ class TestQMinQMult:
         ed.set_lateral_inflow_at(li.river, li.reach, li.river_station, 500.0)
         assert li.q_min == pytest.approx(0.0)
         assert li.q_mult == pytest.approx(1.0)
+
+
+# ---------------------------------------------------------------------------
+# _TimeSeriesBoundary.time_series()
+# ---------------------------------------------------------------------------
+
+
+class TestTimeSeries:
+    def test_requires_start_datetime_when_not_fixed(self):
+        ed = UnsteadyFlow(BAXTER)
+        fh = ed.flow_hydrographs[0]
+        assert fh.use_fixed_start is False
+        with pytest.raises(ValueError):
+            fh.time_series()
+
+    def test_time_series_with_start_datetime(self):
+        ed = UnsteadyFlow(BAXTER)
+        fh = ed.flow_hydrographs[0]
+        start = dt.datetime(2020, 1, 1, 0, 0)
+        s = fh.time_series(start)
+        assert len(s) == len(fh.values)
+        assert list(s.values) == pytest.approx(fh.values)
+        assert s.index[0] == start
+        assert s.index[1] - s.index[0] == dt.timedelta(hours=1)  # BAXTER interval=1HOUR
+
+    def test_time_series_uses_fixed_start_when_true(self):
+        ed = UnsteadyFlow(DAMBRK)
+        li = dataclasses.replace(
+            ed.lateral_inflows[0],
+            use_fixed_start=True,
+            fixed_start="01JAN2020,0600",
+        )
+        s = li.time_series()
+        assert s.index[0] == dt.datetime(2020, 1, 1, 6, 0)
+
+    def test_time_series_ignores_start_datetime_when_fixed(self, caplog):
+        ed = UnsteadyFlow(DAMBRK)
+        li = dataclasses.replace(
+            ed.lateral_inflows[0],
+            use_fixed_start=True,
+            fixed_start="01JAN2020,0600",
+        )
+        s = li.time_series(dt.datetime(1999, 1, 1))
+        assert s.index[0] == dt.datetime(2020, 1, 1, 6, 0)
+        assert "ignored" in caplog.text
+
+    def test_time_series_empty_values_returns_empty_series(self):
+        fh = FlowHydrograph(river="R", reach="Rc", river_station="1")
+        assert fh.values == []
+        s = fh.time_series(dt.datetime(2020, 1, 1))
+        assert len(s) == 0
+
+    def test_time_series_raises_when_use_dss(self):
+        ed = UnsteadyFlow(DAMBRK_DSS)
+        fh = ed.flow_hydrographs[0]
+        assert fh.use_dss is True
+        with pytest.raises(NotImplementedError):
+            fh.time_series(dt.datetime(2020, 1, 1))
+
+    def test_lateral_inflow_time_series(self):
+        ed = UnsteadyFlow(DAMBRK)
+        li = ed.lateral_inflows[0]
+        start = dt.datetime(2020, 1, 1)
+        s = li.time_series(start)
+        assert list(s.values) == pytest.approx(li.values)
+        assert s.index[0] == start
+
+    def test_stage_hydrograph_time_series(self):
+        sh = StageHydrograph(
+            river="R",
+            reach="Rc",
+            river_station="1",
+            interval="30MIN",
+            values=[1.0, 2.0, 3.0],
+        )
+        start = dt.datetime(2020, 6, 1, 12, 0)
+        s = sh.time_series(start)
+        assert list(s.values) == pytest.approx([1.0, 2.0, 3.0])
+        assert s.index[1] - s.index[0] == dt.timedelta(minutes=30)
+
+    def test_raw_values_default_ignores_q_min_q_mult(self):
+        fh = FlowHydrograph(
+            river="R",
+            reach="Rc",
+            river_station="1",
+            values=[1.0, 5.0, 10.0],
+            q_min=8.0,
+            q_mult=2.0,
+        )
+        start = dt.datetime(2020, 1, 1)
+        s = fh.time_series(start)
+        assert list(s.values) == pytest.approx([1.0, 5.0, 10.0])
+
+    def test_raw_values_false_applies_mult_then_floor(self):
+        fh = FlowHydrograph(
+            river="R",
+            reach="Rc",
+            river_station="1",
+            values=[1.0, 5.0, 10.0],
+            q_min=8.0,
+            q_mult=2.0,
+        )
+        start = dt.datetime(2020, 1, 1)
+        s = fh.time_series(start, raw_values=False)
+        # raw*mult = [2.0, 10.0, 20.0]; floor at q_min=8.0 -> [8.0, 10.0, 20.0]
+        assert list(s.values) == pytest.approx([8.0, 10.0, 20.0])
+
+    def test_raw_values_false_missing_q_mult_treated_as_one(self):
+        fh = FlowHydrograph(
+            river="R",
+            reach="Rc",
+            river_station="1",
+            values=[1.0, 5.0, 10.0],
+            q_min=3.0,
+            q_mult=None,
+        )
+        start = dt.datetime(2020, 1, 1)
+        s = fh.time_series(start, raw_values=False)
+        assert list(s.values) == pytest.approx([3.0, 5.0, 10.0])
+
+    def test_raw_values_false_missing_q_min_skips_floor(self):
+        fh = FlowHydrograph(
+            river="R",
+            reach="Rc",
+            river_station="1",
+            values=[1.0, 5.0, 10.0],
+            q_min=None,
+            q_mult=2.0,
+        )
+        start = dt.datetime(2020, 1, 1)
+        s = fh.time_series(start, raw_values=False)
+        assert list(s.values) == pytest.approx([2.0, 10.0, 20.0])
+
+    def test_raw_values_false_on_stage_hydrograph_is_noop(self):
+        sh = StageHydrograph(
+            river="R",
+            reach="Rc",
+            river_station="1",
+            values=[1.0, 2.0, 3.0],
+        )
+        start = dt.datetime(2020, 1, 1)
+        s = sh.time_series(start, raw_values=False)
+        assert list(s.values) == pytest.approx([1.0, 2.0, 3.0])
+
+    def test_raw_values_false_on_lateral_inflow(self):
+        li = LateralInflow(
+            river="R",
+            reach="Rc",
+            river_station="1",
+            values=[10.0, 20.0],
+            q_min=25.0,
+            q_mult=1.0,
+        )
+        start = dt.datetime(2020, 1, 1)
+        s = li.time_series(start, raw_values=False)
+        assert list(s.values) == pytest.approx([25.0, 25.0])
