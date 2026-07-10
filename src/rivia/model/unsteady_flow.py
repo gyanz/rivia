@@ -13,9 +13,10 @@ Convention
 
 from __future__ import annotations
 
+import copy
 import datetime as dt
 import logging
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from math import ceil
 from pathlib import Path
@@ -1511,6 +1512,11 @@ class UnsteadyFlow:
         return [b for b in self.boundaries if isinstance(b, LateralInflow)]
 
     @property
+    def stage_hydrographs(self) -> list[StageHydrograph]:
+        """All :class:`StageHydrograph` boundaries, in file order."""
+        return [b for b in self.boundaries if isinstance(b, StageHydrograph)]
+
+    @property
     def gate_boundaries(self) -> list[GateBoundary]:
         """All :class:`GateBoundary` boundaries, in file order."""
         return [b for b in self.boundaries if isinstance(b, GateBoundary)]
@@ -1688,6 +1694,224 @@ class UnsteadyFlow:
         for gate, v in zip(all_gates, values, strict=False):
             gate.values = _coerce_values(v, len(gate.values))
         self._modified = True
+
+    # ------------------------------------------------------------------
+    # Bulk window operations (adapting a file to a new run period)
+    # ------------------------------------------------------------------
+
+    def _apply_atomically(
+        self,
+        boundary_types: type | tuple[type, ...],
+        apply_fn: Callable[[BoundaryType], None],
+    ) -> None:
+        """Apply *apply_fn* to every boundary of *boundary_types*, all-or-nothing.
+
+        *apply_fn* is first run against a :func:`copy.deepcopy` of each
+        matching boundary. If it raises for any boundary, the exception
+        propagates immediately and :attr:`boundaries` is left completely
+        untouched. Only once every boundary's copy has succeeded are the
+        copies swapped back into :attr:`boundaries`, so a batch call either
+        fully applies or has no effect at all.
+
+        Notes
+        -----
+        On success, matching entries in :attr:`boundaries` are *replaced*
+        by new (deep-copied) objects — unlike every other mutator in this
+        module, which edits a boundary in place. Any reference to a
+        boundary object held from before the call becomes stale; re-fetch
+        it via :attr:`boundaries` / :attr:`flow_hydrographs` /
+        :attr:`lateral_inflows` / :attr:`stage_hydrographs` afterward.
+        """
+        targets = [
+            (i, b)
+            for i, b in enumerate(self.boundaries)
+            if isinstance(b, boundary_types)
+        ]
+        updated: list[tuple[int, BoundaryType]] = []
+        for i, b in targets:
+            new_b = copy.deepcopy(b)
+            apply_fn(new_b)
+            updated.append((i, new_b))
+        for i, new_b in updated:
+            self.boundaries[i] = new_b
+        if updated:
+            self._modified = True
+
+    def reset_all_flows(
+        self,
+        window: tuple[dt.datetime, dt.datetime],
+        interval: str | float | int | dt.timedelta,
+        value: float | int = 0.0,
+        *,
+        q_min: float = 0.0,
+        q_mult: float = 1.0,
+    ) -> None:
+        """Reset every flow-type boundary to a constant value over a new window.
+
+        Applies :meth:`FlowHydrograph.set_time_series_window` /
+        :meth:`LateralInflow.set_time_series_window` with a scalar *value*
+        to every :class:`FlowHydrograph` and :class:`LateralInflow`
+        boundary in the file. Useful when adapting an existing unsteady
+        flow file to a new simulation run that doesn't yet have real flow
+        data for its period: rather than trying to preserve the old
+        hydrograph shapes, every flow-type boundary is reset to a flat
+        baseline (e.g. ``0``) spanning the new window, ready for the
+        caller to overwrite individually (e.g. via
+        :meth:`set_flow_hydrograph_at` / :meth:`set_lateral_inflow_at`) as
+        real data becomes available.
+
+        Parameters
+        ----------
+        window:
+            ``(start, end)`` for the new run, inclusive of both endpoints,
+            applied identically to every flow-type boundary.
+        interval:
+            Spacing between timesteps, applied to every boundary. One of a
+            HEC-RAS interval string (e.g. ``"15MIN"``), a
+            :class:`datetime.timedelta`, or a bare ``int``/``float``
+            interpreted as seconds.
+        value:
+            Constant value every flow-type boundary is reset to
+            (default ``0.0``).
+        q_min:
+            ``QMin`` applied to every boundary reset (default ``0.0``).
+        q_mult:
+            ``QMult`` applied to every boundary reset (default ``1.0``).
+
+        Raises
+        ------
+        ValueError
+            *window*/*interval* is invalid for any boundary (see
+            :meth:`_TimeSeriesBoundary.set_time_series_window`). No
+            boundary is changed if any of them would fail.
+
+        Notes
+        -----
+        All-or-nothing: either every targeted boundary is updated, or (on
+        error) none of them are. On success, updated boundaries are
+        replaced by new objects (see :meth:`_apply_atomically`) — re-fetch
+        via :attr:`flow_hydrographs` / :attr:`lateral_inflows` afterward
+        rather than relying on references held from before the call.
+        """
+        self._apply_atomically(
+            (FlowHydrograph, LateralInflow),
+            lambda bc: bc.set_time_series_window(
+                window, interval, value, q_min=q_min, q_mult=q_mult
+            ),
+        )
+
+    def resize_all_stages(
+        self,
+        window: tuple[dt.datetime | None, dt.datetime | None],
+        *,
+        start_datetime: dt.datetime | None = None,
+    ) -> None:
+        """Clip/extend every :class:`StageHydrograph` boundary to a new window.
+
+        Applies :meth:`StageHydrograph.resize_window` to every stage
+        boundary in the file, in place. Appropriate for stage/tailwater
+        boundaries, where resetting to a constant (as
+        :meth:`reset_all_flows` does for flow-type boundaries) usually
+        isn't physically meaningful: existing data inside the new window
+        is kept, data outside it is clipped, and new timesteps beyond
+        either end are filled by repeating the boundary's own first/last
+        value.
+
+        Parameters
+        ----------
+        window:
+            ``(new_start, new_end)``, applied identically to every stage
+            boundary. Either side may be ``None`` to leave that side
+            untouched.
+        start_datetime:
+            Current start, needed only for boundaries with
+            ``use_fixed_start=False`` (see
+            :meth:`_TimeSeriesBoundary.resize_window`). Boundaries with
+            ``use_fixed_start=True`` ignore this and use their own
+            ``fixed_start`` instead, so a single call can mix both kinds.
+
+        Raises
+        ------
+        ValueError
+            Any boundary's window/alignment is invalid, or *start_datetime*
+            is required but missing, for any boundary (see
+            :meth:`_TimeSeriesBoundary.resize_window`). No boundary is
+            changed if any of them would fail.
+        NotImplementedError
+            Any boundary has ``use_dss=True``.
+
+        Notes
+        -----
+        All-or-nothing: either every stage boundary is updated, or (on
+        error) none of them are. On success, updated boundaries are
+        replaced by new objects (see :meth:`_apply_atomically`) — re-fetch
+        via :attr:`stage_hydrographs` afterward rather than relying on
+        references held from before the call.
+        """
+        self._apply_atomically(
+            StageHydrograph,
+            lambda bc: bc.resize_window(window, start_datetime=start_datetime),
+        )
+
+    def resize_all(
+        self,
+        window: tuple[dt.datetime | None, dt.datetime | None],
+        *,
+        start_datetime: dt.datetime | None = None,
+        boundary_types: tuple[type, ...] = (
+            FlowHydrograph,
+            LateralInflow,
+            StageHydrograph,
+        ),
+    ) -> None:
+        """Clip/extend every matching time-series boundary to a new window.
+
+        Generic counterpart to :meth:`resize_all_stages`: applies
+        :meth:`_TimeSeriesBoundary.resize_window` to every boundary whose
+        type is in *boundary_types* (default: all three time-series
+        boundary types). Useful when real flow data already exists and
+        should be clipped/extended rather than reset to a constant (see
+        :meth:`reset_all_flows`) — pass
+        ``boundary_types=(FlowHydrograph, LateralInflow)`` to resize only
+        flow-type boundaries, for example.
+
+        Parameters
+        ----------
+        window:
+            ``(new_start, new_end)``, applied identically to every matching
+            boundary. Either side may be ``None`` to leave that side
+            untouched.
+        start_datetime:
+            Current start, needed only for boundaries with
+            ``use_fixed_start=False`` (see
+            :meth:`_TimeSeriesBoundary.resize_window`).
+        boundary_types:
+            Which boundary classes to include. Defaults to all three
+            time-series boundary types (:class:`FlowHydrograph`,
+            :class:`LateralInflow`, :class:`StageHydrograph`).
+
+        Raises
+        ------
+        ValueError
+            Any matching boundary's window/alignment is invalid, or
+            *start_datetime* is required but missing, for any boundary
+            (see :meth:`_TimeSeriesBoundary.resize_window`). No boundary is
+            changed if any of them would fail.
+        NotImplementedError
+            Any matching boundary has ``use_dss=True``.
+
+        Notes
+        -----
+        All-or-nothing: either every matching boundary is updated, or (on
+        error) none of them are. On success, updated boundaries are
+        replaced by new objects (see :meth:`_apply_atomically`) — re-fetch
+        via :attr:`boundaries` (or the relevant typed property) afterward
+        rather than relying on references held from before the call.
+        """
+        self._apply_atomically(
+            boundary_types,
+            lambda bc: bc.resize_window(window, start_datetime=start_datetime),
+        )
 
     # ------------------------------------------------------------------
     # Set by location (river / reach / rs)
