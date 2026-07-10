@@ -724,6 +724,80 @@ class _TimeSeriesBoundary(_Boundary):
             q_mult=q_mult,
         )
 
+    def reset_values(
+        self,
+        data: float | int | Sequence[float | int] | dict[float, float],
+        *,
+        q_min: float = 0.0,
+        q_mult: float = 1.0,
+    ) -> None:
+        """Replace this boundary's values in place, keeping window and interval fixed.
+
+        Unlike :meth:`set_time_series_window`, this never changes
+        :attr:`interval`, :attr:`fixed_start`, or :attr:`use_fixed_start` —
+        only :attr:`values` (and, where present, ``q_min``/``q_mult``) are
+        replaced, using the existing number of timesteps.
+
+        Parameters
+        ----------
+        data:
+            New values. One of:
+
+            * a scalar — broadcast to the existing number of timesteps.
+            * a sequence of numbers — used as-is; its length must exactly
+              match the existing number of timesteps (since the window is
+              not changing).
+            * a ``dict[float, float]`` mapping elapsed minutes since the
+              start of the existing window to a step value, e.g.
+              ``{0: 20, 60: 50}`` (same step/hold semantics as
+              :meth:`set_time_series_window`). Must contain a ``0`` key.
+        q_min:
+            New ``QMin`` value. Always applied, overwriting any previously
+            set value. Has no effect on boundary types without a ``q_min``
+            field (e.g. :class:`StageHydrograph`).
+        q_mult:
+            New ``QMult`` value. Always applied, overwriting any previously
+            set value. Has no effect on boundary types without a ``q_mult``
+            field (e.g. :class:`StageHydrograph`).
+
+        Raises
+        ------
+        ValueError
+            :attr:`values` is currently empty (there is no existing window
+            length to reset into); *data* is a sequence whose length
+            doesn't match the existing number of timesteps; or *data* is a
+            dict that is empty, has a negative key, or has no ``0`` key.
+
+        Examples
+        --------
+        >>> fh.values
+        [1.0, 2.0, 3.0]
+        >>> fh.reset_values(0.0)
+        >>> fh.values
+        [0.0, 0.0, 0.0]
+        """
+        n = len(self.values)
+        if n == 0:
+            raise ValueError(
+                "Cannot reset an empty time series; there is no existing "
+                "window length to reset into. Use set_time_series_window() "
+                "to establish one."
+            )
+        if isinstance(data, dict):
+            interval_minutes = parse_interval(self.interval).total_seconds() / 60
+            values = _expand_steps(data, n, interval_minutes)
+        elif isinstance(data, (int, float)):
+            values = _coerce_values(data, n)
+        else:
+            values = [float(v) for v in data]
+            if len(values) != n:
+                raise ValueError(
+                    f"data has {len(values)} values but this boundary has "
+                    f"{n} existing timesteps; length must match since "
+                    "window/interval are not being changed."
+                )
+        self.set_time_series(values, q_min=q_min, q_mult=q_mult)
+
     def resize_window(
         self,
         window: tuple[dt.datetime | None, dt.datetime | None],

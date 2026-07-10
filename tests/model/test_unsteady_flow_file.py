@@ -1493,6 +1493,98 @@ class TestSetTimeSeriesWindow:
         assert not hasattr(sh, "q_mult")
 
 
+class TestResetValues:
+    def _fh(self, **overrides):
+        defaults = dict(
+            river="R",
+            reach="Rc",
+            river_station="1",
+            interval="1HOUR",
+            values=[1.0, 2.0, 3.0],
+            use_fixed_start=True,
+            fixed_start="01JAN2021,0000",
+        )
+        defaults.update(overrides)
+        return FlowHydrograph(**defaults)
+
+    def test_scalar_broadcasts_to_existing_length(self):
+        fh = self._fh()
+        fh.reset_values(9.0)
+        assert fh.values == pytest.approx([9.0, 9.0, 9.0])
+
+    def test_exact_length_sequence_passes_through(self):
+        fh = self._fh()
+        fh.reset_values([4.0, 5.0, 6.0])
+        assert fh.values == pytest.approx([4.0, 5.0, 6.0])
+
+    def test_sequence_wrong_length_raises(self):
+        fh = self._fh()
+        with pytest.raises(ValueError):
+            fh.reset_values([4.0, 5.0])
+
+    def test_dict_steps_hold_until_next_breakpoint(self):
+        fh = self._fh(interval="15MIN", values=[0.0] * 9)
+        fh.reset_values({0: 20, 60: 50})
+        assert fh.values == pytest.approx([20, 20, 20, 20, 50, 50, 50, 50, 50])
+
+    def test_dict_missing_zero_key_raises(self):
+        fh = self._fh()
+        with pytest.raises(ValueError):
+            fh.reset_values({60: 50})
+
+    def test_empty_values_raises(self):
+        fh = self._fh(values=[])
+        with pytest.raises(ValueError):
+            fh.reset_values(1.0)
+
+    def test_window_and_interval_unchanged(self):
+        fh = self._fh()
+        fh.reset_values(9.0)
+        assert fh.interval == "1HOUR"
+        assert fh.use_fixed_start is True
+        assert fh.fixed_start == "01JAN2021,0000"
+
+    def test_non_fixed_start_unchanged(self):
+        fh = self._fh(use_fixed_start=False)
+        fh.reset_values(9.0)
+        assert fh.use_fixed_start is False
+
+    def test_q_min_q_mult_default_to_identity(self):
+        fh = self._fh(q_min=5.0, q_mult=2.0)
+        fh.reset_values(9.0)
+        assert fh.q_min == 0.0
+        assert fh.q_mult == 1.0
+
+    def test_q_min_q_mult_explicit_values_applied(self):
+        fh = self._fh()
+        fh.reset_values(9.0, q_min=3.0, q_mult=1.5)
+        assert fh.q_min == 3.0
+        assert fh.q_mult == 1.5
+
+    def test_stage_hydrograph_ignores_q_min_q_mult(self):
+        sh = StageHydrograph(
+            river="R", reach="Rc", river_station="1", values=[1.0, 2.0]
+        )
+        sh.reset_values(9.0, q_min=3.0, q_mult=1.5)
+        assert not hasattr(sh, "q_min")
+        assert not hasattr(sh, "q_mult")
+
+    def test_clears_use_dss(self):
+        fh = self._fh(use_dss=True, dss_path="//A/B/C//D/E/")
+        fh.reset_values(9.0)
+        assert fh.use_dss is False
+
+    def test_lateral_inflow_supports_reset_values(self):
+        li = LateralInflow(river="R", reach="Rc", river_station="1", values=[1.0, 2.0])
+        li.reset_values(5.0)
+        assert li.values == pytest.approx([5.0, 5.0])
+
+    def test_stage_hydrograph_supports_reset_values(self):
+        sh = StageHydrograph(river="R", reach="Rc", river_station="1", values=[1.0, 2.0])
+        sh.reset_values(100.0)
+        assert sh.values == pytest.approx([100.0, 100.0])
+
+
 class TestResizeWindow:
     def _fh(self, **overrides):
         defaults = dict(
