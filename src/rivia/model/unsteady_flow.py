@@ -99,6 +99,55 @@ def _resolve_interval(value: str | float | int | dt.timedelta) -> str:
     return format_interval_strict(value)
 
 
+def _expand_steps(
+    steps: dict[float, float], n_periods: int, interval_minutes: float
+) -> list[float]:
+    """Return *n_periods* per-timestep values by holding each step until the next.
+
+    Used by :meth:`_TimeSeriesBoundary.set_time_series_window` to expand a
+    ``{elapsed_minutes: value}`` mapping into a full timestep-by-timestep
+    series: the value at a given timestep is whichever key is the largest
+    one not greater than that timestep's elapsed minutes.
+
+    Parameters
+    ----------
+    steps:
+        Mapping of elapsed minutes since the window start to the value held
+        from that point until the next key. Must contain a ``0`` key.
+    n_periods:
+        Number of evenly spaced timesteps to generate (inclusive of both
+        window endpoints).
+    interval_minutes:
+        Spacing between timesteps, in minutes.
+
+    Raises
+    ------
+    ValueError
+        *steps* is empty, has a negative key, or has no ``0`` key.
+    """
+    if not steps:
+        raise ValueError("steps dict must not be empty.")
+    if any(k < 0 for k in steps):
+        raise ValueError("steps dict keys (elapsed minutes) must be non-negative.")
+    if 0 not in steps:
+        raise ValueError(
+            "steps dict must define a value at elapsed minute 0 (the start "
+            "of the window)."
+        )
+    breakpoints = sorted(steps)
+    values = []
+    current = breakpoints[0]
+    bp_iter = iter(breakpoints)
+    next_bp = next(bp_iter)
+    for i in range(n_periods):
+        elapsed = i * interval_minutes
+        while next_bp is not None and next_bp <= elapsed:
+            current = next_bp
+            next_bp = next(bp_iter, None)
+        values.append(float(steps[current]))
+    return values
+
+
 def _format_fixed_start(d: dt.datetime) -> str:
     """Return *d* formatted as a HEC-RAS ``fixed_start`` string (``"DDMONYYYY,HHMM"``).
 
@@ -432,6 +481,8 @@ class _TimeSeriesBoundary(_Boundary):
         interval: str | float | int | dt.timedelta | None = None,
         start_datetime: dt.datetime | None = None,
         use_fixed_start: bool | None = None,
+        q_min: float = 0.0,
+        q_mult: float = 1.0,
     ) -> None:
         """Replace this boundary's time series, in place.
 
@@ -479,6 +530,15 @@ class _TimeSeriesBoundary(_Boundary):
             automatically whenever a start is resolved (from *data* or
             *start_datetime*); pass ``False`` to keep the new values/interval
             but fall back to the plan's simulation start instead.
+        q_min:
+            New ``QMin`` value. Always applied, overwriting any previously
+            set value (same convention as ``UnsteadyFlow.set_flow_hydrograph``
+            / ``set_lateral_inflow``). Has no effect on boundary types
+            without a ``q_min`` field (e.g. :class:`StageHydrograph`).
+        q_mult:
+            New ``QMult`` value. Always applied, overwriting any previously
+            set value. Has no effect on boundary types without a ``q_mult``
+            field (e.g. :class:`StageHydrograph`).
 
         Notes
         -----
@@ -531,16 +591,137 @@ class _TimeSeriesBoundary(_Boundary):
         if start_datetime is not None:
             resolved_start = start_datetime
 
+        # Resolve everything that can still raise (formatting, float casts)
+        # before mutating self, so a failure here leaves the instance
+        # untouched instead of partially updated.
+        resolved_fixed_start = (
+            _format_fixed_start(resolved_start) if resolved_start is not None else None
+        )
+        if resolved_fixed_start is not None and use_fixed_start is None:
+            use_fixed_start = True
+        resolved_q_min = float(q_min) if hasattr(self, "q_min") else None
+        resolved_q_mult = float(q_mult) if hasattr(self, "q_mult") else None
+
+        # Nothing below this point can raise.
         self.values = values
         self.use_dss = False
         if resolved_interval is not None:
             self.interval = resolved_interval
-        if resolved_start is not None:
-            self.fixed_start = _format_fixed_start(resolved_start)
-            if use_fixed_start is None:
-                use_fixed_start = True
+        if resolved_fixed_start is not None:
+            self.fixed_start = resolved_fixed_start
         if use_fixed_start is not None:
             self.use_fixed_start = use_fixed_start
+        if resolved_q_min is not None:
+            self.q_min = resolved_q_min
+        if resolved_q_mult is not None:
+            self.q_mult = resolved_q_mult
+
+    def set_time_series_window(
+        self,
+        window: tuple[dt.datetime, dt.datetime],
+        interval: str | float | int | dt.timedelta,
+        data: float | int | Sequence[float | int] | dict[float, float],
+        *,
+        q_min: float = 0.0,
+        q_mult: float = 1.0,
+    ) -> None:
+        """Replace this boundary's time series over an explicit ``(start, end)`` window.
+
+        Convenience wrapper around :meth:`set_time_series` for specifying a
+        fixed start and end time directly, instead of letting the end be
+        inferred from the length of *data*. Also accepts a ``dict`` of step
+        values keyed by elapsed minutes, for building a step (piecewise
+        constant) hydrograph without precomputing every timestep by hand.
+
+        Parameters
+        ----------
+        window:
+            ``(start, end)`` datetimes, inclusive of both endpoints. *end*
+            must be reachable from *start* by a whole number of *interval*
+            steps.
+        interval:
+            Spacing between timesteps. One of a HEC-RAS interval string
+            (e.g. ``"15MIN"``), a :class:`datetime.timedelta`, or a bare
+            ``int``/``float`` interpreted as seconds — resolved the same way
+            as :meth:`set_time_series`'s *interval* (validated and
+            re-canonicalized via :func:`rivia.utils.parse_interval_strict` /
+            :func:`rivia.utils.format_interval_strict`).
+        data:
+            Values to fill the window with. One of:
+
+            * a scalar — broadcast to every timestep in the window.
+            * a sequence of numbers — used as-is; its length must exactly
+              match the number of timesteps implied by *window* and
+              *interval*.
+            * a ``dict[float, float]`` mapping elapsed minutes since *start*
+              to a step value, e.g. ``{0: 20, 60: 50}`` holds ``20`` from
+              the start of the window until minute 60, then ``50`` for the
+              rest of the window. Must contain a ``0`` key.
+        q_min:
+            New ``QMin`` value. Always applied, overwriting any previously
+            set value. Has no effect on boundary types without a ``q_min``
+            field (e.g. :class:`StageHydrograph`).
+        q_mult:
+            New ``QMult`` value. Always applied, overwriting any previously
+            set value. Has no effect on boundary types without a ``q_mult``
+            field (e.g. :class:`StageHydrograph`).
+
+        Raises
+        ------
+        ValueError
+            *end* is not after *start*; the window duration is not evenly
+            divisible by *interval*; *data* is a sequence whose length
+            doesn't match the number of timesteps implied by *window* and
+            *interval*; *data* is a dict that is empty, has a negative key,
+            or has no ``0`` key; or *interval* does not resolve to a
+            HEC-RAS dropdown interval.
+
+        Examples
+        --------
+        >>> fh.set_time_series_window(
+        ...     (dt.datetime(2021, 1, 1), dt.datetime(2021, 1, 1, 2)),
+        ...     "15MIN",
+        ...     {0: 20, 60: 50},
+        ... )
+        """
+        start, end = window
+        if end <= start:
+            raise ValueError(
+                f"window end ({end}) must be after window start ({start})."
+            )
+
+        resolved_interval = _resolve_interval(interval)
+        interval_td = parse_interval_strict(resolved_interval)
+
+        duration = end - start
+        if duration % interval_td != dt.timedelta(0):
+            raise ValueError(
+                f"window duration {duration} is not evenly divisible by "
+                f"interval {resolved_interval!r}."
+            )
+        n_periods = duration // interval_td + 1
+
+        if isinstance(data, dict):
+            interval_minutes = interval_td.total_seconds() / 60
+            values = _expand_steps(data, n_periods, interval_minutes)
+        elif isinstance(data, (int, float)):
+            values = _coerce_values(data, n_periods)
+        else:
+            values = [float(v) for v in data]
+            if len(values) != n_periods:
+                raise ValueError(
+                    f"data has {len(values)} values but window/interval "
+                    f"implies {n_periods} timesteps."
+                )
+
+        self.set_time_series(
+            values,
+            interval=resolved_interval,
+            start_datetime=start,
+            use_fixed_start=True,
+            q_min=q_min,
+            q_mult=q_mult,
+        )
 
 
 @dataclass

@@ -1232,6 +1232,34 @@ class TestSetTimeSeries:
         fh.set_time_series([1.0, 2.0])
         assert fh.use_dss is False
 
+    def test_q_min_q_mult_default_to_identity(self):
+        fh = self._fh(q_min=5.0, q_mult=2.0)
+        fh.set_time_series([1.0, 2.0])
+        assert fh.q_min == 0.0
+        assert fh.q_mult == 1.0
+
+    def test_q_min_q_mult_explicit_values_applied(self):
+        fh = self._fh()
+        fh.set_time_series([1.0, 2.0], q_min=3.0, q_mult=1.5)
+        assert fh.q_min == 3.0
+        assert fh.q_mult == 1.5
+
+    def test_stage_hydrograph_ignores_q_min_q_mult(self):
+        sh = StageHydrograph(river="R", reach="Rc", river_station="1", values=[1.0])
+        sh.set_time_series([1.0, 2.0], q_min=3.0, q_mult=1.5)
+        assert not hasattr(sh, "q_min")
+        assert not hasattr(sh, "q_mult")
+
+    def test_failed_q_min_conversion_leaves_instance_untouched(self):
+        # A bad q_min must raise before any attribute is mutated -- not
+        # after self.values/self.use_dss/self.interval are already updated.
+        fh = self._fh(interval="1HOUR", values=[1.0, 2.0, 3.0], use_dss=True)
+        with pytest.raises(ValueError):
+            fh.set_time_series([9.0, 9.0, 9.0], interval="15MIN", q_min="not-a-number")
+        assert fh.values == pytest.approx([1.0, 2.0, 3.0])
+        assert fh.interval == "1HOUR"
+        assert fh.use_dss is True
+
     def test_round_trip_through_time_series(self):
         fh = self._fh()
         idx = pd.date_range("2021-06-01", periods=5, freq="1h")
@@ -1298,3 +1326,168 @@ class TestSetTimeSeries:
         s = pd.Series([1.0, 2.0, 3.0], index=idx)
         with pytest.raises(ValueError):
             fh.set_time_series(s, interval=dt.timedelta(hours=2))
+
+
+class TestSetTimeSeriesWindow:
+    def _fh(self, **overrides):
+        defaults = dict(river="R", reach="Rc", river_station="1")
+        defaults.update(overrides)
+        return FlowHydrograph(**defaults)
+
+    def test_scalar_broadcasts_across_window(self):
+        fh = self._fh()
+        fh.set_time_series_window(
+            (dt.datetime(2021, 1, 1), dt.datetime(2021, 1, 1, 1)), "15MIN", 9.0
+        )
+        assert fh.values == pytest.approx([9.0] * 5)
+        assert fh.interval == "15MIN"
+        assert fh.use_fixed_start is True
+        assert fh.fixed_start == "01JAN2021,0000"
+
+    def test_exact_length_sequence_passes_through(self):
+        fh = self._fh()
+        fh.set_time_series_window(
+            (dt.datetime(2021, 1, 1), dt.datetime(2021, 1, 1, 1)),
+            "15MIN",
+            [1.0, 2.0, 3.0, 4.0, 5.0],
+        )
+        assert fh.values == pytest.approx([1.0, 2.0, 3.0, 4.0, 5.0])
+
+    def test_sequence_wrong_length_raises(self):
+        fh = self._fh()
+        with pytest.raises(ValueError):
+            fh.set_time_series_window(
+                (dt.datetime(2021, 1, 1), dt.datetime(2021, 1, 1, 1)),
+                "15MIN",
+                [1.0, 2.0],
+            )
+
+    def test_dict_steps_hold_until_next_breakpoint(self):
+        fh = self._fh()
+        fh.set_time_series_window(
+            (dt.datetime(2021, 1, 1), dt.datetime(2021, 1, 1, 2)),
+            "15MIN",
+            {0: 20, 60: 50},
+        )
+        assert fh.values == pytest.approx([20, 20, 20, 20, 50, 50, 50, 50, 50])
+        result = fh.time_series()
+        assert list(result.values) == pytest.approx([20, 20, 20, 20, 50, 50, 50, 50, 50])
+
+    def test_dict_missing_zero_key_raises(self):
+        fh = self._fh()
+        with pytest.raises(ValueError):
+            fh.set_time_series_window(
+                (dt.datetime(2021, 1, 1), dt.datetime(2021, 1, 1, 1)),
+                "15MIN",
+                {15: 20, 60: 50},
+            )
+
+    def test_dict_negative_key_raises(self):
+        fh = self._fh()
+        with pytest.raises(ValueError):
+            fh.set_time_series_window(
+                (dt.datetime(2021, 1, 1), dt.datetime(2021, 1, 1, 1)),
+                "15MIN",
+                {-15: 20, 0: 50},
+            )
+
+    def test_empty_dict_raises(self):
+        fh = self._fh()
+        with pytest.raises(ValueError):
+            fh.set_time_series_window(
+                (dt.datetime(2021, 1, 1), dt.datetime(2021, 1, 1, 1)), "15MIN", {}
+            )
+
+    def test_end_before_start_raises(self):
+        fh = self._fh()
+        with pytest.raises(ValueError):
+            fh.set_time_series_window(
+                (dt.datetime(2021, 1, 1, 1), dt.datetime(2021, 1, 1)), "15MIN", 1.0
+            )
+
+    def test_end_equal_start_raises(self):
+        fh = self._fh()
+        with pytest.raises(ValueError):
+            fh.set_time_series_window(
+                (dt.datetime(2021, 1, 1), dt.datetime(2021, 1, 1)), "15MIN", 1.0
+            )
+
+    def test_window_not_evenly_divisible_by_interval_raises(self):
+        fh = self._fh()
+        with pytest.raises(ValueError):
+            fh.set_time_series_window(
+                (dt.datetime(2021, 1, 1), dt.datetime(2021, 1, 1, 1, 10)),
+                "15MIN",
+                1.0,
+            )
+
+    def test_interval_as_timedelta(self):
+        fh = self._fh()
+        fh.set_time_series_window(
+            (dt.datetime(2021, 1, 1), dt.datetime(2021, 1, 1, 1)),
+            dt.timedelta(minutes=15),
+            1.0,
+        )
+        assert fh.interval == "15MIN"
+
+    def test_interval_as_seconds_int(self):
+        fh = self._fh()
+        fh.set_time_series_window(
+            (dt.datetime(2021, 1, 1), dt.datetime(2021, 1, 1, 1)), 900, 1.0
+        )
+        assert fh.interval == "15MIN"
+
+    def test_interval_alias_is_canonicalized(self):
+        fh = self._fh()
+        fh.set_time_series_window(
+            (dt.datetime(2021, 1, 1), dt.datetime(2021, 1, 1, 1)), "15MINUTE", 1.0
+        )
+        assert fh.interval == "15MIN"
+
+    def test_lateral_inflow_supports_set_time_series_window(self):
+        li = LateralInflow(river="R", reach="Rc", river_station="1")
+        li.set_time_series_window(
+            (dt.datetime(2021, 1, 1), dt.datetime(2021, 1, 2)), "1DAY", 5.0
+        )
+        assert li.values == pytest.approx([5.0, 5.0])
+        assert li.interval == "1DAY"
+
+    def test_stage_hydrograph_supports_set_time_series_window(self):
+        sh = StageHydrograph(river="R", reach="Rc", river_station="1")
+        sh.set_time_series_window(
+            (dt.datetime(2021, 1, 1), dt.datetime(2021, 1, 1, 6)), "6HOUR", 100.0
+        )
+        assert sh.values == pytest.approx([100.0, 100.0])
+        assert sh.interval == "6HOUR"
+
+    def test_q_min_q_mult_default_to_identity(self):
+        fh = self._fh(q_min=5.0, q_mult=2.0)
+        fh.set_time_series_window(
+            (dt.datetime(2021, 1, 1), dt.datetime(2021, 1, 1, 1)), "15MIN", 1.0
+        )
+        assert fh.q_min == 0.0
+        assert fh.q_mult == 1.0
+
+    def test_q_min_q_mult_explicit_values_applied(self):
+        fh = self._fh()
+        fh.set_time_series_window(
+            (dt.datetime(2021, 1, 1), dt.datetime(2021, 1, 1, 1)),
+            "15MIN",
+            1.0,
+            q_min=3.0,
+            q_mult=1.5,
+        )
+        assert fh.q_min == 3.0
+        assert fh.q_mult == 1.5
+
+    def test_stage_hydrograph_ignores_q_min_q_mult(self):
+        sh = StageHydrograph(river="R", reach="Rc", river_station="1")
+        sh.set_time_series_window(
+            (dt.datetime(2021, 1, 1), dt.datetime(2021, 1, 1, 6)),
+            "6HOUR",
+            100.0,
+            q_min=3.0,
+            q_mult=1.5,
+        )
+        assert not hasattr(sh, "q_min")
+        assert not hasattr(sh, "q_mult")
