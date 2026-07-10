@@ -482,7 +482,7 @@ class _TimeSeriesBoundary(_Boundary):
         interval: str | float | int | dt.timedelta | None = None,
         start_datetime: dt.datetime | None = None,
         use_fixed_start: bool | None = None,
-        q_min: float = 0.0,
+        q_min: float | None = None,
         q_mult: float = 1.0,
     ) -> None:
         """Replace this boundary's time series, in place.
@@ -532,10 +532,15 @@ class _TimeSeriesBoundary(_Boundary):
             *start_datetime*); pass ``False`` to keep the new values/interval
             but fall back to the plan's simulation start instead.
         q_min:
-            New ``QMin`` value. Always applied, overwriting any previously
-            set value (same convention as ``UnsteadyFlow.set_flow_hydrograph``
-            / ``set_lateral_inflow``). Has no effect on boundary types
-            without a ``q_min`` field (e.g. :class:`StageHydrograph`).
+            New ``QMin`` value, or ``None`` (default) to leave ``QMin``
+            unspecified. Always applied, overwriting any previously set
+            value — ``None`` explicitly *clears* a previous ``QMin``
+            rather than leaving it alone, the same way a numeric value
+            explicitly overwrites one. Defaulting to ``None`` (rather than
+            ``0.0``) matters for :class:`LateralInflow`, which can
+            legitimately take negative values that a ``0.0`` floor would
+            silently destroy. Has no effect on boundary types without a
+            ``q_min`` field (e.g. :class:`StageHydrograph`).
         q_mult:
             New ``QMult`` value. Always applied, overwriting any previously
             set value. Has no effect on boundary types without a ``q_mult``
@@ -600,7 +605,8 @@ class _TimeSeriesBoundary(_Boundary):
         )
         if resolved_fixed_start is not None and use_fixed_start is None:
             use_fixed_start = True
-        resolved_q_min = float(q_min) if hasattr(self, "q_min") else None
+        has_q_min = hasattr(self, "q_min")
+        resolved_q_min = float(q_min) if q_min is not None else None
         resolved_q_mult = float(q_mult) if hasattr(self, "q_mult") else None
 
         # Nothing below this point can raise.
@@ -612,7 +618,7 @@ class _TimeSeriesBoundary(_Boundary):
             self.fixed_start = resolved_fixed_start
         if use_fixed_start is not None:
             self.use_fixed_start = use_fixed_start
-        if resolved_q_min is not None:
+        if has_q_min:
             self.q_min = resolved_q_min
         if resolved_q_mult is not None:
             self.q_mult = resolved_q_mult
@@ -623,7 +629,7 @@ class _TimeSeriesBoundary(_Boundary):
         interval: str | float | int | dt.timedelta,
         data: float | int | Sequence[float | int] | dict[float, float],
         *,
-        q_min: float = 0.0,
+        q_min: float | None = None,
         q_mult: float = 1.0,
     ) -> None:
         """Replace this boundary's time series over an explicit ``(start, end)`` window.
@@ -659,9 +665,11 @@ class _TimeSeriesBoundary(_Boundary):
               the start of the window until minute 60, then ``50`` for the
               rest of the window. Must contain a ``0`` key.
         q_min:
-            New ``QMin`` value. Always applied, overwriting any previously
-            set value. Has no effect on boundary types without a ``q_min``
-            field (e.g. :class:`StageHydrograph`).
+            New ``QMin`` value, or ``None`` (default) to leave ``QMin``
+            unspecified (see :meth:`set_time_series`). Always applied,
+            overwriting any previously set value. Has no effect on
+            boundary types without a ``q_min`` field (e.g.
+            :class:`StageHydrograph`).
         q_mult:
             New ``QMult`` value. Always applied, overwriting any previously
             set value. Has no effect on boundary types without a ``q_mult``
@@ -728,7 +736,7 @@ class _TimeSeriesBoundary(_Boundary):
         self,
         data: float | int | Sequence[float | int] | dict[float, float],
         *,
-        q_min: float = 0.0,
+        q_min: float | None = None,
         q_mult: float = 1.0,
     ) -> None:
         """Replace this boundary's values in place, keeping window and interval fixed.
@@ -752,9 +760,11 @@ class _TimeSeriesBoundary(_Boundary):
               ``{0: 20, 60: 50}`` (same step/hold semantics as
               :meth:`set_time_series_window`). Must contain a ``0`` key.
         q_min:
-            New ``QMin`` value. Always applied, overwriting any previously
-            set value. Has no effect on boundary types without a ``q_min``
-            field (e.g. :class:`StageHydrograph`).
+            New ``QMin`` value, or ``None`` (default) to leave ``QMin``
+            unspecified (see :meth:`set_time_series`). Always applied,
+            overwriting any previously set value. Has no effect on
+            boundary types without a ``q_min`` field (e.g.
+            :class:`StageHydrograph`).
         q_mult:
             New ``QMult`` value. Always applied, overwriting any previously
             set value. Has no effect on boundary types without a ``q_mult``
@@ -1675,7 +1685,11 @@ class UnsteadyFlow:
     # ------------------------------------------------------------------
 
     def set_flow_hydrograph(
-        self, index: int, values: _Values, q_min: float = 0.0, q_mult: float = 1.0
+        self,
+        index: int,
+        values: _Values,
+        q_min: float | None = None,
+        q_mult: float = 1.0,
     ) -> None:
         """Set flow hydrograph values by position in :attr:`flow_hydrographs`.
 
@@ -1687,20 +1701,28 @@ class UnsteadyFlow:
             New flow values.  A scalar is broadcast to the length of
             the existing time series.
         q_min:
-            New ``Flow Hydrograph QMin`` value.  Always applied, overwriting
-            any previously set value.
+            New ``Flow Hydrograph QMin`` value, or ``None`` (default) to
+            leave ``QMin`` unspecified.  Always applied, overwriting any
+            previously set value.
         q_mult:
             New ``Flow Hydrograph QMult`` value.  Always applied, overwriting
             any previously set value.
         """
         bc = self.flow_hydrographs[index]
-        bc.values = _coerce_values(values, len(bc.values))
-        bc.q_min = float(q_min)
-        bc.q_mult = float(q_mult)
+        new_values = _coerce_values(values, len(bc.values))
+        resolved_q_min = float(q_min) if q_min is not None else None
+        resolved_q_mult = float(q_mult)
+        bc.values = new_values
+        bc.q_min = resolved_q_min
+        bc.q_mult = resolved_q_mult
         self._modified = True
 
     def set_lateral_inflow(
-        self, index: int, values: _Values, q_min: float = 0.0, q_mult: float = 1.0
+        self,
+        index: int,
+        values: _Values,
+        q_min: float | None = None,
+        q_mult: float = 1.0,
     ) -> None:
         """Set lateral inflow values by position in :attr:`lateral_inflows`.
 
@@ -1710,16 +1732,21 @@ class UnsteadyFlow:
             New flow values.  A scalar is broadcast to the length of
             the existing time series.
         q_min:
-            New ``QMin`` value.  Always applied, overwriting any previously
-            set value.
+            New ``QMin`` value, or ``None`` (default) to leave ``QMin``
+            unspecified — important since :class:`LateralInflow` can
+            legitimately be negative, which a ``0.0`` floor would destroy.
+            Always applied, overwriting any previously set value.
         q_mult:
             New ``QMult`` value.  Always applied, overwriting any previously
             set value.
         """
         bc = self.lateral_inflows[index]
-        bc.values = _coerce_values(values, len(bc.values))
-        bc.q_min = float(q_min)
-        bc.q_mult = float(q_mult)
+        new_values = _coerce_values(values, len(bc.values))
+        resolved_q_min = float(q_min) if q_min is not None else None
+        resolved_q_mult = float(q_mult)
+        bc.values = new_values
+        bc.q_min = resolved_q_min
+        bc.q_mult = resolved_q_mult
         self._modified = True
 
     def set_all_lateral_inflows(self, values: list[float | list[float]]) -> None:
@@ -1823,7 +1850,7 @@ class UnsteadyFlow:
         interval: str | float | int | dt.timedelta,
         value: float | int = 0.0,
         *,
-        q_min: float = 0.0,
+        q_min: float | None = None,
         q_mult: float = 1.0,
     ) -> None:
         """Redefine every flow-type boundary to a constant value over a new window.
@@ -1855,7 +1882,10 @@ class UnsteadyFlow:
             Constant value every flow-type boundary is redefined to
             (default ``0.0``).
         q_min:
-            ``QMin`` applied to every boundary redefined (default ``0.0``).
+            ``QMin`` applied to every boundary redefined, or ``None``
+            (default) to leave ``QMin`` unspecified (see
+            :meth:`_TimeSeriesBoundary.set_time_series`) — important for
+            :class:`LateralInflow`, which can legitimately be negative.
         q_mult:
             ``QMult`` applied to every boundary redefined (default ``1.0``).
 
@@ -2054,7 +2084,7 @@ class UnsteadyFlow:
         self,
         data: float | int | Sequence[float | int] | dict[float, float],
         *,
-        q_min: float = 0.0,
+        q_min: float | None = None,
         q_mult: float = 1.0,
         boundary_types: tuple[_TimeSeriesBoundaryClass, ...] = (
             FlowHydrograph,
@@ -2091,7 +2121,10 @@ class UnsteadyFlow:
               value (see :meth:`_TimeSeriesBoundary.reset_values`) — expanded
               independently against each boundary's own interval and length.
         q_min:
-            ``QMin`` applied to every boundary reset (default ``0.0``).
+            ``QMin`` applied to every boundary reset, or ``None`` (default)
+            to leave ``QMin`` unspecified (see
+            :meth:`_TimeSeriesBoundary.set_time_series`) — important for
+            :class:`LateralInflow`, which can legitimately be negative.
         q_mult:
             ``QMult`` applied to every boundary reset (default ``1.0``).
         boundary_types:
@@ -2181,7 +2214,7 @@ class UnsteadyFlow:
         reach: str,
         rs: str,
         values: _Values,
-        q_min: float = 0.0,
+        q_min: float | None = None,
         q_mult: float = 1.0,
         occurrence: int = 0,
     ) -> None:
@@ -2192,8 +2225,9 @@ class UnsteadyFlow:
         values:
             A scalar is broadcast to the existing time-series length.
         q_min:
-            New ``Flow Hydrograph QMin`` value.  Always applied, overwriting
-            any previously set value.
+            New ``Flow Hydrograph QMin`` value, or ``None`` (default) to
+            leave ``QMin`` unspecified.  Always applied, overwriting any
+            previously set value.
         q_mult:
             New ``Flow Hydrograph QMult`` value.  Always applied, overwriting
             any previously set value.
@@ -2210,9 +2244,12 @@ class UnsteadyFlow:
         b = self._find_boundary(river, reach, rs, occurrence)
         if not isinstance(b, FlowHydrograph):
             raise KeyError(f"No FlowHydrograph at {river!r}, {reach!r}, {rs!r}")
-        b.values = _coerce_values(values, len(b.values))
-        b.q_min = float(q_min)
-        b.q_mult = float(q_mult)
+        new_values = _coerce_values(values, len(b.values))
+        resolved_q_min = float(q_min) if q_min is not None else None
+        resolved_q_mult = float(q_mult)
+        b.values = new_values
+        b.q_min = resolved_q_min
+        b.q_mult = resolved_q_mult
         self._modified = True
 
     def set_lateral_inflow_at(
@@ -2221,7 +2258,7 @@ class UnsteadyFlow:
         reach: str,
         rs: str,
         values: _Values,
-        q_min: float = 0.0,
+        q_min: float | None = None,
         q_mult: float = 1.0,
         occurrence: int = 0,
     ) -> None:
@@ -2232,8 +2269,10 @@ class UnsteadyFlow:
         values:
             A scalar is broadcast to the existing time-series length.
         q_min:
-            New ``QMin`` value.  Always applied, overwriting any previously
-            set value.
+            New ``QMin`` value, or ``None`` (default) to leave ``QMin``
+            unspecified — important since :class:`LateralInflow` can
+            legitimately be negative, which a ``0.0`` floor would destroy.
+            Always applied, overwriting any previously set value.
         q_mult:
             New ``QMult`` value.  Always applied, overwriting any previously
             set value.
@@ -2250,9 +2289,12 @@ class UnsteadyFlow:
         b = self._find_boundary(river, reach, rs, occurrence)
         if not isinstance(b, LateralInflow):
             raise KeyError(f"No LateralInflow at {river!r}, {reach!r}, {rs!r}")
-        b.values = _coerce_values(values, len(b.values))
-        b.q_min = float(q_min)
-        b.q_mult = float(q_mult)
+        new_values = _coerce_values(values, len(b.values))
+        resolved_q_min = float(q_min) if q_min is not None else None
+        resolved_q_mult = float(q_mult)
+        b.values = new_values
+        b.q_min = resolved_q_min
+        b.q_mult = resolved_q_mult
         self._modified = True
 
     def reset_values_at(
@@ -2262,7 +2304,7 @@ class UnsteadyFlow:
         rs: str,
         data: float | int | Sequence[float | int] | dict[float, float],
         *,
-        q_min: float = 0.0,
+        q_min: float | None = None,
         q_mult: float = 1.0,
         occurrence: int = 0,
     ) -> None:
@@ -2284,8 +2326,10 @@ class UnsteadyFlow:
             scalar, an exact-length sequence, or a
             ``{elapsed_minutes: value}`` step dict.
         q_min:
-            New ``QMin`` value. Always applied, overwriting any previously
-            set value. Has no effect if the boundary at this location is a
+            New ``QMin`` value, or ``None`` (default) to leave ``QMin``
+            unspecified (see :meth:`_TimeSeriesBoundary.set_time_series`).
+            Always applied, overwriting any previously set value. Has no
+            effect if the boundary at this location is a
             :class:`StageHydrograph` (no such field).
         q_mult:
             New ``QMult`` value. Always applied, overwriting any previously

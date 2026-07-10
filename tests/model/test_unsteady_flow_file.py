@@ -937,7 +937,9 @@ class TestQMinQMult:
         ed = UnsteadyFlow(QMIN_QMULT)
         assert ed.flow_hydrographs[0].q_min == pytest.approx(400.0)
         ed.set_flow_hydrograph(0, 500.0)
-        assert ed.flow_hydrographs[0].q_min == pytest.approx(0.0)
+        # q_min defaults to None (unspecified), not 0.0 -- a 0.0 floor
+        # would silently destroy legitimate negative LateralInflow values.
+        assert ed.flow_hydrographs[0].q_min is None
         assert ed.flow_hydrographs[0].q_mult == pytest.approx(1.0)
 
     def test_set_flow_hydrograph_explicit_q_min_q_mult(self):
@@ -950,7 +952,7 @@ class TestQMinQMult:
         ed = UnsteadyFlow(QMIN_QMULT)
         fh = ed.flow_hydrographs[0]
         ed.set_flow_hydrograph_at(fh.river, fh.reach, fh.river_station, 500.0)
-        assert fh.q_min == pytest.approx(0.0)
+        assert fh.q_min is None
         assert fh.q_mult == pytest.approx(1.0)
 
     def test_set_flow_hydrograph_writes_q_min_q_mult(self, tmp_path):
@@ -959,7 +961,8 @@ class TestQMinQMult:
         out = tmp_path / "baxter_qmin_qmult.u01"
         ed1.save(out)
         ed2 = UnsteadyFlow(out)
-        assert ed2.flow_hydrographs[0].q_min == pytest.approx(0.0)
+        # q_min is None -> no "Flow Hydrograph QMin=" line written at all.
+        assert ed2.flow_hydrographs[0].q_min is None
         assert ed2.flow_hydrographs[0].q_mult == pytest.approx(1.0)
 
     def test_set_lateral_inflow_defaults_q_min_q_mult(self):
@@ -967,7 +970,7 @@ class TestQMinQMult:
         li = ed.lateral_inflows[0]
         assert li.q_mult == pytest.approx(0.0)
         ed.set_lateral_inflow(0, 500.0)
-        assert li.q_min == pytest.approx(0.0)
+        assert li.q_min is None
         assert li.q_mult == pytest.approx(1.0)
 
     def test_set_lateral_inflow_explicit_q_min_q_mult(self):
@@ -980,8 +983,15 @@ class TestQMinQMult:
         ed = UnsteadyFlow(QMIN_QMULT)
         li = ed.lateral_inflows[0]
         ed.set_lateral_inflow_at(li.river, li.reach, li.river_station, 500.0)
-        assert li.q_min == pytest.approx(0.0)
+        assert li.q_min is None
         assert li.q_mult == pytest.approx(1.0)
+
+    def test_set_lateral_inflow_negative_values_survive_default_q_min(self):
+        ed = UnsteadyFlow(QMIN_QMULT)
+        ed.set_lateral_inflow(0, [-50.0, -10.0, 5.0])
+        li = ed.lateral_inflows[0]
+        assert li.values == pytest.approx([-50.0, -10.0, 5.0])
+        assert li.q_min is None
 
 
 # ---------------------------------------------------------------------------
@@ -1232,11 +1242,25 @@ class TestSetTimeSeries:
         fh.set_time_series([1.0, 2.0])
         assert fh.use_dss is False
 
-    def test_q_min_q_mult_default_to_identity(self):
+    def test_q_min_defaults_to_none_q_mult_defaults_to_identity(self):
+        # q_min defaults to None (unspecified), not 0.0 -- a 0.0 floor
+        # would silently destroy legitimate negative LateralInflow values.
         fh = self._fh(q_min=5.0, q_mult=2.0)
         fh.set_time_series([1.0, 2.0])
-        assert fh.q_min == 0.0
+        assert fh.q_min is None
         assert fh.q_mult == 1.0
+
+    def test_negative_lateral_inflow_values_survive_default_reset(self):
+        li = LateralInflow(
+            river="R", reach="Rc", river_station="1", interval="1HOUR",
+            values=[1.0, 2.0],
+        )
+        li.set_time_series([-50.0, -10.0, 5.0])
+        assert li.values == pytest.approx([-50.0, -10.0, 5.0])
+        assert li.q_min is None
+        # No QMin floor applied since q_min is None.
+        result = li.time_series(dt.datetime(2021, 1, 1), raw_values=False)
+        assert list(result.values) == pytest.approx([-50.0, -10.0, 5.0])
 
     def test_q_min_q_mult_explicit_values_applied(self):
         fh = self._fh()
@@ -1460,12 +1484,12 @@ class TestSetTimeSeriesWindow:
         assert sh.values == pytest.approx([100.0, 100.0])
         assert sh.interval == "6HOUR"
 
-    def test_q_min_q_mult_default_to_identity(self):
+    def test_q_min_defaults_to_none_q_mult_defaults_to_identity(self):
         fh = self._fh(q_min=5.0, q_mult=2.0)
         fh.set_time_series_window(
             (dt.datetime(2021, 1, 1), dt.datetime(2021, 1, 1, 1)), "15MIN", 1.0
         )
-        assert fh.q_min == 0.0
+        assert fh.q_min is None
         assert fh.q_mult == 1.0
 
     def test_q_min_q_mult_explicit_values_applied(self):
@@ -1549,10 +1573,10 @@ class TestResetValues:
         fh.reset_values(9.0)
         assert fh.use_fixed_start is False
 
-    def test_q_min_q_mult_default_to_identity(self):
+    def test_q_min_defaults_to_none_q_mult_defaults_to_identity(self):
         fh = self._fh(q_min=5.0, q_mult=2.0)
         fh.reset_values(9.0)
-        assert fh.q_min == 0.0
+        assert fh.q_min is None
         assert fh.q_mult == 1.0
 
     def test_q_min_q_mult_explicit_values_applied(self):
@@ -1797,7 +1821,7 @@ class TestRedefineAllFlowTimeSeries:
         )
         assert ed.flow_hydrographs[0].values == pytest.approx([0.0, 0.0])
 
-    def test_q_min_q_mult_default_to_identity(self):
+    def test_q_min_defaults_to_none_q_mult_defaults_to_identity(self):
         fh = FlowHydrograph(
             river="R", reach="Rc", river_station="1", interval="1HOUR",
             values=[1.0], q_min=5.0, q_mult=2.0,
@@ -1806,7 +1830,7 @@ class TestRedefineAllFlowTimeSeries:
         ed.redefine_all_flow_time_series(
             (dt.datetime(2021, 1, 1), dt.datetime(2021, 1, 1, 1)), "1HOUR", 1.0
         )
-        assert ed.flow_hydrographs[0].q_min == 0.0
+        assert ed.flow_hydrographs[0].q_min is None
         assert ed.flow_hydrographs[0].q_mult == 1.0
 
     def test_q_min_q_mult_explicit_values_applied(self):
@@ -2150,6 +2174,15 @@ class TestResetAllValuesByType:
             [20, 20, 20, 20, 50, 50, 50, 50, 50]
         )
 
+    def test_q_min_defaults_to_none(self):
+        li = LateralInflow(
+            river="R", reach="Rc", river_station="1", values=[1.0], q_min=5.0,
+        )
+        ed = _bare_ed([li])
+        ed.reset_all_values_by_type(-10.0)
+        assert ed.lateral_inflows[0].values == pytest.approx([-10.0])
+        assert ed.lateral_inflows[0].q_min is None
+
     def test_q_min_q_mult_applied_to_flow_types_only(self):
         fh = FlowHydrograph(
             river="R", reach="Rc", river_station="1", values=[1.0],
@@ -2216,6 +2249,16 @@ class TestResetValuesAt:
         ed = _bare_ed([li])
         ed.reset_values_at("River", "Reach", "100", 9.0)
         assert li.values == pytest.approx([9.0, 9.0])
+
+    def test_q_min_defaults_to_none_preserves_negative_lateral_inflow(self):
+        li = LateralInflow(
+            river="River", reach="Reach", river_station="100",
+            values=[1.0, 2.0], q_min=0.0,
+        )
+        ed = _bare_ed([li])
+        ed.reset_values_at("River", "Reach", "100", [-20.0, -5.0])
+        assert li.values == pytest.approx([-20.0, -5.0])
+        assert li.q_min is None
 
     def test_resets_stage_hydrograph_by_location(self):
         sh = StageHydrograph(
