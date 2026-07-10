@@ -1987,6 +1987,75 @@ class UnsteadyFlow:
             lambda bc: bc.resize_window(window, start_datetime=start_datetime),
         )
 
+    def reset_all_values(
+        self,
+        data: float | int | Sequence[float | int] | dict[float, float],
+        *,
+        q_min: float = 0.0,
+        q_mult: float = 1.0,
+        boundary_types: tuple[type, ...] = (
+            FlowHydrograph,
+            LateralInflow,
+            StageHydrograph,
+        ),
+    ) -> None:
+        """Reset every matching boundary's values, keeping window/interval fixed.
+
+        Bulk counterpart to :meth:`_TimeSeriesBoundary.reset_values`, the
+        same way :meth:`resize_all` is the bulk counterpart to
+        :meth:`_TimeSeriesBoundary.resize_window`: unlike
+        :meth:`reset_all_flows` / :meth:`resize_all_stages` / :meth:`resize_all`,
+        this never changes any boundary's window or interval — only
+        :attr:`~_TimeSeriesBoundary.values` (and, where present,
+        ``q_min``/``q_mult``) are replaced, each using that boundary's own
+        existing number of timesteps.
+
+        Parameters
+        ----------
+        data:
+            New values, applied identically to every matching boundary.
+            One of:
+
+            * a scalar — broadcast to each boundary's own existing number
+              of timesteps.
+            * a sequence of numbers — used as-is for every boundary; its
+              length must exactly match every matching boundary's existing
+              number of timesteps (so this only works cleanly when all
+              matching boundaries already share the same length).
+            * a ``dict[float, float]`` mapping elapsed minutes to a step
+              value (see :meth:`_TimeSeriesBoundary.reset_values`) — expanded
+              independently against each boundary's own interval and length.
+        q_min:
+            ``QMin`` applied to every boundary reset (default ``0.0``).
+        q_mult:
+            ``QMult`` applied to every boundary reset (default ``1.0``).
+        boundary_types:
+            Which boundary classes to include. Defaults to all three
+            time-series boundary types (:class:`FlowHydrograph`,
+            :class:`LateralInflow`, :class:`StageHydrograph`).
+
+        Raises
+        ------
+        ValueError
+            *data* is invalid for any matching boundary (see
+            :meth:`_TimeSeriesBoundary.reset_values`) — e.g. a sequence
+            whose length doesn't match one of the boundaries, or any
+            matching boundary currently has no values. No boundary is
+            changed if any of them would fail.
+
+        Notes
+        -----
+        All-or-nothing: either every matching boundary is updated, or (on
+        error) none of them are. On success, updated boundaries are
+        replaced by new objects (see :meth:`_apply_atomically`) — re-fetch
+        via :attr:`boundaries` (or the relevant typed property) afterward
+        rather than relying on references held from before the call.
+        """
+        self._apply_atomically(
+            boundary_types,
+            lambda bc: bc.reset_values(data, q_min=q_min, q_mult=q_mult),
+        )
+
     # ------------------------------------------------------------------
     # Set by location (river / reach / rs)
     # ------------------------------------------------------------------
@@ -2116,6 +2185,67 @@ class UnsteadyFlow:
         b.values = _coerce_values(values, len(b.values))
         b.q_min = float(q_min)
         b.q_mult = float(q_mult)
+        self._modified = True
+
+    def reset_values_at(
+        self,
+        river: str,
+        reach: str,
+        rs: str,
+        data: float | int | Sequence[float | int] | dict[float, float],
+        *,
+        q_min: float = 0.0,
+        q_mult: float = 1.0,
+        occurrence: int = 0,
+    ) -> None:
+        """Reset a single time-series boundary's values by location.
+
+        Location-based counterpart to
+        :meth:`_TimeSeriesBoundary.reset_values`: finds the boundary at
+        the given river/reach/station and resets its values in place,
+        without changing its window or interval. Works on any of
+        :class:`FlowHydrograph`, :class:`LateralInflow`, or
+        :class:`StageHydrograph` — unlike :meth:`set_flow_hydrograph_at` /
+        :meth:`set_lateral_inflow_at`, which each only accept one specific
+        boundary type.
+
+        Parameters
+        ----------
+        data:
+            New values (see :meth:`_TimeSeriesBoundary.reset_values`): a
+            scalar, an exact-length sequence, or a
+            ``{elapsed_minutes: value}`` step dict.
+        q_min:
+            New ``QMin`` value. Always applied, overwriting any previously
+            set value. Has no effect if the boundary at this location is a
+            :class:`StageHydrograph` (no such field).
+        q_mult:
+            New ``QMult`` value. Always applied, overwriting any previously
+            set value. Has no effect if the boundary at this location is a
+            :class:`StageHydrograph` (no such field).
+        occurrence:
+            Zero-based position among boundaries sharing this river/reach/
+            station, in file order. Use :meth:`boundaries_at` to see all
+            matches when more than one boundary shares a location.
+
+        Raises
+        ------
+        KeyError
+            No :class:`FlowHydrograph`, :class:`LateralInflow`, or
+            :class:`StageHydrograph` boundary is found at this location.
+        IndexError
+            *occurrence* is out of range for the number of matches found.
+        ValueError
+            *data* is invalid for the found boundary (see
+            :meth:`_TimeSeriesBoundary.reset_values`).
+        """
+        b = self._find_boundary(river, reach, rs, occurrence)
+        if not isinstance(b, (FlowHydrograph, LateralInflow, StageHydrograph)):
+            raise KeyError(
+                f"No FlowHydrograph, LateralInflow, or StageHydrograph at "
+                f"{river!r}, {reach!r}, {rs!r}"
+            )
+        b.reset_values(data, q_min=q_min, q_mult=q_mult)
         self._modified = True
 
     def set_gate_opening_at(

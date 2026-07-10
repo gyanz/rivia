@@ -2014,3 +2014,183 @@ class TestResizeAll:
         assert ed.stage_hydrographs[0] is sh
         assert sh.values == pytest.approx([10.0, 20.0])
         assert ed.is_modified is False
+
+
+class TestResetAllValues:
+    def test_default_boundary_types_covers_flow_and_stage(self):
+        fh = FlowHydrograph(
+            river="R", reach="Rc", river_station="1", values=[1.0, 2.0, 3.0]
+        )
+        li = LateralInflow(
+            river="R", reach="Rc", river_station="2", values=[4.0, 5.0]
+        )
+        sh = StageHydrograph(
+            river="R", reach="Rc", river_station="3", values=[9.0]
+        )
+        ed = _bare_ed([fh, li, sh])
+
+        ed.reset_all_values(0.0)
+
+        assert ed.flow_hydrographs[0].values == pytest.approx([0.0, 0.0, 0.0])
+        assert ed.lateral_inflows[0].values == pytest.approx([0.0, 0.0])
+        assert ed.stage_hydrographs[0].values == pytest.approx([0.0])
+        assert ed.is_modified is True
+
+    def test_boundary_types_filters_to_flow_only(self):
+        fh = FlowHydrograph(
+            river="R", reach="Rc", river_station="1", values=[1.0, 2.0]
+        )
+        sh = StageHydrograph(river="R", reach="Rc", river_station="2", values=[9.0])
+        ed = _bare_ed([fh, sh])
+
+        ed.reset_all_values(
+            5.0, boundary_types=(FlowHydrograph, LateralInflow)
+        )
+
+        assert ed.flow_hydrographs[0].values == pytest.approx([5.0, 5.0])
+        assert ed.stage_hydrographs[0] is sh
+        assert sh.values == pytest.approx([9.0])
+
+    def test_per_boundary_length_and_interval_used_independently(self):
+        # Different lengths/intervals -- a scalar and a step dict must each
+        # resolve per-boundary, not against a single shared count/interval.
+        fh = FlowHydrograph(
+            river="R", reach="Rc", river_station="1", interval="1HOUR",
+            values=[1.0, 2.0, 3.0],
+        )
+        sh = StageHydrograph(
+            river="R", reach="Rc", river_station="2", interval="15MIN",
+            values=[0.0] * 9,
+        )
+        ed = _bare_ed([fh, sh])
+
+        ed.reset_all_values({0: 20, 60: 50})
+
+        # fh: 1HOUR interval -> step at index 1 already.
+        assert ed.flow_hydrographs[0].values == pytest.approx([20, 50, 50])
+        # sh: 15MIN interval -> step holds for 4 timesteps.
+        assert ed.stage_hydrographs[0].values == pytest.approx(
+            [20, 20, 20, 20, 50, 50, 50, 50, 50]
+        )
+
+    def test_q_min_q_mult_applied_to_flow_types_only(self):
+        fh = FlowHydrograph(
+            river="R", reach="Rc", river_station="1", values=[1.0],
+            q_min=5.0, q_mult=2.0,
+        )
+        sh = StageHydrograph(river="R", reach="Rc", river_station="2", values=[9.0])
+        ed = _bare_ed([fh, sh])
+
+        ed.reset_all_values(1.0, q_min=3.0, q_mult=1.5)
+
+        assert ed.flow_hydrographs[0].q_min == 3.0
+        assert ed.flow_hydrographs[0].q_mult == 1.5
+        assert not hasattr(ed.stage_hydrographs[0], "q_min")
+
+    def test_no_matching_boundaries_is_no_op(self):
+        sh = StageHydrograph(river="R", reach="Rc", river_station="1", values=[9.0])
+        ed = _bare_ed([sh])
+        ed.reset_all_values(1.0, boundary_types=(FlowHydrograph, LateralInflow))
+        assert ed.stage_hydrographs[0].values == pytest.approx([9.0])
+        assert ed.is_modified is False
+
+    def test_atomic_failure_leaves_all_boundaries_unchanged(self):
+        fh = FlowHydrograph(
+            river="R", reach="Rc", river_station="1", values=[1.0, 2.0, 3.0]
+        )
+        sh = StageHydrograph(river="R", reach="Rc", river_station="2", values=[])
+        ed = _bare_ed([fh, sh])
+
+        with pytest.raises(ValueError):
+            ed.reset_all_values(9.0)
+
+        # fh's copy would have succeeded on its own -- must not be
+        # committed since sh (empty values) fails.
+        assert ed.flow_hydrographs[0] is fh
+        assert fh.values == pytest.approx([1.0, 2.0, 3.0])
+        assert ed.stage_hydrographs[0] is sh
+        assert sh.values == []
+        assert ed.is_modified is False
+
+
+class TestResetValuesAt:
+    def test_resets_flow_hydrograph_by_location(self):
+        fh = FlowHydrograph(
+            river="River", reach="Reach", river_station="100",
+            values=[1.0, 2.0],
+        )
+        ed = _bare_ed([fh])
+        ed.reset_values_at("River", "Reach", "100", 9.0)
+        assert fh.values == pytest.approx([9.0, 9.0])
+        assert ed.is_modified is True
+
+    def test_resets_lateral_inflow_by_location(self):
+        li = LateralInflow(
+            river="River", reach="Reach", river_station="100",
+            values=[1.0, 2.0],
+        )
+        ed = _bare_ed([li])
+        ed.reset_values_at("River", "Reach", "100", 9.0)
+        assert li.values == pytest.approx([9.0, 9.0])
+
+    def test_resets_stage_hydrograph_by_location(self):
+        sh = StageHydrograph(
+            river="River", reach="Reach", river_station="100",
+            values=[1.0, 2.0],
+        )
+        ed = _bare_ed([sh])
+        ed.reset_values_at("River", "Reach", "100", 9.0)
+        assert sh.values == pytest.approx([9.0, 9.0])
+
+    def test_mutates_in_place_not_a_copy(self):
+        fh = FlowHydrograph(
+            river="River", reach="Reach", river_station="100",
+            values=[1.0, 2.0],
+        )
+        ed = _bare_ed([fh])
+        ed.reset_values_at("River", "Reach", "100", 9.0)
+        assert ed.boundaries[0] is fh
+
+    def test_step_dict_and_q_min_q_mult(self):
+        fh = FlowHydrograph(
+            river="River", reach="Reach", river_station="100",
+            interval="15MIN", values=[0.0] * 9,
+        )
+        ed = _bare_ed([fh])
+        ed.reset_values_at(
+            "River", "Reach", "100", {0: 20, 60: 50}, q_min=3.0, q_mult=1.5
+        )
+        assert fh.values == pytest.approx([20, 20, 20, 20, 50, 50, 50, 50, 50])
+        assert fh.q_min == 3.0
+        assert fh.q_mult == 1.5
+
+    def test_no_match_raises_key_error(self):
+        ed = _bare_ed([])
+        with pytest.raises(KeyError):
+            ed.reset_values_at("River", "Reach", "100", 9.0)
+
+    def test_wrong_type_raises_key_error(self):
+        gb = GateBoundary(river="River", reach="Reach", river_station="100")
+        ed = _bare_ed([gb])
+        with pytest.raises(KeyError):
+            ed.reset_values_at("River", "Reach", "100", 9.0)
+
+    def test_occurrence_disambiguates_duplicates(self):
+        fh1 = FlowHydrograph(
+            river="River", reach="Reach", river_station="100", values=[1.0],
+        )
+        fh2 = FlowHydrograph(
+            river="River", reach="Reach", river_station="100", values=[2.0],
+        )
+        ed = _bare_ed([fh1, fh2])
+        ed.reset_values_at("River", "Reach", "100", 9.0, occurrence=1)
+        assert fh1.values == pytest.approx([1.0])
+        assert fh2.values == pytest.approx([9.0])
+
+    def test_occurrence_out_of_range_raises_index_error(self):
+        fh = FlowHydrograph(
+            river="River", reach="Reach", river_station="100", values=[1.0],
+        )
+        ed = _bare_ed([fh])
+        with pytest.raises(IndexError):
+            ed.reset_values_at("River", "Reach", "100", 9.0, occurrence=1)
