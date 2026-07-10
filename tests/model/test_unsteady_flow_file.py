@@ -1760,7 +1760,7 @@ class TestStageHydrographsProperty:
         assert ed.stage_hydrographs == [sh1, sh2]
 
 
-class TestResetAllFlows:
+class TestRedefineAllFlowTimeSeries:
     def test_resets_flow_hydrographs_and_lateral_inflows(self):
         fh = FlowHydrograph(
             river="R", reach="Rc", river_station="1", interval="1HOUR",
@@ -1776,7 +1776,7 @@ class TestResetAllFlows:
         )
         ed = _bare_ed([fh, li, sh])
 
-        ed.reset_all_flows(
+        ed.redefine_all_flow_time_series(
             (dt.datetime(2021, 1, 1), dt.datetime(2021, 1, 1, 2)), "1HOUR", 5.0
         )
 
@@ -1792,7 +1792,7 @@ class TestResetAllFlows:
             values=[1.0],
         )
         ed = _bare_ed([fh])
-        ed.reset_all_flows(
+        ed.redefine_all_flow_time_series(
             (dt.datetime(2021, 1, 1), dt.datetime(2021, 1, 1, 1)), "1HOUR"
         )
         assert ed.flow_hydrographs[0].values == pytest.approx([0.0, 0.0])
@@ -1803,7 +1803,7 @@ class TestResetAllFlows:
             values=[1.0], q_min=5.0, q_mult=2.0,
         )
         ed = _bare_ed([fh])
-        ed.reset_all_flows(
+        ed.redefine_all_flow_time_series(
             (dt.datetime(2021, 1, 1), dt.datetime(2021, 1, 1, 1)), "1HOUR", 1.0
         )
         assert ed.flow_hydrographs[0].q_min == 0.0
@@ -1815,7 +1815,7 @@ class TestResetAllFlows:
             values=[1.0],
         )
         ed = _bare_ed([fh])
-        ed.reset_all_flows(
+        ed.redefine_all_flow_time_series(
             (dt.datetime(2021, 1, 1), dt.datetime(2021, 1, 1, 1)),
             "1HOUR",
             1.0,
@@ -1831,7 +1831,7 @@ class TestResetAllFlows:
             values=[9.0],
         )
         ed = _bare_ed([sh])
-        ed.reset_all_flows(
+        ed.redefine_all_flow_time_series(
             (dt.datetime(2021, 1, 1), dt.datetime(2021, 1, 1, 1)), "1HOUR", 1.0
         )
         assert ed.stage_hydrographs[0].values == pytest.approx([9.0])
@@ -1848,7 +1848,7 @@ class TestResetAllFlows:
         )
         ed = _bare_ed([fh, li])
         with pytest.raises(ValueError):
-            ed.reset_all_flows(
+            ed.redefine_all_flow_time_series(
                 (dt.datetime(2021, 1, 1), dt.datetime(2021, 1, 1, 7)), "7HOUR", 5.0
             )
         # 7HOUR is not a HEC-RAS dropdown interval -- nothing committed.
@@ -1859,7 +1859,80 @@ class TestResetAllFlows:
         assert ed.is_modified is False
 
 
-class TestResizeAllStages:
+class TestResizeAllFlowTimeSeries:
+    def test_resizes_flow_hydrographs_and_lateral_inflows(self):
+        fh = FlowHydrograph(
+            river="R", reach="Rc", river_station="1", interval="1HOUR",
+            values=[10.0, 20.0], use_fixed_start=True, fixed_start="01JAN2021,0000",
+        )
+        li = LateralInflow(
+            river="R", reach="Rc", river_station="2", interval="1HOUR",
+            values=[100.0, 200.0], use_fixed_start=True, fixed_start="01JAN2021,0000",
+        )
+        ed = _bare_ed([fh, li])
+
+        ed.resize_all_flow_time_series((None, dt.datetime(2021, 1, 1, 2)))
+
+        assert ed.flow_hydrographs[0].values == pytest.approx([10.0, 20.0, 20.0])
+        assert ed.lateral_inflows[0].values == pytest.approx([100.0, 200.0, 200.0])
+        assert ed.is_modified is True
+
+    def test_stage_boundaries_untouched(self):
+        fh = FlowHydrograph(
+            river="R", reach="Rc", river_station="1", interval="1HOUR",
+            values=[1.0, 2.0], use_fixed_start=True, fixed_start="01JAN2021,0000",
+        )
+        sh = StageHydrograph(
+            river="R", reach="Rc", river_station="2", interval="1HOUR",
+            values=[10.0, 20.0],
+        )
+        ed = _bare_ed([fh, sh])
+        ed.resize_all_flow_time_series((None, dt.datetime(2021, 1, 1, 2)))
+        assert ed.stage_hydrographs[0] is sh
+        assert sh.values == pytest.approx([10.0, 20.0])
+
+    def test_no_flow_boundaries_is_no_op(self):
+        sh = StageHydrograph(
+            river="R", reach="Rc", river_station="1", interval="1HOUR",
+            values=[1.0],
+        )
+        ed = _bare_ed([sh])
+        ed.resize_all_flow_time_series((None, dt.datetime(2021, 1, 1, 2)))
+        assert ed.is_modified is False
+
+    def test_use_fixed_start_false_requires_start_datetime(self):
+        fh = FlowHydrograph(
+            river="R", reach="Rc", river_station="1", interval="1HOUR",
+            values=[10.0, 20.0], use_fixed_start=False,
+        )
+        ed = _bare_ed([fh])
+        with pytest.raises(ValueError):
+            ed.resize_all_flow_time_series((None, dt.datetime(2021, 1, 1, 2)))
+
+    def test_atomic_failure_leaves_all_flow_boundaries_unchanged(self):
+        # fh is on the hour; li is offset 30 minutes -- a new_end of
+        # 01:00 aligns with fh's grid but not li's.
+        fh = FlowHydrograph(
+            river="R", reach="Rc", river_station="1", interval="1HOUR",
+            values=[10.0, 20.0], use_fixed_start=True, fixed_start="01JAN2021,0000",
+        )
+        li = LateralInflow(
+            river="R", reach="Rc", river_station="2", interval="1HOUR",
+            values=[100.0, 200.0], use_fixed_start=True, fixed_start="01JAN2021,0030",
+        )
+        ed = _bare_ed([fh, li])
+
+        with pytest.raises(ValueError):
+            ed.resize_all_flow_time_series((None, dt.datetime(2021, 1, 1, 2)))
+
+        assert ed.flow_hydrographs[0] is fh
+        assert fh.values == pytest.approx([10.0, 20.0])
+        assert ed.lateral_inflows[0] is li
+        assert li.values == pytest.approx([100.0, 200.0])
+        assert ed.is_modified is False
+
+
+class TestResizeAllStageTimeSeries:
     def test_resizes_all_stage_boundaries(self):
         sh1 = StageHydrograph(
             river="R", reach="Rc", river_station="1", interval="1HOUR",
@@ -1871,7 +1944,7 @@ class TestResizeAllStages:
         )
         ed = _bare_ed([sh1, sh2])
 
-        ed.resize_all_stages((None, dt.datetime(2021, 1, 1, 2)))
+        ed.resize_all_stage_time_series((None, dt.datetime(2021, 1, 1, 2)))
 
         assert ed.stage_hydrographs[0].values == pytest.approx([10.0, 20.0, 20.0])
         assert ed.stage_hydrographs[1].values == pytest.approx([100.0, 200.0, 200.0])
@@ -1887,7 +1960,7 @@ class TestResizeAllStages:
             values=[10.0, 20.0], use_fixed_start=True, fixed_start="01JAN2021,0000",
         )
         ed = _bare_ed([fh, sh])
-        ed.resize_all_stages((None, dt.datetime(2021, 1, 1, 2)))
+        ed.resize_all_stage_time_series((None, dt.datetime(2021, 1, 1, 2)))
         assert ed.flow_hydrographs[0] is fh
         assert fh.values == pytest.approx([1.0, 2.0])
 
@@ -1897,7 +1970,7 @@ class TestResizeAllStages:
             values=[1.0],
         )
         ed = _bare_ed([fh])
-        ed.resize_all_stages((None, dt.datetime(2021, 1, 1, 2)))
+        ed.resize_all_stage_time_series((None, dt.datetime(2021, 1, 1, 2)))
         assert ed.is_modified is False
 
     def test_use_fixed_start_false_requires_start_datetime(self):
@@ -1907,7 +1980,7 @@ class TestResizeAllStages:
         )
         ed = _bare_ed([sh])
         with pytest.raises(ValueError):
-            ed.resize_all_stages((None, dt.datetime(2021, 1, 1, 2)))
+            ed.resize_all_stage_time_series((None, dt.datetime(2021, 1, 1, 2)))
 
     def test_mixed_fixed_and_non_fixed_boundaries(self):
         sh_fixed = StageHydrograph(
@@ -1920,7 +1993,7 @@ class TestResizeAllStages:
         )
         ed = _bare_ed([sh_fixed, sh_non_fixed])
 
-        ed.resize_all_stages(
+        ed.resize_all_stage_time_series(
             (None, dt.datetime(2021, 1, 1, 2)),
             start_datetime=dt.datetime(2021, 1, 1),
         )
@@ -1942,7 +2015,7 @@ class TestResizeAllStages:
         ed = _bare_ed([sh_a, sh_b])
 
         with pytest.raises(ValueError):
-            ed.resize_all_stages((None, dt.datetime(2021, 1, 1, 2)))
+            ed.resize_all_stage_time_series((None, dt.datetime(2021, 1, 1, 2)))
 
         # sh_a's copy would have succeeded on its own -- must not be
         # committed since sh_b's copy failed.
@@ -1953,7 +2026,7 @@ class TestResizeAllStages:
         assert ed.is_modified is False
 
 
-class TestResizeAll:
+class TestResizeAllTimeSeriesByType:
     def test_default_boundary_types_covers_flow_and_stage(self):
         fh = FlowHydrograph(
             river="R", reach="Rc", river_station="1", interval="1HOUR",
@@ -1969,7 +2042,7 @@ class TestResizeAll:
         )
         ed = _bare_ed([fh, li, sh])
 
-        ed.resize_all((None, dt.datetime(2021, 1, 1, 2)))
+        ed.resize_all_time_series_by_type((None, dt.datetime(2021, 1, 1, 2)))
 
         assert ed.flow_hydrographs[0].values == pytest.approx([1.0, 2.0, 2.0])
         assert ed.lateral_inflows[0].values == pytest.approx([3.0, 4.0, 4.0])
@@ -1986,7 +2059,7 @@ class TestResizeAll:
         )
         ed = _bare_ed([fh, sh])
 
-        ed.resize_all(
+        ed.resize_all_time_series_by_type(
             (None, dt.datetime(2021, 1, 1, 2)),
             boundary_types=(FlowHydrograph, LateralInflow),
         )
@@ -2007,7 +2080,7 @@ class TestResizeAll:
         ed = _bare_ed([fh, sh])
 
         with pytest.raises(ValueError):
-            ed.resize_all((None, dt.datetime(2021, 1, 1, 2)))
+            ed.resize_all_time_series_by_type((None, dt.datetime(2021, 1, 1, 2)))
 
         assert ed.flow_hydrographs[0] is fh
         assert fh.values == pytest.approx([1.0, 2.0])
@@ -2016,7 +2089,7 @@ class TestResizeAll:
         assert ed.is_modified is False
 
 
-class TestResetAllValues:
+class TestResetAllValuesByType:
     def test_default_boundary_types_covers_flow_only(self):
         fh = FlowHydrograph(
             river="R", reach="Rc", river_station="1", values=[1.0, 2.0, 3.0]
@@ -2029,7 +2102,7 @@ class TestResetAllValues:
         )
         ed = _bare_ed([fh, li, sh])
 
-        ed.reset_all_values(0.0)
+        ed.reset_all_values_by_type(0.0)
 
         assert ed.flow_hydrographs[0].values == pytest.approx([0.0, 0.0, 0.0])
         assert ed.lateral_inflows[0].values == pytest.approx([0.0, 0.0])
@@ -2045,7 +2118,7 @@ class TestResetAllValues:
         sh = StageHydrograph(river="R", reach="Rc", river_station="2", values=[9.0])
         ed = _bare_ed([fh, sh])
 
-        ed.reset_all_values(
+        ed.reset_all_values_by_type(
             5.0, boundary_types=(FlowHydrograph, LateralInflow, StageHydrograph)
         )
 
@@ -2065,7 +2138,7 @@ class TestResetAllValues:
         )
         ed = _bare_ed([fh, sh])
 
-        ed.reset_all_values(
+        ed.reset_all_values_by_type(
             {0: 20, 60: 50},
             boundary_types=(FlowHydrograph, LateralInflow, StageHydrograph),
         )
@@ -2085,7 +2158,7 @@ class TestResetAllValues:
         sh = StageHydrograph(river="R", reach="Rc", river_station="2", values=[9.0])
         ed = _bare_ed([fh, sh])
 
-        ed.reset_all_values(
+        ed.reset_all_values_by_type(
             1.0,
             q_min=3.0,
             q_mult=1.5,
@@ -2099,7 +2172,7 @@ class TestResetAllValues:
     def test_no_matching_boundaries_is_no_op(self):
         sh = StageHydrograph(river="R", reach="Rc", river_station="1", values=[9.0])
         ed = _bare_ed([sh])
-        ed.reset_all_values(1.0)
+        ed.reset_all_values_by_type(1.0)
         assert ed.stage_hydrographs[0].values == pytest.approx([9.0])
         assert ed.is_modified is False
 
@@ -2111,7 +2184,7 @@ class TestResetAllValues:
         ed = _bare_ed([fh, sh])
 
         with pytest.raises(ValueError):
-            ed.reset_all_values(
+            ed.reset_all_values_by_type(
                 9.0, boundary_types=(FlowHydrograph, LateralInflow, StageHydrograph)
             )
 

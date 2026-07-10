@@ -1817,7 +1817,7 @@ class UnsteadyFlow:
         if updated:
             self._modified = True
 
-    def reset_all_flows(
+    def redefine_all_flow_time_series(
         self,
         window: tuple[dt.datetime, dt.datetime],
         interval: str | float | int | dt.timedelta,
@@ -1826,7 +1826,7 @@ class UnsteadyFlow:
         q_min: float = 0.0,
         q_mult: float = 1.0,
     ) -> None:
-        """Reset every flow-type boundary to a constant value over a new window.
+        """Redefine every flow-type boundary to a constant value over a new window.
 
         Applies :meth:`FlowHydrograph.set_time_series_window` /
         :meth:`LateralInflow.set_time_series_window` with a scalar *value*
@@ -1834,11 +1834,12 @@ class UnsteadyFlow:
         boundary in the file. Useful when adapting an existing unsteady
         flow file to a new simulation run that doesn't yet have real flow
         data for its period: rather than trying to preserve the old
-        hydrograph shapes, every flow-type boundary is reset to a flat
+        hydrograph shapes, every flow-type boundary is redefined to a flat
         baseline (e.g. ``0``) spanning the new window, ready for the
         caller to overwrite individually (e.g. via
         :meth:`set_flow_hydrograph_at` / :meth:`set_lateral_inflow_at`) as
-        real data becomes available.
+        real data becomes available. See :meth:`resize_all_flow_time_series`
+        for the alternative that preserves existing data instead.
 
         Parameters
         ----------
@@ -1851,12 +1852,12 @@ class UnsteadyFlow:
             :class:`datetime.timedelta`, or a bare ``int``/``float``
             interpreted as seconds.
         value:
-            Constant value every flow-type boundary is reset to
+            Constant value every flow-type boundary is redefined to
             (default ``0.0``).
         q_min:
-            ``QMin`` applied to every boundary reset (default ``0.0``).
+            ``QMin`` applied to every boundary redefined (default ``0.0``).
         q_mult:
-            ``QMult`` applied to every boundary reset (default ``1.0``).
+            ``QMult`` applied to every boundary redefined (default ``1.0``).
 
         Raises
         ------
@@ -1880,7 +1881,61 @@ class UnsteadyFlow:
             ),
         )
 
-    def resize_all_stages(
+    def resize_all_flow_time_series(
+        self,
+        window: tuple[dt.datetime | None, dt.datetime | None],
+        *,
+        start_datetime: dt.datetime | None = None,
+    ) -> None:
+        """Clip/extend every flow-type boundary to a new window.
+
+        Applies :meth:`FlowHydrograph.resize_window` /
+        :meth:`LateralInflow.resize_window` to every
+        :class:`FlowHydrograph` and :class:`LateralInflow` boundary in the
+        file, in place. Companion to :meth:`redefine_all_flow_time_series`:
+        use this one instead when real flow data already exists and should
+        be clipped/extended rather than reset to a constant — existing
+        data inside the new window is kept, data outside it is clipped,
+        and new timesteps beyond either end are filled by repeating the
+        boundary's own first/last value.
+
+        Parameters
+        ----------
+        window:
+            ``(new_start, new_end)``, applied identically to every
+            flow-type boundary. Either side may be ``None`` to leave that
+            side untouched.
+        start_datetime:
+            Current start, needed only for boundaries with
+            ``use_fixed_start=False`` (see
+            :meth:`_TimeSeriesBoundary.resize_window`). Boundaries with
+            ``use_fixed_start=True`` ignore this and use their own
+            ``fixed_start`` instead, so a single call can mix both kinds.
+
+        Raises
+        ------
+        ValueError
+            Any boundary's window/alignment is invalid, or *start_datetime*
+            is required but missing, for any boundary (see
+            :meth:`_TimeSeriesBoundary.resize_window`). No boundary is
+            changed if any of them would fail.
+        NotImplementedError
+            Any boundary has ``use_dss=True``.
+
+        Notes
+        -----
+        All-or-nothing: either every flow-type boundary is updated, or (on
+        error) none of them are. On success, updated boundaries are
+        replaced by new objects (see :meth:`_apply_atomically`) — re-fetch
+        via :attr:`flow_hydrographs` / :attr:`lateral_inflows` afterward
+        rather than relying on references held from before the call.
+        """
+        self._apply_atomically(
+            (FlowHydrograph, LateralInflow),
+            lambda bc: bc.resize_window(window, start_datetime=start_datetime),
+        )
+
+    def resize_all_stage_time_series(
         self,
         window: tuple[dt.datetime | None, dt.datetime | None],
         *,
@@ -1891,11 +1946,11 @@ class UnsteadyFlow:
         Applies :meth:`StageHydrograph.resize_window` to every stage
         boundary in the file, in place. Appropriate for stage/tailwater
         boundaries, where resetting to a constant (as
-        :meth:`reset_all_flows` does for flow-type boundaries) usually
-        isn't physically meaningful: existing data inside the new window
-        is kept, data outside it is clipped, and new timesteps beyond
-        either end are filled by repeating the boundary's own first/last
-        value.
+        :meth:`redefine_all_flow_time_series` does for flow-type
+        boundaries) usually isn't physically meaningful: existing data
+        inside the new window is kept, data outside it is clipped, and new
+        timesteps beyond either end are filled by repeating the boundary's
+        own first/last value.
 
         Parameters
         ----------
@@ -1933,7 +1988,7 @@ class UnsteadyFlow:
             lambda bc: bc.resize_window(window, start_datetime=start_datetime),
         )
 
-    def resize_all(
+    def resize_all_time_series_by_type(
         self,
         window: tuple[dt.datetime | None, dt.datetime | None],
         *,
@@ -1946,14 +2001,16 @@ class UnsteadyFlow:
     ) -> None:
         """Clip/extend every matching time-series boundary to a new window.
 
-        Generic counterpart to :meth:`resize_all_stages`: applies
+        Generic counterpart to :meth:`resize_all_flow_time_series` /
+        :meth:`resize_all_stage_time_series`: applies
         :meth:`_TimeSeriesBoundary.resize_window` to every boundary whose
         type is in *boundary_types* (default: all three time-series
         boundary types). Useful when real flow data already exists and
         should be clipped/extended rather than reset to a constant (see
-        :meth:`reset_all_flows`) — pass
+        :meth:`redefine_all_flow_time_series`) — pass
         ``boundary_types=(FlowHydrograph, LateralInflow)`` to resize only
-        flow-type boundaries, for example.
+        flow-type boundaries, for example (equivalent to calling
+        :meth:`resize_all_flow_time_series` directly).
 
         Parameters
         ----------
@@ -1993,7 +2050,7 @@ class UnsteadyFlow:
             lambda bc: bc.resize_window(window, start_datetime=start_datetime),
         )
 
-    def reset_all_values(
+    def reset_all_values_by_type(
         self,
         data: float | int | Sequence[float | int] | dict[float, float],
         *,
@@ -2007,10 +2064,13 @@ class UnsteadyFlow:
         """Reset every matching boundary's values, keeping window/interval fixed.
 
         Bulk counterpart to :meth:`_TimeSeriesBoundary.reset_values`, the
-        same way :meth:`resize_all` is the bulk counterpart to
-        :meth:`_TimeSeriesBoundary.resize_window`: unlike
-        :meth:`reset_all_flows` / :meth:`resize_all_stages` / :meth:`resize_all`,
-        this never changes any boundary's window or interval — only
+        same way :meth:`resize_all_time_series_by_type` is the bulk
+        counterpart to :meth:`_TimeSeriesBoundary.resize_window`: unlike
+        :meth:`redefine_all_flow_time_series` /
+        :meth:`resize_all_flow_time_series` /
+        :meth:`resize_all_stage_time_series` /
+        :meth:`resize_all_time_series_by_type`, this never changes any
+        boundary's window or interval — only
         :attr:`~_TimeSeriesBoundary.values` (and, where present,
         ``q_min``/``q_mult``) are replaced, each using that boundary's own
         existing number of timesteps.
