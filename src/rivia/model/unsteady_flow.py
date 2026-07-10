@@ -1020,6 +1020,12 @@ BoundaryType = (
     | GateBoundary
 )
 
+# Type alias for a class (not an instance) accepted by the boundary_types=
+# parameter of UnsteadyFlow's bulk time-series methods.
+_TimeSeriesBoundaryClass = (
+    type[FlowHydrograph] | type[LateralInflow] | type[StageHydrograph]
+)
+
 
 # ---------------------------------------------------------------------------
 # Boundary parser (shared by both classes)
@@ -1775,7 +1781,7 @@ class UnsteadyFlow:
 
     def _apply_atomically(
         self,
-        boundary_types: type | tuple[type, ...],
+        boundary_types: _TimeSeriesBoundaryClass | tuple[_TimeSeriesBoundaryClass, ...],
         apply_fn: Callable[[BoundaryType], None],
     ) -> None:
         """Apply *apply_fn* to every boundary of *boundary_types*, all-or-nothing.
@@ -1932,7 +1938,7 @@ class UnsteadyFlow:
         window: tuple[dt.datetime | None, dt.datetime | None],
         *,
         start_datetime: dt.datetime | None = None,
-        boundary_types: tuple[type, ...] = (
+        boundary_types: tuple[_TimeSeriesBoundaryClass, ...] = (
             FlowHydrograph,
             LateralInflow,
             StageHydrograph,
@@ -1993,10 +1999,9 @@ class UnsteadyFlow:
         *,
         q_min: float = 0.0,
         q_mult: float = 1.0,
-        boundary_types: tuple[type, ...] = (
+        boundary_types: tuple[_TimeSeriesBoundaryClass, ...] = (
             FlowHydrograph,
             LateralInflow,
-            StageHydrograph,
         ),
     ) -> None:
         """Reset every matching boundary's values, keeping window/interval fixed.
@@ -2030,9 +2035,12 @@ class UnsteadyFlow:
         q_mult:
             ``QMult`` applied to every boundary reset (default ``1.0``).
         boundary_types:
-            Which boundary classes to include. Defaults to all three
-            time-series boundary types (:class:`FlowHydrograph`,
-            :class:`LateralInflow`, :class:`StageHydrograph`).
+            Which boundary classes to include. Defaults to the two
+            flow-type boundaries (:class:`FlowHydrograph`,
+            :class:`LateralInflow`) — bulk-resetting stage/tailwater
+            boundaries to a shared value is less commonly meaningful.
+            Pass ``boundary_types=(StageHydrograph,)`` (or include it
+            alongside the flow types) to also cover stage boundaries.
 
         Raises
         ------
