@@ -723,6 +723,133 @@ class _TimeSeriesBoundary(_Boundary):
             q_mult=q_mult,
         )
 
+    def resize_window(
+        self,
+        window: tuple[dt.datetime | None, dt.datetime | None],
+        *,
+        start_datetime: dt.datetime | None = None,
+    ) -> None:
+        """Clip and/or extend this boundary's time series to a new ``(start, end)``.
+
+        Unlike :meth:`set_time_series_window`, this does not replace the
+        data — it reshapes the *existing* :attr:`values` to cover a new
+        window: timesteps inside both the old and new window are kept
+        as-is, timesteps dropped from either end are clipped, and timesteps
+        added beyond either end are filled by repeating the existing edge
+        value (:attr:`values`'s first element for the front, last element
+        for the back). :attr:`interval` and (where present) ``q_min``/
+        ``q_mult`` are left unchanged.
+
+        Parameters
+        ----------
+        window:
+            ``(new_start, new_end)``. Either side may be ``None`` to leave
+            that side untouched. Both, when given, must land exactly on the
+            existing interval grid (i.e. be reachable from the current
+            start by a whole number of :attr:`interval` steps).
+        start_datetime:
+            The time series' *current* start — needed only to interpret
+            *window* when :attr:`use_fixed_start` is ``False`` (a non-fixed
+            boundary has no start of its own; it implicitly starts at the
+            plan's simulation start). Ignored (with a warning) when
+            :attr:`use_fixed_start` is ``True``, since :attr:`fixed_start`
+            is authoritative in that case — same convention as
+            :meth:`time_series`.
+
+        Raises
+        ------
+        ValueError
+            *start_datetime* was not provided and :attr:`use_fixed_start`
+            is ``False``; :attr:`values` is empty; the effective new end is
+            before the effective new start; or either window bound is not
+            reachable from the current start by a whole number of
+            :attr:`interval` steps.
+        NotImplementedError
+            :attr:`use_dss` is ``True`` — values live in an external DSS
+            file and there is nothing inline to reshape.
+
+        Examples
+        --------
+        >>> fh.values
+        [10.0, 20.0, 30.0]
+        >>> fh.resize_window((dt.datetime(2020, 12, 31, 23), None))
+        >>> fh.values
+        [10.0, 10.0, 20.0, 30.0]
+        """
+        if self.use_dss:
+            raise NotImplementedError(
+                "values are stored in an external DSS file (use_dss=True); "
+                "resize_window() only supports inline values."
+            )
+        if not self.values:
+            raise ValueError(
+                "Cannot resize an empty time series; there are no edge "
+                "values to clip or extend from."
+            )
+        if self.use_fixed_start:
+            if start_datetime is not None:
+                logger.warning(
+                    "start_datetime is ignored because use_fixed_start is "
+                    "True; using fixed_start=%r instead.",
+                    self.fixed_start,
+                )
+            current_start = parse_hec_datetime(self.fixed_start)
+        else:
+            if start_datetime is None:
+                raise ValueError(
+                    "start_datetime is required when use_fixed_start is False."
+                )
+            current_start = start_datetime
+
+        interval_td = parse_interval(self.interval)
+        n = len(self.values)
+        current_end = current_start + (n - 1) * interval_td
+
+        new_start, new_end = window
+        effective_start = new_start if new_start is not None else current_start
+        effective_end = new_end if new_end is not None else current_end
+        if effective_end < effective_start:
+            raise ValueError(
+                f"effective window end ({effective_end}) is before the "
+                f"effective window start ({effective_start})."
+            )
+        if (effective_start - current_start) % interval_td != dt.timedelta(0):
+            raise ValueError(
+                f"window start {effective_start} is not reachable from the "
+                f"current start {current_start} by a whole number of "
+                f"{self.interval!r} steps."
+            )
+        if (effective_end - current_start) % interval_td != dt.timedelta(0):
+            raise ValueError(
+                f"window end {effective_end} is not reachable from the "
+                f"current start {current_start} by a whole number of "
+                f"{self.interval!r} steps."
+            )
+        i_start = (effective_start - current_start) // interval_td
+        i_end = (effective_end - current_start) // interval_td
+
+        def _value_at(i: int) -> float:
+            if i < 0:
+                return self.values[0]
+            if i > n - 1:
+                return self.values[-1]
+            return self.values[i]
+
+        new_values = [_value_at(i) for i in range(i_start, i_end + 1)]
+
+        # Resolve everything that can still raise before mutating self.
+        resolved_fixed_start = (
+            _format_fixed_start(effective_start)
+            if effective_start != current_start
+            else None
+        )
+
+        # Nothing below this point can raise.
+        self.values = new_values
+        if resolved_fixed_start is not None:
+            self.fixed_start = resolved_fixed_start
+            self.use_fixed_start = True
+
 
 @dataclass
 class FlowHydrograph(_TimeSeriesBoundary):

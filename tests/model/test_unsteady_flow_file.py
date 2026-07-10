@@ -1491,3 +1491,154 @@ class TestSetTimeSeriesWindow:
         )
         assert not hasattr(sh, "q_min")
         assert not hasattr(sh, "q_mult")
+
+
+class TestResizeWindow:
+    def _fh(self, **overrides):
+        defaults = dict(
+            river="R",
+            reach="Rc",
+            river_station="1",
+            interval="1HOUR",
+            values=[10.0, 20.0, 30.0],
+            use_fixed_start=True,
+            fixed_start="01JAN2021,0000",
+        )
+        defaults.update(overrides)
+        return FlowHydrograph(**defaults)
+
+    def test_clip_both_ends(self):
+        fh = self._fh()
+        fh.resize_window((dt.datetime(2021, 1, 1, 1), dt.datetime(2021, 1, 1, 1)))
+        assert fh.values == pytest.approx([20.0])
+        assert fh.fixed_start == "01JAN2021,0100"
+
+    def test_extend_both_ends(self):
+        fh = self._fh()
+        fh.resize_window((dt.datetime(2020, 12, 31, 23), dt.datetime(2021, 1, 1, 3)))
+        assert fh.values == pytest.approx([10.0, 10.0, 20.0, 30.0, 30.0])
+        assert fh.fixed_start == "31DEC2020,2300"
+
+    def test_clip_front_extend_back(self):
+        fh = self._fh()
+        fh.resize_window((dt.datetime(2021, 1, 1, 1), dt.datetime(2021, 1, 1, 4)))
+        assert fh.values == pytest.approx([20.0, 30.0, 30.0, 30.0])
+        assert fh.fixed_start == "01JAN2021,0100"
+
+    def test_extend_front_clip_back(self):
+        fh = self._fh()
+        fh.resize_window((dt.datetime(2020, 12, 31, 23), dt.datetime(2021, 1, 1, 1)))
+        assert fh.values == pytest.approx([10.0, 10.0, 20.0])
+        assert fh.fixed_start == "31DEC2020,2300"
+
+    def test_both_none_is_no_op(self):
+        fh = self._fh()
+        fh.resize_window((None, None))
+        assert fh.values == pytest.approx([10.0, 20.0, 30.0])
+        assert fh.fixed_start == "01JAN2021,0000"
+
+    def test_start_none_only_extends_end(self):
+        fh = self._fh()
+        fh.resize_window((None, dt.datetime(2021, 1, 1, 3)))
+        assert fh.values == pytest.approx([10.0, 20.0, 30.0, 30.0])
+        assert fh.fixed_start == "01JAN2021,0000"
+
+    def test_end_none_only_extends_start(self):
+        fh = self._fh()
+        fh.resize_window((dt.datetime(2020, 12, 31, 23), None))
+        assert fh.values == pytest.approx([10.0, 10.0, 20.0, 30.0])
+        assert fh.fixed_start == "31DEC2020,2300"
+
+    def test_total_non_overlap_before(self):
+        fh = self._fh()
+        fh.resize_window((dt.datetime(2020, 12, 31, 21), dt.datetime(2020, 12, 31, 22)))
+        assert fh.values == pytest.approx([10.0, 10.0])
+        assert fh.fixed_start == "31DEC2020,2100"
+
+    def test_total_non_overlap_after(self):
+        fh = self._fh()
+        fh.resize_window((dt.datetime(2021, 1, 1, 5), dt.datetime(2021, 1, 1, 6)))
+        assert fh.values == pytest.approx([30.0, 30.0])
+        assert fh.fixed_start == "01JAN2021,0500"
+
+    def test_empty_values_raises(self):
+        fh = self._fh(values=[])
+        with pytest.raises(ValueError):
+            fh.resize_window((None, dt.datetime(2021, 1, 1, 3)))
+
+    def test_use_dss_raises(self):
+        fh = self._fh(use_dss=True)
+        with pytest.raises(NotImplementedError):
+            fh.resize_window((None, dt.datetime(2021, 1, 1, 3)))
+
+    def test_use_fixed_start_false_requires_start_datetime(self):
+        fh = self._fh(use_fixed_start=False)
+        with pytest.raises(ValueError):
+            fh.resize_window((None, dt.datetime(2021, 1, 1, 3)))
+
+    def test_use_fixed_start_false_with_start_datetime(self):
+        fh = self._fh(use_fixed_start=False)
+        fh.resize_window(
+            (None, dt.datetime(2021, 1, 1, 4)),
+            start_datetime=dt.datetime(2021, 1, 1),
+        )
+        assert fh.values == pytest.approx([10.0, 20.0, 30.0, 30.0, 30.0])
+        # Front unchanged -> stays non-fixed.
+        assert fh.use_fixed_start is False
+
+    def test_non_fixed_boundary_promoted_when_start_changes(self):
+        fh = self._fh(use_fixed_start=False)
+        fh.resize_window(
+            (dt.datetime(2020, 12, 31, 23), None),
+            start_datetime=dt.datetime(2021, 1, 1),
+        )
+        assert fh.use_fixed_start is True
+        assert fh.fixed_start == "31DEC2020,2300"
+
+    def test_misaligned_start_raises(self):
+        fh = self._fh()
+        with pytest.raises(ValueError):
+            fh.resize_window((dt.datetime(2021, 1, 1, 0, 30), None))
+
+    def test_misaligned_end_raises(self):
+        fh = self._fh()
+        with pytest.raises(ValueError):
+            fh.resize_window((None, dt.datetime(2021, 1, 1, 2, 30)))
+
+    def test_end_before_start_raises(self):
+        fh = self._fh()
+        with pytest.raises(ValueError):
+            fh.resize_window((dt.datetime(2021, 1, 1, 2), dt.datetime(2021, 1, 1)))
+
+    def test_interval_q_min_q_mult_unchanged(self):
+        fh = self._fh(q_min=3.0, q_mult=1.5)
+        fh.resize_window((dt.datetime(2020, 12, 31, 23), None))
+        assert fh.interval == "1HOUR"
+        assert fh.q_min == 3.0
+        assert fh.q_mult == 1.5
+
+    def test_lateral_inflow_supports_resize_window(self):
+        li = LateralInflow(
+            river="R",
+            reach="Rc",
+            river_station="1",
+            interval="1HOUR",
+            values=[1.0, 2.0],
+            use_fixed_start=True,
+            fixed_start="01JAN2021,0000",
+        )
+        li.resize_window((None, dt.datetime(2021, 1, 1, 2)))
+        assert li.values == pytest.approx([1.0, 2.0, 2.0])
+
+    def test_stage_hydrograph_supports_resize_window(self):
+        sh = StageHydrograph(
+            river="R",
+            reach="Rc",
+            river_station="1",
+            interval="1HOUR",
+            values=[1.0, 2.0],
+            use_fixed_start=True,
+            fixed_start="01JAN2021,0000",
+        )
+        sh.resize_window((None, dt.datetime(2021, 1, 1, 2)))
+        assert sh.values == pytest.approx([1.0, 2.0, 2.0])
