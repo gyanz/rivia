@@ -1771,17 +1771,31 @@ class TestResizeWindow:
         assert fh.values == pytest.approx([10.0, 10.0, 20.0, 30.0])
         assert fh.fixed_start == "31DEC2020,2300"
 
-    def test_total_non_overlap_before(self):
+    def test_total_non_overlap_before(self, caplog):
         fh = self._fh()
         fh.resize_window((dt.datetime(2020, 12, 31, 21), dt.datetime(2020, 12, 31, 22)))
         assert fh.values == pytest.approx([10.0, 10.0])
         assert fh.fixed_start == "31DEC2020,2100"
+        assert "does not overlap" in caplog.text
 
-    def test_total_non_overlap_after(self):
+    def test_total_non_overlap_after(self, caplog):
         fh = self._fh()
         fh.resize_window((dt.datetime(2021, 1, 1, 5), dt.datetime(2021, 1, 1, 6)))
         assert fh.values == pytest.approx([30.0, 30.0])
         assert fh.fixed_start == "01JAN2021,0500"
+        assert "does not overlap" in caplog.text
+
+    def test_overlap_does_not_warn(self, caplog):
+        fh = self._fh()
+        fh.resize_window((dt.datetime(2021, 1, 1, 1), dt.datetime(2021, 1, 1, 4)))
+        assert "does not overlap" not in caplog.text
+
+    def test_resize_beyond_sanity_limit_raises(self):
+        fh = self._fh()
+        with pytest.raises(ValueError):
+            fh.resize_window(
+                (None, dt.datetime(2021, 1, 1) + dt.timedelta(hours=100_001))
+            )
 
     def test_empty_values_raises(self):
         fh = self._fh(values=[])

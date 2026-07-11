@@ -291,6 +291,13 @@ def _infer_interval(index: pd.DatetimeIndex) -> str:
 _COL_WIDTH = 8
 _COLS_PER_ROW = 10
 
+# Sanity limit on the number of timesteps _TimeSeriesBoundary.resize_window()
+# will produce in one call. Guards against a window/interval combination
+# that implies a runaway allocation (e.g. a units or date-arithmetic bug),
+# not a real HEC-RAS use case -- no legitimate boundary needs this many
+# timesteps in a single series.
+_MAX_RESIZE_TIMESTEPS = 100_000
+
 
 def _fit_width(value: float, width: int = _COL_WIDTH) -> str:
     """Right-justify *value* inside *width* characters.
@@ -980,12 +987,24 @@ class _TimeSeriesBoundary(_Boundary):
         ValueError
             *start_datetime* was not provided and :attr:`use_fixed_start`
             is ``False``; :attr:`values` is empty; the effective new end is
-            before the effective new start; or either window bound is not
+            before the effective new start; either window bound is not
             reachable from the current start by a whole number of
-            :attr:`interval` steps.
+            :attr:`interval` steps; or the new window implies more than
+            :data:`_MAX_RESIZE_TIMESTEPS` timesteps (a sanity limit that
+            guards against a units/date-arithmetic mistake producing a
+            runaway allocation).
         NotImplementedError
             :attr:`use_dss` is ``True`` — values live in an external DSS
             file and there is nothing inline to reshape.
+
+        Notes
+        -----
+        If the new window does not overlap the current one at all, none of
+        the existing data survives — the result is a flat line at whichever
+        edge value is nearest (the first value if the new window is
+        entirely before the old one, the last value if entirely after). A
+        warning is logged in that case, since it silently discards the
+        entire existing shape.
 
         Examples
         --------
@@ -1047,14 +1066,37 @@ class _TimeSeriesBoundary(_Boundary):
         i_start = (effective_start - current_start) // interval_td
         i_end = (effective_end - current_start) // interval_td
 
-        def _value_at(i: int) -> float:
-            if i < 0:
-                return self.values[0]
-            if i > n - 1:
-                return self.values[-1]
-            return self.values[i]
+        n_new = i_end - i_start + 1
+        if n_new > _MAX_RESIZE_TIMESTEPS:
+            raise ValueError(
+                f"resize_window() would produce {n_new} timesteps, "
+                f"exceeding the {_MAX_RESIZE_TIMESTEPS}-timestep sanity "
+                "limit; check window/interval for a units or date mistake."
+            )
 
-        new_values = [_value_at(i) for i in range(i_start, i_end + 1)]
+        if i_end < 0 or i_start > n - 1:
+            logger.warning(
+                "resize_window(%s, %s) does not overlap the current data "
+                "window (%s to %s); the entire result will be a flat line "
+                "at the nearest edge value (%s).",
+                effective_start,
+                effective_end,
+                current_start,
+                current_end,
+                self.values[0] if i_end < 0 else self.values[-1],
+            )
+
+        core_start = max(i_start, 0)
+        core_end = min(i_end, n - 1)
+        if core_end >= core_start:
+            core = self.values[core_start : core_end + 1]
+            front_pad = core_start - i_start
+            back_pad = i_end - core_end
+        elif i_end < 0:
+            core, front_pad, back_pad = [], n_new, 0
+        else:
+            core, front_pad, back_pad = [], 0, n_new
+        new_values = [self.values[0]] * front_pad + core + [self.values[-1]] * back_pad
 
         # Resolve everything that can still raise before mutating self.
         resolved_fixed_start = (
