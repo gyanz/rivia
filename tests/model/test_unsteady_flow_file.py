@@ -563,6 +563,30 @@ class TestEditorSorting:
         result = [(li.reach, float(li.river_station)) for li in ed.lateral_inflows]
         assert result == [("Reach B", 200.0), ("Reach A", 100.0), ("Reach A", 300.0)]
 
+    def test_sort_lateral_inflows_sets_modified(self):
+        li = LateralInflow(river="R", reach="Rc", river_station="2")
+        ed = _bare_ed([li])
+        ed.sort_lateral_inflows(descending=False)
+        assert ed.is_modified is True
+
+    def test_sort_flow_hydrographs_sets_modified(self):
+        fh = FlowHydrograph(river="R", reach="Rc", river_station="2")
+        ed = _bare_ed([fh])
+        ed.sort_flow_hydrographs(descending=False)
+        assert ed.is_modified is True
+
+    def test_sort_gate_boundaries_sets_modified(self):
+        gb = GateBoundary(river="R", reach="Rc", river_station="2")
+        ed = _bare_ed([gb])
+        ed.sort_gate_boundaries(descending=False)
+        assert ed.is_modified is True
+
+    def test_sort_with_no_matching_boundaries_does_not_set_modified(self):
+        fh = FlowHydrograph(river="R", reach="Rc", river_station="2")
+        ed = _bare_ed([fh])
+        ed.sort_lateral_inflows(descending=False)
+        assert ed.is_modified is False
+
 
 # ---------------------------------------------------------------------------
 # UnsteadyFlow — set by index

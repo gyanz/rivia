@@ -490,6 +490,26 @@ class _TimeSeriesBoundary(_Boundary):
     :class:`StageHydrograph`.  :class:`RatingCurve` is *not* a subclass of
     this: it stores a static stage/flow lookup table (``pairs``), not a
     time-indexed signal.
+
+    .. warning::
+        These objects hold no reference back to the :class:`UnsteadyFlow`
+        they came from and have no modification-tracking of their own.
+        Calling :meth:`set_time_series`, :meth:`set_time_series_window`,
+        :meth:`reset_values`, or :meth:`resize_window` directly on a
+        boundary fetched from :attr:`UnsteadyFlow.boundaries` (or the
+        typed :attr:`~UnsteadyFlow.flow_hydrographs` /
+        :attr:`~UnsteadyFlow.lateral_inflows` /
+        :attr:`~UnsteadyFlow.stage_hydrographs` views) does change the
+        object in place, but it does **not** set
+        :attr:`UnsteadyFlow.is_modified` — prefer the ``UnsteadyFlow``-level
+        equivalents (:meth:`UnsteadyFlow.set_flow_hydrograph_at`,
+        :meth:`UnsteadyFlow.reset_values_at`,
+        :meth:`UnsteadyFlow.resize_all_flow_time_series`, etc.), which set
+        it correctly. If you do call these methods directly, remember to
+        call :meth:`UnsteadyFlow.save` yourself regardless of
+        :attr:`~UnsteadyFlow.is_modified` — ``save()`` always writes
+        unconditionally, but any of *your own* code that gates saving on
+        ``is_modified`` will silently miss the change.
     """
 
     interval: str = "1HOUR"
@@ -660,6 +680,9 @@ class _TimeSeriesBoundary(_Boundary):
         ignores inline values entirely, so supplying new inline data means
         the caller wants them used.
 
+        Calling this directly does not set :attr:`UnsteadyFlow.is_modified`
+        — see the class-level warning on :class:`_TimeSeriesBoundary`.
+
         Raises
         ------
         ValueError
@@ -805,6 +828,11 @@ class _TimeSeriesBoundary(_Boundary):
             set value. Has no effect on boundary types without a ``q_mult``
             field (e.g. :class:`StageHydrograph`).
 
+        Notes
+        -----
+        Calling this directly does not set :attr:`UnsteadyFlow.is_modified`
+        — see the class-level warning on :class:`_TimeSeriesBoundary`.
+
         Raises
         ------
         ValueError
@@ -908,6 +936,11 @@ class _TimeSeriesBoundary(_Boundary):
             New ``QMult`` value. Always applied, overwriting any previously
             set value. Has no effect on boundary types without a ``q_mult``
             field (e.g. :class:`StageHydrograph`).
+
+        Notes
+        -----
+        Calling this directly does not set :attr:`UnsteadyFlow.is_modified`
+        — see the class-level warning on :class:`_TimeSeriesBoundary`.
 
         Raises
         ------
@@ -1029,6 +1062,9 @@ class _TimeSeriesBoundary(_Boundary):
         With ``align="cover"``, bounds are snapped onto the grid by
         construction, so the ``"exact"``-only grid-alignment and
         end-before-start :exc:`ValueError` branches above are unreachable.
+
+        Calling this directly does not set :attr:`UnsteadyFlow.is_modified`
+        — see the class-level warning on :class:`_TimeSeriesBoundary`.
 
         Examples
         --------
@@ -1857,6 +1893,8 @@ class UnsteadyFlow:
             )
         for (orig_idx, _), (_, sorted_bc) in zip(targets, sorted_targets):
             self.boundaries[orig_idx] = sorted_bc
+        if targets:
+            self._modified = True
 
     def sort_flow_hydrographs(self, *, descending: bool = True) -> None:
         """Sort :class:`FlowHydrograph` entries by river station.
