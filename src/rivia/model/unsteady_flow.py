@@ -69,6 +69,10 @@ def _parse_window(
 # A bare float/int is broadcast to fill the current time-series length.
 _Values = list[float | int] | float | int
 
+# How a {elapsed_minutes: value} steps dict is expanded into a per-timestep
+# series by _expand_steps().
+FillMethod = Literal["ffill", "bfill", "ffill_bfill", "linear"]
+
 
 def _coerce_values(values: _Values, count: int) -> list[float]:
     """Return *values* as a list of floats of length *count*.
@@ -100,53 +104,150 @@ def _resolve_interval(value: str | float | int | dt.timedelta) -> str:
     return format_interval_strict(value)
 
 
-def _expand_steps(
-    steps: dict[float, float], n_periods: int, interval_minutes: float
+def _hold_forward_values(
+    steps: dict[float, float], breakpoints: list[float], elapsed_times: list[float]
 ) -> list[float]:
-    """Return *n_periods* per-timestep values by holding each step until the next.
+    """Return values holding each key forward until the next key.
 
-    Used by :meth:`_TimeSeriesBoundary.set_time_series_window` to expand a
-    ``{elapsed_minutes: value}`` mapping into a full timestep-by-timestep
-    series: the value at a given timestep is whichever key is the largest
-    one not greater than that timestep's elapsed minutes.
-
-    Parameters
-    ----------
-    steps:
-        Mapping of elapsed minutes since the window start to the value held
-        from that point until the next key. Must contain a ``0`` key.
-    n_periods:
-        Number of evenly spaced timesteps to generate (inclusive of both
-        window endpoints).
-    interval_minutes:
-        Spacing between timesteps, in minutes.
-
-    Raises
-    ------
-    ValueError
-        *steps* is empty, has a negative key, or has no ``0`` key.
+    Shared by the ``"ffill"`` and ``"ffill_bfill"`` branches of
+    :func:`_expand_steps` — they use the same hold-forward walk and differ
+    only in whether a ``0`` key is required beforehand. When *elapsed_times*
+    starts before ``breakpoints[0]``, those leading timesteps are
+    implicitly back-filled with ``steps[breakpoints[0]]``.
     """
-    if not steps:
-        raise ValueError("steps dict must not be empty.")
-    if any(k < 0 for k in steps):
-        raise ValueError("steps dict keys (elapsed minutes) must be non-negative.")
-    if 0 not in steps:
-        raise ValueError(
-            "steps dict must define a value at elapsed minute 0 (the start "
-            "of the window)."
-        )
-    breakpoints = sorted(steps)
     values = []
     current = breakpoints[0]
     bp_iter = iter(breakpoints)
-    next_bp = next(bp_iter)
-    for i in range(n_periods):
-        elapsed = i * interval_minutes
+    next_bp: float | None = next(bp_iter)
+    for elapsed in elapsed_times:
         while next_bp is not None and next_bp <= elapsed:
             current = next_bp
             next_bp = next(bp_iter, None)
         values.append(float(steps[current]))
     return values
+
+
+def _expand_steps(
+    steps: dict[float, float],
+    n_periods: int,
+    interval_minutes: float,
+    fill_method: FillMethod = "ffill",
+) -> list[float]:
+    """Return *n_periods* per-timestep values from a sparse steps mapping.
+
+    Used by :meth:`_TimeSeriesBoundary.set_time_series_window` and
+    :meth:`_TimeSeriesBoundary.reset_values` to expand a
+    ``{elapsed_minutes: value}`` mapping into a full timestep-by-timestep
+    series. *fill_method* controls how timesteps between and outside the
+    given keys are filled:
+
+    * ``"ffill"`` (default) — each timestep takes the value of the largest
+      key not greater than its elapsed time (hold the previous value
+      forward). Requires a key at or before elapsed minute ``0``.
+    * ``"bfill"`` — each timestep takes the value of the smallest key not
+      less than its elapsed time (hold the next value backward). Requires a
+      key at the final timestep's elapsed minute.
+    * ``"ffill_bfill"`` — the same forward-hold behavior as ``"ffill"`` from
+      the first key onward, but does not require a key at or before ``0``:
+      timesteps before the first key are back-filled with the first key's
+      value.
+    * ``"linear"`` — linearly interpolates between consecutive keys using
+      their actual elapsed-minute values (not their position in the
+      mapping); timesteps before the first key or after the last key are
+      held constant at the nearest key's value. Requires at least 2 keys.
+
+    Keys may be negative — representing times before the window start —
+    which can be used to anchor ``"ffill"``/``"ffill_bfill"`` without a
+    literal ``0`` key, or to give ``"linear"`` a slope that already carries
+    into the window. A negative key is logged as a warning since it's an
+    easy typo (e.g. minutes vs. hours) to introduce silently.
+
+    Parameters
+    ----------
+    steps:
+        Mapping of elapsed minutes since the window start to a value.
+        Negative keys are allowed (see above).
+    n_periods:
+        Number of evenly spaced timesteps to generate (inclusive of both
+        window endpoints).
+    interval_minutes:
+        Spacing between timesteps, in minutes.
+    fill_method:
+        How to fill timesteps between and outside the given keys. See above.
+
+    Raises
+    ------
+    ValueError
+        *steps* is empty, is missing a required endpoint key for
+        *fill_method*, or (for ``"linear"``) has fewer than 2 keys.
+    """
+    if not steps:
+        raise ValueError("steps dict must not be empty.")
+
+    breakpoints = sorted(steps)
+    if breakpoints[0] < 0:
+        logger.warning(
+            "steps dict contains negative elapsed-minute keys %r; these "
+            "represent times before the window start and only affect "
+            "extrapolation/interpolation into it.",
+            [k for k in breakpoints if k < 0],
+        )
+    elapsed_times = [i * interval_minutes for i in range(n_periods)]
+
+    if fill_method == "ffill":
+        if breakpoints[0] > 0:
+            raise ValueError(
+                "steps dict must define a value at or before elapsed "
+                "minute 0 (the start of the window) for fill_method='ffill'."
+            )
+        return _hold_forward_values(steps, breakpoints, elapsed_times)
+
+    if fill_method == "ffill_bfill":
+        return _hold_forward_values(steps, breakpoints, elapsed_times)
+
+    if fill_method == "bfill":
+        last_elapsed = elapsed_times[-1] if elapsed_times else 0.0
+        if last_elapsed not in steps:
+            raise ValueError(
+                "steps dict must define a value at the final elapsed "
+                f"minute ({last_elapsed}) for fill_method='bfill'."
+            )
+        rev_breakpoints = list(reversed(breakpoints))
+        values = []
+        current = rev_breakpoints[0]
+        bp_iter = iter(rev_breakpoints)
+        next_bp: float | None = next(bp_iter)
+        for elapsed in reversed(elapsed_times):
+            while next_bp is not None and next_bp >= elapsed:
+                current = next_bp
+                next_bp = next(bp_iter, None)
+            values.append(float(steps[current]))
+        values.reverse()
+        return values
+
+    if fill_method == "linear":
+        if len(breakpoints) < 2:
+            raise ValueError(
+                "steps dict must define at least 2 keys for "
+                "fill_method='linear'."
+            )
+        values = []
+        idx = 0
+        for elapsed in elapsed_times:
+            if elapsed <= breakpoints[0]:
+                values.append(float(steps[breakpoints[0]]))
+                continue
+            if elapsed >= breakpoints[-1]:
+                values.append(float(steps[breakpoints[-1]]))
+                continue
+            while idx < len(breakpoints) - 2 and breakpoints[idx + 1] <= elapsed:
+                idx += 1
+            k0, k1 = breakpoints[idx], breakpoints[idx + 1]
+            v0, v1 = steps[k0], steps[k1]
+            values.append(float(v0 + (v1 - v0) * (elapsed - k0) / (k1 - k0)))
+        return values
+
+    raise ValueError(f"Unknown fill_method: {fill_method!r}")
 
 
 def _format_fixed_start(d: dt.datetime) -> str:
@@ -629,6 +730,7 @@ class _TimeSeriesBoundary(_Boundary):
         interval: str | float | int | dt.timedelta,
         data: float | int | Sequence[float | int] | dict[float, float],
         *,
+        fill_method: FillMethod = "ffill",
         q_min: float | None = None,
         q_mult: float = 1.0,
     ) -> None:
@@ -638,7 +740,8 @@ class _TimeSeriesBoundary(_Boundary):
         fixed start and end time directly, instead of letting the end be
         inferred from the length of *data*. Also accepts a ``dict`` of step
         values keyed by elapsed minutes, for building a step (piecewise
-        constant) hydrograph without precomputing every timestep by hand.
+        constant) or interpolated hydrograph without precomputing every
+        timestep by hand.
 
         Parameters
         ----------
@@ -661,9 +764,29 @@ class _TimeSeriesBoundary(_Boundary):
               match the number of timesteps implied by *window* and
               *interval*.
             * a ``dict[float, float]`` mapping elapsed minutes since *start*
-              to a step value, e.g. ``{0: 20, 60: 50}`` holds ``20`` from
-              the start of the window until minute 60, then ``50`` for the
-              rest of the window. Must contain a ``0`` key.
+              to a step value, e.g. ``{0: 20, 60: 50}``. Expanded into a
+              full timestep series according to *fill_method*. Keys may be
+              negative (times before the window start); a negative key
+              logs a warning since it's an easy typo to introduce silently.
+        fill_method:
+            How a dict *data* is expanded between (and outside) its keys.
+            Ignored unless *data* is a dict. One of:
+
+            * ``"ffill"`` (default) — hold each value forward until the
+              next key, e.g. ``{0: 20, 60: 50}`` holds ``20`` from the
+              start of the window until minute 60, then ``50`` for the
+              rest of the window. Requires a key at or before elapsed
+              minute ``0``.
+            * ``"bfill"`` — hold each value backward from the next key.
+              Requires a key at the window's final elapsed minute.
+            * ``"ffill_bfill"`` — same forward-hold behavior as
+              ``"ffill"``, but without requiring a key at or before ``0``:
+              elapsed time before the first key is back-filled with its
+              value.
+            * ``"linear"`` — linearly interpolate between consecutive keys
+              (by their actual elapsed-minute values); elapsed time before
+              the first key or after the last key is held constant at the
+              nearest key's value. Requires at least 2 keys.
         q_min:
             New ``QMin`` value, or ``None`` (default) to leave ``QMin``
             unspecified (see :meth:`set_time_series`). Always applied,
@@ -681,9 +804,10 @@ class _TimeSeriesBoundary(_Boundary):
             *end* is not after *start*; the window duration is not evenly
             divisible by *interval*; *data* is a sequence whose length
             doesn't match the number of timesteps implied by *window* and
-            *interval*; *data* is a dict that is empty, has a negative key,
-            or has no ``0`` key; or *interval* does not resolve to a
-            HEC-RAS dropdown interval.
+            *interval*; *data* is a dict that is empty, is missing a
+            required endpoint key for *fill_method* (see above), or (for
+            ``fill_method="linear"``) has fewer than 2 keys; or *interval*
+            does not resolve to a HEC-RAS dropdown interval.
 
         Examples
         --------
@@ -712,7 +836,7 @@ class _TimeSeriesBoundary(_Boundary):
 
         if isinstance(data, dict):
             interval_minutes = interval_td.total_seconds() / 60
-            values = _expand_steps(data, n_periods, interval_minutes)
+            values = _expand_steps(data, n_periods, interval_minutes, fill_method)
         elif isinstance(data, (int, float)):
             values = _coerce_values(data, n_periods)
         else:
@@ -736,6 +860,7 @@ class _TimeSeriesBoundary(_Boundary):
         self,
         data: float | int | Sequence[float | int] | dict[float, float],
         *,
+        fill_method: FillMethod = "ffill",
         q_min: float | None = None,
         q_mult: float = 1.0,
     ) -> None:
@@ -757,8 +882,15 @@ class _TimeSeriesBoundary(_Boundary):
               not changing).
             * a ``dict[float, float]`` mapping elapsed minutes since the
               start of the existing window to a step value, e.g.
-              ``{0: 20, 60: 50}`` (same step/hold semantics as
-              :meth:`set_time_series_window`). Must contain a ``0`` key.
+              ``{0: 20, 60: 50}``. Expanded into a full timestep series
+              according to *fill_method* (same semantics, including
+              negative-key support, as :meth:`set_time_series_window`).
+        fill_method:
+            How a dict *data* is expanded between (and outside) its keys.
+            Ignored unless *data* is a dict. See
+            :meth:`set_time_series_window` for the full description of
+            ``"ffill"`` (default), ``"bfill"``, ``"ffill_bfill"``, and
+            ``"linear"``.
         q_min:
             New ``QMin`` value, or ``None`` (default) to leave ``QMin``
             unspecified (see :meth:`set_time_series`). Always applied,
@@ -776,7 +908,9 @@ class _TimeSeriesBoundary(_Boundary):
             :attr:`values` is currently empty (there is no existing window
             length to reset into); *data* is a sequence whose length
             doesn't match the existing number of timesteps; or *data* is a
-            dict that is empty, has a negative key, or has no ``0`` key.
+            dict that is empty, is missing a required endpoint key for
+            *fill_method*, or (for ``fill_method="linear"``) has fewer
+            than 2 keys.
 
         Examples
         --------
@@ -795,7 +929,7 @@ class _TimeSeriesBoundary(_Boundary):
             )
         if isinstance(data, dict):
             interval_minutes = parse_interval(self.interval).total_seconds() / 60
-            values = _expand_steps(data, n, interval_minutes)
+            values = _expand_steps(data, n, interval_minutes, fill_method)
         elif isinstance(data, (int, float)):
             values = _coerce_values(data, n)
         else:
@@ -2084,6 +2218,7 @@ class UnsteadyFlow:
         self,
         data: float | int | Sequence[float | int] | dict[float, float],
         *,
+        fill_method: FillMethod = "ffill",
         q_min: float | None = None,
         q_mult: float = 1.0,
         boundary_types: tuple[_TimeSeriesBoundaryClass, ...] = (
@@ -2120,6 +2255,11 @@ class UnsteadyFlow:
             * a ``dict[float, float]`` mapping elapsed minutes to a step
               value (see :meth:`_TimeSeriesBoundary.reset_values`) — expanded
               independently against each boundary's own interval and length.
+        fill_method:
+            How a dict *data* is expanded between (and outside) its keys.
+            Ignored unless *data* is a dict. See
+            :meth:`_TimeSeriesBoundary.set_time_series_window` for the full
+            description of the available methods.
         q_min:
             ``QMin`` applied to every boundary reset, or ``None`` (default)
             to leave ``QMin`` unspecified (see
@@ -2154,7 +2294,9 @@ class UnsteadyFlow:
         """
         self._apply_atomically(
             boundary_types,
-            lambda bc: bc.reset_values(data, q_min=q_min, q_mult=q_mult),
+            lambda bc: bc.reset_values(
+                data, fill_method=fill_method, q_min=q_min, q_mult=q_mult
+            ),
         )
 
     # ------------------------------------------------------------------
@@ -2304,6 +2446,7 @@ class UnsteadyFlow:
         rs: str,
         data: float | int | Sequence[float | int] | dict[float, float],
         *,
+        fill_method: FillMethod = "ffill",
         q_min: float | None = None,
         q_mult: float = 1.0,
         occurrence: int = 0,
@@ -2325,6 +2468,11 @@ class UnsteadyFlow:
             New values (see :meth:`_TimeSeriesBoundary.reset_values`): a
             scalar, an exact-length sequence, or a
             ``{elapsed_minutes: value}`` step dict.
+        fill_method:
+            How a dict *data* is expanded between (and outside) its keys.
+            Ignored unless *data* is a dict. See
+            :meth:`_TimeSeriesBoundary.set_time_series_window` for the full
+            description of the available methods.
         q_min:
             New ``QMin`` value, or ``None`` (default) to leave ``QMin``
             unspecified (see :meth:`_TimeSeriesBoundary.set_time_series`).
@@ -2357,7 +2505,7 @@ class UnsteadyFlow:
                 f"No FlowHydrograph, LateralInflow, or StageHydrograph at "
                 f"{river!r}, {reach!r}, {rs!r}"
             )
-        b.reset_values(data, q_min=q_min, q_mult=q_mult)
+        b.reset_values(data, fill_method=fill_method, q_min=q_min, q_mult=q_mult)
         self._modified = True
 
     def set_gate_opening_at(

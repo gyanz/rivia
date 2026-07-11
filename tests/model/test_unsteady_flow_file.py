@@ -1406,20 +1406,90 @@ class TestSetTimeSeriesWindow:
                 {15: 20, 60: 50},
             )
 
-    def test_dict_negative_key_raises(self):
+    def test_dict_negative_key_allowed_and_warns(self, caplog):
         fh = self._fh()
-        with pytest.raises(ValueError):
-            fh.set_time_series_window(
-                (dt.datetime(2021, 1, 1), dt.datetime(2021, 1, 1, 1)),
-                "15MIN",
-                {-15: 20, 0: 50},
-            )
+        fh.set_time_series_window(
+            (dt.datetime(2021, 1, 1), dt.datetime(2021, 1, 1, 1)),
+            "15MIN",
+            {-15: 20, 0: 50},
+        )
+        assert fh.values == pytest.approx([50, 50, 50, 50, 50])
+        assert "negative" in caplog.text
+
+    def test_dict_ffill_allows_negative_key_as_anchor(self):
+        fh = self._fh()
+        fh.set_time_series_window(
+            (dt.datetime(2021, 1, 1), dt.datetime(2021, 1, 1, 1)),
+            "15MIN",
+            {-15: 5, 60: 50},
+        )
+        assert fh.values == pytest.approx([5, 5, 5, 5, 50])
 
     def test_empty_dict_raises(self):
         fh = self._fh()
         with pytest.raises(ValueError):
             fh.set_time_series_window(
                 (dt.datetime(2021, 1, 1), dt.datetime(2021, 1, 1, 1)), "15MIN", {}
+            )
+
+    def test_dict_bfill_holds_backward_from_next_breakpoint(self):
+        fh = self._fh()
+        fh.set_time_series_window(
+            (dt.datetime(2021, 1, 1), dt.datetime(2021, 1, 1, 2)),
+            "15MIN",
+            {0: 20, 60: 50, 120: 80},
+            fill_method="bfill",
+        )
+        assert fh.values == pytest.approx([20, 50, 50, 50, 50, 80, 80, 80, 80])
+
+    def test_dict_bfill_missing_final_key_raises(self):
+        fh = self._fh()
+        with pytest.raises(ValueError):
+            fh.set_time_series_window(
+                (dt.datetime(2021, 1, 1), dt.datetime(2021, 1, 1, 2)),
+                "15MIN",
+                {0: 20, 60: 50},
+                fill_method="bfill",
+            )
+
+    def test_dict_ffill_bfill_backfills_leading_gap(self):
+        fh = self._fh()
+        fh.set_time_series_window(
+            (dt.datetime(2021, 1, 1), dt.datetime(2021, 1, 1, 1, 30)),
+            "15MIN",
+            {30: 20, 60: 50},
+            fill_method="ffill_bfill",
+        )
+        assert fh.values == pytest.approx([20, 20, 20, 20, 50, 50, 50])
+
+    def test_dict_linear_interpolates_and_holds_edges(self):
+        fh = self._fh()
+        fh.set_time_series_window(
+            (dt.datetime(2021, 1, 1), dt.datetime(2021, 1, 1, 1, 30)),
+            "15MIN",
+            {30: 20, 60: 50},
+            fill_method="linear",
+        )
+        assert fh.values == pytest.approx([20, 20, 20, 35, 50, 50, 50])
+
+    def test_dict_linear_interpolates_using_actual_elapsed_minutes(self):
+        fh = self._fh()
+        fh.set_time_series_window(
+            (dt.datetime(2021, 1, 1), dt.datetime(2021, 1, 1, 0, 30)),
+            "15MIN",
+            {0: 0, 20: 100},
+            fill_method="linear",
+        )
+        assert fh.values == pytest.approx([0, 75, 100])
+
+    def test_dict_linear_requires_at_least_two_keys(self):
+        fh = self._fh()
+        with pytest.raises(ValueError):
+            fh.set_time_series_window(
+                (dt.datetime(2021, 1, 1), dt.datetime(2021, 1, 1, 1)),
+                "15MIN",
+                {0: 20},
+                fill_method="linear",
             )
 
     def test_end_before_start_raises(self):
@@ -1555,6 +1625,42 @@ class TestResetValues:
         fh = self._fh()
         with pytest.raises(ValueError):
             fh.reset_values({60: 50})
+
+    def test_dict_negative_key_allowed_and_warns(self, caplog):
+        fh = self._fh(interval="15MIN", values=[0.0] * 5)
+        fh.reset_values({-15: 20, 0: 50})
+        assert fh.values == pytest.approx([50, 50, 50, 50, 50])
+        assert "negative" in caplog.text
+
+    def test_dict_ffill_allows_negative_key_as_anchor(self):
+        fh = self._fh(interval="15MIN", values=[0.0] * 5)
+        fh.reset_values({-15: 5, 60: 50})
+        assert fh.values == pytest.approx([5, 5, 5, 5, 50])
+
+    def test_dict_bfill_holds_backward_from_next_breakpoint(self):
+        fh = self._fh(interval="15MIN", values=[0.0] * 9)
+        fh.reset_values({0: 20, 60: 50, 120: 80}, fill_method="bfill")
+        assert fh.values == pytest.approx([20, 50, 50, 50, 50, 80, 80, 80, 80])
+
+    def test_dict_bfill_missing_final_key_raises(self):
+        fh = self._fh(interval="15MIN", values=[0.0] * 9)
+        with pytest.raises(ValueError):
+            fh.reset_values({0: 20, 60: 50}, fill_method="bfill")
+
+    def test_dict_ffill_bfill_backfills_leading_gap(self):
+        fh = self._fh(interval="15MIN", values=[0.0] * 7)
+        fh.reset_values({30: 20, 60: 50}, fill_method="ffill_bfill")
+        assert fh.values == pytest.approx([20, 20, 20, 20, 50, 50, 50])
+
+    def test_dict_linear_interpolates_and_holds_edges(self):
+        fh = self._fh(interval="15MIN", values=[0.0] * 7)
+        fh.reset_values({30: 20, 60: 50}, fill_method="linear")
+        assert fh.values == pytest.approx([20, 20, 20, 35, 50, 50, 50])
+
+    def test_dict_linear_requires_at_least_two_keys(self):
+        fh = self._fh(interval="15MIN", values=[0.0] * 5)
+        with pytest.raises(ValueError):
+            fh.reset_values({0: 20}, fill_method="linear")
 
     def test_empty_values_raises(self):
         fh = self._fh(values=[])
