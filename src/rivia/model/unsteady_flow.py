@@ -953,6 +953,7 @@ class _TimeSeriesBoundary(_Boundary):
         self,
         window: tuple[dt.datetime | None, dt.datetime | None],
         *,
+        align: Literal["exact", "cover"] = "exact",
         start_datetime: dt.datetime | None = None,
     ) -> None:
         """Clip and/or extend this boundary's time series to a new ``(start, end)``.
@@ -970,9 +971,26 @@ class _TimeSeriesBoundary(_Boundary):
         ----------
         window:
             ``(new_start, new_end)``. Either side may be ``None`` to leave
-            that side untouched. Both, when given, must land exactly on the
-            existing interval grid (i.e. be reachable from the current
-            start by a whole number of :attr:`interval` steps).
+            that side untouched.
+        align:
+            How *window* bounds that don't land on the existing interval
+            grid are handled. One of:
+
+            * ``"exact"`` (default) — both bounds, when given, must land
+              exactly on the existing interval grid (i.e. be reachable
+              from the current start by a whole number of :attr:`interval`
+              steps); an off-grid bound raises :exc:`ValueError`.
+            * ``"cover"`` — each given bound is snapped *outward* onto the
+              grid instead of requiring exact alignment: the front snaps
+              down to the interval boundary at or before *new_start*, the
+              back snaps up to the interval boundary at or after
+              *new_end*. Extension-only — a bound is never moved past the
+              boundary's current start/end, so this mode can never clip
+              (a side the series already covers is left as-is). If both
+              resulting bounds already equal the current window, the call
+              is a no-op. Useful when the caller just needs "at least
+              cover ``[start, end]``, preserving my own interval" without
+              computing grid-aligned dates by hand.
         start_datetime:
             The time series' *current* start — needed only to interpret
             *window* when :attr:`use_fixed_start` is ``False`` (a non-fixed
@@ -987,12 +1005,13 @@ class _TimeSeriesBoundary(_Boundary):
         ValueError
             *start_datetime* was not provided and :attr:`use_fixed_start`
             is ``False``; :attr:`values` is empty; the effective new end is
-            before the effective new start; either window bound is not
-            reachable from the current start by a whole number of
-            :attr:`interval` steps; or the new window implies more than
-            :data:`_MAX_RESIZE_TIMESTEPS` timesteps (a sanity limit that
-            guards against a units/date-arithmetic mistake producing a
-            runaway allocation).
+            before the effective new start; ``align="exact"`` and either
+            window bound is not reachable from the current start by a
+            whole number of :attr:`interval` steps; the new window implies
+            more than :data:`_MAX_RESIZE_TIMESTEPS` timesteps (a sanity
+            limit that guards against a units/date-arithmetic mistake
+            producing a runaway allocation); or *align* is neither
+            ``"exact"`` nor ``"cover"``.
         NotImplementedError
             :attr:`use_dss` is ``True`` — values live in an external DSS
             file and there is nothing inline to reshape.
@@ -1004,7 +1023,12 @@ class _TimeSeriesBoundary(_Boundary):
         edge value is nearest (the first value if the new window is
         entirely before the old one, the last value if entirely after). A
         warning is logged in that case, since it silently discards the
-        entire existing shape.
+        entire existing shape. This cannot happen with ``align="cover"``,
+        since that mode only ever extends, never clips.
+
+        With ``align="cover"``, bounds are snapped onto the grid by
+        construction, so the ``"exact"``-only grid-alignment and
+        end-before-start :exc:`ValueError` branches above are unreachable.
 
         Examples
         --------
@@ -1024,6 +1048,8 @@ class _TimeSeriesBoundary(_Boundary):
                 "Cannot resize an empty time series; there are no edge "
                 "values to clip or extend from."
             )
+        if align not in ("exact", "cover"):
+            raise ValueError(f"align must be 'exact' or 'cover', got {align!r}.")
         if self.use_fixed_start:
             if start_datetime is not None:
                 logger.warning(
@@ -1044,8 +1070,22 @@ class _TimeSeriesBoundary(_Boundary):
         current_end = current_start + (n - 1) * interval_td
 
         new_start, new_end = window
+        if align == "cover":
+            if new_start is not None:
+                steps, _ = divmod(new_start - current_start, interval_td)
+                front = current_start + steps * interval_td
+                new_start = min(current_start, front)
+            if new_end is not None:
+                steps, remainder = divmod(new_end - current_start, interval_td)
+                if remainder != dt.timedelta(0):
+                    steps += 1
+                back = current_start + steps * interval_td
+                new_end = max(current_end, back)
+
         effective_start = new_start if new_start is not None else current_start
         effective_end = new_end if new_end is not None else current_end
+        if effective_start == current_start and effective_end == current_end:
+            return
         if effective_end < effective_start:
             raise ValueError(
                 f"effective window end ({effective_end}) is before the "
@@ -2091,6 +2131,7 @@ class UnsteadyFlow:
         self,
         window: tuple[dt.datetime | None, dt.datetime | None],
         *,
+        align: Literal["exact", "cover"] = "exact",
         start_datetime: dt.datetime | None = None,
     ) -> None:
         """Clip/extend every flow-type boundary to a new window.
@@ -2111,6 +2152,14 @@ class UnsteadyFlow:
             ``(new_start, new_end)``, applied identically to every
             flow-type boundary. Either side may be ``None`` to leave that
             side untouched.
+        align:
+            How *window* bounds that don't land on a boundary's own
+            interval grid are handled — see
+            :meth:`_TimeSeriesBoundary.resize_window` for the full
+            description of ``"exact"`` (default) vs. ``"cover"``. Applied
+            independently to each boundary against its own interval, so
+            ``"cover"`` is useful for snapping a shared ``window`` onto
+            boundaries with different intervals in one call.
         start_datetime:
             Current start, needed only for boundaries with
             ``use_fixed_start=False`` (see
@@ -2138,13 +2187,16 @@ class UnsteadyFlow:
         """
         self._apply_atomically(
             (FlowHydrograph, LateralInflow),
-            lambda bc: bc.resize_window(window, start_datetime=start_datetime),
+            lambda bc: bc.resize_window(
+                window, align=align, start_datetime=start_datetime
+            ),
         )
 
     def resize_all_stage_time_series(
         self,
         window: tuple[dt.datetime | None, dt.datetime | None],
         *,
+        align: Literal["exact", "cover"] = "exact",
         start_datetime: dt.datetime | None = None,
     ) -> None:
         """Clip/extend every :class:`StageHydrograph` boundary to a new window.
@@ -2164,6 +2216,14 @@ class UnsteadyFlow:
             ``(new_start, new_end)``, applied identically to every stage
             boundary. Either side may be ``None`` to leave that side
             untouched.
+        align:
+            How *window* bounds that don't land on a boundary's own
+            interval grid are handled — see
+            :meth:`_TimeSeriesBoundary.resize_window` for the full
+            description of ``"exact"`` (default) vs. ``"cover"``. Applied
+            independently to each boundary against its own interval, so
+            ``"cover"`` is useful for snapping a shared ``window`` onto
+            boundaries with different intervals in one call.
         start_datetime:
             Current start, needed only for boundaries with
             ``use_fixed_start=False`` (see
@@ -2191,13 +2251,16 @@ class UnsteadyFlow:
         """
         self._apply_atomically(
             StageHydrograph,
-            lambda bc: bc.resize_window(window, start_datetime=start_datetime),
+            lambda bc: bc.resize_window(
+                window, align=align, start_datetime=start_datetime
+            ),
         )
 
     def resize_all_time_series_by_type(
         self,
         window: tuple[dt.datetime | None, dt.datetime | None],
         *,
+        align: Literal["exact", "cover"] = "exact",
         start_datetime: dt.datetime | None = None,
         boundary_types: tuple[_TimeSeriesBoundaryClass, ...] = (
             FlowHydrograph,
@@ -2224,6 +2287,14 @@ class UnsteadyFlow:
             ``(new_start, new_end)``, applied identically to every matching
             boundary. Either side may be ``None`` to leave that side
             untouched.
+        align:
+            How *window* bounds that don't land on a boundary's own
+            interval grid are handled — see
+            :meth:`_TimeSeriesBoundary.resize_window` for the full
+            description of ``"exact"`` (default) vs. ``"cover"``. Applied
+            independently to each boundary against its own interval, so
+            ``"cover"`` is useful for snapping a shared ``window`` onto
+            boundaries with different intervals in one call.
         start_datetime:
             Current start, needed only for boundaries with
             ``use_fixed_start=False`` (see
@@ -2253,7 +2324,9 @@ class UnsteadyFlow:
         """
         self._apply_atomically(
             boundary_types,
-            lambda bc: bc.resize_window(window, start_datetime=start_datetime),
+            lambda bc: bc.resize_window(
+                window, align=align, start_datetime=start_datetime
+            ),
         )
 
     def reset_all_values_by_type(

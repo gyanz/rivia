@@ -1853,6 +1853,69 @@ class TestResizeWindow:
         assert fh.q_min == 3.0
         assert fh.q_mult == 1.5
 
+    def test_align_cover_extends_front_only_off_grid(self):
+        fh = self._fh()
+        fh.resize_window((dt.datetime(2020, 12, 31, 22, 40), None), align="cover")
+        assert fh.values == pytest.approx([10.0, 10.0, 10.0, 20.0, 30.0])
+        assert fh.fixed_start == "31DEC2020,2200"
+
+    def test_align_cover_extends_back_only_off_grid(self):
+        fh = self._fh()
+        fh.resize_window((None, dt.datetime(2021, 1, 1, 3, 10)), align="cover")
+        assert fh.values == pytest.approx([10.0, 20.0, 30.0, 30.0, 30.0])
+        assert fh.fixed_start == "01JAN2021,0000"
+
+    def test_align_cover_extends_both_off_grid(self):
+        fh = self._fh()
+        fh.resize_window(
+            (dt.datetime(2020, 12, 31, 22, 40), dt.datetime(2021, 1, 1, 3, 10)),
+            align="cover",
+        )
+        assert fh.values == pytest.approx(
+            [10.0, 10.0, 10.0, 20.0, 30.0, 30.0, 30.0]
+        )
+        assert fh.fixed_start == "31DEC2020,2200"
+
+    def test_align_cover_window_already_covered_is_noop(self):
+        fh = self._fh()
+        fh.resize_window(
+            (dt.datetime(2021, 1, 1, 0, 30), dt.datetime(2021, 1, 1, 1, 30)),
+            align="cover",
+        )
+        assert fh.values == pytest.approx([10.0, 20.0, 30.0])
+        assert fh.fixed_start == "01JAN2021,0000"
+
+    def test_align_cover_exact_match_is_noop(self):
+        fh = self._fh()
+        fh.resize_window(
+            (dt.datetime(2021, 1, 1, 0, 0), dt.datetime(2021, 1, 1, 2, 0)),
+            align="cover",
+        )
+        assert fh.values == pytest.approx([10.0, 20.0, 30.0])
+        assert fh.fixed_start == "01JAN2021,0000"
+
+    def test_align_cover_never_clips_front(self):
+        fh = self._fh()
+        # New start is *after* the current start -- would clip under
+        # "exact"/normal semantics; "cover" must leave the front alone.
+        fh.resize_window((dt.datetime(2021, 1, 1, 5), dt.datetime(2021, 1, 1, 6)),
+                          align="cover")
+        assert fh.values == pytest.approx([10.0, 20.0, 30.0, 30.0, 30.0, 30.0, 30.0])
+        assert fh.fixed_start == "01JAN2021,0000"
+
+    def test_align_cover_still_enforces_max_resize_timesteps(self):
+        fh = self._fh()
+        with pytest.raises(ValueError):
+            fh.resize_window(
+                (None, dt.datetime(2021, 1, 1) + dt.timedelta(hours=100_001)),
+                align="cover",
+            )
+
+    def test_align_invalid_raises(self):
+        fh = self._fh()
+        with pytest.raises(ValueError):
+            fh.resize_window((None, None), align="bogus")
+
     def test_lateral_inflow_supports_resize_window(self):
         li = LateralInflow(
             river="R",
@@ -2075,6 +2138,31 @@ class TestResizeAllFlowTimeSeries:
         assert li.values == pytest.approx([100.0, 200.0])
         assert ed.is_modified is False
 
+    def test_align_cover_snaps_each_boundary_to_its_own_grid(self):
+        # fh is on the hour; li is offset 30 minutes -- the same window is
+        # off-grid for li under "exact" (see
+        # test_atomic_failure_leaves_all_flow_boundaries_unchanged above),
+        # but "cover" snaps each boundary outward onto its own grid instead
+        # of requiring exact alignment.
+        fh = FlowHydrograph(
+            river="R", reach="Rc", river_station="1", interval="1HOUR",
+            values=[10.0, 20.0], use_fixed_start=True, fixed_start="01JAN2021,0000",
+        )
+        li = LateralInflow(
+            river="R", reach="Rc", river_station="2", interval="1HOUR",
+            values=[100.0, 200.0], use_fixed_start=True, fixed_start="01JAN2021,0030",
+        )
+        ed = _bare_ed([fh, li])
+
+        ed.resize_all_flow_time_series(
+            (None, dt.datetime(2021, 1, 1, 2)), align="cover"
+        )
+
+        assert ed.flow_hydrographs[0].values == pytest.approx([10.0, 20.0, 20.0])
+        assert ed.flow_hydrographs[0].fixed_start == "01JAN2021,0000"
+        assert ed.lateral_inflows[0].values == pytest.approx([100.0, 200.0, 200.0])
+        assert ed.lateral_inflows[0].fixed_start == "01JAN2021,0030"
+
 
 class TestResizeAllStageTimeSeries:
     def test_resizes_all_stage_boundaries(self):
@@ -2169,6 +2257,31 @@ class TestResizeAllStageTimeSeries:
         assert sh_b.values == pytest.approx([100.0, 200.0])
         assert ed.is_modified is False
 
+    def test_align_cover_snaps_each_boundary_to_its_own_grid(self):
+        # sh_a is on the hour; sh_b is offset 30 minutes -- the same window
+        # is off-grid for sh_b under "exact" (see
+        # test_atomic_failure_leaves_all_stage_boundaries_unchanged above),
+        # but "cover" snaps each boundary outward onto its own grid instead
+        # of requiring exact alignment.
+        sh_a = StageHydrograph(
+            river="R", reach="Rc", river_station="1", interval="1HOUR",
+            values=[10.0, 20.0], use_fixed_start=True, fixed_start="01JAN2021,0000",
+        )
+        sh_b = StageHydrograph(
+            river="R", reach="Rc", river_station="2", interval="1HOUR",
+            values=[100.0, 200.0], use_fixed_start=True, fixed_start="01JAN2021,0030",
+        )
+        ed = _bare_ed([sh_a, sh_b])
+
+        ed.resize_all_stage_time_series(
+            (None, dt.datetime(2021, 1, 1, 2)), align="cover"
+        )
+
+        assert ed.stage_hydrographs[0].values == pytest.approx([10.0, 20.0, 20.0])
+        assert ed.stage_hydrographs[0].fixed_start == "01JAN2021,0000"
+        assert ed.stage_hydrographs[1].values == pytest.approx([100.0, 200.0, 200.0])
+        assert ed.stage_hydrographs[1].fixed_start == "01JAN2021,0030"
+
 
 class TestResizeAllTimeSeriesByType:
     def test_default_boundary_types_covers_flow_and_stage(self):
@@ -2231,6 +2344,31 @@ class TestResizeAllTimeSeriesByType:
         assert ed.stage_hydrographs[0] is sh
         assert sh.values == pytest.approx([10.0, 20.0])
         assert ed.is_modified is False
+
+    def test_align_cover_snaps_each_boundary_to_its_own_grid(self):
+        # fh is on the hour; sh is offset 30 minutes -- the same window is
+        # off-grid for sh under "exact" (see
+        # test_atomic_failure_across_mixed_types_leaves_all_unchanged
+        # above), but "cover" snaps each boundary outward onto its own
+        # grid instead of requiring exact alignment.
+        fh = FlowHydrograph(
+            river="R", reach="Rc", river_station="1", interval="1HOUR",
+            values=[1.0, 2.0], use_fixed_start=True, fixed_start="01JAN2021,0000",
+        )
+        sh = StageHydrograph(
+            river="R", reach="Rc", river_station="2", interval="1HOUR",
+            values=[10.0, 20.0], use_fixed_start=True, fixed_start="01JAN2021,0030",
+        )
+        ed = _bare_ed([fh, sh])
+
+        ed.resize_all_time_series_by_type(
+            (None, dt.datetime(2021, 1, 1, 2)), align="cover"
+        )
+
+        assert ed.flow_hydrographs[0].values == pytest.approx([1.0, 2.0, 2.0])
+        assert ed.flow_hydrographs[0].fixed_start == "01JAN2021,0000"
+        assert ed.stage_hydrographs[0].values == pytest.approx([10.0, 20.0, 20.0])
+        assert ed.stage_hydrographs[0].fixed_start == "01JAN2021,0030"
 
 
 class TestResetAllValuesByType:
