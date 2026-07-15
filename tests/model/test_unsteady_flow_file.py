@@ -2206,6 +2206,29 @@ class TestResizeAllStageTimeSeries:
         assert ed.stage_hydrographs[1].values == pytest.approx([100.0, 200.0, 200.0])
         assert ed.is_modified is True
 
+    def test_reference_held_before_call_stays_same_object_and_reflects_update(self):
+        # Regression test: _apply_atomically() used to replace boundary
+        # objects wholesale on success, silently staling any reference a
+        # caller resolved beforehand (e.g. via boundaries_at()). A later
+        # mutation on that stale reference would succeed with no error but
+        # never reach ed.boundaries, so save() would silently drop it.
+        sh = StageHydrograph(
+            river="R", reach="Rc", river_station="1", interval="1HOUR",
+            values=[10.0, 20.0], use_fixed_start=True, fixed_start="01JAN2021,0000",
+        )
+        ed = _bare_ed([sh])
+        held = ed.stage_hydrographs[0]
+
+        ed.resize_all_stage_time_series((None, dt.datetime(2021, 1, 1, 2)))
+
+        assert ed.stage_hydrographs[0] is held
+        assert held.values == pytest.approx([10.0, 20.0, 20.0])
+
+        # Mutating the reference resolved *before* the bulk call must still
+        # land on the boundary actually stored in ed.boundaries.
+        held.reset_values([1.0, 2.0, 3.0])
+        assert ed.stage_hydrographs[0].values == pytest.approx([1.0, 2.0, 3.0])
+
     def test_flow_boundaries_untouched(self):
         fh = FlowHydrograph(
             river="R", reach="Rc", river_station="1", interval="1HOUR",
@@ -2510,6 +2533,30 @@ class TestResetAllValuesByType:
         assert ed.stage_hydrographs[0] is sh
         assert sh.values == []
         assert ed.is_modified is False
+
+    def test_reference_held_before_call_survives_save(self, tmp_path):
+        # End-to-end regression test for the identity-preservation fix:
+        # resolve a boundary, run a bulk call, mutate the *originally
+        # resolved* reference afterward, then confirm save() picks up that
+        # mutation -- previously it would have been silently lost, since
+        # the held reference no longer matched the object actually stored
+        # in ed.boundaries after the bulk call.
+        ed = UnsteadyFlow(BAXTER)
+        held = ed.flow_hydrographs[0]
+        n = len(held.values)
+
+        ed.reset_all_values_by_type(0.0)
+
+        assert ed.flow_hydrographs[0] is held
+        assert held.values == pytest.approx([0.0] * n)
+
+        marker = [111.0] * n
+        held.reset_values(marker)
+
+        out = tmp_path / "baxter_identity_rt.u01"
+        ed.save(out)
+        ed2 = UnsteadyFlow(out)
+        assert ed2.flow_hydrographs[0].values == pytest.approx(marker)
 
 
 class TestResetValuesAt:

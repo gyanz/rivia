@@ -17,7 +17,7 @@ import copy
 import datetime as dt
 import logging
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from math import ceil
 from pathlib import Path
 from typing import Literal
@@ -2070,18 +2070,18 @@ class UnsteadyFlow:
         *apply_fn* is first run against a :func:`copy.deepcopy` of each
         matching boundary. If it raises for any boundary, the exception
         propagates immediately and :attr:`boundaries` is left completely
-        untouched. Only once every boundary's copy has succeeded are the
-        copies swapped back into :attr:`boundaries`, so a batch call either
-        fully applies or has no effect at all.
+        untouched. Only once every boundary's copy has succeeded is each
+        original boundary updated field-by-field from its copy, so a batch
+        call either fully applies or has no effect at all.
 
         Notes
         -----
-        On success, matching entries in :attr:`boundaries` are *replaced*
-        by new (deep-copied) objects — unlike every other mutator in this
-        module, which edits a boundary in place. Any reference to a
-        boundary object held from before the call becomes stale; re-fetch
-        it via :attr:`boundaries` / :attr:`flow_hydrographs` /
-        :attr:`lateral_inflows` / :attr:`stage_hydrographs` afterward.
+        On success, matching entries in :attr:`boundaries` are updated in
+        place, field-by-field, from the mutated copy — the original
+        boundary objects themselves are never replaced, consistent with
+        every other mutator in this module. Any reference to a boundary
+        object held from before the call remains valid and reflects the
+        update afterward.
         """
         targets = [
             (i, b)
@@ -2094,7 +2094,9 @@ class UnsteadyFlow:
             apply_fn(new_b)
             updated.append((i, new_b))
         for i, new_b in updated:
-            self.boundaries[i] = new_b
+            target = self.boundaries[i]
+            for f in fields(new_b):
+                setattr(target, f.name, getattr(new_b, f.name))
         if updated:
             self._modified = True
 
@@ -2153,10 +2155,10 @@ class UnsteadyFlow:
         Notes
         -----
         All-or-nothing: either every targeted boundary is updated, or (on
-        error) none of them are. On success, updated boundaries are
-        replaced by new objects (see :meth:`_apply_atomically`) — re-fetch
-        via :attr:`flow_hydrographs` / :attr:`lateral_inflows` afterward
-        rather than relying on references held from before the call.
+        error) none of them are. Boundaries are updated in place (see
+        :meth:`_apply_atomically`) — references held from before the call
+        remain valid afterward; there's no need to re-fetch via
+        :attr:`flow_hydrographs` / :attr:`lateral_inflows`.
         """
         self._apply_atomically(
             (FlowHydrograph, LateralInflow),
@@ -2218,10 +2220,10 @@ class UnsteadyFlow:
         Notes
         -----
         All-or-nothing: either every flow-type boundary is updated, or (on
-        error) none of them are. On success, updated boundaries are
-        replaced by new objects (see :meth:`_apply_atomically`) — re-fetch
-        via :attr:`flow_hydrographs` / :attr:`lateral_inflows` afterward
-        rather than relying on references held from before the call.
+        error) none of them are. Boundaries are updated in place (see
+        :meth:`_apply_atomically`) — references held from before the call
+        remain valid afterward; there's no need to re-fetch via
+        :attr:`flow_hydrographs` / :attr:`lateral_inflows`.
         """
         self._apply_atomically(
             (FlowHydrograph, LateralInflow),
@@ -2282,10 +2284,10 @@ class UnsteadyFlow:
         Notes
         -----
         All-or-nothing: either every stage boundary is updated, or (on
-        error) none of them are. On success, updated boundaries are
-        replaced by new objects (see :meth:`_apply_atomically`) — re-fetch
-        via :attr:`stage_hydrographs` afterward rather than relying on
-        references held from before the call.
+        error) none of them are. Boundaries are updated in place (see
+        :meth:`_apply_atomically`) — references held from before the call
+        remain valid afterward; there's no need to re-fetch via
+        :attr:`stage_hydrographs`.
         """
         self._apply_atomically(
             StageHydrograph,
@@ -2355,10 +2357,10 @@ class UnsteadyFlow:
         Notes
         -----
         All-or-nothing: either every matching boundary is updated, or (on
-        error) none of them are. On success, updated boundaries are
-        replaced by new objects (see :meth:`_apply_atomically`) — re-fetch
-        via :attr:`boundaries` (or the relevant typed property) afterward
-        rather than relying on references held from before the call.
+        error) none of them are. Boundaries are updated in place (see
+        :meth:`_apply_atomically`) — references held from before the call
+        remain valid afterward; there's no need to re-fetch via
+        :attr:`boundaries` (or the relevant typed property).
         """
         self._apply_atomically(
             boundary_types,
@@ -2440,10 +2442,10 @@ class UnsteadyFlow:
         Notes
         -----
         All-or-nothing: either every matching boundary is updated, or (on
-        error) none of them are. On success, updated boundaries are
-        replaced by new objects (see :meth:`_apply_atomically`) — re-fetch
-        via :attr:`boundaries` (or the relevant typed property) afterward
-        rather than relying on references held from before the call.
+        error) none of them are. Boundaries are updated in place (see
+        :meth:`_apply_atomically`) — references held from before the call
+        remain valid afterward; there's no need to re-fetch via
+        :attr:`boundaries` (or the relevant typed property).
         """
         self._apply_atomically(
             boundary_types,
