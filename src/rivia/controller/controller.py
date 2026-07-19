@@ -8,7 +8,7 @@ import pywintypes
 import win32com.client
 
 from ._geometry import GeometryBase as _GeometryBase
-from ._runtime import Runtime, kill_hecras_version
+from ._runtime import Runtime, kill_hecras_version, kill_process
 from ._ver400 import Controller as C400
 from ._ver400 import RASEvents as E400
 from ._ver500 import Controller as C500
@@ -200,8 +200,8 @@ class _ControllerBase:
         Safe to call multiple times; does nothing when the process has already
         exited.
         """
-        if self.is_alive:
-            self._runtime.close()
+        if getattr(self, "_finalizer", None) is not None:
+            self._finalizer()
 
     # ------------------------------------------------------------------
     # Window visibility
@@ -414,33 +414,26 @@ class _ControllerBase:
                 com_error=e,
             ) from e
 
-    def __del__(self):
-        try:
-            logger.debug("HEC-RAS Controller destructor called.")
-        except Exception:
-            pass
-        try:
-            self.close()
-        except Exception:
-            pass
-
 
 class _Controller400(_ControllerBase, C400, _GeometryBase):
     def __init__(self, rc, geom, flow, events, version_xxxx):
         super().__init__(rc, geom, flow, events, version_xxxx)
         self._runtime = Runtime(self, installed_ras_display_name(version_xxxx))
+        self._finalizer = weakref.finalize(self, kill_process, self._runtime.parent_pid)
 
 
 class _Controller500(_ControllerBase, C500, _GeometryBase):
     def __init__(self, rc, geom, flow, events, version_xxxx):
         super().__init__(rc, geom, flow, events, version_xxxx)
         self._runtime = Runtime(self, installed_ras_display_name(version_xxxx))
+        self._finalizer = weakref.finalize(self, kill_process, self._runtime.parent_pid)
 
 
 class _Controller503(_ControllerBase, C503, _GeometryBase):
     def __init__(self, rc, geom, flow, events, version_xxxx):
         super().__init__(rc, geom, flow, events, version_xxxx)
         self._runtime = Runtime(self, installed_ras_display_name(version_xxxx))
+        self._finalizer = weakref.finalize(self, kill_process, self._runtime.parent_pid)
 
 
 # class _ControllerGeometry(_GeometryBase):
