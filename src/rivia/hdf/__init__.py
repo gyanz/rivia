@@ -75,6 +75,10 @@ from .unsteady_plan import (  # noqa: F401
     StructureResultsCollection,
     UnsteadyPlan,
 )
+from .unsteady_sediment import (  # noqa: F401
+    SedimentCrossSectionResults,
+    UnsteadySediment,
+)
 
 __all__ = [
     "check_plan_staleness",

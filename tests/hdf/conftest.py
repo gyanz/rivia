@@ -28,6 +28,22 @@ skip_if_no_example = pytest.mark.skipif(
     reason="Example HDF file not found on this machine",
 )
 
+# 1-D sediment transport example plans -- same plan/geometry, two sediment
+# output modes (Mass vs. Volume).
+SEDIMENT_1D_MASS_HDF = Path(
+    r"Z:\HEC-RAS Examples\Example_Projects_6_6\1D Sediment Transport"
+    r"\Unsteady Sediment with Concentration Rules\SedRuleLat.p05.hdf"
+)
+SEDIMENT_1D_VOL_HDF = Path(
+    r"Z:\HEC-RAS Examples\Example_Projects_6_6\1D Sediment Transport"
+    r"\Unsteady Sediment with Concentration Rules\SedRuleLat.p01.hdf"
+)
+
+skip_if_no_sediment_examples = pytest.mark.skipif(
+    not (SEDIMENT_1D_MASS_HDF.exists() and SEDIMENT_1D_VOL_HDF.exists()),
+    reason="1D sediment example HDF files not found on this machine",
+)
+
 
 # ---------------------------------------------------------------------------
 # Synthetic HDF fixture helpers

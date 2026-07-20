@@ -51,6 +51,8 @@ if TYPE_CHECKING:
     import h5py
     import rasterio.io
 
+    from .unsteady_sediment import UnsteadySediment
+
 logger = logging.getLogger("rivia.hdf")
 
 
@@ -3655,6 +3657,10 @@ class CrossSectionResultsCollection(CrossSectionCollection):
         ``f"{root}/Cross Section Attributes"``, which is correct for Base
         Output and DSS blocks.  Pass ``_POSTPROC_GEOM_ATTRS`` for the Post
         Process block, where attributes live outside the XS result group.
+        Result blocks with no attributes table of their own (e.g. sediment)
+        can pass the geometry ``Geometry/Cross Sections/Attributes`` table
+        instead; its station field is named ``RS`` rather than ``Station``,
+        and both names are recognised.
     timestamps_fn:
         Zero-argument callable that returns the ``pd.DatetimeIndex`` for
         this block.  Resolved lazily on first access; the result is cached
@@ -3701,7 +3707,8 @@ class CrossSectionResultsCollection(CrossSectionCollection):
 
         HEC-RAS result blocks store XS data as ``(n_t, n_xs)`` arrays where
         the column order is given by a ``Cross Section Attributes`` structured
-        array (River/Reach/Station fields).  This method builds a
+        array (River/Reach/Station fields, or River/Reach/RS fields when the
+        geometry attributes table is used directly).  This method builds a
         ``(river, reach, station) → column_index`` lookup from that array, then
         matches it against the geometry items from
         :meth:`~CrossSectionCollection._load`.  XS present in geometry but
@@ -3725,7 +3732,12 @@ class CrossSectionResultsCollection(CrossSectionCollection):
         for i, row in enumerate(result_attrs):
             r  = _decode(row["River"])   if "River"   in fn else ""
             rc = _decode(row["Reach"])   if "Reach"   in fn else ""
-            st = _decode(row["Station"]) if "Station" in fn else ""
+            if "Station" in fn:
+                st = _decode(row["Station"])
+            elif "RS" in fn:
+                st = _decode(row["RS"])
+            else:
+                st = ""
             result_index[(r, rc, st)] = i
 
         ts = self.timestamps
@@ -4738,6 +4750,7 @@ class UnsteadyPlan(_PlanHdf, Geometry):
         self._plan_storage_areas_cache: dict[str, StorageAreaResultsCollection] = {}
         self._plan_structures_cache: dict[str, StructureResultsCollection] = {}
         self._plan_cross_sections_cache: dict[str, CrossSectionResultsCollection] = {}
+        self._sediment: UnsteadySediment | None = None
 
     # ------------------------------------------------------------------
     # Runtime log
@@ -5268,3 +5281,34 @@ class UnsteadyPlan(_PlanHdf, Geometry):
             present, plain :class:`SA2DConnection` otherwise.
         """
         return self.structures(output).connections
+
+    # ------------------------------------------------------------------
+    # Sediment
+    # ------------------------------------------------------------------
+
+    @property
+    def sediment(self) -> UnsteadySediment:
+        """Sediment transport results view for this plan.
+
+        Borrows this plan's already-open HDF handle rather than opening its
+        own -- the returned view is invalidated once this plan is closed.
+        See :class:`~rivia.hdf.unsteady_sediment.UnsteadySediment`.
+
+        Returns
+        -------
+        UnsteadySediment
+
+        Examples
+        --------
+        ::
+
+            with UnsteadyPlan("SedRuleLat.p05") as plan:
+                xs = plan.sediment.cross_sections()["Beaver Creek", "Kentwood", "5.99"]
+                df = xs.cumulative_inflow(quantity="mass")
+        """
+        if self._sediment is None:
+            # local import — avoids circular dependency
+            from .unsteady_sediment import UnsteadySediment
+
+            self._sediment = UnsteadySediment(self)
+        return self._sediment
