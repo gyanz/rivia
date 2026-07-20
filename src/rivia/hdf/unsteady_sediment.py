@@ -32,7 +32,7 @@ from .unsteady_plan import CrossSectionResultsCollection, _CrossSectionResultsBa
 if TYPE_CHECKING:
     import h5py
 
-    from .unsteady_plan import UnsteadyPlan
+    from .unsteady_plan import FlowAreaResults, FlowAreaResultsCollection, UnsteadyPlan
 
 # ---------------------------------------------------------------------------
 # HDF path constants -- 1D cross sections
@@ -193,7 +193,7 @@ class SedimentCrossSectionResults(_CrossSectionResultsBase):
                 data[grain_names[n - 1]] = self._load(name)
         return pd.DataFrame(data, index=self.timestamps)
 
-    def cumulative_inflow(self, quantity: Quantity) -> pd.DataFrame:
+    def get_cumulative_inflow(self, quantity: Quantity) -> pd.DataFrame:
         """Cumulative sediment inflow, split by grain class.
 
         Parameters
@@ -220,14 +220,14 @@ class SedimentCrossSectionResults(_CrossSectionResultsBase):
         """
         return self._consolidated(quantity, "In Cum")
 
-    def cumulative_outflow(self, quantity: Quantity) -> pd.DataFrame:
+    def get_cumulative_outflow(self, quantity: Quantity) -> pd.DataFrame:
         """Cumulative sediment outflow, split by grain class.
 
         Parameters
         ----------
         quantity : {"mass", "vol"}
             Whether to read the ``Mass Out Cum`` or ``Vol Out Cum`` record
-            family.  Required -- see :meth:`cumulative_inflow`.
+            family.  Required -- see :meth:`get_cumulative_inflow`.
 
         Returns
         -------
@@ -254,6 +254,19 @@ class SedimentFlowAreaResults:
     their own timestamp axes; both are exposed here since the two blocks
     describe the same flow area.
 
+    **Naming conventions:** bare-noun properties and mode-only methods
+    (``bed_elevation``, ``bed_change``, ``initial_bed_elevation``,
+    ``max_bed_elevation``, ``min_bed_elevation``,
+    ``transport_bed_shear_stress``) return a raw HDF dataset or a thin
+    array/summary over *all* cells or faces -- no cell/face selector is
+    accepted or required. ``get_<quantity>(*, cell=/face=, ...)`` methods
+    are single-cell/face accessors; the selector is required and raises
+    ``ValueError`` if omitted. ``get_bed_elevation``, ``get_bed_change``,
+    and ``get_bed_shear_stress`` return a plain ``pandas.Series`` for one cell;
+    ``get_fraction_suspended``, ``get_total_load_concentration``, and
+    ``get_transport_rate`` additionally split the result by grain class,
+    returning a ``pandas.DataFrame``.
+
     Parameters
     ----------
     hdf :
@@ -267,6 +280,12 @@ class SedimentFlowAreaResults:
     transport_timestamps_fn :
         Zero-argument callable returning the Sediment Transport block's
         ``pd.DatetimeIndex``.  Resolved lazily on first access.
+    hydraulics_fn :
+        Zero-argument callable returning this flow area's hydraulics
+        :class:`~rivia.hdf.unsteady_plan.FlowAreaResults`, used only for
+        its mesh geometry
+        (:meth:`~rivia.hdf.unsteady_plan.FlowAreaResults.faces_along_line`).
+        Resolved lazily on first access.
     """
 
     def __init__(
@@ -275,6 +294,7 @@ class SedimentFlowAreaResults:
         name: str,
         bed_timestamps_fn: Callable[[], pd.DatetimeIndex],
         transport_timestamps_fn: Callable[[], pd.DatetimeIndex],
+        hydraulics_fn: Callable[[], FlowAreaResults],
     ) -> None:
         self.name = name
         self._hdf = hdf
@@ -283,8 +303,10 @@ class SedimentFlowAreaResults:
         self._transport_root = f"{_SED_TRANSPORT_TS_2D}/{name}"
         self._bed_timestamps_fn = bed_timestamps_fn
         self._transport_timestamps_fn = transport_timestamps_fn
+        self._hydraulics_fn = hydraulics_fn
         self._bed_timestamps: pd.DatetimeIndex | None = None
         self._transport_timestamps: pd.DatetimeIndex | None = None
+        self._hydraulics: FlowAreaResults | None = None
 
     def __repr__(self) -> str:
         return f"SedimentFlowAreaResults({self.name!r})"
@@ -306,6 +328,13 @@ class SedimentFlowAreaResults:
         if self._transport_timestamps is None:
             self._transport_timestamps = self._transport_timestamps_fn()
         return self._transport_timestamps
+
+    @property
+    def _hydraulics_geometry(self) -> FlowAreaResults:
+        """This flow area's hydraulics results, for mesh-geometry access only."""
+        if self._hydraulics is None:
+            self._hydraulics = self._hydraulics_fn()
+        return self._hydraulics
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -337,6 +366,33 @@ class SedimentFlowAreaResults:
                 data[name] = self._column(root, key, index)
         return pd.DataFrame(data, index=timestamps)
 
+    def _consolidated_signed_sum(
+        self,
+        root: str,
+        base: str,
+        indexes: list[int],
+        signs: np.ndarray,
+        timestamps: pd.DatetimeIndex,
+    ) -> pd.DataFrame:
+        """Build a Total + per-grain-class DataFrame summed over several signed columns.
+
+        Same column discovery as :meth:`_consolidated`, but each named record
+        is read for every index in *indexes*, multiplied by the matching
+        entry of *signs* (``+1``/``-1``), and summed -- used to net a
+        multi-face fence rather than read a single cell/face column.
+        """
+
+        def signed_sum(name: str) -> np.ndarray:
+            cols = np.column_stack([self._column(root, name, i) for i in indexes])
+            return np.asarray((cols * signs[np.newaxis, :]).sum(axis=1))
+
+        data: dict[str, np.ndarray] = {"Total": signed_sum(f"{base} - Total")}
+        for name in _grain_class_names(self._hdf):
+            key = f"{base} - {name}"
+            if f"{root}/{key}" in self._hdf:
+                data[name] = signed_sum(key)
+        return pd.DataFrame(data, index=timestamps)
+
     # ------------------------------------------------------------------
     # Sediment Bed
     # ------------------------------------------------------------------
@@ -362,6 +418,7 @@ class SedimentFlowAreaResults:
         """Cell bed elevation before the simulation starts, shape ``(n_cells,)``."""
         return np.array(self._dataset(self._bed_root, "Cell Initial Bed Elevation")[0])
 
+    @property
     def max_bed_elevation(self) -> np.ndarray:
         """Maximum bed elevation summary, as written by HEC-RAS.
 
@@ -373,19 +430,71 @@ class SedimentFlowAreaResults:
         """
         return np.array(self._dataset(self._bed_sum_root, "Maximum Bed Elevation"))
 
+    @property
     def min_bed_elevation(self) -> np.ndarray:
         """Minimum bed elevation summary, as written by HEC-RAS.
 
-        See :meth:`max_bed_elevation` for a caveat on this dataset's shape.
+        See :attr:`max_bed_elevation` for a caveat on this dataset's shape.
         """
         return np.array(self._dataset(self._bed_sum_root, "Minimum Bed Elevation"))
+
+    def get_bed_elevation(self, *, cell: int | None = None) -> pd.Series:
+        """Bed elevation over time for one cell.
+
+        Parameters
+        ----------
+        cell : int, optional
+            0-based cell index.  Required.
+
+        Returns
+        -------
+        pandas.Series
+            Indexed by :attr:`bed_timestamps`, named ``"Bed Elevation"``.
+
+        Raises
+        ------
+        ValueError
+            If *cell* is not specified.
+        """
+        if cell is None:
+            raise ValueError("cell must be specified.")
+        values = np.array(self.bed_elevation[:, cell])
+        return pd.Series(values, index=self.bed_timestamps, name="Bed Elevation")
+
+    def get_bed_change(self, *, cell: int | None = None) -> pd.Series:
+        """Bed change over time for one cell.
+
+        Parameters
+        ----------
+        cell : int, optional
+            0-based cell index.  Required.
+
+        Returns
+        -------
+        pandas.Series
+            Indexed by :attr:`bed_timestamps`, named ``"Bed Change"``.
+
+        Raises
+        ------
+        ValueError
+            If *cell* is not specified.
+        """
+        if cell is None:
+            raise ValueError("cell must be specified.")
+        values = np.array(self.bed_change[:, cell])
+        return pd.Series(values, index=self.bed_timestamps, name="Bed Change")
 
     # ------------------------------------------------------------------
     # Sediment Transport
     # ------------------------------------------------------------------
 
-    def bed_shear_stress(self, *, component: ShearComponent) -> h5py.Dataset:
+    def transport_bed_shear_stress(self, *, component: ShearComponent) -> h5py.Dataset:
         """Cell bed shear stress, shape ``(n_t, n_cells)``.
+
+        Read from the Sediment Transport output block (see
+        :attr:`~UnsteadySediment.transport_timestamps`), despite "bed" in the
+        name -- shear stress on the bed is computed as part of the Transport
+        block, not the Sediment Bed block.
 
         Parameters
         ----------
@@ -404,7 +513,40 @@ class SedimentFlowAreaResults:
             self._transport_root, f"Cell Bed Shear Stress - {_SHEAR_SUFFIX[component]}"
         )
 
-    def fraction_suspended(self, *, cell: int | None = None) -> pd.DataFrame:
+    def get_bed_shear_stress(
+        self, *, cell: int | None = None, component: ShearComponent
+    ) -> pd.Series:
+        """Bed shear stress over time for one cell.
+
+        Parameters
+        ----------
+        cell : int, optional
+            0-based cell index.  Required.
+        component : {"skin", "total"}
+            Whether to read the skin or total bed shear stress.  Required --
+            see :meth:`transport_bed_shear_stress`.
+
+        Returns
+        -------
+        pandas.Series
+            Indexed by :attr:`transport_timestamps`, named
+            ``"Bed Shear Stress ({component})"``.
+
+        Raises
+        ------
+        ValueError
+            If *cell* is not specified.
+        """
+        if cell is None:
+            raise ValueError("cell must be specified.")
+        values = np.array(self.transport_bed_shear_stress(component=component)[:, cell])
+        return pd.Series(
+            values,
+            index=self.transport_timestamps,
+            name=f"Bed Shear Stress ({component})",
+        )
+
+    def get_fraction_suspended(self, *, cell: int | None = None) -> pd.DataFrame:
         """Suspended-load fraction over time for one cell, split by grain class.
 
         Parameters
@@ -433,7 +575,7 @@ class SedimentFlowAreaResults:
             self.transport_timestamps,
         )
 
-    def total_load_concentration(self, *, cell: int | None = None) -> pd.DataFrame:
+    def get_total_load_concentration(self, *, cell: int | None = None) -> pd.DataFrame:
         """Total-load concentration over time for one cell, split by grain class.
 
         Parameters
@@ -462,13 +604,19 @@ class SedimentFlowAreaResults:
             self.transport_timestamps,
         )
 
-    def transport_rate(self, *, face: int | None = None) -> pd.DataFrame:
+    def get_transport_rate(
+        self, *, face: int | None = None, capacity: bool = False
+    ) -> pd.DataFrame:
         """Total-load transport rate over time for one face, split by grain class.
 
         Parameters
         ----------
         face : int, optional
             0-based face index.  Required.
+        capacity : bool, optional
+            When ``True``, read the ``Face Total-load Transport Capacity``
+            record instead of ``Face Total-load Transport Rate``.  Default
+            ``False``.
 
         Returns
         -------
@@ -484,10 +632,76 @@ class SedimentFlowAreaResults:
         """
         if face is None:
             raise ValueError("face must be specified.")
+        base = (
+            "Face Total-load Transport Capacity"
+            if capacity
+            else "Face Total-load Transport Rate"
+        )
         return self._consolidated(
             self._transport_root,
-            "Face Total-load Transport Rate",
+            base,
             face,
+            self.transport_timestamps,
+        )
+
+    def transport_rate_along_line(
+        self,
+        xy: np.ndarray,
+        *,
+        method: Literal["walk", "shortest_path"] = "shortest_path",
+    ) -> pd.DataFrame:
+        """Net total-load transport rate through a user-supplied profile line.
+
+        Identifies the mesh face "fence" that best approximates *xy* via
+        this flow area's hydraulics
+        :meth:`~rivia.hdf.unsteady_plan.FlowAreaResults.faces_along_line`,
+        then sums signed per-face transport rate -- Total and each grain
+        class -- across that fence at every timestep.
+
+        The sign convention matches RASMapper and
+        :meth:`~rivia.hdf.unsteady_plan.FlowAreaResults.flow_across_line`:
+        flow from left bank to right bank (when facing from *xy* start to
+        *xy* end) is **positive**.
+
+        Parameters
+        ----------
+        xy : ndarray, shape ``(n_pts, 2)``
+            Profile polyline vertices ``(x, y)`` drawn from left bank to
+            right bank.
+        method : {"shortest_path", "walk"}, optional
+            Face-selection method passed to ``faces_along_line``.  Default
+            is ``"shortest_path"``.
+
+        Returns
+        -------
+        pandas.DataFrame
+            Indexed by :attr:`transport_timestamps`.  First column
+            ``"Total"``, followed by one column per grain class actually
+            present in the file.  Values are the net (signed) transport
+            rate across the fence.
+
+        Raises
+        ------
+        ValueError
+            If the polyline does not intersect the mesh or no connected
+            face path can be found.
+        NotImplementedError
+            If ``method="walk"``.
+
+        See Also
+        --------
+        get_transport_rate : per-face transport rate, no fence summation
+        """
+        xy = np.asarray(xy, dtype=np.float64)
+        faces_df = self._hydraulics_geometry.faces_along_line(xy, method=method)
+        face_ids = faces_df["face"].tolist()
+        orientations = faces_df["orientation"].to_numpy(dtype=bool)  # True -> negate
+        signs = np.where(orientations, -1.0, 1.0)
+        return self._consolidated_signed_sum(
+            self._transport_root,
+            "Face Total-load Transport Rate",
+            face_ids,
+            signs,
             self.transport_timestamps,
         )
 
@@ -508,19 +722,29 @@ class SedimentFlowAreaResultsCollection(Mapping[str, SedimentFlowAreaResults]):
         names: list[str],
         bed_timestamps_fn: Callable[[], pd.DatetimeIndex],
         transport_timestamps_fn: Callable[[], pd.DatetimeIndex],
+        hydraulics_flow_areas: FlowAreaResultsCollection,
     ) -> None:
         self._hdf = hdf
         self._names = names
         self._bed_timestamps_fn = bed_timestamps_fn
         self._transport_timestamps_fn = transport_timestamps_fn
+        self._hydraulics_flow_areas = hydraulics_flow_areas
         self._cache: dict[str, SedimentFlowAreaResults] = {}
 
     def __getitem__(self, name: str) -> SedimentFlowAreaResults:
         if name not in self._names:
             raise KeyError(f"2D flow area {name!r} not found. Available: {self._names}")
         if name not in self._cache:
+
+            def hydraulics_fn(n: str = name) -> FlowAreaResults:
+                return self._hydraulics_flow_areas[n]
+
             self._cache[name] = SedimentFlowAreaResults(
-                self._hdf, name, self._bed_timestamps_fn, self._transport_timestamps_fn
+                self._hdf,
+                name,
+                self._bed_timestamps_fn,
+                self._transport_timestamps_fn,
+                hydraulics_fn=hydraulics_fn,
             )
         return self._cache[name]
 
@@ -671,5 +895,6 @@ class UnsteadySediment:
                 self._plan.flow_areas.names,
                 bed_timestamps_fn=lambda: self.bed_timestamps,
                 transport_timestamps_fn=lambda: self.transport_timestamps,
+                hydraulics_flow_areas=self._plan.flow_areas,
             )
         return self._flow_areas

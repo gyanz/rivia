@@ -5304,7 +5304,7 @@ class UnsteadyPlan(_PlanHdf, Geometry):
 
             with UnsteadyPlan("SedRuleLat.p05") as plan:
                 xs = plan.sediment.cross_sections()["Beaver Creek", "Kentwood", "5.99"]
-                df = xs.cumulative_inflow(quantity="mass")
+                df = xs.get_cumulative_inflow(quantity="mass")
         """
         if self._sediment is None:
             # local import — avoids circular dependency

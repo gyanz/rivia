@@ -23,7 +23,7 @@ AREA = "Perimeter 1"
 EXPECTED_TRANSPORT_GRAINS = [
     "FS", "MS", "CS", "VCS", "VFG", "FG", "MG", "CG", "VCG", "SC",
 ]
-CELL_METHODS = ["fraction_suspended", "total_load_concentration"]
+CELL_METHODS = ["get_fraction_suspended", "get_total_load_concentration"]
 
 
 # ---------------------------------------------------------------------------
@@ -135,14 +135,46 @@ class TestSedimentBed:
     def test_max_bed_elevation_returns_ndarray(self):
         with UnsteadyPlan(SEDIMENT_2D_HDF) as plan:
             fa = plan.sediment.flow_areas()[AREA]
-            arr = fa.max_bed_elevation()
+            arr = fa.max_bed_elevation
         assert arr.ndim == 2
 
     def test_min_bed_elevation_returns_ndarray(self):
         with UnsteadyPlan(SEDIMENT_2D_HDF) as plan:
             fa = plan.sediment.flow_areas()[AREA]
-            arr = fa.min_bed_elevation()
+            arr = fa.min_bed_elevation
         assert arr.ndim == 2
+
+    def test_get_bed_elevation_matches_column(self):
+        with UnsteadyPlan(SEDIMENT_2D_HDF) as plan:
+            fa = plan.sediment.flow_areas()[AREA]
+            series = fa.get_bed_elevation(cell=100)
+            column = np.array(fa.bed_elevation[:, 100])
+        assert isinstance(series, pd.Series)
+        assert series.name == "Bed Elevation"
+        assert (series.index == fa.bed_timestamps).all()
+        assert np.allclose(series.to_numpy(), column)
+
+    def test_get_bed_elevation_cell_required(self):
+        with UnsteadyPlan(SEDIMENT_2D_HDF) as plan:
+            fa = plan.sediment.flow_areas()[AREA]
+            with pytest.raises(ValueError):
+                fa.get_bed_elevation()
+
+    def test_get_bed_change_matches_column(self):
+        with UnsteadyPlan(SEDIMENT_2D_HDF) as plan:
+            fa = plan.sediment.flow_areas()[AREA]
+            series = fa.get_bed_change(cell=100)
+            column = np.array(fa.bed_change[:, 100])
+        assert isinstance(series, pd.Series)
+        assert series.name == "Bed Change"
+        assert (series.index == fa.bed_timestamps).all()
+        assert np.allclose(series.to_numpy(), column)
+
+    def test_get_bed_change_cell_required(self):
+        with UnsteadyPlan(SEDIMENT_2D_HDF) as plan:
+            fa = plan.sediment.flow_areas()[AREA]
+            with pytest.raises(ValueError):
+                fa.get_bed_change()
 
 
 # ---------------------------------------------------------------------------
@@ -155,8 +187,8 @@ class TestBedShearStress:
     def test_skin_and_total_are_datasets(self):
         with UnsteadyPlan(SEDIMENT_2D_HDF) as plan:
             fa = plan.sediment.flow_areas()[AREA]
-            skin = fa.bed_shear_stress(component="skin")
-            total = fa.bed_shear_stress(component="total")
+            skin = fa.transport_bed_shear_stress(component="skin")
+            total = fa.transport_bed_shear_stress(component="total")
             assert isinstance(skin, h5py.Dataset)
             assert isinstance(total, h5py.Dataset)
             assert skin.shape == total.shape
@@ -165,7 +197,29 @@ class TestBedShearStress:
         with UnsteadyPlan(SEDIMENT_2D_HDF) as plan:
             fa = plan.sediment.flow_areas()[AREA]
             with pytest.raises(TypeError):
-                fa.bed_shear_stress()  # type: ignore[call-arg]
+                fa.transport_bed_shear_stress()  # type: ignore[call-arg]
+
+    def test_get_bed_shear_stress_matches_column(self):
+        with UnsteadyPlan(SEDIMENT_2D_HDF) as plan:
+            fa = plan.sediment.flow_areas()[AREA]
+            series = fa.get_bed_shear_stress(cell=100, component="skin")
+            column = np.array(fa.transport_bed_shear_stress(component="skin")[:, 100])
+        assert isinstance(series, pd.Series)
+        assert series.name == "Bed Shear Stress (skin)"
+        assert (series.index == fa.transport_timestamps).all()
+        assert np.allclose(series.to_numpy(), column)
+
+    def test_get_bed_shear_stress_cell_required(self):
+        with UnsteadyPlan(SEDIMENT_2D_HDF) as plan:
+            fa = plan.sediment.flow_areas()[AREA]
+            with pytest.raises(ValueError):
+                fa.get_bed_shear_stress(component="skin")
+
+    def test_get_bed_shear_stress_component_has_no_default(self):
+        with UnsteadyPlan(SEDIMENT_2D_HDF) as plan:
+            fa = plan.sediment.flow_areas()[AREA]
+            with pytest.raises(TypeError):
+                fa.get_bed_shear_stress(cell=100)  # type: ignore[call-arg]
 
 
 # ---------------------------------------------------------------------------
@@ -203,9 +257,9 @@ class TestConsolidatedCellAccessors:
         with UnsteadyPlan(SEDIMENT_2D_HDF) as plan:
             fa = plan.sediment.flow_areas()[AREA]
             with pytest.raises(ValueError):
-                fa.fraction_suspended()
+                fa.get_fraction_suspended()
             with pytest.raises(ValueError):
-                fa.total_load_concentration()
+                fa.get_total_load_concentration()
 
 
 @skip_if_no_2d_sediment_example
@@ -213,17 +267,88 @@ class TestTransportRate:
     def test_total_first_column(self):
         with UnsteadyPlan(SEDIMENT_2D_HDF) as plan:
             fa = plan.sediment.flow_areas()[AREA]
-            df = fa.transport_rate(face=200)
+            df = fa.get_transport_rate(face=200)
         assert df.columns[0] == "Total"
 
     def test_discovers_present_grains_only(self):
         with UnsteadyPlan(SEDIMENT_2D_HDF) as plan:
             fa = plan.sediment.flow_areas()[AREA]
-            df = fa.transport_rate(face=200)
+            df = fa.get_transport_rate(face=200)
         assert list(df.columns) == ["Total"] + EXPECTED_TRANSPORT_GRAINS
 
     def test_face_required_raises_valueerror(self):
         with UnsteadyPlan(SEDIMENT_2D_HDF) as plan:
             fa = plan.sediment.flow_areas()[AREA]
             with pytest.raises(ValueError):
-                fa.transport_rate()
+                fa.get_transport_rate()
+
+    def test_capacity_reads_capacity_record(self):
+        with UnsteadyPlan(SEDIMENT_2D_HDF) as plan:
+            fa = plan.sediment.flow_areas()[AREA]
+            capacity = fa.get_transport_rate(face=200, capacity=True)
+        assert isinstance(capacity, pd.DataFrame)
+        assert list(capacity.columns) == ["Total"] + EXPECTED_TRANSPORT_GRAINS
+
+    def test_capacity_defaults_to_false(self):
+        with UnsteadyPlan(SEDIMENT_2D_HDF) as plan:
+            fa = plan.sediment.flow_areas()[AREA]
+            default = fa.get_transport_rate(face=200)
+            explicit_rate = fa.get_transport_rate(face=200, capacity=False)
+        assert default["Total"].equals(explicit_rate["Total"])
+
+
+# ---------------------------------------------------------------------------
+# Sediment Transport -- transport rate along a profile line
+# ---------------------------------------------------------------------------
+
+
+def _left_to_right_line(hydraulics_fa) -> np.ndarray:
+    """Build a profile line spanning the flow area from its cell centers."""
+    centers = hydraulics_fa.cell_centers
+    return np.array(
+        [centers[np.argmin(centers[:, 0])], centers[np.argmax(centers[:, 0])]]
+    )
+
+
+@skip_if_no_2d_sediment_example
+class TestTransportRateAlongLine:
+    def test_returns_dataframe_with_grain_columns(self):
+        with UnsteadyPlan(SEDIMENT_2D_HDF) as plan:
+            fa = plan.sediment.flow_areas()[AREA]
+            xy = _left_to_right_line(plan.flow_areas[AREA])
+            df = fa.transport_rate_along_line(xy)
+        assert isinstance(df, pd.DataFrame)
+        assert list(df.columns) == ["Total"] + EXPECTED_TRANSPORT_GRAINS
+
+    def test_indexed_by_transport_timestamps(self):
+        with UnsteadyPlan(SEDIMENT_2D_HDF) as plan:
+            sed = plan.sediment
+            fa = sed.flow_areas()[AREA]
+            xy = _left_to_right_line(plan.flow_areas[AREA])
+            df = fa.transport_rate_along_line(xy)
+            ts = sed.transport_timestamps
+        assert (df.index == ts).all()
+
+    def test_matches_manual_signed_sum_of_faces(self):
+        # Cross-check the fence summation against the already-verified
+        # single-face get_transport_rate accessor.
+        with UnsteadyPlan(SEDIMENT_2D_HDF) as plan:
+            fa = plan.sediment.flow_areas()[AREA]
+            hydraulics_fa = plan.flow_areas[AREA]
+            xy = _left_to_right_line(hydraulics_fa)
+            df = fa.transport_rate_along_line(xy)
+            faces_df = hydraulics_fa.faces_along_line(xy)
+            signs = np.where(faces_df["orientation"].to_numpy(dtype=bool), -1.0, 1.0)
+            expected_total = np.zeros(len(df))
+            for face, sign in zip(faces_df["face"], signs, strict=True):
+                expected_total += sign * fa.get_transport_rate(face=int(face))[
+                    "Total"
+                ].to_numpy()
+        assert np.allclose(df["Total"].to_numpy(), expected_total)
+
+    def test_walk_method_raises_notimplementederror(self):
+        with UnsteadyPlan(SEDIMENT_2D_HDF) as plan:
+            fa = plan.sediment.flow_areas()[AREA]
+            xy = _left_to_right_line(plan.flow_areas[AREA])
+            with pytest.raises(NotImplementedError):
+                fa.transport_rate_along_line(xy, method="walk")

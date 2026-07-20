@@ -148,26 +148,26 @@ class TestConsolidatedMass:
     def test_cumulative_inflow_total_first_column(self):
         with UnsteadyPlan(SEDIMENT_1D_MASS_HDF) as plan:
             xs = plan.sediment.cross_sections()[FIRST_XS]
-            df = xs.cumulative_inflow(quantity="mass")
+            df = xs.get_cumulative_inflow(quantity="mass")
         assert isinstance(df, pd.DataFrame)
         assert df.columns[0] == "Total"
 
     def test_cumulative_inflow_discovers_present_grains_only(self):
         with UnsteadyPlan(SEDIMENT_1D_MASS_HDF) as plan:
             xs = plan.sediment.cross_sections()[FIRST_XS]
-            df = xs.cumulative_inflow(quantity="mass")
+            df = xs.get_cumulative_inflow(quantity="mass")
         assert list(df.columns) == ["Total"] + EXPECTED_GRAINS_5_TO_16
 
     def test_cumulative_outflow_same_grain_set(self):
         with UnsteadyPlan(SEDIMENT_1D_MASS_HDF) as plan:
             xs = plan.sediment.cross_sections()[FIRST_XS]
-            df = xs.cumulative_outflow(quantity="mass")
+            df = xs.get_cumulative_outflow(quantity="mass")
         assert list(df.columns) == ["Total"] + EXPECTED_GRAINS_5_TO_16
 
     def test_indexed_by_sediment_timestamps(self):
         with UnsteadyPlan(SEDIMENT_1D_MASS_HDF) as plan:
             sed = plan.sediment
-            df = sed.cross_sections()[FIRST_XS].cumulative_inflow(quantity="mass")
+            df = sed.cross_sections()[FIRST_XS].get_cumulative_inflow(quantity="mass")
             ts = sed.cross_section_timestamps
         assert (df.index == ts).all()
 
@@ -176,7 +176,7 @@ class TestConsolidatedMass:
         # (within float32 rounding error accumulated over 1440 timesteps).
         with UnsteadyPlan(SEDIMENT_1D_MASS_HDF) as plan:
             xs = plan.sediment.cross_sections()[FIRST_XS]
-            df = xs.cumulative_inflow(quantity="mass")
+            df = xs.get_cumulative_inflow(quantity="mass")
         grain_sum = df.drop(columns="Total").sum(axis=1)
         assert np.allclose(grain_sum, df["Total"], rtol=1e-4, atol=1.0)
 
@@ -184,19 +184,19 @@ class TestConsolidatedMass:
         with UnsteadyPlan(SEDIMENT_1D_MASS_HDF) as plan:
             xs = plan.sediment.cross_sections()[FIRST_XS]
             with pytest.raises(KeyError):
-                xs.cumulative_inflow(quantity="vol")
+                xs.get_cumulative_inflow(quantity="vol")
 
     def test_invalid_quantity_raises_valueerror(self):
         with UnsteadyPlan(SEDIMENT_1D_MASS_HDF) as plan:
             xs = plan.sediment.cross_sections()[FIRST_XS]
             with pytest.raises(ValueError):
-                xs.cumulative_inflow(quantity="bogus")  # type: ignore[arg-type]
+                xs.get_cumulative_inflow(quantity="bogus")  # type: ignore[arg-type]
 
     def test_quantity_has_no_default(self):
         with UnsteadyPlan(SEDIMENT_1D_MASS_HDF) as plan:
             xs = plan.sediment.cross_sections()[FIRST_XS]
             with pytest.raises(TypeError):
-                xs.cumulative_inflow()  # type: ignore[call-arg]
+                xs.get_cumulative_inflow()  # type: ignore[call-arg]
 
 
 @skip_if_no_sediment_examples
@@ -204,11 +204,11 @@ class TestConsolidatedVolume:
     def test_cumulative_inflow_vol(self):
         with UnsteadyPlan(SEDIMENT_1D_VOL_HDF) as plan:
             xs = plan.sediment.cross_sections()[FIRST_XS]
-            df = xs.cumulative_inflow(quantity="vol")
+            df = xs.get_cumulative_inflow(quantity="vol")
         assert list(df.columns) == ["Total"] + EXPECTED_GRAINS_5_TO_16
 
     def test_mass_requested_on_vol_file_raises_keyerror(self):
         with UnsteadyPlan(SEDIMENT_1D_VOL_HDF) as plan:
             xs = plan.sediment.cross_sections()[FIRST_XS]
             with pytest.raises(KeyError):
-                xs.cumulative_inflow(quantity="mass")
+                xs.get_cumulative_inflow(quantity="mass")
