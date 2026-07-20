@@ -44,6 +44,17 @@ skip_if_no_sediment_examples = pytest.mark.skipif(
     reason="1D sediment example HDF files not found on this machine",
 )
 
+# 2-D sediment transport example plan.
+SEDIMENT_2D_HDF = Path(
+    r"Z:\HEC-RAS Examples\Example_Projects_6_6\2D Sediment Transport"
+    r"\Chippewa_2D\Chippewa_2D.p01.hdf"
+)
+
+skip_if_no_2d_sediment_example = pytest.mark.skipif(
+    not SEDIMENT_2D_HDF.exists(),
+    reason="2D sediment example HDF file not found on this machine",
+)
+
 
 # ---------------------------------------------------------------------------
 # Synthetic HDF fixture helpers

@@ -77,6 +77,8 @@ from .unsteady_plan import (  # noqa: F401
 )
 from .unsteady_sediment import (  # noqa: F401
     SedimentCrossSectionResults,
+    SedimentFlowAreaResults,
+    SedimentFlowAreaResultsCollection,
     UnsteadySediment,
 )
 

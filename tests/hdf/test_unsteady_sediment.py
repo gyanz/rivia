@@ -57,13 +57,13 @@ class TestSedimentAccessor:
 class TestSedimentTimestamps:
     def test_returns_datetimeindex(self):
         with UnsteadyPlan(SEDIMENT_1D_MASS_HDF) as plan:
-            ts = plan.sediment.timestamps
+            ts = plan.sediment.cross_section_timestamps
         assert isinstance(ts, pd.DatetimeIndex)
         assert ts.is_monotonic_increasing
 
     def test_differs_from_hydraulics_mapping_interval(self):
         with UnsteadyPlan(SEDIMENT_1D_MASS_HDF) as plan:
-            sed_ts = plan.sediment.timestamps
+            sed_ts = plan.sediment.cross_section_timestamps
             hydraulics_ts = plan.mapping_timestamps
         # Sediment writes at its own interval -- not required to match the
         # hydraulics Base Output interval in either count or spacing.
@@ -132,7 +132,7 @@ class TestScalarProperties:
             sed = plan.sediment
             xs = sed.cross_sections()[FIRST_XS]
             series = getattr(xs, attr)
-            ts = sed.timestamps
+            ts = sed.cross_section_timestamps
         assert isinstance(series, pd.Series)
         assert len(series) == len(ts)
         assert (series.index == ts).all()
@@ -168,7 +168,7 @@ class TestConsolidatedMass:
         with UnsteadyPlan(SEDIMENT_1D_MASS_HDF) as plan:
             sed = plan.sediment
             df = sed.cross_sections()[FIRST_XS].cumulative_inflow(quantity="mass")
-            ts = sed.timestamps
+            ts = sed.cross_section_timestamps
         assert (df.index == ts).all()
 
     def test_grain_columns_sum_to_total(self):

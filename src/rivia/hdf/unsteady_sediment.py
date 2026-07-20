@@ -9,12 +9,17 @@ result classes -- does not grow further.
 :class:`UnsteadySediment` does not open its own HDF handle: it borrows the
 handle already opened by the parent
 :class:`~rivia.hdf.unsteady_plan.UnsteadyPlan` (reached via
-``plan.sediment``) and reuses that plan's cross-section geometry join
-(:class:`~rivia.hdf.unsteady_plan.CrossSectionResultsCollection`).
+``plan.sediment``).  1D cross-section results reuse that plan's existing
+cross-section geometry join
+(:class:`~rivia.hdf.unsteady_plan.CrossSectionResultsCollection`); 2D flow
+area results reuse the plan's flow-area name list
+(:attr:`~rivia.hdf.unsteady_plan.UnsteadyPlan.flow_areas`) and read the
+``Sediment Bed`` and ``Sediment Transport`` output blocks directly.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterator, Mapping
 from typing import TYPE_CHECKING, Literal
 
 import numpy as np
@@ -30,7 +35,7 @@ if TYPE_CHECKING:
     from .unsteady_plan import UnsteadyPlan
 
 # ---------------------------------------------------------------------------
-# HDF path constants
+# HDF path constants -- 1D cross sections
 # ---------------------------------------------------------------------------
 _SED_ROOT = "Results/Unsteady/Output/Output Blocks/Sediment/Sediment Time Series"
 _SED_TS_XS = f"{_SED_ROOT}/Cross Sections"
@@ -41,6 +46,23 @@ _N_GRAIN_CLASSES = 20
 
 Quantity = Literal["mass", "vol"]
 _QUANTITY_BASE = {"mass": "Mass", "vol": "Vol"}
+
+# ---------------------------------------------------------------------------
+# HDF path constants -- 2D flow areas
+# ---------------------------------------------------------------------------
+_SED_BED_ROOT = "Results/Unsteady/Output/Output Blocks/Sediment Bed"
+_SED_BED_TS_ROOT = f"{_SED_BED_ROOT}/Unsteady Time Series"
+_SED_BED_TS_2D = f"{_SED_BED_TS_ROOT}/2D Flow Areas"
+_SED_BED_TIME_STAMP_DS = f"{_SED_BED_TS_ROOT}/Time Date Stamp"
+_SED_BED_SUM_2D = f"{_SED_BED_ROOT}/Summary Output/2D Flow Areas"
+
+_SED_TRANSPORT_ROOT = "Results/Unsteady/Output/Output Blocks/Sediment Transport"
+_SED_TRANSPORT_TS_ROOT = f"{_SED_TRANSPORT_ROOT}/Unsteady Time Series"
+_SED_TRANSPORT_TS_2D = f"{_SED_TRANSPORT_TS_ROOT}/2D Flow Areas"
+_SED_TRANSPORT_TIME_STAMP_DS = f"{_SED_TRANSPORT_TS_ROOT}/Time Date Stamp"
+
+ShearComponent = Literal["skin", "total"]
+_SHEAR_SUFFIX = {"skin": "Skin", "total": "Total"}
 
 
 def _grain_class_names(hdf: h5py.File) -> list[str]:
@@ -224,6 +246,291 @@ class SedimentCrossSectionResults(_CrossSectionResultsBase):
         return self._consolidated(quantity, "Out Cum")
 
 
+class SedimentFlowAreaResults:
+    """Sediment Bed and Sediment Transport results for one 2-D flow area.
+
+    Returned by ``plan.sediment.flow_areas()[name]``.  ``Sediment Bed`` and
+    ``Sediment Transport`` are two independent HEC-RAS output blocks with
+    their own timestamp axes; both are exposed here since the two blocks
+    describe the same flow area.
+
+    Parameters
+    ----------
+    hdf :
+        Open ``h5py.File`` handle -- kept alive by the parent
+        :class:`UnsteadySediment`.
+    name :
+        Flow area name, matching ``Geometry/2D Flow Areas``.
+    bed_timestamps_fn :
+        Zero-argument callable returning the Sediment Bed block's
+        ``pd.DatetimeIndex``.  Resolved lazily on first access.
+    transport_timestamps_fn :
+        Zero-argument callable returning the Sediment Transport block's
+        ``pd.DatetimeIndex``.  Resolved lazily on first access.
+    """
+
+    def __init__(
+        self,
+        hdf: h5py.File,
+        name: str,
+        bed_timestamps_fn: Callable[[], pd.DatetimeIndex],
+        transport_timestamps_fn: Callable[[], pd.DatetimeIndex],
+    ) -> None:
+        self.name = name
+        self._hdf = hdf
+        self._bed_root = f"{_SED_BED_TS_2D}/{name}"
+        self._bed_sum_root = f"{_SED_BED_SUM_2D}/{name}"
+        self._transport_root = f"{_SED_TRANSPORT_TS_2D}/{name}"
+        self._bed_timestamps_fn = bed_timestamps_fn
+        self._transport_timestamps_fn = transport_timestamps_fn
+        self._bed_timestamps: pd.DatetimeIndex | None = None
+        self._transport_timestamps: pd.DatetimeIndex | None = None
+
+    def __repr__(self) -> str:
+        return f"SedimentFlowAreaResults({self.name!r})"
+
+    # ------------------------------------------------------------------
+    # Timestamps
+    # ------------------------------------------------------------------
+
+    @property
+    def bed_timestamps(self) -> pd.DatetimeIndex:
+        """Sediment Bed block time stamps as a ``pd.DatetimeIndex``."""
+        if self._bed_timestamps is None:
+            self._bed_timestamps = self._bed_timestamps_fn()
+        return self._bed_timestamps
+
+    @property
+    def transport_timestamps(self) -> pd.DatetimeIndex:
+        """Sediment Transport block time stamps as a ``pd.DatetimeIndex``."""
+        if self._transport_timestamps is None:
+            self._transport_timestamps = self._transport_timestamps_fn()
+        return self._transport_timestamps
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _dataset(self, root: str, name: str) -> h5py.Dataset:
+        ds = self._hdf.get(f"{root}/{name}")
+        if ds is None:
+            raise KeyError(f"Dataset '{name}' not found at '{root}'.")
+        return ds
+
+    def _column(self, root: str, name: str, index: int) -> np.ndarray:
+        return np.array(self._dataset(root, name)[:, index])
+
+    def _consolidated(
+        self, root: str, base: str, index: int, timestamps: pd.DatetimeIndex
+    ) -> pd.DataFrame:
+        """Build a Total + per-grain-class DataFrame for one cell/face column.
+
+        Iterates every grain-class name and includes only the columns
+        actually present in the HDF file -- the active grain classes depend
+        on the user's sediment gradation setup and are never hard-coded.
+        """
+        total = self._column(root, f"{base} - Total", index)
+        data: dict[str, np.ndarray] = {"Total": total}
+        for name in _grain_class_names(self._hdf):
+            key = f"{base} - {name}"
+            if f"{root}/{key}" in self._hdf:
+                data[name] = self._column(root, key, index)
+        return pd.DataFrame(data, index=timestamps)
+
+    # ------------------------------------------------------------------
+    # Sediment Bed
+    # ------------------------------------------------------------------
+
+    @property
+    def bed_elevation(self) -> h5py.Dataset:
+        """Cell bed elevation, shape ``(n_t, n_cells)``.
+
+        Slice to control what is loaded, e.g. ``bed_elevation[t]``.
+        """
+        return self._dataset(self._bed_root, "Cell Bed Elevation")
+
+    @property
+    def bed_change(self) -> h5py.Dataset:
+        """Cell bed change, shape ``(n_t, n_cells)``.
+
+        Slice to control what is loaded, e.g. ``bed_change[t]``.
+        """
+        return self._dataset(self._bed_root, "Cell Bed Change")
+
+    @property
+    def initial_bed_elevation(self) -> np.ndarray:
+        """Cell bed elevation before the simulation starts, shape ``(n_cells,)``."""
+        return np.array(self._dataset(self._bed_root, "Cell Initial Bed Elevation")[0])
+
+    def max_bed_elevation(self) -> np.ndarray:
+        """Maximum bed elevation summary, as written by HEC-RAS.
+
+        Returns the ``Maximum Bed Elevation`` dataset unmodified.  Unlike the
+        hydraulics ``max_water_surface`` summary (shape ``(2, n_cells)``,
+        value/time rows per cell), this dataset's shape has not been
+        confirmed to follow that convention across HEC-RAS projects -- it is
+        returned as-is rather than parsed into a DataFrame.
+        """
+        return np.array(self._dataset(self._bed_sum_root, "Maximum Bed Elevation"))
+
+    def min_bed_elevation(self) -> np.ndarray:
+        """Minimum bed elevation summary, as written by HEC-RAS.
+
+        See :meth:`max_bed_elevation` for a caveat on this dataset's shape.
+        """
+        return np.array(self._dataset(self._bed_sum_root, "Minimum Bed Elevation"))
+
+    # ------------------------------------------------------------------
+    # Sediment Transport
+    # ------------------------------------------------------------------
+
+    def bed_shear_stress(self, *, component: ShearComponent) -> h5py.Dataset:
+        """Cell bed shear stress, shape ``(n_t, n_cells)``.
+
+        Parameters
+        ----------
+        component : {"skin", "total"}
+            Whether to read ``Cell Bed Shear Stress - Skin`` or
+            ``... - Total``.  Required -- these are two distinct physical
+            quantities with no meaningful default.
+
+        Returns
+        -------
+        h5py.Dataset
+            Slice to control what is loaded, e.g. ``result[t]`` for one
+            timestep or ``result[:]`` for the full array.
+        """
+        return self._dataset(
+            self._transport_root, f"Cell Bed Shear Stress - {_SHEAR_SUFFIX[component]}"
+        )
+
+    def fraction_suspended(self, *, cell: int | None = None) -> pd.DataFrame:
+        """Suspended-load fraction over time for one cell, split by grain class.
+
+        Parameters
+        ----------
+        cell : int, optional
+            0-based cell index.  Required.
+
+        Returns
+        -------
+        pandas.DataFrame
+            Indexed by :attr:`transport_timestamps`.  First column
+            ``"Total"``, followed by one column per grain class actually
+            present in the file.
+
+        Raises
+        ------
+        ValueError
+            If *cell* is not specified.
+        """
+        if cell is None:
+            raise ValueError("cell must be specified.")
+        return self._consolidated(
+            self._transport_root,
+            "Cell Fraction Suspended",
+            cell,
+            self.transport_timestamps,
+        )
+
+    def total_load_concentration(self, *, cell: int | None = None) -> pd.DataFrame:
+        """Total-load concentration over time for one cell, split by grain class.
+
+        Parameters
+        ----------
+        cell : int, optional
+            0-based cell index.  Required.
+
+        Returns
+        -------
+        pandas.DataFrame
+            Indexed by :attr:`transport_timestamps`.  First column
+            ``"Total"``, followed by one column per grain class actually
+            present in the file.
+
+        Raises
+        ------
+        ValueError
+            If *cell* is not specified.
+        """
+        if cell is None:
+            raise ValueError("cell must be specified.")
+        return self._consolidated(
+            self._transport_root,
+            "Cell Total-load Concentration",
+            cell,
+            self.transport_timestamps,
+        )
+
+    def transport_rate(self, *, face: int | None = None) -> pd.DataFrame:
+        """Total-load transport rate over time for one face, split by grain class.
+
+        Parameters
+        ----------
+        face : int, optional
+            0-based face index.  Required.
+
+        Returns
+        -------
+        pandas.DataFrame
+            Indexed by :attr:`transport_timestamps`.  First column
+            ``"Total"``, followed by one column per grain class actually
+            present in the file.
+
+        Raises
+        ------
+        ValueError
+            If *face* is not specified.
+        """
+        if face is None:
+            raise ValueError("face must be specified.")
+        return self._consolidated(
+            self._transport_root,
+            "Face Total-load Transport Rate",
+            face,
+            self.transport_timestamps,
+        )
+
+
+class SedimentFlowAreaResultsCollection(Mapping[str, SedimentFlowAreaResults]):
+    """Collection of :class:`SedimentFlowAreaResults`, keyed by flow-area name.
+
+    Returned by :meth:`UnsteadySediment.flow_areas`.  Flow area names are
+    taken from the plan's geometry (``Geometry/2D Flow Areas``) rather than
+    from the sediment result groups themselves, so a name is available even
+    if one of the two sediment blocks is absent for that area; the specific
+    accessor raises ``KeyError`` in that case.
+    """
+
+    def __init__(
+        self,
+        hdf: h5py.File,
+        names: list[str],
+        bed_timestamps_fn: Callable[[], pd.DatetimeIndex],
+        transport_timestamps_fn: Callable[[], pd.DatetimeIndex],
+    ) -> None:
+        self._hdf = hdf
+        self._names = names
+        self._bed_timestamps_fn = bed_timestamps_fn
+        self._transport_timestamps_fn = transport_timestamps_fn
+        self._cache: dict[str, SedimentFlowAreaResults] = {}
+
+    def __getitem__(self, name: str) -> SedimentFlowAreaResults:
+        if name not in self._names:
+            raise KeyError(f"2D flow area {name!r} not found. Available: {self._names}")
+        if name not in self._cache:
+            self._cache[name] = SedimentFlowAreaResults(
+                self._hdf, name, self._bed_timestamps_fn, self._transport_timestamps_fn
+            )
+        return self._cache[name]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._names)
+
+    def __len__(self) -> int:
+        return len(self._names)
+
+
 class UnsteadySediment:
     """Sediment results view for an :class:`~rivia.hdf.unsteady_plan.UnsteadyPlan`.
 
@@ -244,14 +551,16 @@ class UnsteadySediment:
         self._plan = plan
         self._hdf = plan._hdf
         self._cross_sections: CrossSectionResultsCollection | None = None
+        self._flow_areas: SedimentFlowAreaResultsCollection | None = None
 
     @property
-    def timestamps(self) -> pd.DatetimeIndex:
-        """Sediment output time stamps as a ``pd.DatetimeIndex``.
+    def cross_section_timestamps(self) -> pd.DatetimeIndex:
+        """1D cross-section sediment output time stamps as a ``pd.DatetimeIndex``.
 
         Parsed from ``.../Sediment/Sediment Time Series/Time Date Stamp``.
         This interval is independent of the hydraulics mapping interval
-        (:attr:`~rivia.hdf.unsteady_plan.UnsteadyPlan.mapping_timestamps`).
+        (:attr:`~rivia.hdf.unsteady_plan.UnsteadyPlan.mapping_timestamps`)
+        and of the 2D :attr:`bed_timestamps` / :attr:`transport_timestamps`.
 
         Raises
         ------
@@ -280,7 +589,8 @@ class UnsteadySediment:
         CrossSectionResultsCollection
             Collection supporting ``[key]``, integer index, and ``names``,
             with items of type :class:`SedimentCrossSectionResults`.
-            Timestamps are available as ``coll.timestamps`` (:attr:`timestamps`).
+            Timestamps are available as ``coll.timestamps``
+            (:attr:`cross_section_timestamps`).
         """
         if self._cross_sections is None:
             self._cross_sections = CrossSectionResultsCollection(
@@ -288,6 +598,78 @@ class UnsteadySediment:
                 _SED_TS_XS,
                 result_cls=SedimentCrossSectionResults,
                 attrs_path=_XS_GEOM_ATTRS,
-                timestamps_fn=lambda: self.timestamps,
+                timestamps_fn=lambda: self.cross_section_timestamps,
             )
         return self._cross_sections
+
+    # ------------------------------------------------------------------
+    # 2D flow areas
+    # ------------------------------------------------------------------
+
+    @property
+    def bed_timestamps(self) -> pd.DatetimeIndex:
+        """Sediment Bed block time stamps as a ``pd.DatetimeIndex``.
+
+        Parsed from ``Sediment Bed/Unsteady Time Series/Time Date Stamp``.
+        Independent of :attr:`cross_section_timestamps` (the 1D axis) and of
+        :attr:`transport_timestamps`.
+
+        Raises
+        ------
+        KeyError
+            If the Sediment Bed ``Time Date Stamp`` dataset is absent -- e.g.
+            this plan has no 2D sediment transport analysis.
+        """
+        ds = self._hdf.get(_SED_BED_TIME_STAMP_DS)
+        if ds is None:
+            raise KeyError(
+                f"'{_SED_BED_TIME_STAMP_DS}' not found. "
+                "Ensure this plan includes a 2D sediment transport analysis."
+            )
+        raw = np.array(ds).astype(str)
+        return _parse_hec_ts_array(raw, _RAS_TS_FMT)
+
+    @property
+    def transport_timestamps(self) -> pd.DatetimeIndex:
+        """Sediment Transport block time stamps as a ``pd.DatetimeIndex``.
+
+        Parsed from ``Sediment Transport/Unsteady Time Series/Time Date
+        Stamp``.  Written at the unsteady-flow mapping interval.
+
+        Raises
+        ------
+        KeyError
+            If the Sediment Transport ``Time Date Stamp`` dataset is absent
+            -- e.g. this plan has no 2D sediment transport analysis.
+        """
+        ds = self._hdf.get(_SED_TRANSPORT_TIME_STAMP_DS)
+        if ds is None:
+            raise KeyError(
+                f"'{_SED_TRANSPORT_TIME_STAMP_DS}' not found. "
+                "Ensure this plan includes a 2D sediment transport analysis."
+            )
+        raw = np.array(ds).astype(str)
+        return _parse_hec_ts_array(raw, _RAS_TS_FMT)
+
+    def flow_areas(self) -> SedimentFlowAreaResultsCollection:
+        """2D flow areas with sediment bed and transport time-series results.
+
+        Flow area names are taken from ``plan.flow_areas`` (geometry), so
+        the collection is available even when a particular area lacks
+        sediment output; the specific accessor raises ``KeyError`` in that
+        case.
+
+        Returns
+        -------
+        SedimentFlowAreaResultsCollection
+            Mapping keyed by flow-area name, with items of type
+            :class:`SedimentFlowAreaResults`.
+        """
+        if self._flow_areas is None:
+            self._flow_areas = SedimentFlowAreaResultsCollection(
+                self._hdf,
+                self._plan.flow_areas.names,
+                bed_timestamps_fn=lambda: self.bed_timestamps,
+                transport_timestamps_fn=lambda: self.transport_timestamps,
+            )
+        return self._flow_areas
