@@ -287,7 +287,7 @@ class TestTransportRate:
             fa = plan.sediment.flow_areas()[AREA]
             capacity = fa.get_transport_rate(face=200, capacity=True)
         assert isinstance(capacity, pd.DataFrame)
-        assert list(capacity.columns) == ["Total"] + EXPECTED_TRANSPORT_GRAINS
+        assert list(capacity.columns) == ["Total"]
 
     def test_capacity_defaults_to_false(self):
         with UnsteadyPlan(SEDIMENT_2D_HDF) as plan:

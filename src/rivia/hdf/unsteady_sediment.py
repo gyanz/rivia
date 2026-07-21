@@ -615,15 +615,18 @@ class SedimentFlowAreaResults:
             0-based face index.  Required.
         capacity : bool, optional
             When ``True``, read the ``Face Total-load Transport Capacity``
-            record instead of ``Face Total-load Transport Rate``.  Default
-            ``False``.
+            record instead of ``Face Total-load Transport Rate``.  Unlike
+            the rate record, capacity is written as a single flat dataset
+            with no per-grain-class breakdown, so the result has only a
+            ``"Total"`` column.  Default ``False``.
 
         Returns
         -------
         pandas.DataFrame
-            Indexed by :attr:`transport_timestamps`.  First column
-            ``"Total"``, followed by one column per grain class actually
-            present in the file.
+            Indexed by :attr:`transport_timestamps`.  When *capacity* is
+            ``False``, first column ``"Total"``, followed by one column per
+            grain class actually present in the file.  When *capacity* is
+            ``True``, only a ``"Total"`` column.
 
         Raises
         ------
@@ -632,14 +635,14 @@ class SedimentFlowAreaResults:
         """
         if face is None:
             raise ValueError("face must be specified.")
-        base = (
-            "Face Total-load Transport Capacity"
-            if capacity
-            else "Face Total-load Transport Rate"
-        )
+        if capacity:
+            total = self._column(
+                self._transport_root, "Face Total-load Transport Capacity", face
+            )
+            return pd.DataFrame({"Total": total}, index=self.transport_timestamps)
         return self._consolidated(
             self._transport_root,
-            base,
+            "Face Total-load Transport Rate",
             face,
             self.transport_timestamps,
         )
