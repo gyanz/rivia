@@ -17,9 +17,15 @@ from rivia.hdf.unsteady_sediment import (
     SedimentFlowAreaResultsCollection,
 )
 
-from .conftest import SEDIMENT_2D_HDF, skip_if_no_2d_sediment_example
+from .conftest import (
+    SEDIMENT_2D_HDF,
+    SEDIMENT_2D_LEVEL3_HDF,
+    skip_if_no_2d_sediment_example,
+    skip_if_no_2d_sediment_level3_example,
+)
 
 AREA = "Perimeter 1"
+LEVEL3_AREA = "2DArea"
 EXPECTED_TRANSPORT_GRAINS = [
     "FS", "MS", "CS", "VCS", "VFG", "FG", "MG", "CG", "VCG", "SC",
 ]
@@ -297,6 +303,26 @@ class TestTransportRate:
         assert default["Total"].equals(explicit_rate["Total"])
 
 
+@skip_if_no_2d_sediment_level3_example
+class TestTransportRateLevel3Fallback:
+    """Sediment output level 3 writes only the unsuffixed consolidated record."""
+
+    def test_total_only_column(self):
+        with UnsteadyPlan(SEDIMENT_2D_LEVEL3_HDF) as plan:
+            fa = plan.sediment.flow_areas()[LEVEL3_AREA]
+            df = fa.get_transport_rate(face=200)
+        assert isinstance(df, pd.DataFrame)
+        assert list(df.columns) == ["Total"]
+
+    def test_indexed_by_transport_timestamps(self):
+        with UnsteadyPlan(SEDIMENT_2D_LEVEL3_HDF) as plan:
+            sed = plan.sediment
+            fa = sed.flow_areas()[LEVEL3_AREA]
+            df = fa.get_transport_rate(face=200)
+            ts = sed.transport_timestamps
+        assert (df.index == ts).all()
+
+
 # ---------------------------------------------------------------------------
 # Sediment Transport -- transport rate along a profile line
 # ---------------------------------------------------------------------------
@@ -352,3 +378,38 @@ class TestTransportRateAlongLine:
             xy = _left_to_right_line(plan.flow_areas[AREA])
             with pytest.raises(NotImplementedError):
                 fa.transport_rate_along_line(xy, method="walk")
+
+
+def _bottom_to_top_line(hydraulics_fa) -> np.ndarray:
+    """Build a cross-channel profile line spanning the flow area's narrow axis."""
+    centers = hydraulics_fa.cell_centers
+    x_mid = np.median(centers[:, 0])
+    return np.array([[x_mid, centers[:, 1].min()], [x_mid, centers[:, 1].max()]])
+
+
+@skip_if_no_2d_sediment_level3_example
+class TestTransportRateAlongLineLevel3Fallback:
+    """Sediment output level 3 writes only the unsuffixed consolidated record."""
+
+    def test_total_only_column(self):
+        with UnsteadyPlan(SEDIMENT_2D_LEVEL3_HDF) as plan:
+            fa = plan.sediment.flow_areas()[LEVEL3_AREA]
+            xy = _bottom_to_top_line(plan.flow_areas[LEVEL3_AREA])
+            df = fa.transport_rate_along_line(xy)
+        assert isinstance(df, pd.DataFrame)
+        assert list(df.columns) == ["Total"]
+
+    def test_matches_manual_signed_sum_of_faces(self):
+        with UnsteadyPlan(SEDIMENT_2D_LEVEL3_HDF) as plan:
+            fa = plan.sediment.flow_areas()[LEVEL3_AREA]
+            hydraulics_fa = plan.flow_areas[LEVEL3_AREA]
+            xy = _bottom_to_top_line(hydraulics_fa)
+            df = fa.transport_rate_along_line(xy)
+            faces_df = hydraulics_fa.faces_along_line(xy)
+            signs = np.where(faces_df["orientation"].to_numpy(dtype=bool), -1.0, 1.0)
+            expected_total = np.zeros(len(df))
+            for face, sign in zip(faces_df["face"], signs, strict=True):
+                expected_total += sign * fa.get_transport_rate(face=int(face))[
+                    "Total"
+                ].to_numpy()
+        assert np.allclose(df["Total"].to_numpy(), expected_total)

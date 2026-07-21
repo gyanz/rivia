@@ -55,6 +55,18 @@ skip_if_no_2d_sediment_example = pytest.mark.skipif(
     reason="2D sediment example HDF file not found on this machine",
 )
 
+# 2-D sediment transport example plan run at sediment output level 3 -- the
+# "Face Total-load Transport Rate" record has no per-grain-class suffix.
+SEDIMENT_2D_LEVEL3_HDF = Path(
+    r"Z:\HEC-RAS Examples\Example_Projects_6_6\2D Sediment Transport"
+    r"\Weise_2D\Weise.p01.hdf"
+)
+
+skip_if_no_2d_sediment_level3_example = pytest.mark.skipif(
+    not SEDIMENT_2D_LEVEL3_HDF.exists(),
+    reason="2D sediment (level 3) example HDF file not found on this machine",
+)
+
 
 # ---------------------------------------------------------------------------
 # Synthetic HDF fixture helpers

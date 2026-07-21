@@ -19,6 +19,7 @@ area results reuse the plan's flow-area name list
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Iterator, Mapping
 from typing import TYPE_CHECKING, Literal, overload
 
@@ -33,6 +34,8 @@ if TYPE_CHECKING:
     import h5py
 
     from .unsteady_plan import FlowAreaResults, FlowAreaResultsCollection, UnsteadyPlan
+
+logger = logging.getLogger("rivia.hdf")
 
 # ---------------------------------------------------------------------------
 # HDF path constants -- 1D cross sections
@@ -267,7 +270,12 @@ class SedimentFlowAreaResults:
     ``get_transport_rate`` additionally split the result by grain class,
     returning a ``pandas.DataFrame`` -- except ``get_transport_rate(...,
     capacity=True)``, whose underlying HDF record has no per-grain-class
-    breakdown and returns a single ``"Total"`` column.
+    breakdown and returns a single ``"Total"`` column, and
+    ``get_transport_rate(capacity=False)`` / ``get_total_load_concentration``
+    on a plan whose sediment output level wrote only the unsuffixed
+    consolidated record, which is likewise ``"Total"``-only (see
+    :meth:`SedimentFlowAreaResults.get_transport_rate` and
+    :meth:`SedimentFlowAreaResults.get_total_load_concentration`).
 
     Parameters
     ----------
@@ -368,6 +376,17 @@ class SedimentFlowAreaResults:
                 data[name] = self._column(root, key, index)
         return pd.DataFrame(data, index=timestamps)
 
+    def _signed_sum(
+        self, root: str, name: str, indexes: list[int], signs: np.ndarray
+    ) -> np.ndarray:
+        """Sum one named column over several indexes, each multiplied by its sign.
+
+        Used to net a multi-face fence rather than read a single cell/face
+        column.
+        """
+        cols = np.column_stack([self._column(root, name, i) for i in indexes])
+        return np.asarray((cols * signs[np.newaxis, :]).sum(axis=1))
+
     def _consolidated_signed_sum(
         self,
         root: str,
@@ -379,21 +398,58 @@ class SedimentFlowAreaResults:
         """Build a Total + per-grain-class DataFrame summed over several signed columns.
 
         Same column discovery as :meth:`_consolidated`, but each named record
-        is read for every index in *indexes*, multiplied by the matching
-        entry of *signs* (``+1``/``-1``), and summed -- used to net a
-        multi-face fence rather than read a single cell/face column.
+        is summed across *indexes* via :meth:`_signed_sum`.
         """
-
-        def signed_sum(name: str) -> np.ndarray:
-            cols = np.column_stack([self._column(root, name, i) for i in indexes])
-            return np.asarray((cols * signs[np.newaxis, :]).sum(axis=1))
-
-        data: dict[str, np.ndarray] = {"Total": signed_sum(f"{base} - Total")}
+        data: dict[str, np.ndarray] = {
+            "Total": self._signed_sum(root, f"{base} - Total", indexes, signs)
+        }
         for name in _grain_class_names(self._hdf):
             key = f"{base} - {name}"
             if f"{root}/{key}" in self._hdf:
-                data[name] = signed_sum(key)
+                data[name] = self._signed_sum(root, key, indexes, signs)
         return pd.DataFrame(data, index=timestamps)
+
+    def _total_or_consolidated(
+        self, root: str, base: str, index: int, timestamps: pd.DatetimeIndex
+    ) -> pd.DataFrame:
+        """Read *base* as a Total-only column, falling back to the per-grain family.
+
+        Some sediment compute output levels write *base* as a single
+        unsuffixed dataset (Total only, no per-grain-class breakdown);
+        others split it into a ``<base> - Total`` / ``<base> - <grain>``
+        family. Tries the unsuffixed record first -- cheaper, and the one
+        actually present when the per-grain family is absent.
+        """
+        try:
+            total = self._column(root, base, index)
+            return pd.DataFrame({"Total": total}, index=timestamps)
+        except KeyError:
+            logger.debug(
+                "'%s' not found at '%s'; falling back to per-grain-class family.",
+                base,
+                root,
+            )
+            return self._consolidated(root, base, index, timestamps)
+
+    def _total_or_consolidated_signed_sum(
+        self,
+        root: str,
+        base: str,
+        indexes: list[int],
+        signs: np.ndarray,
+        timestamps: pd.DatetimeIndex,
+    ) -> pd.DataFrame:
+        """Signed-sum variant of :meth:`_total_or_consolidated` for a face fence."""
+        try:
+            total = self._signed_sum(root, base, indexes, signs)
+            return pd.DataFrame({"Total": total}, index=timestamps)
+        except KeyError:
+            logger.debug(
+                "'%s' not found at '%s'; falling back to per-grain-class family.",
+                base,
+                root,
+            )
+            return self._consolidated_signed_sum(root, base, indexes, signs, timestamps)
 
     # ------------------------------------------------------------------
     # Sediment Bed
@@ -580,6 +636,14 @@ class SedimentFlowAreaResults:
     def get_total_load_concentration(self, *, cell: int | None = None) -> pd.DataFrame:
         """Total-load concentration over time for one cell, split by grain class.
 
+        The HDF record for ``Cell Total-load Concentration`` depends on the
+        sediment compute output level: some levels write a per-grain-class
+        family (``... - Total``, ``... - <grain>``, etc.); others write only
+        a single consolidated dataset named ``Cell Total-load Concentration``
+        with no suffix and no per-grain breakdown. This method first tries
+        the unsuffixed record and, if it is absent, falls back to the
+        suffixed per-grain-class family.
+
         Parameters
         ----------
         cell : int, optional
@@ -590,7 +654,9 @@ class SedimentFlowAreaResults:
         pandas.DataFrame
             Indexed by :attr:`transport_timestamps`.  First column
             ``"Total"``, followed by one column per grain class actually
-            present in the file.
+            present in the file -- or only ``"Total"`` if the plan's
+            sediment output level only wrote the unsuffixed consolidated
+            record.
 
         Raises
         ------
@@ -599,7 +665,7 @@ class SedimentFlowAreaResults:
         """
         if cell is None:
             raise ValueError("cell must be specified.")
-        return self._consolidated(
+        return self._total_or_consolidated(
             self._transport_root,
             "Cell Total-load Concentration",
             cell,
@@ -610,6 +676,14 @@ class SedimentFlowAreaResults:
         self, *, face: int | None = None, capacity: bool = False
     ) -> pd.DataFrame:
         """Total-load transport rate over time for one face, split by grain class.
+
+        The HDF record for ``Face Total-load Transport Rate`` depends on the
+        sediment compute output level: at output level 6, HEC-RAS writes a
+        per-grain-class family (``... - Total``, ``... - <grain>``, etc.); at
+        output level 3, it writes only a single consolidated dataset named
+        ``Face Total-load Transport Rate`` with no suffix and no per-grain
+        breakdown. This method first tries the unsuffixed record and, if it
+        is absent, falls back to the suffixed per-grain-class family.
 
         Parameters
         ----------
@@ -626,9 +700,10 @@ class SedimentFlowAreaResults:
         -------
         pandas.DataFrame
             Indexed by :attr:`transport_timestamps`.  When *capacity* is
-            ``False``, first column ``"Total"``, followed by one column per
-            grain class actually present in the file.  When *capacity* is
-            ``True``, only a ``"Total"`` column.
+            ``True``, or the plan's sediment output level only wrote the
+            unsuffixed consolidated record, only a ``"Total"`` column.
+            Otherwise first column ``"Total"``, followed by one column per
+            grain class actually present in the file.
 
         Raises
         ------
@@ -642,7 +717,7 @@ class SedimentFlowAreaResults:
                 self._transport_root, "Face Total-load Transport Capacity", face
             )
             return pd.DataFrame({"Total": total}, index=self.transport_timestamps)
-        return self._consolidated(
+        return self._total_or_consolidated(
             self._transport_root,
             "Face Total-load Transport Rate",
             face,
@@ -668,6 +743,11 @@ class SedimentFlowAreaResults:
         flow from left bank to right bank (when facing from *xy* start to
         *xy* end) is **positive**.
 
+        As with :meth:`get_transport_rate`, this first tries the unsuffixed
+        ``Face Total-load Transport Rate`` record (sediment output level 3)
+        and falls back to the per-grain-class family (level 6) if that
+        record is absent.
+
         Parameters
         ----------
         xy : ndarray, shape ``(n_pts, 2)``
@@ -682,8 +762,10 @@ class SedimentFlowAreaResults:
         pandas.DataFrame
             Indexed by :attr:`transport_timestamps`.  First column
             ``"Total"``, followed by one column per grain class actually
-            present in the file.  Values are the net (signed) transport
-            rate across the fence.
+            present in the file -- or only ``"Total"`` if the plan's
+            sediment output level only wrote the unsuffixed consolidated
+            record.  Values are the net (signed) transport rate across the
+            fence.
 
         Raises
         ------
@@ -702,7 +784,7 @@ class SedimentFlowAreaResults:
         face_ids = faces_df["face"].tolist()
         orientations = faces_df["orientation"].to_numpy(dtype=bool)  # True -> negate
         signs = np.where(orientations, -1.0, 1.0)
-        return self._consolidated_signed_sum(
+        return self._total_or_consolidated_signed_sum(
             self._transport_root,
             "Face Total-load Transport Rate",
             face_ids,
