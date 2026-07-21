@@ -20,7 +20,7 @@ area results reuse the plan's flow-area name list
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Mapping
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, overload
 
 import numpy as np
 import pandas as pd
@@ -717,6 +717,9 @@ class SedimentFlowAreaResultsCollection(Mapping[str, SedimentFlowAreaResults]):
     from the sediment result groups themselves, so a name is available even
     if one of the two sediment blocks is absent for that area; the specific
     accessor raises ``KeyError`` in that case.
+
+    Supports ``[name]`` and 0-based integer index (in geometry order), e.g.
+    ``coll[0]``.
     """
 
     def __init__(
@@ -734,7 +737,20 @@ class SedimentFlowAreaResultsCollection(Mapping[str, SedimentFlowAreaResults]):
         self._hydraulics_flow_areas = hydraulics_flow_areas
         self._cache: dict[str, SedimentFlowAreaResults] = {}
 
-    def __getitem__(self, name: str) -> SedimentFlowAreaResults:
+    @overload
+    def __getitem__(self, key: int) -> SedimentFlowAreaResults: ...
+    @overload
+    def __getitem__(self, key: str) -> SedimentFlowAreaResults: ...
+
+    def __getitem__(self, key: int | str) -> SedimentFlowAreaResults:
+        if isinstance(key, int):
+            try:
+                key = self._names[key]
+            except IndexError:
+                raise IndexError(
+                    f"Index {key} out of range for {len(self._names)} flow areas"
+                ) from None
+        name = key
         if name not in self._names:
             raise KeyError(f"2D flow area {name!r} not found. Available: {self._names}")
         if name not in self._cache:
