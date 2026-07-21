@@ -265,7 +265,9 @@ class SedimentFlowAreaResults:
     and ``get_bed_shear_stress`` return a plain ``pandas.Series`` for one cell;
     ``get_fraction_suspended``, ``get_total_load_concentration``, and
     ``get_transport_rate`` additionally split the result by grain class,
-    returning a ``pandas.DataFrame``.
+    returning a ``pandas.DataFrame`` -- except ``get_transport_rate(...,
+    capacity=True)``, whose underlying HDF record has no per-grain-class
+    breakdown and returns a single ``"Total"`` column.
 
     Parameters
     ----------
@@ -718,8 +720,8 @@ class SedimentFlowAreaResultsCollection(Mapping[str, SedimentFlowAreaResults]):
     if one of the two sediment blocks is absent for that area; the specific
     accessor raises ``KeyError`` in that case.
 
-    Supports ``[name]`` and 0-based integer index (in geometry order), e.g.
-    ``coll[0]``.
+    Supports ``[name]`` and integer index (in geometry order), including
+    negative indices, e.g. ``coll[0]`` or ``coll[-1]``.
     """
 
     def __init__(
@@ -905,8 +907,8 @@ class UnsteadySediment:
         Returns
         -------
         SedimentFlowAreaResultsCollection
-            Mapping keyed by flow-area name, with items of type
-            :class:`SedimentFlowAreaResults`.
+            Collection supporting ``[name]`` and integer index, with items
+            of type :class:`SedimentFlowAreaResults`.
         """
         if self._flow_areas is None:
             self._flow_areas = SedimentFlowAreaResultsCollection(
