@@ -105,6 +105,15 @@ conn.stage_tw       # pd.Series
 xy = np.array([[500, 200], [600, 250], [700, 300]])
 df     = model.wse_along_line(xy, timestep="max", interval=1.0)  # pd.DataFrame — station, wse, …
 series = model.flow_across_line(xy)                               # pd.Series — discharge time series
+
+# Sediment transport (if the plan includes a sediment analysis)
+sed = hdf.sediment
+xs = sed.cross_sections()["Beaver Creek", "Kentwood", "5.99"]
+xs.get_cumulative_inflow(quantity="mass")   # pd.DataFrame — Total + per-grain-class columns
+
+fa = sed.flow_areas()["Perimeter 1"]
+fa.bed_change[-1]                           # np.ndarray — bed change per cell, last timestep
+fa.get_transport_rate(face=200)             # pd.DataFrame — Total + per-grain-class columns
 ```
 
 ## Package Structure

@@ -310,3 +310,60 @@ conn.flow_total                       # total flow time series, pd.Series indexe
 conn.stage_hw                         # headwater stage, pd.Series
 conn.stage_tw                         # tailwater stage, pd.Series
 ```
+
+### Sediment transport
+
+`hdf.sediment` is an `UnsteadySediment` view over the plan's sediment output
+blocks (present only for plans with a sediment transport analysis). It does
+not open its own HDF handle — it borrows the plan's.
+
+```python
+sed = model.results.sediment
+```
+
+**1D cross sections** — `sed.cross_sections()` is a `CrossSectionResultsCollection`
+of `SedimentCrossSectionResults`, keyed the same way as hydraulics cross
+sections (name, `(river, reach, rs)` tuple, or integer index):
+
+```python
+xs = sed.cross_sections()["Beaver Creek", "Kentwood", "5.99"]
+
+xs.effective_depth                          # pd.Series indexed by timestamps
+xs.invert_change                            # pd.Series — channel invert change
+xs.water_surface                            # pd.Series
+
+# Cumulative inflow/outflow, split by grain class — quantity is required
+# since a sediment analysis runs in exactly one of the two output modes
+xs.get_cumulative_inflow(quantity="mass")   # pd.DataFrame — Total + per-grain-class columns
+xs.get_cumulative_outflow(quantity="vol")   # pd.DataFrame
+```
+
+**2D flow areas** — `sed.flow_areas()` is a `SedimentFlowAreaResultsCollection`
+of `SedimentFlowAreaResults`, keyed by flow-area name or integer index.
+Sediment Bed and Sediment Transport are independent HEC-RAS output blocks
+with their own timestamp axes (`fa.bed_timestamps` / `fa.transport_timestamps`):
+
+```python
+fa = sed.flow_areas()["Perimeter 1"]
+
+# Sediment Bed — raw datasets, shape (n_t, n_cells); slice to read into memory
+fa.bed_elevation[-1]                        # bed elevation per cell, last timestep
+fa.bed_change[-1]                           # bed change per cell, last timestep
+fa.initial_bed_elevation                    # np.ndarray — elevation before simulation starts
+fa.max_bed_elevation                        # np.ndarray — HEC-RAS summary, as written
+
+# Sediment Bed — single-cell time series
+fa.get_bed_elevation(cell=100)              # pd.Series indexed by bed_timestamps
+fa.get_bed_change(cell=100)                 # pd.Series
+
+# Sediment Transport — single-cell/face accessors, split by grain class
+fa.get_bed_shear_stress(cell=100, component="skin")   # pd.Series
+fa.get_fraction_suspended(cell=100)                   # pd.DataFrame — Total + grain columns
+fa.get_total_load_concentration(cell=100)             # pd.DataFrame
+fa.get_transport_rate(face=200)                       # pd.DataFrame — rate, Total + grain columns
+fa.get_transport_rate(face=200, capacity=True)         # pd.DataFrame — capacity, Total only
+
+# Net transport rate through a profile line (mirrors flow_across_line)
+xy = np.array([[500, 200], [700, 300]])
+fa.transport_rate_along_line(xy)            # pd.DataFrame indexed by transport_timestamps
+```
