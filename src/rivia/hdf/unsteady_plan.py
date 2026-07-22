@@ -3033,11 +3033,28 @@ class _CrossSectionResultsBase(CrossSection):
 
     Holds the HDF handle, column index, result-group root, and the
     timestamps resolved by the parent collection.  Provides the shared
-    ``_load`` and ``_series`` helpers.
+    ``_load``, ``_units``, and ``_series`` helpers.
 
     Concrete subclasses add the properties specific to their output block
     (:class:`CrossSectionMappingResults`, :class:`CrossSectionOutputResults`,
     :class:`CrossSectionPostProcessResults`).
+
+    Parameters
+    ----------
+    geom:
+        Geometry object from :class:`CrossSectionCollection`.
+    hdf:
+        Open ``h5py.File`` -- kept alive by the parent ``UnsteadyPlan`` context.
+    index:
+        Column index of this XS in the ``(n_t, n_xs)`` result datasets at
+        *root*. Also used to index row-per-XS datasets (e.g. ``Sediment SE``
+        blocks in :mod:`rivia.hdf.quasi_unsteady_plan`), which rely on the
+        same row/column order as the main result block.
+    root:
+        HDF path prefix under which the result datasets for this output
+        block live.
+    timestamps:
+        Output timestamps resolved by the parent collection.
     """
 
     def __init__(
@@ -3070,6 +3087,7 @@ class _CrossSectionResultsBase(CrossSection):
         self._index = index
         self._root = root
         self._cache: dict[str, np.ndarray] = {}
+        self._units_cache: dict[str, str | None] = {}
         self.timestamps = timestamps
 
     def _load(self, dataset: str) -> np.ndarray:
@@ -3081,11 +3099,32 @@ class _CrossSectionResultsBase(CrossSection):
                     f"Dataset '{dataset}' not found at '{self._root}'."
                 )
             self._cache[dataset] = np.array(ds[:, self._index])
+            raw_units = ds.attrs.get("Units")
+            self._units_cache[dataset] = (
+                _decode(raw_units) if raw_units is not None else None
+            )
         return self._cache[dataset]
 
+    def _units(self, dataset: str) -> str | None:
+        """Return the ``Units`` HDF attribute for *dataset*, or ``None`` if absent."""
+        if dataset not in self._units_cache:
+            self._load(dataset)
+        return self._units_cache[dataset]
+
     def _series(self, dataset: str, name: str) -> pd.Series:
-        """Return a time-indexed ``pd.Series`` for one dataset column."""
-        return pd.Series(self._load(dataset), index=self.timestamps, name=name)
+        """Return a time-indexed ``pd.Series`` for one dataset column.
+
+        ``series.attrs["units"]`` is set from the dataset's HDF ``Units``
+        attribute when present (e.g. ``"ft"``). ``pandas`` ``Series.attrs``
+        is experimental and does not survive most operations (arithmetic,
+        slicing, ``concat``, ``reindex``) -- read it directly off the object
+        returned here, don't rely on it downstream.
+        """
+        series = pd.Series(self._load(dataset), index=self.timestamps, name=name)
+        units = self._units(dataset)
+        if units:
+            series.attrs["units"] = units
+        return series
 
 
 class CrossSectionMappingResults(_CrossSectionResultsBase):

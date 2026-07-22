@@ -44,6 +44,17 @@ skip_if_no_sediment_examples = pytest.mark.skipif(
     reason="1D sediment example HDF files not found on this machine",
 )
 
+# Quasi-unsteady (1-D sediment transport) example plan.
+QUASI_STEADY_SEDIMENT_HDF = Path(
+    r"Z:\HEC-RAS Examples\Example_Projects_7_0\1D Sediment Transport"
+    r"\Simple Sediment Transport Example\MBex.p04.hdf"
+)
+
+skip_if_no_quasi_steady_example = pytest.mark.skipif(
+    not QUASI_STEADY_SEDIMENT_HDF.exists(),
+    reason="Quasi-steady sediment example HDF file not found on this machine",
+)
+
 # 2-D sediment transport example plan.
 SEDIMENT_2D_HDF = Path(
     r"Z:\HEC-RAS Examples\Example_Projects_6_6\2D Sediment Transport"

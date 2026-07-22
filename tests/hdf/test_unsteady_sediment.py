@@ -137,6 +137,12 @@ class TestScalarProperties:
         assert len(series) == len(ts)
         assert (series.index == ts).all()
 
+    def test_effective_depth_units_is_feet(self):
+        with UnsteadyPlan(SEDIMENT_1D_MASS_HDF) as plan:
+            xs = plan.sediment.cross_sections()[FIRST_XS]
+            series = xs.effective_depth
+        assert series.attrs["units"] == "ft"
+
 
 # ---------------------------------------------------------------------------
 # Mass / Vol consolidated accessors
@@ -151,6 +157,12 @@ class TestConsolidatedMass:
             df = xs.get_cumulative_inflow(quantity="mass")
         assert isinstance(df, pd.DataFrame)
         assert df.columns[0] == "Total"
+
+    def test_cumulative_inflow_units_present(self):
+        with UnsteadyPlan(SEDIMENT_1D_MASS_HDF) as plan:
+            xs = plan.sediment.cross_sections()[FIRST_XS]
+            df = xs.get_cumulative_inflow(quantity="mass")
+        assert "units" in df.attrs
 
     def test_cumulative_inflow_discovers_present_grains_only(self):
         with UnsteadyPlan(SEDIMENT_1D_MASS_HDF) as plan:

@@ -81,6 +81,10 @@ from .unsteady_sediment import (  # noqa: F401
     SedimentFlowAreaResultsCollection,
     UnsteadySediment,
 )
+from .quasi_unsteady_plan import (  # noqa: F401
+    QuasiUnsteadyCrossSectionResults,
+    QuasiUnsteadyPlan,
+)
 
 __all__ = [
     "check_plan_staleness",
@@ -89,6 +93,7 @@ __all__ = [
     "GeomVersionStaleness",
     "LayerStaleness",
     "PlanStalenessReport",
+    "QuasiUnsteadyPlan",
     "ResultStaleness",
     "RunCompletion",
     "RuntimeLog",

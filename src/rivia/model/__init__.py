@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Literal
 if TYPE_CHECKING:
     from rivia.hdf.staleness import PlanStalenessReport
 
-from rivia.hdf import SteadyPlan, UnsteadyPlan
+from rivia.hdf import QuasiUnsteadyPlan, SteadyPlan, UnsteadyPlan
 
 from .. import controller
 from ..controller.ras import installed_ras_progid as _installed_ras_progid
@@ -408,13 +408,15 @@ class Project(MapperExtension):
         return self._flow
 
     @property
-    def results(self) -> SteadyPlan | UnsteadyPlan:
+    def results(self) -> SteadyPlan | UnsteadyPlan | QuasiUnsteadyPlan:
         """Lazily opened HDF results file for the current plan.
 
         Dispatches to the appropriate class based on plan type:
 
         * Steady flow (``plan.is_steady``) → :class:`~rivia.hdf.SteadyPlan`
         * Unsteady flow (``plan.is_unsteady``) → :class:`~rivia.hdf.UnsteadyPlan`
+        * Quasi-steady flow (``plan.is_quasi_steady``) →
+          :class:`~rivia.hdf.QuasiUnsteadyPlan`
 
         The handle is kept open until :meth:`reload` is called or :meth:`close`
         is invoked.  For geometry-only access (no results), use
@@ -440,6 +442,8 @@ class Project(MapperExtension):
                 self._hdf = SteadyPlan(plan_path)
             elif self.plan.is_unsteady:
                 self._hdf = UnsteadyPlan(plan_path)
+            elif self.plan.is_quasi_steady:
+                self._hdf = QuasiUnsteadyPlan(plan_path)
             else:
                 raise ValueError(
                     f"Cannot determine plan type from flow file "

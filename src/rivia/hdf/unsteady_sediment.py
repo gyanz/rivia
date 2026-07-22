@@ -174,6 +174,12 @@ class SedimentCrossSectionResults(_CrossSectionResultsBase):
         depend on the user's sediment gradation setup and are never
         hard-coded.
 
+        The returned DataFrame's ``attrs["units"]`` is set from the ``Total``
+        record's HDF ``Units`` attribute, if present -- all grain-class
+        columns share the same physical unit. See
+        :meth:`~rivia.hdf.unsteady_plan._CrossSectionResultsBase._series`
+        for the caveat on ``pandas`` ``.attrs`` durability.
+
         Raises
         ------
         ValueError
@@ -194,7 +200,11 @@ class SedimentCrossSectionResults(_CrossSectionResultsBase):
             name = f"{base} {n}"
             if f"{self._root}/{name}" in self._hdf:
                 data[grain_names[n - 1]] = self._load(name)
-        return pd.DataFrame(data, index=self.timestamps)
+        df = pd.DataFrame(data, index=self.timestamps)
+        units = self._units(base)
+        if units:
+            df.attrs["units"] = units
+        return df
 
     def get_cumulative_inflow(self, quantity: Quantity) -> pd.DataFrame:
         """Cumulative sediment inflow, split by grain class.
