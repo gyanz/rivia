@@ -166,6 +166,12 @@ class TestSedimentBed:
             with pytest.raises(ValueError):
                 fa.get_bed_elevation()
 
+    def test_get_bed_elevation_units_is_feet(self):
+        with UnsteadyPlan(SEDIMENT_2D_HDF) as plan:
+            fa = plan.sediment.flow_areas()[AREA]
+            series = fa.get_bed_elevation(cell=100)
+        assert series.attrs["units"] == "ft"
+
     def test_get_bed_change_matches_column(self):
         with UnsteadyPlan(SEDIMENT_2D_HDF) as plan:
             fa = plan.sediment.flow_areas()[AREA]
@@ -227,6 +233,12 @@ class TestBedShearStress:
             with pytest.raises(TypeError):
                 fa.get_bed_shear_stress(cell=100)  # type: ignore[call-arg]
 
+    def test_get_bed_shear_stress_units_is_psf(self):
+        with UnsteadyPlan(SEDIMENT_2D_HDF) as plan:
+            fa = plan.sediment.flow_areas()[AREA]
+            series = fa.get_bed_shear_stress(cell=100, component="skin")
+        assert series.attrs["units"] == "PSF"
+
 
 # ---------------------------------------------------------------------------
 # Sediment Transport -- consolidated grain accessors
@@ -267,6 +279,19 @@ class TestConsolidatedCellAccessors:
             with pytest.raises(ValueError):
                 fa.get_total_load_concentration()
 
+    def test_fraction_suspended_is_dimensionless_no_units_attr(self):
+        # "Fraction Suspended" has no HDF Units attribute (it's a fraction).
+        with UnsteadyPlan(SEDIMENT_2D_HDF) as plan:
+            fa = plan.sediment.flow_areas()[AREA]
+            df = fa.get_fraction_suspended(cell=100)
+        assert "units" not in df.attrs
+
+    def test_total_load_concentration_units_present(self):
+        with UnsteadyPlan(SEDIMENT_2D_HDF) as plan:
+            fa = plan.sediment.flow_areas()[AREA]
+            df = fa.get_total_load_concentration(cell=100)
+        assert df.attrs["units"] == "mg/L"
+
 
 @skip_if_no_2d_sediment_example
 class TestTransportRate:
@@ -301,6 +326,18 @@ class TestTransportRate:
             default = fa.get_transport_rate(face=200)
             explicit_rate = fa.get_transport_rate(face=200, capacity=False)
         assert default["Total"].equals(explicit_rate["Total"])
+
+    def test_rate_units_present(self):
+        with UnsteadyPlan(SEDIMENT_2D_HDF) as plan:
+            fa = plan.sediment.flow_areas()[AREA]
+            df = fa.get_transport_rate(face=200)
+        assert df.attrs["units"] == "ton/ft/day"
+
+    def test_capacity_units_present(self):
+        with UnsteadyPlan(SEDIMENT_2D_HDF) as plan:
+            fa = plan.sediment.flow_areas()[AREA]
+            df = fa.get_transport_rate(face=200, capacity=True)
+        assert df.attrs["units"] == "ton/ft/day"
 
 
 @skip_if_no_2d_sediment_level3_example
@@ -378,6 +415,13 @@ class TestTransportRateAlongLine:
             xy = _left_to_right_line(plan.flow_areas[AREA])
             with pytest.raises(NotImplementedError):
                 fa.transport_rate_along_line(xy, method="walk")
+
+    def test_units_present(self):
+        with UnsteadyPlan(SEDIMENT_2D_HDF) as plan:
+            fa = plan.sediment.flow_areas()[AREA]
+            xy = _left_to_right_line(plan.flow_areas[AREA])
+            df = fa.transport_rate_along_line(xy)
+        assert df.attrs["units"] == "ton/ft/day"
 
 
 def _bottom_to_top_line(hydraulics_fa) -> np.ndarray:
