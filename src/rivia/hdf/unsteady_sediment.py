@@ -47,6 +47,10 @@ _XS_GEOM_ATTRS = f"{_XS_ROOT}/Attributes"
 _GRAIN_CLASS_NAMES = "Sediment/Grain Class Data/Grain Class Names"
 _N_GRAIN_CLASSES = 20
 
+_SED_SE_ROOT = "Results/Unsteady/Output/Output Blocks/Sediment SE/Sediment Time Series"
+_SED_SE_XS = f"{_SED_SE_ROOT}/Cross Section SE"
+_SED_SE_TIME_STAMP_DS = f"{_SED_SE_ROOT}/Time Date Stamp"
+
 Quantity = Literal["mass", "vol"]
 _QUANTITY_BASE = {"mass": "Mass", "vol": "Vol"}
 
@@ -96,6 +100,11 @@ class SedimentCrossSectionResults(_CrossSectionResultsBase):
     and column-index carrier with the hydraulics cross-section results
     (:class:`~rivia.hdf.unsteady_plan._CrossSectionResultsBase`), pointed at
     the sediment result group instead of Base Output.
+
+    Also exposes :meth:`get_xsec`, the cross-section geometry-over-time
+    ("Sediment SE") accessor -- see
+    :attr:`~rivia.hdf.unsteady_sediment.UnsteadySediment.cross_section_geometry_timestamps`
+    for its checkpoint interval.
     """
 
     @property
@@ -258,6 +267,87 @@ class SedimentCrossSectionResults(_CrossSectionResultsBase):
         """
         return self._consolidated(quantity, "Out Cum")
 
+    # ------------------------------------------------------------------
+    # Cross-section geometry over time (Sediment SE block)
+    # ------------------------------------------------------------------
+
+    def get_xsec(self, timestep: int) -> tuple[np.ndarray, np.ndarray]:
+        """Cross-section station/elevation shape at one XS-geometry checkpoint.
+
+        Named with a ``get_`` prefix (unlike the inherited :attr:`station_elevation`
+        field, which holds the *static* geometry survey) both to follow the
+        ``get_<quantity>(*, timestep=, ...)`` convention used throughout
+        :mod:`rivia.hdf.unsteady_plan` for timestep-selected derived
+        accessors, and because a same-named method would be silently
+        shadowed by the inherited dataclass field of the same name.
+
+        Unsteady 1-D sediment plans write the evolving XS shape (station vs.
+        elevation, reflecting bed aggradation/degradation) at its own
+        checkpoint interval, independent of the main sediment time series --
+        see
+        :attr:`~rivia.hdf.unsteady_sediment.UnsteadySediment.cross_section_geometry_timestamps`
+        for that interval's own timestamps. The checkpoint count is entirely
+        file-dependent -- observed matching the main output interval exactly
+        (one checkpoint per timestep) on one project, so don't assume it's
+        sparser.
+
+        Parameters
+        ----------
+        timestep : int
+            0-based index into
+            :attr:`~rivia.hdf.unsteady_sediment.UnsteadySediment.cross_section_geometry_timestamps`.
+
+        Returns
+        -------
+        station : ndarray, shape ``(n,)``
+        elevation : ndarray, shape ``(n,)``
+
+        Raises
+        ------
+        KeyError
+            If the ``Sediment SE`` output block is absent from this HDF
+            file -- e.g. XS geometry output was not enabled for this run.
+        IndexError
+            If *timestep* is out of range.
+        RuntimeError
+            If the row order of the ``Sediment SE`` block does not match
+            this cross section's column index in the main sediment result
+            block (a HEC-RAS write-order assumption this method relies on).
+        """
+        se_grp = self._hdf.get(_SED_SE_XS)
+        if se_grp is None:
+            raise KeyError(
+                f"'{_SED_SE_XS}' not found. "
+                "Ensure this plan has XS geometry output enabled for its "
+                "sediment transport analysis."
+            )
+        ts_ds = self._hdf.get(_SED_SE_TIME_STAMP_DS)
+        if ts_ds is None:
+            raise KeyError(f"'{_SED_SE_TIME_STAMP_DS}' not found.")
+        raw = np.array(ts_ds).astype(str)
+        timestamps = _parse_hec_ts_array(raw, _RAS_TS_FMT)
+        if not 0 <= timestep < len(timestamps):
+            raise IndexError(
+                f"timestep {timestep} out of range (n={len(timestamps)})"
+            )
+
+        label = _decode(se_grp["River Reach Station"][self._index])
+        expected_prefix = f"{self.river} {self.reach} {self.rs}"
+        if not label.startswith(expected_prefix):
+            raise RuntimeError(
+                f"'Sediment SE' row {self._index} ({label!r}) does not match "
+                f"expected cross section {expected_prefix!r}. The "
+                "'Sediment SE' and 'Cross Section Attributes' row orders "
+                "have diverged for this HDF file."
+            )
+
+        date_str = timestamps[timestep].strftime(_RAS_TS_FMT).upper()
+        info = se_grp[f"Station Elevation ({date_str}) info"]
+        values = se_grp[f"Station Elevation ({date_str}) values"]
+        start, count = (int(v) for v in info[self._index])
+        data = np.array(values[start : start + count])
+        return data[:, 0], data[:, 1]
+
 
 class SedimentFlowAreaResults:
     """Sediment Bed and Sediment Transport results for one 2-D flow area.
@@ -286,6 +376,14 @@ class SedimentFlowAreaResults:
     consolidated record, which is likewise ``"Total"``-only (see
     :meth:`SedimentFlowAreaResults.get_transport_rate` and
     :meth:`SedimentFlowAreaResults.get_total_load_concentration`).
+
+    Every ``get_*`` method's returned ``pandas.Series``/``pandas.DataFrame``
+    has ``attrs["units"]`` set from the underlying dataset's HDF ``Units``
+    attribute when present, the same as
+    :class:`~rivia.hdf.unsteady_sediment.SedimentCrossSectionResults` and
+    :class:`~rivia.hdf.unsteady_plan._CrossSectionResultsBase`. See
+    :meth:`~rivia.hdf.unsteady_plan._CrossSectionResultsBase._series` for the
+    caveat on ``pandas`` ``.attrs`` durability.
 
     Parameters
     ----------
@@ -327,6 +425,7 @@ class SedimentFlowAreaResults:
         self._bed_timestamps: pd.DatetimeIndex | None = None
         self._transport_timestamps: pd.DatetimeIndex | None = None
         self._hydraulics: FlowAreaResults | None = None
+        self._units_cache: dict[str, str | None] = {}
 
     def __repr__(self) -> str:
         return f"SedimentFlowAreaResults({self.name!r})"
@@ -364,10 +463,28 @@ class SedimentFlowAreaResults:
         ds = self._hdf.get(f"{root}/{name}")
         if ds is None:
             raise KeyError(f"Dataset '{name}' not found at '{root}'.")
+        key = f"{root}/{name}"
+        if key not in self._units_cache:
+            raw_units = ds.attrs.get("Units")
+            self._units_cache[key] = (
+                _decode(raw_units) if raw_units is not None else None
+            )
         return ds
 
     def _column(self, root: str, name: str, index: int) -> np.ndarray:
         return np.array(self._dataset(root, name)[:, index])
+
+    def _units(self, root: str, name: str) -> str | None:
+        """Return the ``Units`` HDF attribute for a dataset, or ``None`` if absent.
+
+        See :meth:`~rivia.hdf.unsteady_plan._CrossSectionResultsBase._series`
+        for the caveat on ``pandas`` ``.attrs`` durability -- the same applies
+        to every ``series.attrs["units"]``/``df.attrs["units"]`` set below.
+        """
+        key = f"{root}/{name}"
+        if key not in self._units_cache:
+            self._dataset(root, name)
+        return self._units_cache[key]
 
     def _consolidated(
         self, root: str, base: str, index: int, timestamps: pd.DatetimeIndex
@@ -377,6 +494,10 @@ class SedimentFlowAreaResults:
         Iterates every grain-class name and includes only the columns
         actually present in the HDF file -- the active grain classes depend
         on the user's sediment gradation setup and are never hard-coded.
+
+        The returned DataFrame's ``attrs["units"]`` is set from the
+        ``<base> - Total`` record's HDF ``Units`` attribute, if present --
+        all grain-class columns share the same physical unit.
         """
         total = self._column(root, f"{base} - Total", index)
         data: dict[str, np.ndarray] = {"Total": total}
@@ -384,7 +505,11 @@ class SedimentFlowAreaResults:
             key = f"{base} - {name}"
             if f"{root}/{key}" in self._hdf:
                 data[name] = self._column(root, key, index)
-        return pd.DataFrame(data, index=timestamps)
+        df = pd.DataFrame(data, index=timestamps)
+        units = self._units(root, f"{base} - Total")
+        if units:
+            df.attrs["units"] = units
+        return df
 
     def _signed_sum(
         self, root: str, name: str, indexes: list[int], signs: np.ndarray
@@ -408,7 +533,8 @@ class SedimentFlowAreaResults:
         """Build a Total + per-grain-class DataFrame summed over several signed columns.
 
         Same column discovery as :meth:`_consolidated`, but each named record
-        is summed across *indexes* via :meth:`_signed_sum`.
+        is summed across *indexes* via :meth:`_signed_sum`. ``attrs["units"]``
+        is set the same way as :meth:`_consolidated`.
         """
         data: dict[str, np.ndarray] = {
             "Total": self._signed_sum(root, f"{base} - Total", indexes, signs)
@@ -417,7 +543,11 @@ class SedimentFlowAreaResults:
             key = f"{base} - {name}"
             if f"{root}/{key}" in self._hdf:
                 data[name] = self._signed_sum(root, key, indexes, signs)
-        return pd.DataFrame(data, index=timestamps)
+        df = pd.DataFrame(data, index=timestamps)
+        units = self._units(root, f"{base} - Total")
+        if units:
+            df.attrs["units"] = units
+        return df
 
     def _total_or_consolidated(
         self, root: str, base: str, index: int, timestamps: pd.DatetimeIndex
@@ -428,11 +558,17 @@ class SedimentFlowAreaResults:
         unsuffixed dataset (Total only, no per-grain-class breakdown);
         others split it into a ``<base> - Total`` / ``<base> - <grain>``
         family. Tries the unsuffixed record first -- cheaper, and the one
-        actually present when the per-grain family is absent.
+        actually present when the per-grain family is absent. Either way,
+        the returned DataFrame's ``attrs["units"]`` is set from whichever
+        record was actually read.
         """
         try:
             total = self._column(root, base, index)
-            return pd.DataFrame({"Total": total}, index=timestamps)
+            df = pd.DataFrame({"Total": total}, index=timestamps)
+            units = self._units(root, base)
+            if units:
+                df.attrs["units"] = units
+            return df
         except KeyError:
             logger.debug(
                 "'%s' not found at '%s'; falling back to per-grain-class family.",
@@ -452,7 +588,11 @@ class SedimentFlowAreaResults:
         """Signed-sum variant of :meth:`_total_or_consolidated` for a face fence."""
         try:
             total = self._signed_sum(root, base, indexes, signs)
-            return pd.DataFrame({"Total": total}, index=timestamps)
+            df = pd.DataFrame({"Total": total}, index=timestamps)
+            units = self._units(root, base)
+            if units:
+                df.attrs["units"] = units
+            return df
         except KeyError:
             logger.debug(
                 "'%s' not found at '%s'; falling back to per-grain-class family.",
@@ -518,6 +658,8 @@ class SedimentFlowAreaResults:
         -------
         pandas.Series
             Indexed by :attr:`bed_timestamps`, named ``"Bed Elevation"``.
+            ``attrs["units"]`` is set from the dataset's HDF ``Units``
+            attribute when present.
 
         Raises
         ------
@@ -527,7 +669,11 @@ class SedimentFlowAreaResults:
         if cell is None:
             raise ValueError("cell must be specified.")
         values = np.array(self.bed_elevation[:, cell])
-        return pd.Series(values, index=self.bed_timestamps, name="Bed Elevation")
+        series = pd.Series(values, index=self.bed_timestamps, name="Bed Elevation")
+        units = self._units(self._bed_root, "Cell Bed Elevation")
+        if units:
+            series.attrs["units"] = units
+        return series
 
     def get_bed_change(self, *, cell: int | None = None) -> pd.Series:
         """Bed change over time for one cell.
@@ -541,6 +687,8 @@ class SedimentFlowAreaResults:
         -------
         pandas.Series
             Indexed by :attr:`bed_timestamps`, named ``"Bed Change"``.
+            ``attrs["units"]`` is set from the dataset's HDF ``Units``
+            attribute when present.
 
         Raises
         ------
@@ -550,7 +698,11 @@ class SedimentFlowAreaResults:
         if cell is None:
             raise ValueError("cell must be specified.")
         values = np.array(self.bed_change[:, cell])
-        return pd.Series(values, index=self.bed_timestamps, name="Bed Change")
+        series = pd.Series(values, index=self.bed_timestamps, name="Bed Change")
+        units = self._units(self._bed_root, "Cell Bed Change")
+        if units:
+            series.attrs["units"] = units
+        return series
 
     # ------------------------------------------------------------------
     # Sediment Transport
@@ -598,7 +750,8 @@ class SedimentFlowAreaResults:
         -------
         pandas.Series
             Indexed by :attr:`transport_timestamps`, named
-            ``"Bed Shear Stress ({component})"``.
+            ``"Bed Shear Stress ({component})"``. ``attrs["units"]`` is set
+            from the dataset's HDF ``Units`` attribute when present.
 
         Raises
         ------
@@ -607,12 +760,17 @@ class SedimentFlowAreaResults:
         """
         if cell is None:
             raise ValueError("cell must be specified.")
+        dataset_name = f"Cell Bed Shear Stress - {_SHEAR_SUFFIX[component]}"
         values = np.array(self.transport_bed_shear_stress(component=component)[:, cell])
-        return pd.Series(
+        series = pd.Series(
             values,
             index=self.transport_timestamps,
             name=f"Bed Shear Stress ({component})",
         )
+        units = self._units(self._transport_root, dataset_name)
+        if units:
+            series.attrs["units"] = units
+        return series
 
     def get_fraction_suspended(self, *, cell: int | None = None) -> pd.DataFrame:
         """Suspended-load fraction over time for one cell, split by grain class.
@@ -627,7 +785,8 @@ class SedimentFlowAreaResults:
         pandas.DataFrame
             Indexed by :attr:`transport_timestamps`.  First column
             ``"Total"``, followed by one column per grain class actually
-            present in the file.
+            present in the file. ``attrs["units"]`` is set from the ``Total``
+            record's HDF ``Units`` attribute when present.
 
         Raises
         ------
@@ -666,7 +825,8 @@ class SedimentFlowAreaResults:
             ``"Total"``, followed by one column per grain class actually
             present in the file -- or only ``"Total"`` if the plan's
             sediment output level only wrote the unsuffixed consolidated
-            record.
+            record. ``attrs["units"]`` is set from whichever record was
+            actually read.
 
         Raises
         ------
@@ -713,7 +873,8 @@ class SedimentFlowAreaResults:
             ``True``, or the plan's sediment output level only wrote the
             unsuffixed consolidated record, only a ``"Total"`` column.
             Otherwise first column ``"Total"``, followed by one column per
-            grain class actually present in the file.
+            grain class actually present in the file. ``attrs["units"]`` is
+            set from whichever record was actually read.
 
         Raises
         ------
@@ -723,10 +884,13 @@ class SedimentFlowAreaResults:
         if face is None:
             raise ValueError("face must be specified.")
         if capacity:
-            total = self._column(
-                self._transport_root, "Face Total-load Transport Capacity", face
-            )
-            return pd.DataFrame({"Total": total}, index=self.transport_timestamps)
+            dataset_name = "Face Total-load Transport Capacity"
+            total = self._column(self._transport_root, dataset_name, face)
+            df = pd.DataFrame({"Total": total}, index=self.transport_timestamps)
+            units = self._units(self._transport_root, dataset_name)
+            if units:
+                df.attrs["units"] = units
+            return df
         return self._total_or_consolidated(
             self._transport_root,
             "Face Total-load Transport Rate",
@@ -775,7 +939,8 @@ class SedimentFlowAreaResults:
             present in the file -- or only ``"Total"`` if the plan's
             sediment output level only wrote the unsuffixed consolidated
             record.  Values are the net (signed) transport rate across the
-            fence.
+            fence. ``attrs["units"]`` is set from whichever record was
+            actually read.
 
         Raises
         ------
@@ -910,6 +1075,33 @@ class UnsteadySediment:
             raise KeyError(
                 f"'{_SED_TIME_STAMP_DS}' not found. "
                 "Ensure this plan includes a sediment transport analysis."
+            )
+        raw = np.array(ds).astype(str)
+        return _parse_hec_ts_array(raw, _RAS_TS_FMT)
+
+    @property
+    def cross_section_geometry_timestamps(self) -> pd.DatetimeIndex:
+        """XS-geometry ("Sediment SE") checkpoint time stamps.
+
+        This interval is independent of :attr:`cross_section_timestamps` in
+        both spacing and count -- it has been observed matching the main
+        output interval exactly (one checkpoint per timestep) on one
+        project, so the checkpoint count is file-dependent, not assumed
+        sparse. Parsed from ``.../Sediment SE/Sediment Time Series/Time Date
+        Stamp``.
+
+        Raises
+        ------
+        KeyError
+            If the ``Sediment SE`` ``Time Date Stamp`` dataset is absent --
+            e.g. XS geometry output was not enabled for this run.
+        """
+        ds = self._hdf.get(_SED_SE_TIME_STAMP_DS)
+        if ds is None:
+            raise KeyError(
+                f"'{_SED_SE_TIME_STAMP_DS}' not found. "
+                "Ensure this plan has XS geometry output enabled for its "
+                "sediment transport analysis."
             )
         raw = np.array(ds).astype(str)
         return _parse_hec_ts_array(raw, _RAS_TS_FMT)

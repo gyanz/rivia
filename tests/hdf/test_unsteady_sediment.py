@@ -224,3 +224,65 @@ class TestConsolidatedVolume:
             xs = plan.sediment.cross_sections()[FIRST_XS]
             with pytest.raises(KeyError):
                 xs.get_cumulative_inflow(quantity="mass")
+
+
+# ---------------------------------------------------------------------------
+# Cross-section geometry over time (Sediment SE block)
+# ---------------------------------------------------------------------------
+
+
+@skip_if_no_sediment_examples
+class TestCrossSectionGeometryTimestamps:
+    def test_returns_datetimeindex(self):
+        with UnsteadyPlan(SEDIMENT_1D_MASS_HDF) as plan:
+            ts = plan.sediment.cross_section_geometry_timestamps
+        assert isinstance(ts, pd.DatetimeIndex)
+        assert ts.is_monotonic_increasing
+        assert len(ts) > 0
+
+
+@skip_if_no_sediment_examples
+class TestGetXsec:
+    def test_returns_station_elevation_arrays(self):
+        with UnsteadyPlan(SEDIMENT_1D_MASS_HDF) as plan:
+            xs = plan.sediment.cross_sections()[FIRST_XS]
+            station, elevation = xs.get_xsec(0)
+        assert isinstance(station, np.ndarray)
+        assert isinstance(elevation, np.ndarray)
+        assert station.ndim == 1
+        assert elevation.ndim == 1
+        assert station.shape == elevation.shape
+        assert station.shape[0] > 0
+
+    def test_spans_same_range_as_geometry_at_time_zero(self):
+        # Station matches the static survey exactly on this file, but
+        # elevation does not (small real differences, e.g. 210.159 vs.
+        # 210.140 -- up to ~0.02 ft on this XS -- not float32 noise): the
+        # bed has evidently already shifted slightly by the first Sediment
+        # SE checkpoint. Checking range rather than exact equality mirrors
+        # the same finding on QuasiUnsteadyPlan against Salt-Gila.p05.hdf
+        # (see quasi_unsteady_plan_design.md) -- exact match at t=0 isn't a
+        # safe assumption for either plan type in general.
+        with UnsteadyPlan(SEDIMENT_1D_MASS_HDF) as plan:
+            xs = plan.sediment.cross_sections()[FIRST_XS]
+            station0, elevation0 = xs.get_xsec(0)
+            static = xs.station_elevation
+        assert np.all(np.diff(station0) >= 0)
+        np.testing.assert_allclose(
+            [station0.min(), station0.max()],
+            [static[:, 0].min(), static[:, 0].max()],
+            rtol=1e-5,
+        )
+        np.testing.assert_allclose(
+            [elevation0.min(), elevation0.max()],
+            [static[:, 1].min(), static[:, 1].max()],
+            atol=0.1,
+        )
+
+    def test_timestep_out_of_range_raises(self):
+        with UnsteadyPlan(SEDIMENT_1D_MASS_HDF) as plan:
+            sed = plan.sediment
+            xs = sed.cross_sections()[FIRST_XS]
+            n = len(sed.cross_section_geometry_timestamps)
+            with pytest.raises(IndexError):
+                xs.get_xsec(n)

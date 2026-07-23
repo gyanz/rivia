@@ -55,6 +55,17 @@ skip_if_no_quasi_steady_example = pytest.mark.skipif(
     reason="Quasi-steady sediment example HDF file not found on this machine",
 )
 
+# Quasi-unsteady (1-D sediment transport) example plan -- large, real-world
+# project (488 XS, 16 bridges), used to cross-check MBex.p04.hdf coverage.
+SALT_GILA_SEDIMENT_HDF = Path(
+    r"D:\Dropbox\repositories\Z\HEC-RAS Examples\Salt Gila\Salt-Gila.p05.hdf"
+)
+
+skip_if_no_salt_gila_example = pytest.mark.skipif(
+    not SALT_GILA_SEDIMENT_HDF.exists(),
+    reason="Salt-Gila sediment example HDF file not found on this machine",
+)
+
 # 2-D sediment transport example plan.
 SEDIMENT_2D_HDF = Path(
     r"Z:\HEC-RAS Examples\Example_Projects_6_6\2D Sediment Transport"

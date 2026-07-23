@@ -16,9 +16,15 @@ import pytest
 from rivia.hdf import QuasiUnsteadyPlan
 from rivia.hdf.quasi_unsteady_plan import QuasiUnsteadyCrossSectionResults
 
-from .conftest import QUASI_STEADY_SEDIMENT_HDF, skip_if_no_quasi_steady_example
+from .conftest import (
+    QUASI_STEADY_SEDIMENT_HDF,
+    SALT_GILA_SEDIMENT_HDF,
+    skip_if_no_quasi_steady_example,
+    skip_if_no_salt_gila_example,
+)
 
 FIRST_XS = ("Yang Flume", "Yang Flume", "1000")
+SALT_GILA_FIRST_XS = ("Salt", "Salt", "217.76")
 
 
 # ---------------------------------------------------------------------------
@@ -264,3 +270,84 @@ class TestStationElevation:
             n = len(plan.cross_section_geometry_timestamps)
             with pytest.raises(IndexError):
                 xs.get_xsec(n)
+
+
+# ---------------------------------------------------------------------------
+# Cross-check against a second, larger real-world project (Salt-Gila.p05.hdf)
+# ---------------------------------------------------------------------------
+
+
+@skip_if_no_salt_gila_example
+class TestSaltGilaCrossCheck:
+    # All properties/collections here are lazy (backed by the open h5py.File)
+    # -- assertions must run *inside* the `with` block, before the plan (and
+    # its HDF handle) closes.
+
+    def test_large_cross_section_count(self):
+        with QuasiUnsteadyPlan(SALT_GILA_SEDIMENT_HDF) as plan:
+            assert len(plan.cross_sections) == 488
+
+    def test_lookup_first_xs(self):
+        with QuasiUnsteadyPlan(SALT_GILA_SEDIMENT_HDF) as plan:
+            xs = plan.cross_sections[SALT_GILA_FIRST_XS]
+            assert xs.river == SALT_GILA_FIRST_XS[0]
+            assert xs.reach == SALT_GILA_FIRST_XS[1]
+            assert xs.rs == SALT_GILA_FIRST_XS[2]
+
+    def test_effective_depth_units_is_feet(self):
+        with QuasiUnsteadyPlan(SALT_GILA_SEDIMENT_HDF) as plan:
+            xs = plan.cross_sections[SALT_GILA_FIRST_XS]
+            assert xs.effective_depth.attrs["units"] == "ft"
+
+    def test_dimensionless_property_has_no_fake_none_string_unit(self):
+        # Regression test: HEC-RAS writes the literal string "None" as the
+        # Units attribute for some dimensionless quantities (confirmed on
+        # this file for Rouse #) -- that must not surface as
+        # attrs["units"] == "None". Only reproduces on Salt-Gila.p05.hdf;
+        # MBex.p04.hdf's Units attributes don't happen to include this case.
+        with QuasiUnsteadyPlan(SALT_GILA_SEDIMENT_HDF) as plan:
+            xs = plan.cross_sections[SALT_GILA_FIRST_XS]
+            assert "units" not in xs.rouse_number.attrs
+
+    def test_grain_class_subset_discovered(self):
+        # This project's active grain classes (6-18) differ from
+        # MBex.p04.hdf's -- confirms _consolidated()'s "only include
+        # grain-suffix datasets actually present" logic generalizes.
+        with QuasiUnsteadyPlan(SALT_GILA_SEDIMENT_HDF) as plan:
+            xs = plan.cross_sections[SALT_GILA_FIRST_XS]
+            df = xs.get_cumulative_inflow("mass")
+            assert df.columns[0] == "Total"
+            assert len(df.columns) > 1
+            assert df.attrs["units"] == "tons"
+
+    def test_structures_reachable_via_inherited_geometry(self):
+        # Bridge/culvert *results* don't exist for quasi-unsteady sediment
+        # plans (see design doc), but *geometry* is already reachable via
+        # the inherited Geometry.structures property.
+        with QuasiUnsteadyPlan(SALT_GILA_SEDIMENT_HDF) as plan:
+            assert len(plan.structures) == 16
+
+    def test_get_xsec_spans_same_range_as_geometry_at_time_zero(self):
+        # Unlike MBex.p04.hdf, the Sediment SE checkpoint at t=0 does *not*
+        # have the same point count as the static geometry survey on this
+        # file (215 vs. 211 points for this XS) -- HEC-RAS's sediment
+        # engine evidently densifies/resamples the SE curve independently
+        # of the raw station-elevation table, even before any bed movement.
+        # So this checks the same station/elevation *range* and ordering
+        # rather than an exact array match.
+        with QuasiUnsteadyPlan(SALT_GILA_SEDIMENT_HDF) as plan:
+            xs = plan.cross_sections[SALT_GILA_FIRST_XS]
+            station0, elevation0 = xs.get_xsec(0)
+            static = xs.station_elevation
+        assert station0.shape == elevation0.shape
+        assert np.all(np.diff(station0) >= 0)
+        np.testing.assert_allclose(
+            [station0.min(), station0.max()],
+            [static[:, 0].min(), static[:, 0].max()],
+            rtol=1e-5,
+        )
+        np.testing.assert_allclose(
+            [elevation0.min(), elevation0.max()],
+            [static[:, 1].min(), static[:, 1].max()],
+            rtol=1e-5,
+        )

@@ -3047,9 +3047,12 @@ class _CrossSectionResultsBase(CrossSection):
         Open ``h5py.File`` -- kept alive by the parent ``UnsteadyPlan`` context.
     index:
         Column index of this XS in the ``(n_t, n_xs)`` result datasets at
-        *root*. Also used to index row-per-XS datasets (e.g. ``Sediment SE``
-        blocks in :mod:`rivia.hdf.quasi_unsteady_plan`), which rely on the
-        same row/column order as the main result block.
+        *root*. Also used to index row-per-XS datasets (e.g. the
+        ``Sediment SE`` blocks read by
+        :meth:`~rivia.hdf.quasi_unsteady_plan.QuasiUnsteadyCrossSectionResults.get_xsec`
+        and
+        :meth:`~rivia.hdf.unsteady_sediment.SedimentCrossSectionResults.get_xsec`),
+        which rely on the same row/column order as the main result block.
     root:
         HDF path prefix under which the result datasets for this output
         block live.
@@ -3100,13 +3103,21 @@ class _CrossSectionResultsBase(CrossSection):
                 )
             self._cache[dataset] = np.array(ds[:, self._index])
             raw_units = ds.attrs.get("Units")
+            decoded = _decode(raw_units) if raw_units is not None else None
             self._units_cache[dataset] = (
-                _decode(raw_units) if raw_units is not None else None
+                None if decoded is None or decoded.lower() == "none" else decoded
             )
         return self._cache[dataset]
 
     def _units(self, dataset: str) -> str | None:
-        """Return the ``Units`` HDF attribute for *dataset*, or ``None`` if absent."""
+        """Return the ``Units`` HDF attribute for *dataset*, or ``None`` if absent.
+
+        HEC-RAS writes the literal string ``"None"`` as the ``Units`` value
+        for some dimensionless quantities (e.g. ``Rouse #``, ``Shields #``),
+        distinct from datasets where the attribute is absent entirely (e.g.
+        ``Froude Number Channel``). Both are normalized to Python ``None``
+        here so callers never see a fake ``"None"`` unit string.
+        """
         if dataset not in self._units_cache:
             self._load(dataset)
         return self._units_cache[dataset]

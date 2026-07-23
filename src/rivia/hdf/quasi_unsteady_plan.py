@@ -8,7 +8,10 @@ Base Output to layer sediment on top of, so sediment properties live
 directly on the objects returned by :meth:`QuasiUnsteadyPlan.cross_sections`.
 
 Structures (bridges, culverts, inline/lateral structures) may exist in the
-geometry but are not exposed as result objects yet.
+geometry -- reachable via the inherited
+:attr:`~rivia.hdf.geometry.Geometry.structures` -- but HEC-RAS's
+quasi-unsteady sediment engine writes no per-structure time-series results,
+so no structure result classes exist here.
 """
 
 from __future__ import annotations
@@ -585,10 +588,13 @@ class QuasiUnsteadyCrossSectionResults(_CrossSectionResultsBase):
         shadowed by the inherited dataclass field of the same name.
 
         Quasi-unsteady sediment plans write the evolving XS shape (station
-        vs. elevation, reflecting bed aggradation/degradation) at a sparser
-        interval than the main sediment time series -- see
+        vs. elevation, reflecting bed aggradation/degradation) at its own
+        checkpoint interval, independent of the main sediment time series --
+        see
         :attr:`~rivia.hdf.quasi_unsteady_plan.QuasiUnsteadyPlan.cross_section_geometry_timestamps`
-        for that interval's own timestamps.
+        for that interval's own timestamps. The checkpoint count is entirely
+        file-dependent -- it can be far sparser than the main time series or
+        roughly comparable to it, so don't assume either direction.
 
         Parameters
         ----------
@@ -675,7 +681,7 @@ class QuasiUnsteadyPlan(_PlanHdf, Geometry):
 
         with QuasiUnsteadyPlan("MBex.p04") as plan:
             ts = plan.cross_section_timestamps
-            xs = plan.cross_sections()["Yang Flume", "Yang Flume", "1000"]
+            xs = plan.cross_sections["Yang Flume", "Yang Flume", "1000"]
 
             wse = xs.water_surface          # pd.Series over ts
             inflow = xs.get_cumulative_inflow("mass")   # DataFrame by grain class
@@ -718,9 +724,12 @@ class QuasiUnsteadyPlan(_PlanHdf, Geometry):
     def cross_section_geometry_timestamps(self) -> pd.DatetimeIndex:
         """XS-geometry ("Sediment SE") checkpoint time stamps.
 
-        This interval is independent of, and typically much sparser than,
-        :attr:`cross_section_timestamps`. Parsed from ``.../Sediment
-        SE/Sediment Time Series/Time Date Stamp``.
+        This interval is independent of :attr:`cross_section_timestamps` in
+        both spacing and count -- the checkpoint count is entirely
+        file-dependent (observed anywhere from far sparser than the main
+        time series to roughly comparable to it), so don't assume either
+        direction. Parsed from ``.../Sediment SE/Sediment Time Series/Time
+        Date Stamp``.
 
         Raises
         ------
