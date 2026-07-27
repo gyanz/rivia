@@ -1477,6 +1477,84 @@ class FlowArea:
 
         return int(result[0]) if scalar else result
 
+    def cells_within_polygon(
+        self,
+        polygon: np.ndarray,
+        *,
+        mode: Literal["centroid", "full"] = "centroid",
+    ) -> np.ndarray:
+        """Return indices of cells contained within a query polygon.
+
+        Parameters
+        ----------
+        polygon : ndarray, shape ``(n, 2)``
+            Query polygon vertices, ``n >= 3``.  Open ring (do not repeat the
+            first vertex); winding order does not matter.
+        mode : {"centroid", "full"}, optional
+            ``"centroid"`` (default) -- a cell matches when its centre
+            (:attr:`cell_centers`) lies inside *polygon*.  ``"full"`` -- a
+            cell matches only when **every** vertex of its footprint
+            (:attr:`cell_polygons`) lies inside *polygon*, i.e. the entire
+            cell is contained in the query area.
+
+        Returns
+        -------
+        ndarray, shape ``(k,)``, dtype ``int64``
+            Sorted ascending indices of matching cells.  Empty if none match.
+
+        Raises
+        ------
+        ValueError
+            If *polygon* is not shape ``(n, 2)`` with ``n >= 3``, or if
+            *mode* is not one of ``"centroid"``/``"full"``.
+
+        Notes
+        -----
+        Cells whose :attr:`cell_polygons` entry is malformed (empty, from an
+        adjacency cycle that failed to close) are skipped under ``"full"``
+        mode but can still match under ``"centroid"`` mode, since that mode
+        only reads :attr:`cell_centers`.
+
+        Uses :attr:`cell_bbox` for a fast bounding-box pre-filter against the
+        query polygon's own bbox, then :func:`_point_in_polygon` ray-casting
+        for the exact test -- the same pattern as
+        :meth:`cells_containing_points`.
+        """
+        polygon = np.asarray(polygon, dtype=np.float64)
+        if polygon.ndim != 2 or polygon.shape[1] != 2 or polygon.shape[0] < 3:
+            raise ValueError(
+                f"polygon must have shape (n, 2) with n >= 3, got {polygon.shape}"
+            )
+        if mode not in ("centroid", "full"):
+            raise ValueError(f"mode must be 'centroid' or 'full', got {mode!r}")
+
+        bbox = self.cell_bbox  # (n_cells, 4)
+        pxmin, pymin = polygon[:, 0].min(), polygon[:, 1].min()
+        pxmax, pymax = polygon[:, 0].max(), polygon[:, 1].max()
+
+        candidates = np.where(
+            (bbox[:, 2] >= pxmin) & (bbox[:, 0] <= pxmax) &
+            (bbox[:, 3] >= pymin) & (bbox[:, 1] <= pymax)
+        )[0]
+
+        matches: list[int] = []
+        if mode == "centroid":
+            centers = self.cell_centers
+            for ci in candidates:
+                cx, cy = float(centers[ci, 0]), float(centers[ci, 1])
+                if _point_in_polygon(cx, cy, polygon):
+                    matches.append(int(ci))
+        else:
+            cell_polys = self.cell_polygons
+            for ci in candidates:
+                poly = cell_polys[ci]
+                if len(poly) < 3:
+                    continue
+                if all(_point_in_polygon(float(x), float(y), polygon) for x, y in poly):
+                    matches.append(int(ci))
+
+        return np.array(sorted(matches), dtype=np.int64)
+
     # ------------------------------------------------------------------
     # Line / profile spatial queries
     # ------------------------------------------------------------------

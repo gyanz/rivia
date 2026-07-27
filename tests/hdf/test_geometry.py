@@ -5,13 +5,60 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from rivia.hdf import Geometry, UnsteadyPlan
+from rivia.hdf import FlowArea, Geometry, UnsteadyPlan
 
 from .conftest import skip_if_no_example, EXAMPLE_PLAN_HDF
 
 N_CELLS = 10
 N_FACES = 20
 AREA = "TestArea"
+
+
+def _make_grid_flow_area() -> FlowArea:
+    """4-cell 2x2 unit-square grid ``FlowArea`` for polygon-query tests.
+
+    A plain ``dict`` stands in for the ``h5py.Group`` -- ``FlowArea`` only
+    ever does ``self._g[key]`` / ``key in self._g``, both of which a dict
+    supports, so no real HDF file is needed for geometry-only unit tests.
+
+    Facepoints (index: coordinate)::
+
+        6:(0,2) 7:(1,2) 8:(2,2)
+        3:(0,1) 4:(1,1) 5:(2,1)
+        0:(0,0) 1:(1,0) 2:(2,0)
+
+    Cells (CCW corner facepoints, centre)::
+
+        0: fp 0,1,4,3  centre (0.5, 0.5)
+        1: fp 1,2,5,4  centre (1.5, 0.5)
+        2: fp 3,4,7,6  centre (0.5, 1.5)
+        3: fp 4,5,8,7  centre (1.5, 1.5)
+    """
+    fp_coords = np.array([
+        [0.0, 0.0], [1.0, 0.0], [2.0, 0.0],
+        [0.0, 1.0], [1.0, 1.0], [2.0, 1.0],
+        [0.0, 2.0], [1.0, 2.0], [2.0, 2.0],
+    ])
+    cell_fp = np.full((4, 8), -1, dtype=np.int32)
+    cell_fp[0, :4] = [0, 1, 4, 3]
+    cell_fp[1, :4] = [1, 2, 5, 4]
+    cell_fp[2, :4] = [3, 4, 7, 6]
+    cell_fp[3, :4] = [4, 5, 8, 7]
+
+    centers = np.array([[0.5, 0.5], [1.5, 0.5], [0.5, 1.5], [1.5, 1.5]])
+
+    n_faces = 4  # dummy count -- unused since no face is marked curved
+    fake_group = {
+        "Cells Center Coordinate": centers,
+        "Cells FacePoint Indexes": cell_fp,
+        "FacePoints Coordinate": fp_coords,
+        "Faces FacePoint Indexes": np.zeros((n_faces, 2), dtype=np.int32),
+        "Faces Perimeter Info": np.zeros((n_faces, 2), dtype=np.int32),
+        "Faces Perimeter Values": np.zeros((0, 2), dtype=np.float64),
+        "Cells Face and Orientation Info": np.zeros((4, 2), dtype=np.int32),
+        "Cells Face and Orientation Values": np.zeros((1, 2), dtype=np.int32),
+    }
+    return FlowArea(fake_group, "Grid", n_cells=4)
 
 
 # ---------------------------------------------------------------------------
@@ -174,6 +221,105 @@ class TestFlowArea:
             info2, vals2 = area.facepoint_face_orientation
         assert info1 is info2
         assert vals1 is vals2
+
+
+# ---------------------------------------------------------------------------
+# cells_within_polygon
+# ---------------------------------------------------------------------------
+
+
+class TestCellsWithinPolygon:
+    def test_polygon_covers_whole_mesh(self):
+        area = _make_grid_flow_area()
+        polygon = np.array([[-1.0, -1.0], [3.0, -1.0], [3.0, 3.0], [-1.0, 3.0]])
+        centroid = area.cells_within_polygon(polygon, mode="centroid")
+        full = area.cells_within_polygon(polygon, mode="full")
+        np.testing.assert_array_equal(centroid, [0, 1, 2, 3])
+        np.testing.assert_array_equal(full, [0, 1, 2, 3])
+
+    def test_polygon_outside_mesh_bbox_is_empty(self):
+        area = _make_grid_flow_area()
+        polygon = np.array([[10.0, 10.0], [11.0, 10.0], [11.0, 11.0], [10.0, 11.0]])
+        centroid = area.cells_within_polygon(polygon, mode="centroid")
+        full = area.cells_within_polygon(polygon, mode="full")
+        assert centroid.shape == (0,)
+        assert full.shape == (0,)
+        assert centroid.dtype == np.int64
+        assert full.dtype == np.int64
+
+    def test_centroid_mode_matches_where_full_mode_does_not(self):
+        """A vertical strip that spans every cell's centroid but not its corners:
+
+        centroid mode should match all 4 cells; full mode should match none,
+        since every cell has a corner at x=0 or x=2 which lies outside the
+        strip's x range of [0.2, 1.8].
+        """
+        area = _make_grid_flow_area()
+        strip = np.array([[0.2, -0.5], [1.8, -0.5], [1.8, 2.5], [0.2, 2.5]])
+        centroid = area.cells_within_polygon(strip, mode="centroid")
+        full = area.cells_within_polygon(strip, mode="full")
+        np.testing.assert_array_equal(centroid, [0, 1, 2, 3])
+        assert full.shape == (0,)
+
+    def test_concave_polygon_excludes_notch_cells(self):
+        """An L-shaped (concave) polygon covering only the bottom row and the
+        left column should include cells 0, 1, 2 but exclude cell 3, whose
+        centre (1.5, 1.5) sits in the notch cut out of the top-right.
+        """
+        area = _make_grid_flow_area()
+        l_shape = np.array([
+            [-0.5, -0.5], [2.5, -0.5], [2.5, 1.0],
+            [1.0, 1.0], [1.0, 2.5], [-0.5, 2.5],
+        ])
+        centroid = area.cells_within_polygon(l_shape, mode="centroid")
+        np.testing.assert_array_equal(centroid, [0, 1, 2])
+
+    def test_malformed_cell_polygon_excluded_only_under_full_mode(self):
+        """A cell with < 3 valid corner facepoints (broken adjacency) has no
+        usable footprint for "full" mode, but its centre is still valid, so
+        it can still match under "centroid" mode.
+        """
+        fp_coords = np.array([
+            [0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0],
+        ])
+        cell_fp = np.full((2, 8), -1, dtype=np.int32)
+        cell_fp[0, :4] = [0, 1, 2, 3]      # normal quad
+        cell_fp[1, :2] = [0, 1]            # malformed: only 2 valid corners
+        centers = np.array([[0.5, 0.5], [1.5, 0.5]])
+        n_faces = 2
+        fake_group = {
+            "Cells Center Coordinate": centers,
+            "Cells FacePoint Indexes": cell_fp,
+            "FacePoints Coordinate": fp_coords,
+            "Faces FacePoint Indexes": np.zeros((n_faces, 2), dtype=np.int32),
+            "Faces Perimeter Info": np.zeros((n_faces, 2), dtype=np.int32),
+            "Faces Perimeter Values": np.zeros((0, 2), dtype=np.float64),
+            "Cells Face and Orientation Info": np.zeros((2, 2), dtype=np.int32),
+            "Cells Face and Orientation Values": np.zeros((1, 2), dtype=np.int32),
+        }
+        area = FlowArea(fake_group, "Malformed", n_cells=2)
+
+        polygon = np.array([[-1.0, -1.0], [3.0, -1.0], [3.0, 3.0], [-1.0, 3.0]])
+        centroid = area.cells_within_polygon(polygon, mode="centroid")
+        full = area.cells_within_polygon(polygon, mode="full")
+        np.testing.assert_array_equal(centroid, [0, 1])
+        np.testing.assert_array_equal(full, [0])
+
+    def test_invalid_polygon_shape_raises(self):
+        area = _make_grid_flow_area()
+        with pytest.raises(ValueError):
+            area.cells_within_polygon(np.array([[0.0, 0.0], [1.0, 1.0]]))
+
+    def test_invalid_polygon_ndim_raises(self):
+        area = _make_grid_flow_area()
+        with pytest.raises(ValueError):
+            area.cells_within_polygon(np.array([0.0, 1.0, 2.0]))
+
+    def test_invalid_mode_raises(self):
+        area = _make_grid_flow_area()
+        polygon = np.array([[-1.0, -1.0], [3.0, -1.0], [3.0, 3.0], [-1.0, 3.0]])
+        with pytest.raises(ValueError):
+            area.cells_within_polygon(polygon, mode="bogus")  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------
