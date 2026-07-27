@@ -2025,7 +2025,38 @@ class FlowAreaResultsCollection(FlowAreaCollection):
     instead of plain ``FlowArea`` instances.
     """
 
-    def __getitem__(self, name: str) -> FlowAreaResults:
+    @overload
+    def __getitem__(self, key: int) -> FlowAreaResults: ...
+    @overload
+    def __getitem__(self, key: str) -> FlowAreaResults: ...
+
+    def __getitem__(self, key: int | str) -> FlowAreaResults:
+        """Return one 2-D flow area's results by integer index or name.
+
+        Parameters
+        ----------
+        key:
+            ``int`` -- 0-based position in :attr:`names` order.
+            ``str`` -- flow area name.
+
+        Raises
+        ------
+        IndexError
+            If an integer *key* is out of range.
+        KeyError
+            If the flow area name is not found, or has no time-series /
+            summary results in this plan.
+        """
+        if isinstance(key, int):
+            names = self.names
+            try:
+                key = names[key]
+            except IndexError:
+                raise IndexError(
+                    f"Index {key} out of range (n={len(names)})"
+                ) from None
+
+        name = key
         if name not in self._cache:
             root = self._hdf.get("Geometry/2D Flow Areas")
             if root is None or name not in root:
