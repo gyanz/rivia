@@ -48,6 +48,58 @@ def _to_xy(line: "np.ndarray | Any") -> np.ndarray:
     return xy
 
 
+def _to_polygon_xy(polygon: "np.ndarray | Any") -> np.ndarray:
+    """Normalise a polygon-like input to an ``(n, 2)`` float64 ndarray.
+
+    Parameters
+    ----------
+    polygon : ndarray or object with ``__geo_interface__``
+        Either an array-like of shape ``(n, 2)`` containing ``(x, y)``
+        pairs (open ring; do not repeat the first vertex), or any object
+        that exposes a ``__geo_interface__`` property returning a
+        GeoJSON-like mapping (e.g. a :class:`shapely.geometry.Polygon`).
+        Only ``"Polygon"`` geometry type is accepted; all others raise
+        :exc:`TypeError`.  Only the exterior ring is used -- interior
+        rings (holes) are not supported and raise :exc:`ValueError`.  Z
+        coordinates and an explicit closing vertex (first == last) are
+        dropped.
+
+    Returns
+    -------
+    ndarray, shape (n, 2), dtype float64
+
+    Raises
+    ------
+    TypeError
+        If a ``__geo_interface__`` object is not a ``Polygon``.
+    ValueError
+        If the resulting array is not shape ``(n, 2)`` with ``n >= 3``,
+        or if the geometry has interior rings (holes).
+    """
+    if hasattr(polygon, "__geo_interface__"):
+        geom = polygon.__geo_interface__
+        if geom["type"] != "Polygon":
+            raise TypeError(
+                f"Expected a Polygon geometry, got {geom['type']!r}."
+            )
+        rings = geom["coordinates"]
+        if len(rings) > 1:
+            raise ValueError(
+                "Polygon has interior rings (holes), which are not supported."
+            )
+        xy = np.array(rings[0], dtype=np.float64)[:, :2]
+        if len(xy) >= 2 and np.array_equal(xy[0], xy[-1]):
+            xy = xy[:-1]
+    else:
+        xy = np.asarray(polygon, dtype=np.float64)
+
+    if xy.ndim != 2 or xy.shape[1] != 2 or len(xy) < 3:
+        raise ValueError(
+            f"Polygon must resolve to shape (n, 2) with n >= 3; got shape {xy.shape}."
+        )
+    return xy
+
+
 def _stations_to_xy(stations: np.ndarray, polyline_xy: np.ndarray) -> np.ndarray:
     """Convert along-line station distances to ``(x, y)`` coordinates.
 

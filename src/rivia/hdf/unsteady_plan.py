@@ -343,6 +343,75 @@ class _FlowAreaResultsDerived(FlowArea):
         df["value"] = np.maximum(0.0, df["value"].to_numpy() - self.cell_min_elevation)
         return df
 
+    def get_water_volume_within_polygon(
+        self,
+        timestep: int,
+        polygon: np.ndarray | Any,
+        *,
+        mode: Literal["centroid", "full"] = "centroid",
+    ) -> float:
+        """Total water volume within a query polygon at one timestep.
+
+        Selects cells with :meth:`~rivia.hdf.geometry.FlowArea.cells_within_polygon`,
+        then integrates each selected cell's volume-elevation curve
+        (:attr:`~rivia.hdf.geometry.FlowArea.cell_volume_elevation`) at that
+        cell's water-surface elevation.
+
+        Parameters
+        ----------
+        timestep : int
+            0-based index into the time dimension.
+        polygon : ndarray or object with ``__geo_interface__``
+            Query polygon, ``n >= 3`` vertices.  Accepts either an
+            array-like of shape ``(n, 2)`` or any object that exposes a
+            ``__geo_interface__`` mapping for a ``Polygon`` geometry (e.g.
+            a :class:`shapely.geometry.Polygon`).  Open ring (do not repeat
+            the first vertex); winding order does not matter.  Interior
+            rings (holes) are not supported.
+        mode : {"centroid", "full"}, optional
+            Cell-selection mode, see
+            :meth:`~rivia.hdf.geometry.FlowArea.cells_within_polygon`.
+            Default ``"centroid"``.
+
+        Returns
+        -------
+        float
+            Sum of interpolated cell volumes at *timestep*, in model volume
+            units.  ``0.0`` if no cells match *polygon*.
+
+        Notes
+        -----
+        Elevations below a cell's volume-elevation table range are clamped
+        to the lowest table entry by ``numpy.interp`` -- the same
+        convention as :meth:`~rivia.hdf.geometry.StorageArea.volume_at_elevation`
+        (RAS tables start at the cell's minimum elevation with volume
+        approximately ``0``, so this is correct for dry cells).  Elevations
+        *above* the table range are extrapolated by adding
+        ``cell_surface_area * (wse - max_table_elevation)``, treating the
+        cell as a flat prism above the highest tabulated elevation.
+        """
+        from ..geo.profile import _to_polygon_xy
+
+        xy = _to_polygon_xy(polygon)
+        cell_idxs = self.cells_within_polygon(xy, mode=mode)
+        if len(cell_idxs) == 0:
+            return 0.0
+
+        wse = np.array(self.water_surface[timestep, : self.n_cells])[cell_idxs]
+        ve_info, ve_values = self.cell_volume_elevation
+        areas = self.cell_surface_area
+
+        total = 0.0
+        for ci, z in zip(cell_idxs, wse, strict=True):
+            start, count = ve_info[ci]
+            elevs = ve_values[start : start + count, 0]
+            vols = ve_values[start : start + count, 1]
+            if z > elevs[-1]:
+                total += float(vols[-1] + areas[ci] * (z - elevs[-1]))
+            else:
+                total += float(np.interp(z, elevs, vols))
+        return total
+
     def get_wet_cells(self, timestep: int, depth_min: float = 0.0) -> np.ndarray:
         """Boolean mask of wet cells for one timestep.
 
