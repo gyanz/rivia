@@ -5244,6 +5244,100 @@ class UnsteadyPlan(_PlanHdf, Geometry):
         ds = self._hdf.get(_DSS_PROF_TIME_STAMP_DS)
         return None if ds is None else len(ds)
 
+    def timestamp_to_index(
+        self,
+        timestamp: dt.datetime | str,
+        output_type: Literal["mapping", "output", "detailed"] = "mapping",
+    ) -> int:
+        """Index of the closest available timestamp for one output block.
+
+        Parameters
+        ----------
+        timestamp : datetime.datetime or str
+            Query time.  Strings are parsed with :class:`pandas.Timestamp`.
+        output_type : {"mapping", "output", "detailed"}, optional
+            Which timestamp series to search.  ``"mapping"`` (default) uses
+            :attr:`mapping_timestamps`, ``"output"`` uses
+            :attr:`output_timestamps`, ``"detailed"`` uses
+            :attr:`detailed_timestamps`.
+
+        Returns
+        -------
+        int
+            0-based index into the corresponding timestamp series whose
+            value is closest to *timestamp*.
+
+        Raises
+        ------
+        ValueError
+            If *output_type* is not one of ``"mapping"``, ``"output"``,
+            ``"detailed"``.
+        KeyError
+            If the corresponding output block was not written for this plan.
+        """
+        if output_type == "mapping":
+            timestamps = self.mapping_timestamps
+        elif output_type == "output":
+            timestamps = self.output_timestamps
+        elif output_type == "detailed":
+            timestamps = self.detailed_timestamps
+        else:
+            raise ValueError(
+                "output_type must be 'mapping', 'output', or 'detailed'; "
+                f"got {output_type!r}."
+            )
+
+        query = pd.Timestamp(timestamp)
+        return int(timestamps.get_indexer([query], method="nearest")[0])
+
+    def index_to_timestamp(
+        self,
+        index: int,
+        output_type: Literal["mapping", "output", "detailed"] = "mapping",
+    ) -> pd.Timestamp:
+        """Timestamp at a given index for one output block.
+
+        Inverse of :meth:`timestamp_to_index`.
+
+        Parameters
+        ----------
+        index : int
+            0-based index into the corresponding timestamp series.
+        output_type : {"mapping", "output", "detailed"}, optional
+            Which timestamp series to index.  ``"mapping"`` (default) uses
+            :attr:`mapping_timestamps`, ``"output"`` uses
+            :attr:`output_timestamps`, ``"detailed"`` uses
+            :attr:`detailed_timestamps`.
+
+        Returns
+        -------
+        pd.Timestamp
+            Timestamp at *index* in the corresponding timestamp series.
+
+        Raises
+        ------
+        ValueError
+            If *output_type* is not one of ``"mapping"``, ``"output"``,
+            ``"detailed"``.
+        KeyError
+            If the corresponding output block was not written for this plan.
+        IndexError
+            If *index* is out of range for the timestamp series.
+        """
+        if output_type == "mapping":
+            timestamps = self.mapping_timestamps
+        elif output_type == "output":
+            timestamps = self.output_timestamps
+        elif output_type == "detailed":
+            timestamps = self.detailed_timestamps
+        else:
+            raise ValueError(
+                "output_type must be 'mapping', 'output', or 'detailed'; "
+                f"got {output_type!r}."
+            )
+
+        return timestamps[index]
+
     # ------------------------------------------------------------------
     # Collections (override Geometry equivalents with results-aware types)
     # ------------------------------------------------------------------
